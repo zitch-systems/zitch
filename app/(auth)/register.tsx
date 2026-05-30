@@ -1,203 +1,88 @@
-import React, { useState } from "react";
-import { Text, View, Image, Modal, TouchableOpacity, ActivityIndicator } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { LinearGradient } from "expo-linear-gradient";
-import { ScrollView } from "react-native-gesture-handler";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { images } from "../../constants";
-import FieldForm from "@/components/CustomField/fieldForm";
-import ContinueButton from "@/components/CustomButtons/CustomButton";
-import { Link, router } from "expo-router";
+import React, { useState } from 'react';
+import { View, Text, Alert } from 'react-native';
+import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from "@/components/configFiles/apiConfig";
+import baseUrl from '@/components/configFiles/apiConfig';
+import ZIcon from '@/components/design/ZIcon';
+import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { useTheme, font } from '@/lib/theme';
+
 const Register = () => {
+  const { c } = useTheme();
   const [isRegistering, setIsRegistering] = useState(false);
-  const [registrationForm, setRegistrationForm] = useState({
-    email: "",
-    phone: "",
-  });
-  const [alertVisible, setAlertVisible] = useState(false);
-  const [alertMessage, setAlertMessage] = useState("");
+  const [form, setForm] = useState({ email: '', phone: '' });
+
+  const valid = form.phone.trim().length >= 10;
 
   const handleSignup = async () => {
-    // Validate input fields
-    if (registrationForm.email.trim() === '') {
-      setAlertMessage("Email cannot be empty");
-      setAlertVisible(true);
+    if (form.phone.trim() === '') {
+      Alert.alert('Error', 'Phone cannot be empty');
       return;
     }
-    if (registrationForm.phone.trim() === '') {
-      setAlertMessage("Phone cannot be empty");
-      setAlertVisible(true);
-      return;
-    }
-
     setIsRegistering(true);
-    
     try {
-      const response = await fetch(`${baseUrl}/api/phone_verification/`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            email: registrationForm.email,
-            phone: registrationForm.phone,
-          }),
-        }
-      );
-
+      const response = await fetch(`${baseUrl}/api/phone_verification/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: form.email, phone: form.phone }),
+      });
       const result = await response.json();
       if (response.ok) {
-        setAlertMessage("You have successfully registered!");
-        setAlertVisible(true);
-        await AsyncStorage.setItem('UserEmail', registrationForm.email);
-        await AsyncStorage.setItem('UserPhone', registrationForm.phone);
-        router.push("/otp");
+        await AsyncStorage.setItem('UserEmail', form.email);
+        await AsyncStorage.setItem('UserPhone', form.phone);
+        router.push('/otp');
       } else {
-        setAlertMessage(result.message || "Failed to register an account");
-        setAlertVisible(true);
+        Alert.alert('Error', result.message || 'Failed to register an account');
       }
     } catch (error) {
-      setAlertMessage("Something went wrong. Please try again later.");
-      setAlertVisible(true);
+      Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsRegistering(false);
     }
   };
 
   return (
-    <LinearGradient
-      colors={["#44B9B0", "#FFFFFF"]}
-      start={{ x: 4, y: 1 }}
-      end={{ x: 0, y: 1 }}
-      style={{ flex: 1 }}
-    >
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaView className="h-full">
-          <ScrollView
-            contentContainerStyle={{
-              flexGrow: 1,
-              justifyContent: "flex-start",
-              alignItems: "center",
-              paddingTop: 20,
-            }}
-          >
-            <View className="w-full justify-center min-h-[85vh] px-4 my-6">
-              <Image
-                source={images.logo1}
-                resizeMode="contain"
-                className="w-[115px] h-[35px] self-center"
-              />
-              <Text className="text-2xl text-semibold mt-10 font-psemibold">
-                Create Account
-              </Text>
-              <FieldForm
-                title="Phone"
-                value={registrationForm.phone}
-                handleChangeText={(e) => setRegistrationForm({ ...registrationForm, phone: e })}
-                otherStyles="mt-7"
-                placeholder="+234"
-              />
-              <FieldForm
-                title="Email"
-                value={registrationForm.email}
-                handleChangeText={(e) => setRegistrationForm({ ...registrationForm, email: e })}
-                otherStyles="mt-4"
-                placeholder="zitch@gmail.com"
-              />
-              <ContinueButton
-                title="Sign Up"
-                handlePress={handleSignup}
-                containerStyling="bg-[#009b8f] rounded-xl w-[340px] min-h-[50px] justify-center items-center mt-5"
-                textStyling="text-white font-psemibold text-lg px-3"
-                isLoading={isRegistering}
-              />
-              {isRegistering && <ActivityIndicator size="large" color="#009b8f" />}
-              <Text
-                style={{
-                  paddingLeft: 35,
-                  paddingTop: 5,
-                  color: "black",
-                  fontStyle: "italic",
-                  marginTop: 10,
-                }}
-              >
-                Already Have An Account?{" "}
-                <Link
-                  href="/signin"
-                  className="justify-center items-center"
-                  style={{ color: "#00ead8", textDecorationLine: "underline" }}
-                >
-                  Login Now{" "}
-                </Link>
-              </Text>
-            </View>
-          </ScrollView>
-          <Modal
-            animationType="slide"
-            transparent={true}
-            visible={alertVisible}
-            onRequestClose={() => {
-              setAlertVisible(!alertVisible);
-            }}
-          >
-            <View style={styles.centeredView}>
-              <View style={styles.modalView}>
-                <Text style={styles.modalText}>{alertMessage}</Text>
-                <TouchableOpacity
-                  style={styles.closeButton}
-                  onPress={() => setAlertVisible(!alertVisible)}
-                >
-                  <Text style={styles.textStyle}>Close</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </Modal>
-        </SafeAreaView>
-      </GestureHandlerRootView>
-    </LinearGradient>
-  );
-};
+    <Screen>
+      <Header onBack={() => router.replace('/signin')} />
+      <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Create your account</Text>
+      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 26, fontFamily: font.regular }}>
+        Join 5,000,000+ Nigerians on Zitch
+      </Text>
 
-const styles = {
-  centeredView: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    marginTop: 22,
-  },
-  modalView: {
-    margin: 20,
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 35,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-  },
-  closeButton: {
-    backgroundColor: "#009b8f",
-    borderRadius: 20,
-    padding: 10,
-    elevation: 2,
-  },
-  textStyle: {
-    color: "white",
-    fontWeight: "bold",
-    textAlign: "center",
-  },
-  modalText: {
-    marginBottom: 15,
-    textAlign: "center",
-  },
+      <View style={{ gap: 16 }}>
+        <Field
+          label="Phone number"
+          value={form.phone}
+          onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })}
+          keyboardType="number-pad"
+          placeholder="0801 234 5678"
+          prefix={<ZIcon name="airtime" size={18} color={c.ink3} />}
+        />
+        <Field
+          label="Email (optional)"
+          value={form.email}
+          onChangeText={(e) => setForm({ ...form, email: e })}
+          keyboardType="email-address"
+          placeholder="you@email.com"
+          prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
+        />
+      </View>
+      <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
+        By continuing you agree to Zitch's <Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text> &{' '}
+        <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text>.
+      </Text>
+
+      <View style={{ marginTop: 26 }}>
+        <Btn label="Continue" disabled={!valid || isRegistering} onPress={handleSignup} />
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 16 }}>
+        <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>Already have an account?</Text>
+        <Link href="/signin">
+          <Text style={{ fontFamily: font.bold, color: c.brand, fontSize: 14 }}>Sign in</Text>
+        </Link>
+      </View>
+    </Screen>
+  );
 };
 
 export default Register;

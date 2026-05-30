@@ -1,155 +1,126 @@
-import { Text, View, Image, TextInput, Alert, ActivityIndicator } from 'react-native';
-import React, { useState, useEffect } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ScrollView } from 'react-native-gesture-handler';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { images } from "../../constants";
-import ContinueButton from '@/components/CustomButtons/CustomButton';
-import { Link, router } from 'expo-router';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, Alert } from 'react-native';
+import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { saveToken } from '@/lib/secureStore';
+import { Screen, Header, Btn } from '@/components/design/ui';
+import { Keypad } from '@/components/design/Keypad';
+import { useTheme, font } from '@/lib/theme';
+
+const OTP_LEN = 5;
 
 const OTPVerification = () => {
-  const [isCheckingOtp, setIsCheckingOtp] = useState(false);
+  const { c } = useTheme();
   const [otp, setOtp] = useState('');
-  const [userEmail, setUserEmail] = useState('');
+  const [isCheckingOtp, setIsCheckingOtp] = useState(false);
   const [userPhone, setUserPhone] = useState('');
-  const [resendCount, setResendCount] = useState(0);
+  const [seconds, setSeconds] = useState(24);
 
   useEffect(() => {
-    const loadUserData = async () => {
-      try {
-        const email = await AsyncStorage.getItem('UserEmail');
-        const phone = await AsyncStorage.getItem('UserPhone');
-        if (email) setUserEmail(email);
-        if (phone) setUserPhone(phone);
-      } catch (error) {
-        console.error('Error loading user data:', error);
-      }
-    };
-
-    loadUserData();
+    AsyncStorage.getItem('UserPhone').then((p) => p && setUserPhone(p));
   }, []);
 
-  const handleCheckOtp = async () => {
+  useEffect(() => {
+    if (seconds <= 0) return;
+    const t = setTimeout(() => setSeconds((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [seconds]);
+
+  const handleCheckOtp = useCallback(async () => {
     setIsCheckingOtp(true);
     try {
       const response = await fetch(`${baseUrl}/api/verify_otp/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          otp,
-          phone: userPhone,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otp, phone: userPhone }),
       });
-
       const result = await response.json();
-
       if (response.ok) {
-        const access_token = result.access_token;
-        await saveToken(access_token);
-        router.push("/setup");
+        await saveToken(result.access_token);
+        router.push('/setup');
       } else {
         Alert.alert('Error', result.message || 'Failed to verify OTP');
+        setOtp('');
       }
     } catch (error) {
-      console.error('Error in handleCheckOtp:', error);
       Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsCheckingOtp(false);
     }
-  };
+  }, [otp, userPhone]);
+
+  // Auto-submit once all digits are entered.
+  useEffect(() => {
+    if (otp.length === OTP_LEN && !isCheckingOtp) handleCheckOtp();
+  }, [otp, isCheckingOtp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
+    if (seconds > 0) return;
     try {
       const response = await fetch(`${baseUrl}/api/resend_verify_otp/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          phone: userPhone,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: userPhone }),
       });
-
       const result = await response.json();
-
       if (response.ok) {
-        setResendCount(prevCount => prevCount + 1);
+        setSeconds(24);
         Alert.alert('Success', 'OTP has been resent');
       } else {
         Alert.alert('Error', result.message || 'Failed to resend OTP');
       }
     } catch (error) {
-      console.error('Error in handleResendOtp:', error);
       Alert.alert('Error', 'Something went wrong. Please try again later.');
     }
   };
 
+  const onKey = (k: string) =>
+    setOtp((code) => (k === 'del' ? code.slice(0, -1) : code.length < OTP_LEN ? code + k : code));
+
+  const masked = userPhone ? userPhone.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3') : 'your phone';
+
   return (
-    <LinearGradient
-      colors={['#44B9B0', '#FFFFFF']}
-      start={{ x: 4, y: 1 }}
-      end={{ x: 0, y: 1 }}
-      style={{ flex: 1 }}
-    >
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaView className="h-full">
-          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-start', alignItems: 'center', paddingTop: 20 }}>
-            <View className="w-full justify-center min-h-[85vh] px-4 my-6">
-              <Image 
-                source={images.logo1}
-                resizeMode='contain'
-                className="w-[115px] h-[35px] self-center"
-              />
-              <Text className="text-2xl font-semibold mt-10 font-psemibold">
-                Verify Your Account
-              </Text>
-              <Text className="text-base mt-5 text-center">
-                Enter the OTP sent to your phone number
-              </Text>
-              <TextInput
-                style={{
-                  height: 50,
-                  borderColor: '#009b8f',
-                  borderWidth: 1,
-                  borderRadius: 8,
-                  marginTop: 20,
-                  width: '100%',
-                  paddingHorizontal: 10,
-                  fontSize: 18,
-                }}
-                keyboardType="numeric"
-                value={otp}
-                onChangeText={setOtp}
-                placeholder="Enter OTP"
-                accessible={true}
-                accessibilityLabel="OTP Input"
-              />
-              <ContinueButton
-                title="Verify OTP"  
-                handlePress={handleCheckOtp}
-                containerStyling="bg-[#009b8f] rounded-xl w-[340px] min-h-[50px] justify-center items-center mt-5"
-                textStyling="text-white font-psemibold text-lg px-3"
-                isLoading={isCheckingOtp}
-              />
-              {isCheckingOtp && <ActivityIndicator size="large" color="#009b8f" />}
-              <Text style={{ paddingLeft: 35, paddingTop: 5, color: 'black', fontStyle: 'italic', marginTop: 10 }}>
-                Didn't receive an OTP? <Text onPress={handleResendOtp} className="justify-center items-center" 
-                style={{ color: '#00ead8', textDecorationLine: 'underline' }}>Resend OTP</Text>
-              </Text>
-              <Text style={{ marginTop: 10, color: 'gray', fontSize: 12 }}>
-                Resend attempts: {resendCount}
-              </Text>
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </GestureHandlerRootView>
-    </LinearGradient>
+    <Screen scroll={false}>
+      <Header onBack={() => router.replace('/register')} />
+      <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
+      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
+        Enter the {OTP_LEN}-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
+      </Text>
+
+      <View style={{ flexDirection: 'row', gap: 10, marginTop: 28, marginBottom: 18 }}>
+        {Array.from({ length: OTP_LEN }).map((_, k) => (
+          <View
+            key={k}
+            style={{
+              flex: 1,
+              height: 58,
+              borderRadius: 14,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: c.surface,
+              borderWidth: 2,
+              borderColor: otp.length === k ? c.brand : c.line,
+            }}
+          >
+            <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>{otp[k] || ''}</Text>
+          </View>
+        ))}
+      </View>
+
+      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
+        Didn't get it?{' '}
+        <Text onPress={handleResendOtp} style={{ color: c.brand, fontFamily: font.bold }}>
+          {seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+        </Text>
+      </Text>
+
+      <View style={{ flex: 1 }} />
+      {isCheckingOtp && <Btn label="Verifying…" disabled onPress={() => {}} style={{ marginBottom: 12 }} />}
+      <View style={{ paddingBottom: 24 }}>
+        <Keypad onKey={onKey} />
+      </View>
+    </Screen>
   );
 };
 

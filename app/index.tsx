@@ -1,77 +1,71 @@
-import React from 'react';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import React, { useState } from 'react';
+import { View, Text, Pressable } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { ScrollView, Text, View, Image, ImageBackground } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import { Link, Redirect, router } from 'expo-router';
-import {images} from '../constants'
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import ContinueButton from '@/components/CustomButtons/CustomButton';
+import { router, Link } from 'expo-router';
+import ZIcon from '@/components/design/ZIcon';
+import { ZMark } from '@/components/design/Brand';
+import { font } from '@/lib/theme';
+
+const SLIDES = [
+  { icon: 'bills', t: 'Pay every bill in seconds', d: 'Airtime, data, cable TV, electricity, betting & exam pins — all in one app.' },
+  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to Zitch and any Nigerian bank, with saved beneficiaries.' },
+  { icon: 'loan', t: 'Borrow & grow your money', d: 'Instant loans up to ₦500,000 and Fixed Save earning 22% p.a.' },
+];
 
 const Index = () => {
+  const [i, setI] = useState(0);
+  const s = SLIDES[i];
+  const last = i === SLIDES.length - 1;
+
   return (
+    <LinearGradient colors={['#DDF3EF', '#EFF7F5', '#F5FAF9']} style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1 }}>
+        {/* skip */}
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 20, paddingTop: 8 }}>
+          <Pressable onPress={() => router.replace('/signin')}>
+            <Text style={{ fontSize: 14, fontFamily: font.semibold, color: '#6E8B86' }}>Skip</Text>
+          </Pressable>
+        </View>
 
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaView className="bg-[#004D47] h-full" >
-        <ScrollView contentContainerStyle={{ height:' 100px' }}>
-          <View className='w-full justify-center items-center min-h-[85vh] px-4 py-4'>
-            {/* Add your content here */}
-            <Image
-            source={images.logo1}
-            className = 'w-[130px] h-[84px]'
-            resizeMode='contain'
-            />
-             <Image
-            source={images.iPhone}
-            className = 'max-w-[380px] w-full h-[300px]'
-            resizeMode='contain'
-            />
-            <View className="relative mt-5">
-              <Text className='text-sm text-white text-bold text-center'>The go-to app for quick Transactions, Airtime, Bills, loans & Save in $ <Text className="text-secondary-200">zitch </Text></Text>
-              <Image 
-           source={images.path}
-           className ="w-[136px] h-[15px] absolute -bottom-2 -right-8"
-           resizeMode="contained"
-           
-           />
-           
-            </View>
+        {/* slide */}
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
+          <LinearGradient
+            colors={['#0C5249', '#00847B', '#0FA295']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={{ width: 150, height: 150, borderRadius: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#00847B', shadowOpacity: 0.5, shadowRadius: 26, shadowOffset: { width: 0, height: 22 }, elevation: 8 }}
+          >
+            <ZIcon name={s.icon} size={64} color="#fff" />
+          </LinearGradient>
+          <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: '#06231F', marginTop: 38, textAlign: 'center' }}>{s.t}</Text>
+          <Text style={{ fontSize: 14.5, color: '#6E8B86', marginTop: 12, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>{s.d}</Text>
+        </View>
 
-{/* continue wih phone or email */}
-            <ContinueButton 
-            title="Continue With Phone or Email"  
-            handlePress={()=>router.push('/signin')}
-            containerStyling= "bg-[#009b8f] rounded-xl w-[340px] min-h-[50px] justify-center items-center mt-5"
-            textStyling ="text-white font-psemibold text-lg px-3"
-            isLoading={false}
-            />
-          
-          {/* continue with gmail button */}
-          <ContinueButton
-            title="Continue With Gmail"
-            handlePress={()=>router.push('/signin')}
-            containerStyling= "text-sm bg-white rounded-xl min-h-[50px] w-[340px] justify-center items-center mt-3"
-            textStyling ="text-black font-psemibold text-lg px-3"
-            isLoading={false}
-            />
+        {/* dots */}
+        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 24 }}>
+          {SLIDES.map((_, k) => (
+            <View key={k} style={{ width: k === i ? 24 : 8, height: 8, borderRadius: 999, backgroundColor: k === i ? '#0FA295' : '#E2EEEB' }} />
+          ))}
+        </View>
 
-           <View>
-           <Text style={{ color: 'white',fontStyle: 'italic', marginTop:10}}>
-           Not A Member Yet?<Link href="/register" style={{ color: '#D6EEDA', textDecorationLine: 'underline' }}> Register An Account </Link>
-           </Text>
-
-           </View>
-          
-          {/* testnig */}
-        
-          {/* tesitng */}
-            </View>
-          
-          
-        </ScrollView>
-      {/* <StatusBar backgroundColor='#161622' style='light'/> */}
+        {/* cta */}
+        <View style={{ paddingHorizontal: 22 }}>
+          <Pressable
+            onPress={() => (last ? router.replace('/register') : setI(i + 1))}
+            style={{ height: 56, borderRadius: 999, backgroundColor: '#0FA295', alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Text style={{ color: '#fff', fontSize: 16, fontFamily: font.bold }}>{last ? 'Get Started' : 'Next'}</Text>
+          </Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 6, paddingVertical: 22 }}>
+          <Text style={{ fontSize: 14, color: '#6E8B86', fontFamily: font.regular }}>Already have an account?</Text>
+          <Link href="/signin">
+            <Text style={{ fontFamily: font.bold, color: '#0FA295', fontSize: 14 }}>Sign in</Text>
+          </Link>
+        </View>
       </SafeAreaView>
-    </GestureHandlerRootView>
+    </LinearGradient>
   );
 };
 
