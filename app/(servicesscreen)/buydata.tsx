@@ -10,6 +10,7 @@ import ContinueButton from '@/components/CustomButtons/CustomButton';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import SelectForm from '@/components/CustomField/selectfield';
+import { getToken } from '@/lib/secureStore';
 const BuyData = () => {
   const [isBuying, setIsBuying] = useState(false);
   const [memoryEmail, setMemoryEmail] = useState('');
@@ -28,7 +29,7 @@ const BuyData = () => {
   useEffect(() => {
     const loadUserData = async () => {
       try {
-        const access_token = await AsyncStorage.getItem('access_token');
+        const access_token = await getToken();
         if (access_token) setMemoryEmail(access_token);
       } catch (error) {
         console.error('Error loading user data:', error);
@@ -80,7 +81,6 @@ const BuyData = () => {
   };
 
   const fetchDataPlanPrice = async () => {
-    console.log(dataForm.dataplan)
     try {
       const response = await fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
         method: 'POST',
@@ -96,7 +96,6 @@ const BuyData = () => {
       if (response.ok) {
         setPrice(result.price || '');
       } else {
-        console.log('API response:', result); // Debug statement
         Alert.alert('Error', result.message || 'Failed to fetch data plan price');
       }
     } catch (error) {
@@ -107,7 +106,6 @@ const BuyData = () => {
 
   const handleBuyData = async () => {
     setIsBuying(true);
-    console.log(dataForm.dataplan, dataForm.dataplanType, dataForm.network, dataForm.phoneNumber, dataForm.transactionPin)
 
     try {
       const response = await fetch(`${baseUrl}/api/utility/buydata/`, {

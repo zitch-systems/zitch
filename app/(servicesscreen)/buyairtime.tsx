@@ -12,6 +12,7 @@ import { Link, router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import SelectForm from '@/components/CustomField/selectfield';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
 const BuyAirtime = () => {
   const [isBuying, setisBuying] = useState(false);
   const [memoryEmail, setMemoryEmail] = useState('');
@@ -26,7 +27,7 @@ const BuyAirtime = () => {
   useEffect(() => {
     const loadUserData = async () => {
       try {
-        const access_token = await AsyncStorage.getItem('access_token');
+        const access_token = await getToken();
         if (access_token) setMemoryEmail(access_token);
       } catch (error) {
         console.error('Error loading user data:', error);
@@ -41,7 +42,6 @@ const BuyAirtime = () => {
 
   const HandleBuyAirtime = async () => {
     setisBuying(true);
-    console.log(memoryEmail, airtimeForm.amount, airtimeForm.network, airtimeForm.phone, airtimeForm.transaction_pin);
 
     if (airtimeForm.network === '') {
       Alert.alert("Error", "Network field cannot be empty!");
@@ -65,7 +65,7 @@ const BuyAirtime = () => {
     }
 
     if (amount < 100) {
-      Alert.alert("Error", "You can recharge with an amount less than 100.");
+      Alert.alert("Error", "Minimum recharge amount is ₦100.");
       setisBuying(false);
       return;
     }
@@ -86,15 +86,12 @@ const BuyAirtime = () => {
       });
 
       const result = await response.json();
-      console.log('API response:', result); // Debug statement
       if (response.ok) {
         Alert.alert('Success', result.message || "Transaction Successful");
       } else {
         Alert.alert('Error', result.message || 'Incorrect Details');
-        console.log('API response:', result); // Debug statement
       }
     } catch (error) {
-        console.error('API request error:', error); // Debug statement
       Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
       setisBuying(false);

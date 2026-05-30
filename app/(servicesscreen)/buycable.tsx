@@ -10,6 +10,7 @@ import ContinueButton from '@/components/CustomButtons/CustomButton';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import SelectForm from '@/components/CustomField/selectfield';
+import { getToken } from '@/lib/secureStore';
 const BuyCable = () => {
   const [isBuying, setIsBuying] = useState(false);
   const [memoryEmail, setMemoryEmail] = useState('');
@@ -27,7 +28,7 @@ const BuyCable = () => {
   useEffect(() => {
     const loadUserData = async () => {
       try {
-        const access_token = await AsyncStorage.getItem('access_token');
+        const access_token = await getToken();
         if (access_token) setMemoryEmail(access_token);
       } catch (error) {
         console.error('Error loading user data:', error);
@@ -113,7 +114,6 @@ const BuyCable = () => {
    };
 
   const fetchCablePlanPrices = async () => {
-    console.log("prices form"+dataForm.selectedcablePlan)
     try {
       const response = await fetch(`${baseUrl}/api/utility/get_cable_plans_price/`, {
         method: 'POST',
@@ -128,9 +128,7 @@ const BuyCable = () => {
       const result = await response.json();
       if (response.ok) {
         setPrice(result.cable_plans_price || '');
-        console.log(result)
       } else {
-        console.log('API response:', result); // Debug statement
         Alert.alert('Error', result.message || 'Failed to fetch data plan price');
       }
     } catch (error) {
@@ -143,7 +141,6 @@ const BuyCable = () => {
 
   const handleBuyCable = async () => {
     setIsBuying(true);
-    console.log(dataForm.selectedcablePlan,  dataForm.cablenetwork, dataForm.iuc, dataForm.transactionPin)
 
     try {
       const response = await fetch(`${baseUrl}/api/utility/buycable/`, {
