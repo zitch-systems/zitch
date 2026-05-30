@@ -23,7 +23,7 @@ const History = () => {
   });
 
   return (
-    <Screen>
+    <Screen tab>
       <Header title="Transaction History" onBack={() => router.back()} />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 14 }}>
         {FILTERS.map((f) => {

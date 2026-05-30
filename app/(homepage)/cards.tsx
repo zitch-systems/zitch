@@ -12,7 +12,7 @@ const Cards = () => {
   const [freeze, setFreeze] = useState(false);
 
   return (
-    <Screen pad={false}>
+    <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Cards</Text>
 
       {/* card visual */}

@@ -28,23 +28,28 @@ const cardShadow = {
 };
 
 // ---- Layout shell ----
+// `tab` adds extra bottom padding so content clears the custom bottom nav
+// (the tab screens render their own nav bar over the scene).
 export const Screen = ({
   children,
   pad = true,
   scroll = true,
+  tab = false,
 }: {
   children: React.ReactNode;
   pad?: boolean;
   scroll?: boolean;
+  tab?: boolean;
 }) => {
   const { c } = useTheme();
+  const bottomPad = tab ? 96 : 28;
   return (
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: pad ? 20 : 0, paddingBottom: 28 }}
+            contentContainerStyle={{ paddingHorizontal: pad ? 20 : 0, paddingBottom: bottomPad }}
           >
             {children}
           </ScrollView>

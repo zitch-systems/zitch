@@ -13,7 +13,7 @@ const ITEMS: { icon: string; title: string; sub: string; color: keyof ReturnType
 const Notifications = () => {
   const { c } = useTheme();
   return (
-    <Screen>
+    <Screen tab>
       <Header title="Notifications" onBack={() => router.back()} />
       {ITEMS.map((x, i) => (
         <ZItem

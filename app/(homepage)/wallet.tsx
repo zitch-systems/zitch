@@ -14,7 +14,7 @@ const Wallet = () => {
   const moneyOut = txns.filter((t) => t.dir === 'out').reduce((s, t) => s + Math.abs(t.amount), 0);
 
   return (
-    <Screen pad={false}>
+    <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Wallet</Text>
 
       <Hero style={{ margin: 16 }} watermark={140}>

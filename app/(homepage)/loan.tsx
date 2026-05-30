@@ -8,7 +8,7 @@ import { useTheme, font } from '@/lib/theme';
 const Loans = () => {
   const { c } = useTheme();
   return (
-    <Screen pad={false}>
+    <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Loans</Text>
 
       <Hero style={{ margin: 16 }}>

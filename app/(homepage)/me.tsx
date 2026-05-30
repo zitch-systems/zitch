@@ -101,7 +101,7 @@ const Me = () => {
   );
 
   return (
-    <Screen pad={false}>
+    <Screen pad={false} tab>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 6 }}>
         <Avatar size={50} ring={c.brand} surface={c.surface} />

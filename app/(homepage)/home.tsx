@@ -40,7 +40,7 @@ const Home = () => {
   const [more, setMore] = useState(false);
 
   return (
-    <Screen pad={false}>
+    <Screen pad={false} tab>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
         <Pressable onPress={() => router.push('/me')}>
