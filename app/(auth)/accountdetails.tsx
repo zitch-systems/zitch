@@ -1,201 +1,102 @@
-import { Text, View, Image, Alert, ActivityIndicator } from "react-native";
-import React, { useEffect, useState } from "react";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { ScrollView } from "react-native-gesture-handler";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { images } from "../../constants";
-import FieldForm from "@/components/CustomField/fieldForm";
-import ContinueButton from "@/components/CustomButtons/CustomButton";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import baseUrl from "@/components/configFiles/apiConfig";
-import UploadButton from "@/components/CustomButtons/UploadButton";
-import { Link, router } from 'expo-router';
+import React, { useEffect, useState } from 'react';
+import { View, Text, Alert } from 'react-native';
+import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import ZIcon from '@/components/design/ZIcon';
+import { Avatar } from '@/components/design/Brand';
+import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { useTheme, font } from '@/lib/theme';
 
 const AccountDetails = () => {
-  const [isUpdatingRecord, setIsUpdatingRecord] = useState(false);
-  const [updateUserForm, setUpdateUserForm] = useState({
-    email: "",
-    phone: "",
-    firstName: "",
-    lastName: "",
-  });
-  const [alertVisible, setAlertVisible] = useState(false);
-  const [alertMessage, setAlertMessage] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [email, setEmail] = useState("");
-  const [token, setToken] = useState(null);
+  const { c } = useTheme();
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [token, setToken] = useState<string | null>(null);
+  const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  const [form, setForm] = useState({ firstName: '', lastName: '', email: '', phone: '' });
 
   useEffect(() => {
-    const fetchAccessToken = async () => {
-      try {
-        const token = await getToken();
-        setToken(token);
-      } catch (error) {
-        console.error("Failed to retrieve access token from storage:", error);
-      }
-    };
-
-    fetchAccessToken();
+    getToken().then(setToken);
   }, []);
 
   useEffect(() => {
-    if (token) {
-      fetchUserInfo();
-    }
+    if (!token) return;
+    fetch(`${baseUrl}/api/wallet_balance/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: token }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success) {
+          setCurrent({
+            firstName: data.user_first_name ?? '',
+            lastName: data.user_last_name ?? '',
+            email: data.user_email ?? '',
+            phone: data.user_phone_number ?? '',
+          });
+        }
+      })
+      .catch(() => {});
   }, [token]);
 
-  const fetchUserInfo = async () => {
-    try {
-      const response = await fetch(`${baseUrl}/api/wallet_balance/`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ access_token: token }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        setLastName(data.user_last_name);
-        setFirstName(data.user_first_name);
-        setPhone(data.user_phone_number);
-        setEmail(data.user_email);
-      } else {
-        console.error("Failed to fetch user info:", data);
-      }
-    } catch (error) {
-      console.error("Error fetching user info:", error);
-    }
-  };
-
   const handleUpdate = async () => {
-    if (updateUserForm.email.trim() === "") {
-      setAlertMessage("Email cannot be empty");
-      setAlertVisible(true);
-      return;
-    }
-    if (updateUserForm.phone.trim() === "") {
-      setAlertMessage("Phone cannot be empty");
-      setAlertVisible(true);
-      return;
-    }
-
-    setIsUpdatingRecord(true);
-
+    setIsUpdating(true);
     try {
       const response = await fetch(`${baseUrl}/api/update_info/`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: updateUserForm.email,
-          phone: updateUserForm.phone,
-          first_name: updateUserForm.firstName,
-          last_name: updateUserForm.lastName,
+          email: form.email || current.email,
+          phone: form.phone || current.phone,
+          first_name: form.firstName || current.firstName,
+          last_name: form.lastName || current.lastName,
           access_token: token,
         }),
       });
-
       const result = await response.json();
       if (response.ok) {
-        setAlertMessage("Account Updated!");
-        setAlertVisible(true);
-        await AsyncStorage.setItem("UserEmail", updateUserForm.email);
-        await AsyncStorage.setItem("UserPhone", updateUserForm.phone);
+        if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
+        if (form.phone) await AsyncStorage.setItem('UserPhone', form.phone);
+        Alert.alert('Success', 'Account updated');
       } else {
-        setAlertMessage(result.message || "Failed to Update an account");
-        setAlertVisible(true);
+        Alert.alert('Error', result.message || 'Failed to update account');
       }
-    } catch (error) {
-      setAlertMessage("Something went wrong. Please try again later.");
-      setAlertVisible(true);
+    } catch {
+      Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
-      setIsUpdatingRecord(false);
+      setIsUpdating(false);
     }
   };
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaView className="h-full bg-[#e8f5fe]">
-        <ScrollView>
-          <View className="w-full justify-center px-4 my-6">
-            <Text className="text-[#00101A] font-psemibold px-3 mt-10">
-              Account Details
-            </Text>
-            <Text className="text-[#8B8B8B] mt-2 pl-2 mb-2">
-              Your Account Profile Details
-            </Text>
-            <View style={{ flexDirection: "row" }}>
-              <Image
-                source={images.profileavatar}
-                className="h-50"
-                resizeMode="contain"
-              />
-              <UploadButton
-                title="Update Image"
-                handlePress={handleUpdate}
-                containerStyling="bg-white rounded-xl w-[180px] h-10 mt-10 ml-5 min-h-[20px] justify-center items-center"
-                textStyling="text-[#009b8f] font-psemibold"
-                isLoading={isUpdatingRecord}
-              />
-            </View>
-            <View>
-              <FieldForm
-                title="First Name"
-                value={updateUserForm.firstName}
-                handleChangeText={(e) =>
-                  setUpdateUserForm({ ...updateUserForm, firstName: e })
-                }
-                otherStyles="mt-4"
-                placeholder={firstName}
-              />
-              <FieldForm
-                title="Last Name"
-                value={updateUserForm.lastName}
-                handleChangeText={(e) =>
-                  setUpdateUserForm({ ...updateUserForm, lastName: e })
-                }
-                otherStyles="mt-4"
-                placeholder={lastName}
-              />
-              <FieldForm
-                title="Email"
-                value={updateUserForm.email}
-                handleChangeText={(e) =>
-                  setUpdateUserForm({ ...updateUserForm, email: e })
-                }
-                otherStyles="mt-4"
-                placeholder={email}
-              />
-              <FieldForm
-                title="Phone"
-                value={updateUserForm.phone}
-                handleChangeText={(e) =>
-                  setUpdateUserForm({ ...updateUserForm, phone: e })
-                }
-                otherStyles="mt-7"
-                placeholder={phone}
-              />
-            </View>
-            <ContinueButton
-              title="Update Profile"
-              handlePress={handleUpdate}
-              containerStyling="bg-[#009b8f] ml-15 rounded-xl w-[280px] min-h-[50px] justify-center items-center mt-5"
-              textStyling="text-white font-psemibold text-lg px-3"
-              isLoading={isUpdatingRecord}
-            />
-            {isUpdatingRecord && (
-              <ActivityIndicator size="large" color="#009b8f" />
-            )}
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    </GestureHandlerRootView>
-  );
+    <Screen>
+      <Header title="Account Details" sub="Your account profile details" onBack={() => router.back()} />
 
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20 }}>
+        <Avatar size={64} ring={c.brand} surface={c.surface} />
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 16 }}>
+            {current.firstName} {current.lastName}
+          </Text>
+          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{current.phone}</Text>
+        </View>
+        <Btn label="Update photo" variant="outline" size="sm" full={false} onPress={() => router.push('/comingsoon')} />
+      </View>
+
+      <View style={{ gap: 16 }}>
+        <Field label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
+        <Field label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
+        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+        <Field label="Phone" value={form.phone} onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })} keyboardType="number-pad" placeholder={current.phone || '0801 234 5678'} prefix={<ZIcon name="airtime" size={18} color={c.ink3} />} />
+      </View>
+
+      <View style={{ marginTop: 26 }}>
+        <Btn label="Update Profile" onPress={handleUpdate} disabled={isUpdating} />
+      </View>
+    </Screen>
+  );
 };
 
 export default AccountDetails;

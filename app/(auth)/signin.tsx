@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Alert, Pressable } from 'react-native';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
-import { saveToken, clearSession } from '@/lib/secureStore';
+import { saveToken, clearSession, getToken } from '@/lib/secureStore';
+import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
 import { Screen, Field, Btn } from '@/components/design/ui';
@@ -14,6 +15,29 @@ const Signin = () => {
   const { c } = useTheme();
   const [ischecking, setIsChecking] = useState(false);
   const [form, setForm] = useState({ email: '', password: '' });
+  const [bioReady, setBioReady] = useState(false);
+
+  // Offer instant sign-in only if the user enabled biometrics, the device
+  // supports them, and a previous session token is still on the device.
+  useEffect(() => {
+    (async () => {
+      const [enabled, available, token] = await Promise.all([
+        isBiometricEnabled(),
+        isBiometricAvailable(),
+        getToken(),
+      ]);
+      setBioReady(enabled && available && !!token);
+    })();
+  }, []);
+
+  const handleBiometricSignin = async () => {
+    if (!bioReady) {
+      Alert.alert('Biometric sign-in', 'Enable biometrics from Me → Face ID / Fingerprint after signing in with your password.');
+      return;
+    }
+    const ok = await authenticate('Sign in to Zitch');
+    if (ok) router.replace('/home');
+  };
 
   // Keeps the user signed out after an hour of inactivity.
   const setSessionTimeout = () => {
@@ -71,8 +95,8 @@ const Signin = () => {
         Sign in to continue to Zitch
       </Text>
 
-      {/* instant biometric (visual — enrolment lands in a later pass) */}
-      <Pressable onPress={() => Alert.alert('Biometrics', 'Biometric sign-in is coming soon.')}>
+      {/* instant biometric sign-in */}
+      <Pressable onPress={handleBiometricSignin}>
         <Hero style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16, marginBottom: 18 }} watermark={0}>
           <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.2)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="faceid" size={26} color="#fff" />

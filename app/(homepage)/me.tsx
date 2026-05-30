@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Pressable } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, Text, Pressable, Alert } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
@@ -9,6 +8,7 @@ import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { clearSession } from '@/lib/secureStore';
+import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 
 const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
   const { c } = useTheme();
@@ -31,12 +31,30 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
   const { balance, firstName, showBal } = useWallet();
-  const [biometrics, setBiometrics] = useState(true);
+  const [biometrics, setBiometrics] = useState(false);
 
   useEffect(() => {
-    AsyncStorage.getItem('z-biometrics').then((v) => { if (v != null) setBiometrics(v === '1'); });
+    isBiometricEnabled().then(setBiometrics);
   }, []);
-  const toggleBio = (v: boolean) => { setBiometrics(v); AsyncStorage.setItem('z-biometrics', v ? '1' : '0'); };
+
+  // Enabling requires a live biometric scan; disabling is immediate.
+  const toggleBio = async (v: boolean) => {
+    if (!v) {
+      await setBiometricEnabled(false);
+      setBiometrics(false);
+      return;
+    }
+    const available = await isBiometricAvailable();
+    if (!available) {
+      Alert.alert('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+      return;
+    }
+    const ok = await authenticate('Enable biometric sign-in');
+    if (ok) {
+      await setBiometricEnabled(true);
+      setBiometrics(true);
+    }
+  };
 
   const handleLogout = async () => {
     await clearSession();
