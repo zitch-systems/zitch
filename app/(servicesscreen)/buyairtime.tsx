@@ -157,13 +157,14 @@ const BuyAirtime = () => {
                   placeholder="Enter Phone Number"
                 />
                 
-                <SelectForm 
+                <SelectForm
                   title="Transaction PIN"
                   value={airtimeForm.transaction_pin}
                   handleChangeText={(e) => setairtimeForm({ ...airtimeForm, transaction_pin: e })}
                   otherStyles="mt-2 mb-3"
                   keyboardType="numeric"
                   placeholder="Enter Transaction PIN"
+                  secureTextEntry={true}
                 />
                 
                 <ContinueButton

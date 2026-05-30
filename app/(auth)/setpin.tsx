@@ -120,6 +120,7 @@ const SetPin = () => {
                     fontSize: 18,
                   }}
                   keyboardType="numeric"
+                  secureTextEntry={true}
                   value={transactionPin}
                   onChangeText={setTransactionPin}
                   placeholder="Enter Pin"

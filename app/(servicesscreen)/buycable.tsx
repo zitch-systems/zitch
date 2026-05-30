@@ -237,13 +237,14 @@ const BuyCable = () => {
                   placeholder="IUC Number"
                 />
                 
-                <SelectForm 
+                <SelectForm
                   title="Transaction PIN"
                   value={dataForm.transactionPin}
                   handleChangeText={(e) => setDataForm({ ...dataForm, transactionPin: e })}
                   otherStyles="mt-2 "
                   keyboardType="numeric"
                   placeholder="Enter Transaction PIN"
+                  secureTextEntry={true}
                 />
                 </View>
                 <View className=" mb-2">
@@ -253,7 +254,14 @@ const BuyCable = () => {
                 <ContinueButton
                   title="Validate"
                   handlePress={handleValidate}
-                  containerStyling="bg-[#009b8f] rounded-xl w-[300x] min-h-[40px] justify-center items-center mt-3"
+                  containerStyling="bg-white border border-[#009b8f] rounded-xl w-full min-h-[40px] justify-center items-center mt-3"
+                  textStyling="text-[#009b8f] font-semibold px-3"
+                  isLoading={false}
+                />
+                <ContinueButton
+                  title="Buy Cable"
+                  handlePress={handleBuyCable}
+                  containerStyling="bg-[#009b8f] rounded-xl w-full min-h-[50px] justify-center items-center mt-2"
                   textStyling="text-white font-semibold text-lg px-3"
                   isLoading={isBuying}
                 />

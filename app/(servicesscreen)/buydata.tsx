@@ -216,13 +216,14 @@ const BuyData = () => {
                   placeholder="Enter Phone Number"
                 />
                 
-                <SelectForm 
+                <SelectForm
                   title="Transaction PIN"
                   value={dataForm.transactionPin}
                   handleChangeText={(e) => setDataForm({ ...dataForm, transactionPin: e })}
                   otherStyles="mt-2 "
                   keyboardType="numeric"
                   placeholder="Enter Transaction PIN"
+                  secureTextEntry={true}
                 />
                 </View>
                 <View className=" mb-2">

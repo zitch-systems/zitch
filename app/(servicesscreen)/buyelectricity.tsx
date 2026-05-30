@@ -7,143 +7,162 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { Picker } from '@react-native-picker/picker';
 import { images } from "../../constants";
 import ContinueButton from '@/components/CustomButtons/CustomButton';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import SelectForm from '@/components/CustomField/selectfield';
 import { getToken } from '@/lib/secureStore';
+
+// Nigerian electricity distribution companies. The numeric values follow the
+// same convention the backend uses for network/cable selection.
+// TODO: confirm the disco id mapping and the request field names with the API.
+const DISCOS = [
+  { label: 'Ikeja Electric (IKEDC)', value: '1' },
+  { label: 'Eko Electric (EKEDC)', value: '2' },
+  { label: 'Abuja Electric (AEDC)', value: '3' },
+  { label: 'Kano Electric (KEDCO)', value: '4' },
+  { label: 'Port Harcourt Electric (PHED)', value: '5' },
+  { label: 'Jos Electric (JED)', value: '6' },
+  { label: 'Kaduna Electric (KAEDCO)', value: '7' },
+  { label: 'Enugu Electric (EEDC)', value: '8' },
+  { label: 'Ibadan Electric (IBEDC)', value: '9' },
+  { label: 'Benin Electric (BEDC)', value: '10' },
+];
+
 const BuyElectricity = () => {
   const [isBuying, setIsBuying] = useState(false);
-  const [memoryEmail, setMemoryEmail] = useState('');
-  
-  const [price, setPrice] = useState('');
-  const [dataPlanOptions, setDataPlanOptions] = useState([]);
+  const [isValidating, setIsValidating] = useState(false);
+  const [token, setToken] = useState('');
+  const [customerName, setCustomerName] = useState('');
 
-  const [dataForm, setDataForm] = useState({
-    network: '',
-    dataplanType: '',
-    dataplan: '',
-    phoneNumber:'',
-    transactionPin: ''
+  const [form, setForm] = useState({
+    disco: '',
+    meterType: '',
+    meter: '',
+    amount: '',
+    transactionPin: '',
   });
 
   useEffect(() => {
     const loadUserData = async () => {
       try {
         const access_token = await getToken();
-        if (access_token) setMemoryEmail(access_token);
+        if (access_token) setToken(access_token);
       } catch (error) {
         console.error('Error loading user data:', error);
       }
-    }
+    };
     loadUserData();
   }, []);
 
+  // Reset a previously resolved customer when the meter inputs change.
   useEffect(() => {
-    if (dataForm.network && dataForm.dataplanType) {
-      fetchDataPlans();
-    }
-  }, [dataForm.network, dataForm.dataplanType]);
+    setCustomerName('');
+  }, [form.disco, form.meterType, form.meter]);
 
-  useEffect(() => {
-    if (dataForm.dataplan) {
-      fetchDataPlanPrice();
+  const validateAmount = () => {
+    const amount = parseFloat(form.amount);
+    if (isNaN(amount)) {
+      Alert.alert('Error', 'Please enter a valid amount.');
+      return null;
     }
-  }, [dataForm.dataplan]);
+    if (amount < 100) {
+      Alert.alert('Error', 'Minimum amount is ₦100.');
+      return null;
+    }
+    return amount;
+  };
 
-  const fetchDataPlans = async () => {
-   // console.log("ade " +baseUrl)
+  const handleValidateMeter = async () => {
+    if (form.disco === '') {
+      Alert.alert('Error', 'Please select a disco.');
+      return;
+    }
+    if (form.meterType === '') {
+      Alert.alert('Error', 'Please select Prepaid or Postpaid.');
+      return;
+    }
+    if (form.meter.trim() === '') {
+      Alert.alert('Error', 'Please enter your meter number.');
+      return;
+    }
+
+    setIsValidating(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/get_data_plans/`, {
+      const response = await fetch(`${baseUrl}/api/utility/validate_meter/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          datanetwork: dataForm.network,
-          selectedPlanType: dataForm.dataplanType,
+          meter: form.meter,
+          disco: form.disco,
+          meter_type: form.meterType,
         }),
       });
 
       const result = await response.json();
       if (response.ok) {
-        const options = result.data_plans.map(plan => ({
-          label: `${plan.name} (${plan.validity})`,
-          value: plan.plan_code,
-        }));
-        setDataPlanOptions(options);
+        setCustomerName(result.customer_name || result.name || 'Verified');
       } else {
-        Alert.alert('Error', result.message || 'Failed to fetch data plans');
+        Alert.alert('Error', result.message || 'Could not verify meter number.');
       }
     } catch (error) {
-      console.error('API request error:', error);
       Alert.alert('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setIsValidating(false);
     }
   };
 
-  const fetchDataPlanPrice = async () => {
-    try {
-      const response = await fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          selectedDataPlan: dataForm.dataplan,
-        }),
-      });
-
-      const result = await response.json();
-      if (response.ok) {
-        setPrice(result.price || '');
-      } else {
-        Alert.alert('Error', result.message || 'Failed to fetch data plan price');
-      }
-    } catch (error) {
-      console.error('API request error:', error);
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+  const handleBuyElectricity = async () => {
+    if (form.disco === '') {
+      Alert.alert('Error', 'Please select a disco.');
+      return;
     }
-  };
+    if (form.meterType === '') {
+      Alert.alert('Error', 'Please select Prepaid or Postpaid.');
+      return;
+    }
+    if (form.meter.trim() === '') {
+      Alert.alert('Error', 'Please enter your meter number.');
+      return;
+    }
+    const amount = validateAmount();
+    if (amount === null) return;
+    if (form.transactionPin.trim() === '') {
+      Alert.alert('Error', 'Please enter your transaction PIN.');
+      return;
+    }
 
-  const handleBuyData = async () => {
     setIsBuying(true);
-
     try {
-      const response = await fetch(`${baseUrl}/api/utility/buydata/`, {
+      const response = await fetch(`${baseUrl}/api/utility/buyelectricity/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: dataForm.phoneNumber,
-          datanetwork: dataForm.network,
-          selectedDataPlan: dataForm.dataplan,
-          access_token: memoryEmail,
-          transaction_pin: dataForm.transactionPin ,
-          
-          
+          disco: form.disco,
+          meter: form.meter,
+          meter_type: form.meterType,
+          amount: form.amount,
+          access_token: token,
+          transaction_pin: form.transactionPin,
         }),
       });
 
       const result = await response.json();
       if (response.ok) {
-        Alert.alert('Success', result.message || "Transaction Successful");
+        if (result.token) setToken(result.token);
+        Alert.alert(
+          'Success',
+          result.token
+            ? `Purchase successful. Token: ${result.token}`
+            : result.message || 'Transaction Successful'
+        );
       } else {
         Alert.alert('Error', result.message || 'Transaction Failed');
       }
     } catch (error) {
-      console.error('API request error:', error);
       Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsBuying(false);
     }
   };
-
-  const renderButtonTitle = (icon, text) => (
-    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-      <Image source={icon} resizeMode='contain' style={{ width: 20, height: 20, marginRight: 8 }} />
-      <Text style={{ color: 'black' }}>{text}</Text>
-    </View>
-  );
 
   return (
     <LinearGradient
@@ -156,89 +175,88 @@ const BuyElectricity = () => {
         <SafeAreaView className="h-full">
           <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 10 }}>
             <View className="w-full justify-center px-2 my-3">
-              <View className="min-h-[85vh] justify-center  p-3 rounded-lg shadow-lg">
-                <Text className="text-[#00101A] font-semibold px-3 text-center text-xl mb-6">Buy Data</Text>
-                <Image 
-                  source={images.netprovider}
+              <View className="min-h-[85vh] justify-center p-3 rounded-lg shadow-lg">
+                <Text className="text-[#00101A] font-semibold px-3 text-center text-xl mb-6">Pay Electricity Bill</Text>
+                <Image
+                  source={images.electric}
                   resizeMode='contain'
-                  className="w-[150px] h-[35px] self-center mt-5, mb-15"
+                  className="w-[150px] h-[35px] self-center mt-5 mb-4"
                 />
-                <View className="mt-10 mb-2">
-                 
-                  <Picker
-                    selectedValue={dataForm.network}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, network: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-base "
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                  >
-                    <Picker.Item label="Select Network" value="" />
-                    <Picker.Item label="MTN" value="1" />
-                    <Picker.Item label="GLO" value="2" />
-                    <Picker.Item label="Airtel" value="3" />
-                    <Picker.Item label="9Mobile" value="4" />
-                  </Picker>
-                </View>
+
                 <View className="mt-4 mb-2">
-                  
                   <Picker
-                    selectedValue={dataForm.dataplanType}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, dataplanType: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-3 text-base"
+                    selectedValue={form.disco}
+                    onValueChange={(itemValue) => setForm({ ...form, disco: itemValue })}
                     style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
                   >
-                    <Picker.Item label="Select Dataplan Type" value="" />
-                    <Picker.Item label="SME" value="1" />
-                    <Picker.Item label="Sme2" value="2" />
-                    <Picker.Item label="Gifting" value="3" />
-                    <Picker.Item label="Cooperate Gifting" value="4" />
-                  </Picker>
-                </View>
-                <View className="mt-4 mb-6">
-                  
-                  <Picker
-                    selectedValue={dataForm.dataplan}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, dataplan: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-base"
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                    enabled={dataPlanOptions.length > 0}
-                  >
-                    <Picker.Item label="Select Data Plan" value="" />
-                    {dataPlanOptions.map((plan) => (
-                      <Picker.Item key={plan.value} label={plan.label} value={plan.value} />
+                    <Picker.Item label="Select Disco" value="" />
+                    {DISCOS.map((d) => (
+                      <Picker.Item key={d.value} label={d.label} value={d.value} />
                     ))}
                   </Picker>
-                  <SelectForm 
-                  title="Phone Number"
-                  value={dataForm.phoneNumber}
-                  handleChangeText={(e) => setDataForm({ ...dataForm, phoneNumber: e })}
-                  otherStyles="mt-2 mb-3"
-                  keyboardType="phone-pad"
-                  placeholder="Enter Phone Number"
+                </View>
+
+                <View className="mt-4 mb-2">
+                  <Picker
+                    selectedValue={form.meterType}
+                    onValueChange={(itemValue) => setForm({ ...form, meterType: itemValue })}
+                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
+                  >
+                    <Picker.Item label="Select Meter Type" value="" />
+                    <Picker.Item label="Prepaid" value="prepaid" />
+                    <Picker.Item label="Postpaid" value="postpaid" />
+                  </Picker>
+                </View>
+
+                <SelectForm
+                  title="Meter Number"
+                  value={form.meter}
+                  handleChangeText={(e) => setForm({ ...form, meter: e })}
+                  otherStyles="mt-2 mb-1"
+                  keyboardType="numeric"
+                  placeholder="Enter Meter Number"
                 />
-                
-                <SelectForm 
+                {customerName ? (
+                  <Text className="text-[#009b8f] mb-2 px-1">✓ {customerName}</Text>
+                ) : null}
+                <ContinueButton
+                  title="Validate Meter"
+                  handlePress={handleValidateMeter}
+                  containerStyling="bg-white border border-[#009b8f] rounded-xl w-full min-h-[40px] justify-center items-center mt-1 mb-2"
+                  textStyling="text-[#009b8f] font-semibold px-3"
+                  isLoading={isValidating}
+                />
+
+                <SelectForm
+                  title="Amount"
+                  value={form.amount}
+                  handleChangeText={(e) => setForm({ ...form, amount: e })}
+                  otherStyles="mt-2 mb-3"
+                  keyboardType="numeric"
+                  placeholder="Enter Amount"
+                />
+
+                <SelectForm
                   title="Transaction PIN"
-                  value={dataForm.transactionPin}
-                  handleChangeText={(e) => setDataForm({ ...dataForm, transactionPin: e })}
-                  otherStyles="mt-2 "
+                  value={form.transactionPin}
+                  handleChangeText={(e) => setForm({ ...form, transactionPin: e })}
+                  otherStyles="mt-2 mb-3"
                   keyboardType="numeric"
                   placeholder="Enter Transaction PIN"
+                  secureTextEntry={true}
                 />
-                </View>
-                <View className=" mb-2">
-                  <Text className="mb-2 text-lg text-[#00101A]">  {price ? `Amount: ₦${price}.00` : 'Price'}</Text>
-                 
-                </View>
+
                 <ContinueButton
-                  title="Buy Data"
-                  handlePress={handleBuyData}
-                  containerStyling="bg-[#009b8f] rounded-xl w-[300x] min-h-[40px] justify-center items-center mt-3"
+                  title="Pay Now"
+                  handlePress={handleBuyElectricity}
+                  containerStyling="bg-[#009b8f] rounded-xl w-full min-h-[50px] justify-center items-center mt-2"
                   textStyling="text-white font-semibold text-lg px-3"
                   isLoading={isBuying}
                 />
+                {(isBuying || isValidating) && (
+                  <ActivityIndicator size="large" color="#009b8f" style={{ marginTop: 10 }} />
+                )}
               </View>
-              {isBuying && <ActivityIndicator size="large" color="#009b8f" style={{ marginTop: 10 }} />}
-                
             </View>
           </ScrollView>
         </SafeAreaView>
