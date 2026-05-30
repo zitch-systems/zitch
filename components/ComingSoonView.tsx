@@ -1,32 +1,30 @@
 import React from 'react';
 import { View, Text } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import Icon from 'react-native-vector-icons/MaterialIcons';
+import { router } from 'expo-router';
+import ZIcon from '@/components/design/ZIcon';
+import { Screen, Header } from '@/components/design/ui';
+import { useTheme, font } from '@/lib/theme';
 
 /**
- * Shared placeholder for features that are not built yet. Used by the
- * coming-soon route and by service screens whose flows are still stubs, so the
- * app never drops the user onto a blank/raw screen.
+ * Shared placeholder for features that are not built yet. Themed to match the
+ * revamp so the app never drops the user onto a blank/raw screen.
  */
-const ComingSoonView = ({ title = 'Coming Soon!' }: { title?: string }) => {
+const ComingSoonView = ({ title = 'Coming Soon', icon = 'spark', note = "We're working hard to bring you something amazing. Stay tuned!" }: { title?: string; icon?: string; note?: string }) => {
+  const { c } = useTheme();
   return (
-    <LinearGradient
-      colors={['#44B9B0', '#FFFFFF']}
-      style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}
-    >
-      <SafeAreaView className="h-full justify-center items-center">
-        <View className="bg-white p-8 rounded-2xl shadow-lg justify-center items-center mx-6">
-          <Icon name="announcement" size={56} color="#0FA295" />
-          <Text className="text-2xl font-semibold text-center text-gray-800 mt-4">
-            {title}
-          </Text>
-          <Text className="text-center text-gray-600 mt-2">
-            We're working hard to bring you something amazing. Stay tuned!
-          </Text>
+    <Screen scroll={false}>
+      <Header title={title} onBack={() => router.back()} />
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingBottom: 80 }}>
+        <View style={{ width: 88, height: 88, borderRadius: 28, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name={icon} size={40} color={c.brand} />
         </View>
-      </SafeAreaView>
-    </LinearGradient>
+        <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1, marginTop: 22 }}>{title}</Text>
+        <Text style={{ fontSize: 14, color: c.ink3, marginTop: 8, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>{note}</Text>
+        <View style={{ marginTop: 16, paddingVertical: 7, paddingHorizontal: 16, borderRadius: 999, backgroundColor: c.surface3 }}>
+          <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink2 }}>Fully designed in handoff →</Text>
+        </View>
+      </View>
+    </Screen>
   );
 };
 

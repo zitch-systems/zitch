@@ -1,250 +1,183 @@
-import { Text, View, Image, Alert, ActivityIndicator } from 'react-native';
 import React, { useEffect, useState } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ScrollView } from 'react-native-gesture-handler';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Picker } from '@react-native-picker/picker';
-import { images } from "../../constants";
-import ContinueButton from '@/components/CustomButtons/CustomButton';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, Text, Alert, ActivityIndicator } from 'react-native';
+import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
-import SelectForm from '@/components/CustomField/selectfield';
 import { getToken } from '@/lib/secureStore';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, Segmented, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import Receipt from '@/components/design/Receipt';
+import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
+
+const NETWORKS = [
+  { id: '1', name: 'MTN', color: '#FFCC00' },
+  { id: '2', name: 'GLO', color: '#2BB24C' },
+  { id: '3', name: 'Airtel', color: '#E40000' },
+  { id: '4', name: '9mobile', color: '#0A8A3D' },
+];
+const PLAN_TYPES = [
+  { v: '1', label: 'SME' },
+  { v: '2', label: 'SME2' },
+  { v: '3', label: 'Gifting' },
+  { v: '4', label: 'Corporate' },
+];
+
+type Step = null | 'confirm' | 'pin';
+
 const BuyData = () => {
-  const [isBuying, setIsBuying] = useState(false);
-  const [memoryEmail, setMemoryEmail] = useState('');
-  
+  const { c } = useTheme();
+  const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
+  const [net, setNet] = useState('1');
+  const [planType, setPlanType] = useState('1');
+  const [plan, setPlan] = useState('');
+  const [phone, setPhone] = useState('');
   const [price, setPrice] = useState('');
-  const [dataPlanOptions, setDataPlanOptions] = useState([]);
+  const [plans, setPlans] = useState<{ id: string; label: string; sub?: string; price: number }[]>([]);
+  const [loadingPlans, setLoadingPlans] = useState(false);
+  const [step, setStep] = useState<Step>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
 
-  const [dataForm, setDataForm] = useState({
-    network: '',
-    dataplanType: '',
-    dataplan: '',
-    phoneNumber:'',
-    transactionPin: ''
-  });
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
+  // Fetch plans whenever network + plan type are chosen.
   useEffect(() => {
-    const loadUserData = async () => {
-      try {
-        const access_token = await getToken();
-        if (access_token) setMemoryEmail(access_token);
-      } catch (error) {
-        console.error('Error loading user data:', error);
-      }
-    }
-    loadUserData();
-  }, []);
+    if (!net || !planType) return;
+    setLoadingPlans(true);
+    setPlan('');
+    setPlans([]);
+    fetch(`${baseUrl}/api/utility/get_data_plans/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ datanetwork: net, selectedPlanType: planType }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        if (res?.data_plans) {
+          setPlans(res.data_plans.map((p: any) => ({
+            id: String(p.plan_code),
+            label: p.name,
+            sub: p.validity,
+            price: Number(p.price ?? 0),
+          })));
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingPlans(false));
+  }, [net, planType]);
 
+  // Fetch authoritative price for the chosen plan.
   useEffect(() => {
-    if (dataForm.network && dataForm.dataplanType) {
-      fetchDataPlans();
-    }
-  }, [dataForm.network, dataForm.dataplanType]);
+    if (!plan) { setPrice(''); return; }
+    fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selectedDataPlan: plan }),
+    })
+      .then((r) => r.json())
+      .then((res) => { if (res?.price != null) setPrice(String(res.price)); })
+      .catch(() => {});
+  }, [plan]);
 
-  useEffect(() => {
-    if (dataForm.dataplan) {
-      fetchDataPlanPrice();
-    }
-  }, [dataForm.dataplan]);
+  const network = NETWORKS.find((n) => n.id === net)!;
+  const planObj = plans.find((p) => p.id === plan);
+  const amount = Number(price || planObj?.price || 0);
+  const valid = phone.length >= 10 && !!plan;
 
-  const fetchDataPlans = async () => {
-   // console.log("ade " +baseUrl)
-    try {
-      const response = await fetch(`${baseUrl}/api/utility/get_data_plans/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          datanetwork: dataForm.network,
-          selectedPlanType: dataForm.dataplanType,
-        }),
-      });
-
-      const result = await response.json();
-      if (response.ok) {
-        const options = result.data_plans.map(plan => ({
-          label: `${plan.name} (${plan.validity})`,
-          value: plan.plan_code,
-        }));
-        setDataPlanOptions(options);
-      } else {
-        Alert.alert('Error', result.message || 'Failed to fetch data plans');
-      }
-    } catch (error) {
-      console.error('API request error:', error);
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
-    }
-  };
-
-  const fetchDataPlanPrice = async () => {
-    try {
-      const response = await fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          selectedDataPlan: dataForm.dataplan,
-        }),
-      });
-
-      const result = await response.json();
-      if (response.ok) {
-        setPrice(result.price || '');
-      } else {
-        Alert.alert('Error', result.message || 'Failed to fetch data plan price');
-      }
-    } catch (error) {
-      console.error('API request error:', error);
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
-    }
-  };
-
-  const handleBuyData = async () => {
-    setIsBuying(true);
-
+  const purchase = async (enteredPin: string) => {
+    setBusy(true);
     try {
       const response = await fetch(`${baseUrl}/api/utility/buydata/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          phone: dataForm.phoneNumber,
-          datanetwork: dataForm.network,
-          selectedDataPlan: dataForm.dataplan,
-          access_token: memoryEmail,
-          transaction_pin: dataForm.transactionPin ,
-          
-          
+          phone,
+          datanetwork: net,
+          selectedDataPlan: plan,
+          access_token: token,
+          transaction_pin: enteredPin,
         }),
       });
-
       const result = await response.json();
       if (response.ok) {
-        Alert.alert('Success', result.message || "Transaction Successful");
+        setStep(null);
+        setDone(true);
+        reload();
       } else {
-        Alert.alert('Error', result.message || 'Transaction Failed');
+        Alert.alert('Error', result.message || 'Transaction failed');
+        setStep(null);
       }
-    } catch (error) {
-      console.error('API request error:', error);
+    } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.');
+      setStep(null);
     } finally {
-      setIsBuying(false);
+      setBusy(false);
     }
   };
 
-  const renderButtonTitle = (icon, text) => (
-    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-      <Image source={icon} resizeMode='contain' style={{ width: 20, height: 20, marginRight: 8 }} />
-      <Text style={{ color: 'black' }}>{text}</Text>
-    </View>
-  );
+  if (done) {
+    return (
+      <Screen scroll={false}>
+        <Receipt
+          title="Successful"
+          message={`Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
+          rows={[['Type', 'Data bundle'], ['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
+          onDone={() => router.replace('/home')}
+        />
+      </Screen>
+    );
+  }
 
   return (
-    <LinearGradient
-      colors={['#44B9B0', '#FFFFFF']}
-      start={{ x: 5, y: 1 }}
-      end={{ x: 1, y: 2 }}
-      style={{ flex: 1 }}
-    >
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaView className="h-full">
-          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 10 }}>
-            <View className="w-full justify-center px-2 my-3">
-              <View className="min-h-[85vh] justify-center  p-3 rounded-lg shadow-lg">
-                <Text className="text-[#00101A] font-semibold px-3 text-center text-xl mb-6">Buy Data</Text>
-                <Image 
-                  source={images.netprovider}
-                  resizeMode='contain'
-                  className="w-[150px] h-[35px] self-center mt-5, mb-15"
-                />
-                <View className="mt-10 mb-2">
-                 
-                  <Picker
-                    selectedValue={dataForm.network}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, network: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-base "
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                  >
-                    <Picker.Item label="Select Network" value="" />
-                    <Picker.Item label="MTN" value="1" />
-                    <Picker.Item label="GLO" value="2" />
-                    <Picker.Item label="Airtel" value="3" />
-                    <Picker.Item label="9Mobile" value="4" />
-                  </Picker>
-                </View>
-                <View className="mt-4 mb-2">
-                  
-                  <Picker
-                    selectedValue={dataForm.dataplanType}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, dataplanType: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-3 text-base"
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                  >
-                    <Picker.Item label="Select Dataplan Type" value="" />
-                    <Picker.Item label="SME" value="1" />
-                    <Picker.Item label="Sme2" value="2" />
-                    <Picker.Item label="Gifting" value="3" />
-                    <Picker.Item label="Cooperate Gifting" value="4" />
-                  </Picker>
-                </View>
-                <View className="mt-4 mb-6">
-                  
-                  <Picker
-                    selectedValue={dataForm.dataplan}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, dataplan: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-base"
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                    enabled={dataPlanOptions.length > 0}
-                  >
-                    <Picker.Item label="Select Data Plan" value="" />
-                    {dataPlanOptions.map((plan) => (
-                      <Picker.Item key={plan.value} label={plan.label} value={plan.value} />
-                    ))}
-                  </Picker>
-                  <SelectForm 
-                  title="Phone Number"
-                  value={dataForm.phoneNumber}
-                  handleChangeText={(e) => setDataForm({ ...dataForm, phoneNumber: e })}
-                  otherStyles="mt-2 mb-3"
-                  keyboardType="phone-pad"
-                  placeholder="Enter Phone Number"
-                />
-                
-                <SelectForm
-                  title="Transaction PIN"
-                  value={dataForm.transactionPin}
-                  handleChangeText={(e) => setDataForm({ ...dataForm, transactionPin: e })}
-                  otherStyles="mt-2 "
-                  keyboardType="numeric"
-                  placeholder="Enter Transaction PIN"
-                  secureTextEntry={true}
-                />
-                </View>
-                <View className=" mb-2">
-                  <Text className="mb-2 text-lg text-[#00101A]">  {price ? `Amount: ₦${price}.00` : 'Price'}</Text>
-                 
-                </View>
-                <ContinueButton
-                  title="Buy Data"
-                  handlePress={handleBuyData}
-                  containerStyling="bg-[#009b8f] rounded-xl w-[300x] min-h-[40px] justify-center items-center mt-3"
-                  textStyling="text-white font-semibold text-lg px-3"
-                  isLoading={isBuying}
-                />
-              </View>
-              {isBuying && <ActivityIndicator size="large" color="#009b8f" style={{ marginTop: 10 }} />}
-                
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </GestureHandlerRootView>
-    </LinearGradient>
+    <Screen>
+      <Header title="Data" onBack={() => router.back()} />
+
+      <Label>Select network</Label>
+      <ProviderGrid items={NETWORKS} value={net} onPick={setNet} />
+
+      <Label>Plan type</Label>
+      <Segmented options={PLAN_TYPES} value={planType} onChange={setPlanType} />
+
+      <Label>Select a data plan</Label>
+      {loadingPlans ? (
+        <ActivityIndicator color={c.brand} style={{ marginVertical: 20 }} />
+      ) : plans.length === 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No plans available for this selection.</Text>
+      ) : (
+        <PlanList plans={plans} value={plan} onPick={setPlan} />
+      )}
+      <View style={{ height: 16 }} />
+
+      <Field
+        label="Phone number"
+        value={phone}
+        onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+        keyboardType="number-pad"
+        placeholder="0801 234 5678"
+      />
+      <View style={{ height: 10 }} />
+      <BalanceHint amount={amount} balance={balance} />
+
+      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
+
+      <ConfirmSheet
+        open={step === 'confirm'}
+        onClose={() => setStep(null)}
+        title="Confirm data"
+        total={amount}
+        balance={balance}
+        rows={[['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—']]}
+        onPay={() => setStep('pin')}
+      />
+
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
+        </Text>
+        <PinPad onComplete={(p) => purchase(p)} />
+      </Sheet>
+    </Screen>
   );
 };
 

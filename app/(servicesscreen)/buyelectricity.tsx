@@ -1,267 +1,185 @@
-import { Text, View, Image, Alert, ActivityIndicator } from 'react-native';
 import React, { useEffect, useState } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ScrollView } from 'react-native-gesture-handler';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Picker } from '@react-native-picker/picker';
-import { images } from "../../constants";
-import ContinueButton from '@/components/CustomButtons/CustomButton';
+import { View, Text, Alert } from 'react-native';
+import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
-import SelectForm from '@/components/CustomField/selectfield';
 import { getToken } from '@/lib/secureStore';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import Receipt from '@/components/design/Receipt';
+import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
 
-// Nigerian electricity distribution companies. The numeric values follow the
-// same convention the backend uses for network/cable selection.
-// TODO: confirm the disco id mapping and the request field names with the API.
+// Disco id mapping follows the backend's numeric convention.
 const DISCOS = [
-  { label: 'Ikeja Electric (IKEDC)', value: '1' },
-  { label: 'Eko Electric (EKEDC)', value: '2' },
-  { label: 'Abuja Electric (AEDC)', value: '3' },
-  { label: 'Kano Electric (KEDCO)', value: '4' },
-  { label: 'Port Harcourt Electric (PHED)', value: '5' },
-  { label: 'Jos Electric (JED)', value: '6' },
-  { label: 'Kaduna Electric (KAEDCO)', value: '7' },
-  { label: 'Enugu Electric (EEDC)', value: '8' },
-  { label: 'Ibadan Electric (IBEDC)', value: '9' },
-  { label: 'Benin Electric (BEDC)', value: '10' },
+  { id: '1', name: 'Ikeja (IKEDC)', color: '#E08A00' },
+  { id: '2', name: 'Eko (EKEDC)', color: '#1E5BB8' },
+  { id: '3', name: 'Abuja (AEDC)', color: '#0B7A3B' },
+  { id: '4', name: 'Kano (KEDCO)', color: '#7A1FA2' },
+  { id: '5', name: 'P/H (PHED)', color: '#C0392B' },
+  { id: '6', name: 'Jos (JED)', color: '#16667E' },
+  { id: '7', name: 'Kaduna', color: '#0B4DA2' },
+  { id: '8', name: 'Enugu (EEDC)', color: '#1A8E5F' },
+  { id: '9', name: 'Ibadan (IBEDC)', color: '#6C2FB3' },
 ];
+const ELEC_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
+
+type Step = null | 'confirm' | 'pin';
 
 const BuyElectricity = () => {
-  const [isBuying, setIsBuying] = useState(false);
-  const [isValidating, setIsValidating] = useState(false);
+  const { c } = useTheme();
+  const { balance, reload } = useWallet();
   const [token, setToken] = useState('');
+  const [disco, setDisco] = useState('1');
+  const [meterType, setMeterType] = useState('prepaid');
+  const [meter, setMeter] = useState('');
+  const [amt, setAmt] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [validating, setValidating] = useState(false);
+  const [purchasedToken, setPurchasedToken] = useState('');
+  const [step, setStep] = useState<Step>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
 
-  const [form, setForm] = useState({
-    disco: '',
-    meterType: '',
-    meter: '',
-    amount: '',
-    transactionPin: '',
-  });
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
+  useEffect(() => { setCustomerName(''); }, [disco, meterType, meter]);
 
-  useEffect(() => {
-    const loadUserData = async () => {
-      try {
-        const access_token = await getToken();
-        if (access_token) setToken(access_token);
-      } catch (error) {
-        console.error('Error loading user data:', error);
-      }
-    };
-    loadUserData();
-  }, []);
+  const provider = DISCOS.find((d) => d.id === disco)!;
+  const amount = Number(amt || 0);
+  const valid = meter.length >= 8 && amount >= 500;
 
-  // Reset a previously resolved customer when the meter inputs change.
-  useEffect(() => {
-    setCustomerName('');
-  }, [form.disco, form.meterType, form.meter]);
-
-  const validateAmount = () => {
-    const amount = parseFloat(form.amount);
-    if (isNaN(amount)) {
-      Alert.alert('Error', 'Please enter a valid amount.');
-      return null;
-    }
-    if (amount < 100) {
-      Alert.alert('Error', 'Minimum amount is ₦100.');
-      return null;
-    }
-    return amount;
-  };
-
-  const handleValidateMeter = async () => {
-    if (form.disco === '') {
-      Alert.alert('Error', 'Please select a disco.');
-      return;
-    }
-    if (form.meterType === '') {
-      Alert.alert('Error', 'Please select Prepaid or Postpaid.');
-      return;
-    }
-    if (form.meter.trim() === '') {
-      Alert.alert('Error', 'Please enter your meter number.');
-      return;
-    }
-
-    setIsValidating(true);
+  const validateMeter = async () => {
+    if (meter.trim().length < 8) { Alert.alert('Error', 'Enter a valid meter number.'); return; }
+    setValidating(true);
     try {
       const response = await fetch(`${baseUrl}/api/utility/validate_meter/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          meter: form.meter,
-          disco: form.disco,
-          meter_type: form.meterType,
-        }),
+        body: JSON.stringify({ meter, disco, meter_type: meterType }),
       });
-
       const result = await response.json();
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
       } else {
         Alert.alert('Error', result.message || 'Could not verify meter number.');
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
-      setIsValidating(false);
+      setValidating(false);
     }
   };
 
-  const handleBuyElectricity = async () => {
-    if (form.disco === '') {
-      Alert.alert('Error', 'Please select a disco.');
-      return;
-    }
-    if (form.meterType === '') {
-      Alert.alert('Error', 'Please select Prepaid or Postpaid.');
-      return;
-    }
-    if (form.meter.trim() === '') {
-      Alert.alert('Error', 'Please enter your meter number.');
-      return;
-    }
-    const amount = validateAmount();
-    if (amount === null) return;
-    if (form.transactionPin.trim() === '') {
-      Alert.alert('Error', 'Please enter your transaction PIN.');
-      return;
-    }
-
-    setIsBuying(true);
+  const purchase = async (enteredPin: string) => {
+    setBusy(true);
     try {
       const response = await fetch(`${baseUrl}/api/utility/buyelectricity/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          disco: form.disco,
-          meter: form.meter,
-          meter_type: form.meterType,
-          amount: form.amount,
+          disco,
+          meter,
+          meter_type: meterType,
+          amount: amt,
           access_token: token,
-          transaction_pin: form.transactionPin,
+          transaction_pin: enteredPin,
         }),
       });
-
       const result = await response.json();
       if (response.ok) {
-        if (result.token) setToken(result.token);
-        Alert.alert(
-          'Success',
-          result.token
-            ? `Purchase successful. Token: ${result.token}`
-            : result.message || 'Transaction Successful'
-        );
+        if (result.token) setPurchasedToken(String(result.token));
+        setStep(null);
+        setDone(true);
+        reload();
       } else {
-        Alert.alert('Error', result.message || 'Transaction Failed');
+        Alert.alert('Error', result.message || 'Transaction failed');
+        setStep(null);
       }
-    } catch (error) {
+    } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.');
+      setStep(null);
     } finally {
-      setIsBuying(false);
+      setBusy(false);
     }
   };
 
+  if (done) {
+    return (
+      <Screen scroll={false}>
+        <Receipt
+          title={purchasedToken ? 'Token generated' : 'Payment successful'}
+          message={`Your ${provider.name} ${meterType} purchase was successful.`}
+          rows={[
+            ['Disco', provider.name],
+            ['Meter', meter],
+            ['Type', meterType],
+            ...(purchasedToken ? ([['Token', purchasedToken]] as [string, string][]) : []),
+            ['Total', money(amount), true],
+          ]}
+          onDone={() => router.replace('/home')}
+        />
+      </Screen>
+    );
+  }
+
   return (
-    <LinearGradient
-      colors={['#44B9B0', '#FFFFFF']}
-      start={{ x: 5, y: 1 }}
-      end={{ x: 1, y: 2 }}
-      style={{ flex: 1 }}
-    >
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaView className="h-full">
-          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 10 }}>
-            <View className="w-full justify-center px-2 my-3">
-              <View className="min-h-[85vh] justify-center p-3 rounded-lg shadow-lg">
-                <Text className="text-[#00101A] font-semibold px-3 text-center text-xl mb-6">Pay Electricity Bill</Text>
-                <Image
-                  source={images.electric}
-                  resizeMode='contain'
-                  className="w-[150px] h-[35px] self-center mt-5 mb-4"
-                />
+    <Screen>
+      <Header title="Electricity" onBack={() => router.back()} />
 
-                <View className="mt-4 mb-2">
-                  <Picker
-                    selectedValue={form.disco}
-                    onValueChange={(itemValue) => setForm({ ...form, disco: itemValue })}
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                  >
-                    <Picker.Item label="Select Disco" value="" />
-                    {DISCOS.map((d) => (
-                      <Picker.Item key={d.value} label={d.label} value={d.value} />
-                    ))}
-                  </Picker>
-                </View>
+      <Label>Select disco</Label>
+      <ProviderGrid items={DISCOS} value={disco} onPick={setDisco} cols={3} />
 
-                <View className="mt-4 mb-2">
-                  <Picker
-                    selectedValue={form.meterType}
-                    onValueChange={(itemValue) => setForm({ ...form, meterType: itemValue })}
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                  >
-                    <Picker.Item label="Select Meter Type" value="" />
-                    <Picker.Item label="Prepaid" value="prepaid" />
-                    <Picker.Item label="Postpaid" value="postpaid" />
-                  </Picker>
-                </View>
+      <Segmented
+        options={[{ v: 'prepaid', label: 'Prepaid' }, { v: 'postpaid', label: 'Postpaid' }]}
+        value={meterType}
+        onChange={setMeterType}
+      />
 
-                <SelectForm
-                  title="Meter Number"
-                  value={form.meter}
-                  handleChangeText={(e) => setForm({ ...form, meter: e })}
-                  otherStyles="mt-2 mb-1"
-                  keyboardType="numeric"
-                  placeholder="Enter Meter Number"
-                />
-                {customerName ? (
-                  <Text className="text-[#009b8f] mb-2 px-1">✓ {customerName}</Text>
-                ) : null}
-                <ContinueButton
-                  title="Validate Meter"
-                  handlePress={handleValidateMeter}
-                  containerStyling="bg-white border border-[#009b8f] rounded-xl w-full min-h-[40px] justify-center items-center mt-1 mb-2"
-                  textStyling="text-[#009b8f] font-semibold px-3"
-                  isLoading={isValidating}
-                />
+      <Field
+        label="Meter number"
+        value={meter}
+        onChangeText={(v) => setMeter(v.replace(/\D/g, '').slice(0, 13))}
+        keyboardType="number-pad"
+        placeholder="01234567890"
+      />
+      <View style={{ marginTop: 8, marginBottom: 8 }}>
+        {customerName ? (
+          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {customerName}</Text>
+        ) : (
+          <Btn label="Validate meter" variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating} />
+        )}
+      </View>
 
-                <SelectForm
-                  title="Amount"
-                  value={form.amount}
-                  handleChangeText={(e) => setForm({ ...form, amount: e })}
-                  otherStyles="mt-2 mb-3"
-                  keyboardType="numeric"
-                  placeholder="Enter Amount"
-                />
+      <Label>Amount</Label>
+      <QuickAmounts amounts={ELEC_AMOUNTS} value={amt} onPick={setAmt} />
+      <Field
+        value={amt}
+        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
+        keyboardType="number-pad"
+        placeholder="Enter amount (min ₦500)"
+        prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>}
+      />
+      <View style={{ height: 6 }} />
+      <BalanceHint amount={amount} balance={balance} />
 
-                <SelectForm
-                  title="Transaction PIN"
-                  value={form.transactionPin}
-                  handleChangeText={(e) => setForm({ ...form, transactionPin: e })}
-                  otherStyles="mt-2 mb-3"
-                  keyboardType="numeric"
-                  placeholder="Enter Transaction PIN"
-                  secureTextEntry={true}
-                />
+      <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
 
-                <ContinueButton
-                  title="Pay Now"
-                  handlePress={handleBuyElectricity}
-                  containerStyling="bg-[#009b8f] rounded-xl w-full min-h-[50px] justify-center items-center mt-2"
-                  textStyling="text-white font-semibold text-lg px-3"
-                  isLoading={isBuying}
-                />
-                {(isBuying || isValidating) && (
-                  <ActivityIndicator size="large" color="#009b8f" style={{ marginTop: 10 }} />
-                )}
-              </View>
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </GestureHandlerRootView>
-    </LinearGradient>
+      <ConfirmSheet
+        open={step === 'confirm'}
+        onClose={() => setStep(null)}
+        title="Confirm payment"
+        total={amount}
+        balance={balance}
+        rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
+        onPay={() => setStep('pin')}
+      />
+
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
+        </Text>
+        <PinPad onComplete={(p) => purchase(p)} />
+      </Sheet>
+    </Screen>
   );
 };
 
