@@ -1,413 +1,175 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Image, ScrollView, TouchableOpacity, Alert } from 'react-native';
-import { images, icons } from '../../constants';
-import CustomButton from '@/components/CustomButtons/CustomButton';
-import CustomMenuButton from '@/components/CustomButtons/CustomMenuButton';
+import React, { useState } from 'react';
+import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getToken } from '@/lib/secureStore';
+import ZIcon from '@/components/design/ZIcon';
+import { Avatar } from '@/components/design/Brand';
+import { Screen, Card, Sheet, TxnRow, money } from '@/components/design/ui';
+import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
+import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
+
+const GRID = [
+  { label: 'Airtime', icon: 'airtime', badge: '6% off', go: () => router.push('/buyairtime') },
+  { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
+  { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
+  { label: 'Save', icon: 'fixed', go: () => router.push('/comingsoon') },
+  { label: 'Loan', icon: 'loan', badge: 'Hot', hot: true, go: () => router.push('/getloan') },
+  { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
+  { label: 'More', icon: 'more', more: true },
+];
+
+const MORE = [
+  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
+  { label: 'Send money', icon: 'send', go: () => router.push('/comingsoon') },
+  { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
+  { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
+  { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
+  { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
+  { label: 'Insurance', icon: 'insurance', go: () => router.push('/comingsoon') },
+  { label: 'Remita', icon: 'remita', go: () => router.push('/comingsoon') },
+  { label: 'Movie', icon: 'movie', go: () => router.push('/comingsoon') },
+  { label: 'Convert', icon: 'convert', go: () => router.push('/comingsoon') },
+  { label: 'Invite', icon: 'invite', go: () => router.push('/comingsoon') },
+];
 
 const Home = () => {
-  const [isBalanceVisible, setIsBalanceVisible] = useState(true);
-  const [balance, setBalance] = useState(null);
-  const [username, setUsername] = useState('');
-  const [transactions, setTransactions] = useState([]);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [token, setToken] = useState(null);
-  const [isUserLoggedIn, setIsUserLoggedIn] = useState(false);
-
-  const toggleBalanceVisibility = () => {
-    setIsBalanceVisible(!isBalanceVisible);
-  };
-
-  useEffect(() => {
-    const fetchAccessToken = async () => {
-      try {
-        const usetoken = await getToken();
-        setToken(usetoken);
-      } catch (error) {
-        console.error('Failed to retrieve access token from storage:', error);
-      }
-    };
-
-    fetchAccessToken();
-  }, []);
-
-  useEffect(() => {
-    if (token) {
-      fetchUserInfo();
-      fetchAccountBalance();
-      fetchTransactions();
-    }
-  }, [token, currentPage]);
-
-  const fetchUserInfo = async () => {
-    fetch(`${baseUrl}/api/wallet_balance/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ access_token: token }),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        if (data.success) {
-          setBalance(data.wallet);
-          setUsername(data.user_last_name); // Adjust if you want to use a different part of the response
-        } else {
-          console.error('Failed to fetch user info:', data);
-        }
-      })
-      .catch((error) => {
-        console.error('Error fetching user info:', error);
-      });
-  };
-
-  const fetchAccountBalance = async () => {
-    fetch(`${baseUrl}/api/wallet_balance/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ access_token: token }),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        if (data.success) {
-          setBalance(data.wallet);
-        } else {
-          console.error('Failed to fetch account balance:', data);
-        }
-      })
-      .catch((error) => {
-        console.error('Error fetching account balance:', error);
-      });
-  };
-
-  const fetchTransactions = async () => {
-    fetch(`${baseUrl}/api/user-transaction-history/`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ access_token: token }),
-    })
-      .then((response) => response.json())
-      .then((data) => {
-        if (data.status) {
-          setTransactions(data.all_site_transactions);
-        } else {
-          console.error('Failed to fetch transactions:', data);
-        }
-      })
-      .catch((error) => {
-        console.error('Error fetching transactions:', error);
-      });
-  };
-
-  const loadMoreTransactions = () => {
-    setCurrentPage(currentPage + 1);
-  };
+  const { c, theme } = useTheme();
+  const { balance, firstName, txns, showBal, setShowBal } = useWallet();
+  const [more, setMore] = useState(false);
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.userInfo}>
-        <Image source={images.headicon} style={styles.avatar} />
-        <View style={styles.userDetails}>
-          <Text style={styles.welcome}>Welcome back 👋</Text>
-          <Text style={styles.username}>@{username}</Text>
+    <Screen pad={false}>
+      {/* header */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
+        <Pressable onPress={() => router.push('/me')}>
+          <Avatar size={38} ring={c.brand} surface={c.surface} />
+        </Pressable>
+        <Text style={{ flex: 1, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>
+          Hi, {firstName || 'there'}
+        </Text>
+        <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
+          <Pressable onPress={() => router.push('/comingsoon')}><ZIcon name="help" size={22} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/comingsoon')}><ZIcon name="scan" size={22} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/notifications')}>
+            <View>
+              <ZIcon name="bell" size={22} color={c.ink1} />
+              <View style={{ position: 'absolute', top: -6, right: -7, minWidth: 16, height: 16, paddingHorizontal: 4, borderRadius: 9, backgroundColor: c.red, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#fff', fontSize: 10, fontFamily: font.bold }}>24</Text>
+              </View>
+            </View>
+          </Pressable>
         </View>
-        <Image source={images.alerticon} style={styles.notificationIcon} />
       </View>
 
-      <View >
-        <View style={styles.balanceRow}>
-          <Text style={styles.balanceTitle}>Available Balance</Text>
-          <TouchableOpacity onPress={toggleBalanceVisibility}>
-            <Image
-              source={isBalanceVisible ? icons.eye : icons.eyeHide}
-              style={styles.buttonIconbalance}
-            />
-          </TouchableOpacity>
-        </View>
-        <Text style={styles.balance}>{isBalanceVisible ? `₦${balance}.00` : '*****'}</Text>
-      </View>
-
-      <View style={styles.buttonsContainer}>
-        <CustomMenuButton
-          backgroundColor="#009688"
-          iconSource={images.depositicon}
-          text="Deposit Money"
-          textStyle={{ fontSize: 10 }}
-          onPress={() => console.log('Deposit Money')}
-        />
-        <CustomMenuButton
-          backgroundColor="#FAFBFF"
-          iconSource={images.withdrawalicon}
-          text="Withdraw Money"
-          textStyle={{ fontSize: 10, color: "#004D47" }}
-          onPress={() => console.log('Withdraw Money')}
-        />
-      </View>
-      {/* first menu row */}
-      <Text style={styles.menuTitle}>Select what you want to do</Text>
-      <View style={styles.menuContainer}>
-        <TouchableOpacity style={styles.menuItem}
-        onPress={ ()=>router.push("/comingsoon")}
-        >
-          <Image source={images.sendmoneyicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Send money</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} 
-         onPress={ ()=>router.push("/buyairtime")}
-         >
-          <Image source={images.airtimeicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Buy Airtime </Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem}
-        onPress={ ()=>router.push("/buydata")}>
-          <Image source={images.utilityicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}> Buy Data</Text>
-        </TouchableOpacity>
-        {/* Add more menu items as needed */}
-      </View>
-      {/* second menu row */}
-      <View style={styles.menuContainer}>
-        <TouchableOpacity style={styles.menuItem}onPress={ ()=>router.push("/getloan")}>
-          <Image source={images.getloanicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Get Loan</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem}
-        onPress={ ()=>router.push("/comingsoon")}>
-          <Image source={images.movieticketicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Movies Ticket</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} 
-        onPress={ ()=>router.push("/comingsoon")}>
-          <Image source={images.insuranceicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Insurance</Text>
-        </TouchableOpacity>
-        {/* Add more menu items as needed */}
-      </View>
-      {/* third menu row */}
-      <View style={styles.menuContainer}>
-        <TouchableOpacity style={styles.menuItem} 
-        onPress={ ()=>router.push("/comingsoon")}>
-          <Image source={images.remitaicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Remita</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} 
-        onPress={ ()=>router.push("/exams")}>
-          <Image source={images.jambicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Education</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} 
-        onPress={ ()=>router.push("/utility")}>
-          <Image source={images.utilityicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Utility Bills</Text>
-        </TouchableOpacity>
-        {/* Add more menu items as needed */}
-      </View>
-      {/* fourth menu row */}
-      <View style={styles.menuContainer}>
-        <TouchableOpacity style={styles.menuItem} 
-        onPress={ ()=>router.push("/comingsoon")}>
-          <Image source={images.savemoneyicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Save Money</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem} 
-        onPress={ ()=>router.push("/comingsoon")}>
-          <Image source={images.convertcurrencyicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Convert Currency</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.menuItem}
-        onPress={ ()=>router.push("/comingsoon")}
-        >
-          <Image source={images.utilityicon} style={styles.menuIcon} />
-          <Text style={styles.menuText}>Others</Text>
-        </TouchableOpacity>
-        {/* Add more menu items as needed */}
-      </View>
-
-      
-        
-        <Text style={styles.transactionTitle}>Transaction History</Text>
-      <View style={styles.transactionContainer}>
-        {transactions.slice(0, currentPage * 5).map((transaction, index) => (
-          <View key={index} style={styles.transaction}>
-            <Text style={styles.transactionText}>{transaction.service}</Text>
-            <Text style={styles.transactionAmount}>₦{transaction.amount}</Text>
-            <Text style={styles.transactionStatus}>{transaction.transaction_status}</Text>
+      {/* balance hero */}
+      <Hero style={{ margin: 16 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+            <View style={{ width: 17, height: 17, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.22)', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="check" size={11} color="#fff" stroke={2.6} />
+            </View>
+            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>Available Balance</Text>
           </View>
+          <Pressable onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+            <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>Transaction History</Text>
+            <ZIcon name="right" size={15} color="#fff" />
+          </Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 }}>
+          <Text style={{ color: '#fff', fontSize: 31, fontFamily: font.bold, fontVariant: ['tabular-nums'] }}>
+            {showBal ? money(balance) : '₦ ••••••'}
+          </Text>
+          <Pressable onPress={() => setShowBal(!showBal)}>
+            <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
+          </Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+            <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 12.5, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Acct: 9012 345 678</Text>
+            <ZIcon name="copy" size={14} color="rgba(255,255,255,.82)" />
+          </View>
+          <Pressable onPress={() => router.push('/comingsoon')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
+            <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
+            <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>
+          </Pressable>
+        </View>
+      </Hero>
+
+      {/* daily interest strip */}
+      <Pressable onPress={() => router.push('/comingsoon')} style={{ marginHorizontal: 16, marginTop: -4 }}>
+        <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16 }}>
+          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="spark" size={16} color={c.lime} />
+          </View>
+          <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, fontFamily: font.regular }}>
+            Act now — start earning <Text style={{ color: c.brand, fontFamily: font.bold }}>daily interest</Text>
+          </Text>
+          <ZIcon name="right" size={16} color={c.ink3} />
+        </Card>
+      </Pressable>
+
+      {/* quick actions */}
+      <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
+        {[
+          { icon: 'send', label: 'Transfer', go: () => router.push('/comingsoon') },
+          { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
+          { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/comingsoon') },
+        ].map((q) => (
+          <ServiceTile key={q.label} icon={q.icon} label={q.label} onPress={q.go} round />
         ))}
+      </Card>
+
+      {/* services grid */}
+      <Card style={{ margin: 16, marginBottom: 0, paddingVertical: 20, paddingHorizontal: 8 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+          {GRID.map((s) => (
+            <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
+              <ServiceTile icon={s.icon} label={s.label} badge={s.badge} hot={s.hot} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
+            </View>
+          ))}
+        </View>
+      </Card>
+
+      {/* promo */}
+      <Pressable onPress={() => router.push('/comingsoon')} style={{ marginHorizontal: 16, marginTop: 14 }}>
+        <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
+          <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="fixed" size={23} color={c.brand} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontFamily: font.bold, fontSize: 14, color: c.ink1 }}>Fixed Save · 22% p.a</Text>
+            <Text style={{ fontSize: 12, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>Grow your savings, locked & safe</Text>
+          </View>
+          <View style={{ paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999, backgroundColor: c.brand }}>
+            <Text style={{ color: '#fff', fontSize: 13, fontFamily: font.bold }}>Save</Text>
+          </View>
+        </View>
+      </Pressable>
+
+      {/* recent */}
+      <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
+        <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
+        {txns.length === 0 ? (
+          <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
+        ) : (
+          txns.slice(0, 4).map((x, i) => <TxnRow key={x.id} txn={x} last={i === Math.min(3, txns.length - 1)} />)
+        )}
       </View>
-      {transactions.length > currentPage * 5 && (
-        <TouchableOpacity style={styles.loadMoreButton} onPress={loadMoreTransactions}>
-          <Text style={styles.loadMoreText}>Load More</Text>
-        </TouchableOpacity>
-      )}
-    </ScrollView>
-  );}
-  
 
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#e8f5fe',
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-  },
-  userInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginVertical: 20,
-    paddingTop: 25,
-  },
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-  },
-  userDetails: {
-    flex: 1,
-    marginLeft: 10,
-  },
-  welcome: {
-    fontSize: 16,
-    color: '#555',
-  },
-  username: {
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-  notificationIcon: {
-    width: 30,
-    height: 30,
-  },
-  balanceContainer: {
-    backgroundColor: '#fff',
-    padding: 20,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginVertical: 20,
-  },
-  balanceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  balanceTitle: {
-    fontSize: 16,
-    color: '#555',
-    marginRight: 10,
-  },
-  balance: {
-    fontSize: 24,
-    fontWeight: 'bold',
-  },
-  buttonsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginVertical: 10,
-  },
-  button: {
-    backgroundColor: '#009688',
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 25,
-    borderRadius: 10,
-    flex: 1,
-    marginHorizontal: 5,
-  },
-  buttonIcon: {
-    width: 20,
-    height: 20,
-    marginRight: 10,
-  },
-  buttonIconbalance: {
-    width: 20,
-    height: 20,
-  },
-  menuTitle: {
-    fontSize: 15,
-    marginVertical: 10,
-  },
-  menuContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    
-  },
-  menuItem: {
-    backgroundColor: '#006F66',
-    padding: 15,
-    borderRadius: 10,
-    alignItems: 'center',
-    width: '30%',
-    marginVertical: 5,
-  },
-  menuIcon: {
-    width: 30,
-    height: 30,
-    marginBottom: 10,
-  },
-  menuText: {
-    fontSize: 11,
-    color: '#FFFFFF',
-  },
-  transactionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginVertical: 10,
-  },
-  transactionContainer: {
-    backgroundColor: '#fff',
-    padding: 10,
-    borderRadius: 10,
-  },
-  transaction: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginVertical: 10,
-  },
-  transactionText: {
-    fontSize: 12,
-    flex: 1,
-  },
-  transactionAmount: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    flex: 1,
-    textAlign: 'right',
-    
-  },
-  transactionStatus: {
-    fontSize: 12,
-    color: 'green',
-    flex: 1,
-    textAlign: 'right',
-    marginLeft:8
-  },
-  transactionDate: {
-    fontSize: 12,
-    color: '#999',
-    flex: 1,
-    textAlign: 'right',
-  },
-  loadMoreButton: {
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#009688',
-    borderRadius: 4,
-    margin: 16,
-  },
-  loadMoreText: {
-    fontSize: 16,
-    color: '#fff',
-  },
-});
+      {/* more services sheet */}
+      <Sheet open={more} onClose={() => setMore(false)} title="All services">
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+          {MORE.map((s) => (
+            <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
+              <ServiceTile icon={s.icon} label={s.label} onPress={() => { setMore(false); setTimeout(() => s.go(), 240); }} />
+            </View>
+          ))}
+        </View>
+      </Sheet>
+    </Screen>
+  );
+};
 
 export default Home;
