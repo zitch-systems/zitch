@@ -168,7 +168,7 @@ const BuyData = () => {
         total={amount}
         balance={balance}
         rows={[['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—']]}
-        onPay={() => setStep('pin')}
+        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

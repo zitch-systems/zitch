@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
-import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint, NET_COLORS } from '@/components/design/flowkit';
+import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -25,7 +25,6 @@ const BuyAirtime = () => {
   const [net, setNet] = useState('1');
   const [phone, setPhone] = useState('');
   const [amt, setAmt] = useState('');
-  const [pin, setPin] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -118,14 +117,14 @@ const BuyAirtime = () => {
         total={amount}
         balance={balance}
         rows={[['Network', network.name], ['Phone', phone], ['Amount', money(amount)]]}
-        onPay={() => { setPin(''); setStep('pin'); }}
+        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => { setPin(p); purchase(p); }} />
+        <PinPad onComplete={(p) => purchase(p)} />
       </Sheet>
     </Screen>
   );

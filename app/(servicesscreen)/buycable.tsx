@@ -187,7 +187,7 @@ const BuyCable = () => {
         total={amount}
         balance={balance}
         rows={[['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—']]}
-        onPay={() => setStep('pin')}
+        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

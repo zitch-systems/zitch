@@ -170,7 +170,7 @@ const BuyElectricity = () => {
         total={amount}
         balance={balance}
         rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
-        onPay={() => setStep('pin')}
+        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

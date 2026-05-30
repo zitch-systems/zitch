@@ -20,7 +20,7 @@ const mapTxn = (raw: any, i: number): Txn => {
   return {
     id: String(raw?.id ?? raw?.reference ?? i),
     type: service,
-    detail: String(raw?.transaction_status ?? raw?.date ?? 'Successful'),
+    detail: String(raw?.date ?? raw?.created_at ?? raw?.time ?? ''),
     amount: Number(raw?.amount ?? 0),
     status: String(raw?.transaction_status ?? 'Successful'),
     icon,

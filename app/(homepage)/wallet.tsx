@@ -40,7 +40,7 @@ const Wallet = () => {
           <View key={s.k} style={{ flex: 1, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{s.k}</Text>
             <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: s.color, marginTop: 4, fontVariant: ['tabular-nums'] }}>
-              {s.sign}{money(s.v).replace('₦', '₦')}
+              {s.sign}{money(s.v)}
             </Text>
           </View>
         ))}

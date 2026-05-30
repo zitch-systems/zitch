@@ -477,7 +477,7 @@ export const TxnRow = ({ txn, last }: { txn: Txn; last?: boolean }) => {
       </View>
       <View style={{ alignItems: 'flex-end' }}>
         <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
-          {(inflow ? '+' : '') + money(txn.amount).replace('-', '')}
+          {(inflow ? '+' : '-') + money(Math.abs(txn.amount))}
         </Text>
         <Text style={{ fontSize: 11.5, color: txn.status === 'Pending' ? c.amber : c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.status}</Text>
       </View>
