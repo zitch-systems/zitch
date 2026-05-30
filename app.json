@@ -1,0 +1,50 @@
+{
+  "expo": {
+    "name": "ZitchApp",
+    "slug": "ZitchApp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/logo1.png",
+    "scheme": "Zitch",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/images/logo1.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/logo1.png",
+        "backgroundColor": "#ffffff"
+      },
+      "permissions": [
+        "INTERNET",
+        "CAMERA",
+        "ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.adewebs.ZitchApp"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/images/logo1.png"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "20319806-3319-4d62-884b-046fb948b369"
+      }
+    }
+  }
+}
