@@ -6,6 +6,7 @@ import CustomMenuButton from '@/components/CustomButtons/CustomMenuButton';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getToken } from '@/lib/secureStore';
 
 const Wallet = () => {
   const [isBalanceVisible, setIsBalanceVisible] = useState(true);
@@ -22,7 +23,7 @@ const Wallet = () => {
   useEffect(() => {
     const fetchAccessToken = async () => {
       try {
-        const token = await AsyncStorage.getItem('access_token');
+        const token = await getToken();
         setToken(token);
       } catch (error) {
         console.error('Failed to retrieve access token from storage:', error);

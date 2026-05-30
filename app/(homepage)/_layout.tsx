@@ -2,27 +2,29 @@ import { StyleSheet, Text, View, Image } from 'react-native'
 import React from 'react'
 import { Stack, Tabs } from 'expo-router'
 import { images } from "../../constants";
+import AuthGuard from "@/components/AuthGuard";
 
 const Navicon = ({ icon, color, name, focused })  => {
     return (
       <View>
         <Image
         source ={icon}
-        
+        resizeMode="contain"
+        style={{ width: 24, height: 24, tintColor: color }}
         />
       </View>
     )
-    
+
     }
 
 const Homelayout = () => {
     return (
-        <>
+        <AuthGuard>
         <Tabs>
 <Tabs.Screen 
 name='home'
 options={{
-  title: 'home',
+  title: 'Home',
   headerShown: false,
   tabBarIcon: ({color, focused}) =>(
     <Navicon 
@@ -41,7 +43,7 @@ options={{
 <Tabs.Screen 
 name='wallet'
 options={{
-  title: 'wallet',
+  title: 'Wallet',
   headerShown: false,
   tabBarIcon: ({color, focused}) =>(
     <Navicon 
@@ -58,7 +60,7 @@ options={{
 <Tabs.Screen 
 name='loan'
 options={{
-  title: 'loan',
+  title: 'Loan',
   headerShown: false,
   tabBarIcon: ({color, focused}) =>(
     <Navicon 
@@ -89,7 +91,7 @@ options={{
 }}
 />
    </Tabs>
-        </>
+        </AuthGuard>
       )
 }
 

@@ -1,9 +1,10 @@
 import { StyleSheet, Text, View } from 'react-native'
 import React from 'react'
 import { Stack } from 'expo-router'
+import AuthGuard from "@/components/AuthGuard";
 const ServicesScreenLayout = () => {
   return (
-    <>
+    <AuthGuard>
     <Stack>
     <Stack.Screen name="buydata" 
     options={{ headerShown: false}}/>
@@ -32,7 +33,7 @@ const ServicesScreenLayout = () => {
 <Stack.Screen name="exams" 
     options={{ headerShown: false}}/>
     </Stack>
-    </>
+    </AuthGuard>
   )
 }
 

@@ -10,6 +10,7 @@ import ContinueButton from '@/components/CustomButtons/CustomButton';
 import { Link, router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { PRIVACY_URL } from '@/components/configFiles/links';
 const SetPassword = () => {
   
   const [isUpdating, setIsUpdating] = useState(false);
@@ -152,7 +153,7 @@ const SetPassword = () => {
                   isLoading={isUpdating}
                 />
                 {isUpdating && <ActivityIndicator size="large" color="#009b8f" />}
-                <Text className="text-[#8B8B8B] mt-2 pl-2 mb-2">By clicking Continue, you agree to our <Link className="text-[#009b8f]" href="http://facebook.com">Privacy Policy and Terms and Conditions</Link> </Text>
+                <Text className="text-[#8B8B8B] mt-2 pl-2 mb-2">By clicking Continue, you agree to our <Link className="text-[#009b8f]" href={PRIVACY_URL}>Privacy Policy and Terms and Conditions</Link> </Text>
               </View>
             </View>
           </ScrollView>

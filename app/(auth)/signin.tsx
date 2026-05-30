@@ -10,6 +10,7 @@ import ContinueButton from '@/components/CustomButtons/CustomButton';
 import { Link, router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { saveToken, clearSession } from '@/lib/secureStore';
 const Signin = () => {
 
     const [ischecking, setIsChecking] = useState(false);
@@ -23,9 +24,7 @@ const Signin = () => {
     const setSessionTimeout = () => {
         const sessionDuration = 3600000; // 1 hour in milliseconds
         setTimeout(async () => {
-            await AsyncStorage.removeItem('userID');
-            await AsyncStorage.removeItem('sessionExpiration');
-            await AsyncStorage.removeItem('access_token');
+            await clearSession();
             Alert.alert('Session expired', 'You have been logged out due to inactivity.');
             router.push('/signin') // Navigate back to Register screen
         }, sessionDuration);
@@ -58,16 +57,14 @@ const Signin = () => {
 
             const result = await response.json();
             if (response.ok) {
-                // Alert.alert('Success', 'You have successfully signed in!');
-                router.push("/home")
+                // Persist the session BEFORE navigating so the authenticated
+                // screens (and the auth guard) can read a valid token on mount.
                 const access_token = result.access_token
-                await AsyncStorage.setItem('access_token', access_token);
+                await saveToken(access_token);
                 await AsyncStorage.setItem('userID', form.email);
-                // await AsyncStorage.setItem('isUserLoggedIn', islog);
-
                 await AsyncStorage.setItem('sessionExpiration', Date.now().toString()); // Save session start time
                 setSessionTimeout(); // Set session timeout
-                // You can navigate to another screen here
+                router.push("/home")
             } else {
                 Alert.alert('Error', result.message || 'Incorrect Details');
             }

@@ -9,6 +9,7 @@ import ContinueButton from '@/components/CustomButtons/CustomButton';
 import { Link, router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { PRIVACY_URL } from '@/components/configFiles/links';
 
 const SetPin = () => {
   const [isUpdating, setIsUpdating] = useState(false);
@@ -53,8 +54,6 @@ const SetPin = () => {
     }
 
     try {
-      console.log('Sending request with email:', memoryEmail, 'and pin:', transactionPin); // Debug statement
-
       const response = await fetch(`${baseUrl}/api/set-transaction-pin/`, {
         method: 'POST',
         headers: {
@@ -67,7 +66,6 @@ const SetPin = () => {
       });
 
       const result = await response.json();
-      console.log('API response:', result); // Debug statement
 
       if (response.ok) {
         Alert.alert('Success', 'You have successfully set the transaction pin!');
@@ -76,7 +74,6 @@ const SetPin = () => {
         Alert.alert('Error', result.message || 'Incorrect Details');
       }
     } catch (error) {
-      console.error('API request error:', error); // Debug statement
       Alert.alert('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsUpdating(false);
@@ -141,7 +138,7 @@ const SetPin = () => {
                 
                 {isUpdating && <ActivityIndicator size="large" color="#009b8f" />}
                 
-                <Text className="text-[#8B8B8B] mt-2 pl-2 mb-2">By clicking Continue, you agree to our <Link className="text-[#009b8f]" href="http://facebook.com">Privacy Policy and Terms and Conditions</Link></Text>
+                <Text className="text-[#8B8B8B] mt-2 pl-2 mb-2">By clicking Continue, you agree to our <Link className="text-[#009b8f]" href={PRIVACY_URL}>Privacy Policy and Terms and Conditions</Link></Text>
               </View>
             </View>
           </ScrollView>

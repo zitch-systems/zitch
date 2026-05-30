@@ -10,6 +10,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import baseUrl from "@/components/configFiles/apiConfig";
 import UploadButton from "@/components/CustomButtons/UploadButton";
 import { Link, router } from 'expo-router';
+import { getToken } from '@/lib/secureStore';
 
 const AccountDetails = () => {
   const [isUpdatingRecord, setIsUpdatingRecord] = useState(false);
@@ -30,7 +31,7 @@ const AccountDetails = () => {
   useEffect(() => {
     const fetchAccessToken = async () => {
       try {
-        const token = await AsyncStorage.getItem("access_token");
+        const token = await getToken();
         setToken(token);
       } catch (error) {
         console.error("Failed to retrieve access token from storage:", error);

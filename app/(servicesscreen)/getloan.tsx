@@ -1,14 +1,6 @@
-import { StyleSheet, Text, View } from 'react-native'
-import React from 'react'
+import React from 'react';
+import ComingSoonView from '@/components/ComingSoonView';
 
-const getloan = () => {
-  return (
-    <View>
-      <Text>getloan</Text>
-    </View>
-  )
-}
+const GetLoan = () => <ComingSoonView title="Loans — Coming Soon" />;
 
-export default getloan
-
-const styles = StyleSheet.create({})
+export default GetLoan;

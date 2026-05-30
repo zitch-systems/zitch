@@ -7,6 +7,7 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  Linking,
 } from "react-native";
 import { images, icons } from "../../constants";
 import CustomButton from "@/components/CustomButtons/CustomButton";
@@ -16,6 +17,8 @@ import baseUrl from "@/components/configFiles/apiConfig";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import UtilityButton from "@/components/CustomButtons/UtilityButton";
 import AccountButton from "@/components/CustomButtons/AccountButton";
+import { getToken, clearSession } from "@/lib/secureStore";
+import { TERMS_URL } from "@/components/configFiles/links";
 
 const Profile = () => {
   const [isBalanceVisible, setIsBalanceVisible] = useState(true);
@@ -34,7 +37,7 @@ const Profile = () => {
   useEffect(() => {
     const fetchAccessToken = async () => {
       try {
-        const token = await AsyncStorage.getItem("access_token");
+        const token = await getToken();
         setToken(token);
       } catch (error) {
         console.error("Failed to retrieve access token from storage:", error);
@@ -119,19 +122,15 @@ const Profile = () => {
       });
   };
 
- const handleLogout = ()=>{
-
-  AsyncStorage.removeItem('userID');
-   AsyncStorage.removeItem('sessionExpiration');
-   AsyncStorage.removeItem('access_token');
-   AsyncStorage.removeItem('UserEmail');
-   AsyncStorage.removeItem('UserPhone');
-   router.push('/signin') 
-
+ const handleLogout = async ()=>{
+   await clearSession();
+   router.push('/signin')
  };
  
- const HandleVisitSite = (e)=>{
-
+ const HandleVisitSite = (url: string) => {
+   Linking.openURL(url).catch(() =>
+     Alert.alert('Error', 'Unable to open the link right now.')
+   );
  };
 
  
@@ -177,7 +176,7 @@ const Profile = () => {
           isLoading={false}
           leftIcon={images.contactus} // Adjust according to your icon source
           rightIcon={images.frontarrow} // Adjust according to your icon source
-          handlePress={() => router.push("/buyelectricity")}
+          handlePress={() => router.push("/comingsoon")}
         />
          <AccountButton
           title="Terms & Conditions"
@@ -187,7 +186,7 @@ const Profile = () => {
           isLoading={false}
           leftIcon={images.terms} // Adjust according to your icon source
           rightIcon={images.frontarrow} // Adjust according to your icon source
-          handlePress={() => router.push("/buyelectricity")}
+          handlePress={() => HandleVisitSite(TERMS_URL)}
         />
          <AccountButton
           title="Visit Our Website"
@@ -197,7 +196,7 @@ const Profile = () => {
           isLoading={false}
           leftIcon={images.website} // Adjust according to your icon source
           rightIcon={images.frontarrow} // Adjust according to your icon source
-          handlePress={HandleVisitSite("https://zitch.com")}
+          handlePress={() => HandleVisitSite("https://zitch.example")}
         />
         
          <AccountButton

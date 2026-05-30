@@ -1,14 +1,6 @@
-import { StyleSheet, Text, View } from 'react-native'
-import React from 'react'
+import React from 'react';
+import ComingSoonView from '@/components/ComingSoonView';
 
-const setthumbprint = () => {
-  return (
-    <View>
-      <Text>setthumbprint</Text>
-    </View>
-  )
-}
+const SetThumbprint = () => <ComingSoonView title="Biometric Setup — Coming Soon" />;
 
-export default setthumbprint
-
-const styles = StyleSheet.create({})
+export default SetThumbprint;

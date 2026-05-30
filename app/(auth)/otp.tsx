@@ -9,6 +9,7 @@ import ContinueButton from '@/components/CustomButtons/CustomButton';
 import { Link, router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { saveToken } from '@/lib/secureStore';
 
 const OTPVerification = () => {
   const [isCheckingOtp, setIsCheckingOtp] = useState(false);
@@ -47,11 +48,10 @@ const OTPVerification = () => {
       });
 
       const result = await response.json();
-      console.log('Response:', result);
 
       if (response.ok) {
         const access_token = result.access_token;
-        await AsyncStorage.setItem('access_token', access_token);
+        await saveToken(access_token);
         router.push("/setup");
       } else {
         Alert.alert('Error', result.message || 'Failed to verify OTP');
@@ -77,7 +77,6 @@ const OTPVerification = () => {
       });
 
       const result = await response.json();
-      console.log('Resend OTP Response:', result);
 
       if (response.ok) {
         setResendCount(prevCount => prevCount + 1);

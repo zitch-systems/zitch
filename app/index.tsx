@@ -47,9 +47,9 @@ const Index = () => {
             />
           
           {/* continue with gmail button */}
-          <ContinueButton 
-            title="Continue With Gmail"  
-            handlePress={()=>router.push('/home')}
+          <ContinueButton
+            title="Continue With Gmail"
+            handlePress={()=>router.push('/signin')}
             containerStyling= "text-sm bg-white rounded-xl min-h-[50px] w-[340px] justify-center items-center mt-3"
             textStyling ="text-black font-psemibold text-lg px-3"
             isLoading={false}
@@ -57,7 +57,7 @@ const Index = () => {
 
            <View>
            <Text style={{ color: 'white',fontStyle: 'italic', marginTop:10}}>
-           Not A Member Yet?<Link href="/index" style={{ color: '#D6EEDA', textDecorationLine: 'underline' }}> Register An Account </Link>
+           Not A Member Yet?<Link href="/register" style={{ color: '#D6EEDA', textDecorationLine: 'underline' }}> Register An Account </Link>
            </Text>
 
            </View>
