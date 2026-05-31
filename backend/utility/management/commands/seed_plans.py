@@ -57,4 +57,22 @@ class Command(BaseCommand):
                               "price": price, "active": True},
                 )
                 c += 1
-        self.stdout.write(self.style.SUCCESS(f"Seeded {d} data plans and {c} cable plans."))
+
+        # Exam PIN products (WAEC / NECO / JAMB / NABTEB).
+        from exams.models import ExamProduct
+        EXAMS = [
+            ("waec", "WAEC", "Result Checker PIN", 3500, "waec-registration"),
+            ("neco", "NECO", "Result Token", 1300, "neco-result"),
+            ("jamb", "JAMB", "UTME / DE PIN", 6200, "jamb"),
+            ("nabteb", "NABTEB", "Result Checker", 1000, "nabteb"),
+        ]
+        e = 0
+        for code, name, desc, price, service_id in EXAMS:
+            ExamProduct.objects.update_or_create(
+                code=code,
+                defaults={"name": name, "description": desc, "price": price,
+                          "service_id": service_id, "active": True},
+            )
+            e += 1
+
+        self.stdout.write(self.style.SUCCESS(f"Seeded {d} data plans, {c} cable plans, {e} exam products."))

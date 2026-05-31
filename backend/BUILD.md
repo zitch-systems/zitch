@@ -59,6 +59,8 @@ Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
 buyelectricity}/`
+Exams: `/api/exams/list/` · `/api/exams/buy/`
+Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `/api/loans/repay/`
 
 ## Wallet funding flow (Paystack)
 1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
