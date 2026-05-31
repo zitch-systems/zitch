@@ -8,4 +8,6 @@ urlpatterns = [
     path("fund/initialize/", views.fund_initialize),
     path("fund/verify/", views.fund_verify),
     path("fund/webhook/", views.fund_webhook),
+    path("transfer/resolve/", views.resolve_recipient),
+    path("transfer/send/", views.transfer_send),
 ]

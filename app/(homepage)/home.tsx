@@ -21,7 +21,7 @@ const GRID = [
 
 const MORE = [
   { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
-  { label: 'Send money', icon: 'send', go: () => router.push('/comingsoon') },
+  { label: 'Send money', icon: 'send', go: () => router.push('/sendmoney') },
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
@@ -113,7 +113,7 @@ const Home = () => {
       {/* quick actions */}
       <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
         {[
-          { icon: 'send', label: 'Transfer', go: () => router.push('/comingsoon') },
+          { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
           { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
           { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/comingsoon') },
         ].map((q) => (

@@ -55,6 +55,7 @@ Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/update_info/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
 Funding (Paystack): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
+Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
 buyelectricity}/`

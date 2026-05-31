@@ -99,3 +99,45 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     intent.amount = amount
     intent.save(update_fields=["status", "credited", "amount", "updated"])
     return txn
+
+
+@db_transaction.atomic
+def transfer(sender, recipient, amount, note: str = "") -> tuple[Transaction, Transaction]:
+    """Move funds between two Zitch wallets atomically.
+
+    Both wallet rows are locked (in a stable order to avoid deadlocks) so the
+    debit and credit either both happen or neither does. Raises InsufficientFunds
+    if the sender can't cover the amount. Returns (debit_txn, credit_txn).
+    """
+    amount = Decimal(str(amount))
+
+    # Lock both wallets in a deterministic order (by user id) to prevent
+    # deadlocks when two users transfer to each other simultaneously.
+    first, second = sorted([sender.id, recipient.id])
+    wallets = {w.user_id: w for w in Wallet.objects.select_for_update().filter(user_id__in=[first, second])}
+    sw = wallets[sender.id]
+    rw = wallets[recipient.id]
+
+    if sw.balance < amount:
+        raise InsufficientFunds("Insufficient wallet balance")
+
+    ref = make_reference("ZTRF")
+    sw.balance -= amount
+    rw.balance += amount
+    sw.save(update_fields=["balance", "updated"])
+    rw.save(update_fields=["balance", "updated"])
+
+    recipient_name = (recipient.get_full_name() or recipient.phone or "Zitch user").strip()
+    sender_name = (sender.get_full_name() or sender.phone or "Zitch user").strip()
+
+    debit_txn = Transaction.objects.create(
+        user=sender, service=f"Transfer to {recipient_name}", amount=amount,
+        direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+        reference=ref, meta={"to": recipient.phone, "note": note},
+    )
+    credit_txn = Transaction.objects.create(
+        user=recipient, service=f"Transfer from {sender_name}", amount=amount,
+        direction=Transaction.IN, transaction_status=Transaction.SUCCESS,
+        reference=f"{ref}-C", meta={"from": sender.phone, "note": note},
+    )
+    return debit_txn, credit_txn

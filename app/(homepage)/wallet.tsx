@@ -26,7 +26,7 @@ const Wallet = () => {
           <Pressable onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: '#fff', alignItems: 'center' }}>
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>
           </Pressable>
-          <Pressable onPress={() => router.push('/comingsoon')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
+          <Pressable onPress={() => router.push('/sendmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
             <Text style={{ color: '#fff', fontFamily: font.bold, fontSize: 14 }}>Send</Text>
           </Pressable>
         </View>
