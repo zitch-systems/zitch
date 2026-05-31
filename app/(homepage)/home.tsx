@@ -5,6 +5,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
+import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -168,6 +169,9 @@ const Home = () => {
           ))}
         </View>
       </Sheet>
+
+      {/* smart paste-to-pay */}
+      <SmartPaste />
     </Screen>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
@@ -17,9 +17,10 @@ type Step = null | 'confirm' | 'pin';
 const SendMoney = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
+  const params = useLocalSearchParams<{ identifier?: string }>();
   const [token, setToken] = useState('');
   const [mode, setMode] = useState('zitch'); // 'zitch' | 'bank'
-  const [identifier, setIdentifier] = useState('');
+  const [identifier, setIdentifier] = useState(params.identifier ?? '');
   const [resolvedName, setResolvedName] = useState('');
   const [resolving, setResolving] = useState(false);
   const [amt, setAmt] = useState('');

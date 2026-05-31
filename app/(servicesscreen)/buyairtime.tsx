@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
@@ -21,9 +21,10 @@ type Step = null | 'confirm' | 'pin';
 const BuyAirtime = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
+  const params = useLocalSearchParams<{ phone?: string }>();
   const [token, setToken] = useState('');
   const [net, setNet] = useState('1');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState(params.phone ?? '');
   const [amt, setAmt] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
