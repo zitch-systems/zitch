@@ -54,12 +54,28 @@ Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/resend_verify_otp/` · `/api/set-password/` · `/api/set-transaction-pin/` ·
 `/api/update_info/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
+Funding (Paystack): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
 buyelectricity}/`
 
+## Wallet funding flow (Paystack)
+1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
+   authorization_url}`. A `FundingIntent` row is created (pending).
+2. App opens `authorization_url` (Paystack checkout) in a browser.
+3. Wallet is credited **once**, by whichever arrives first:
+   - `/api/fund/verify/` `{access_token, reference}` (app calls on return), and/or
+   - `/api/fund/webhook/` (Paystack server callback, HMAC-SHA512 verified).
+   `settle_funding()` locks the intent row and guards on `credited`, so
+   duplicate verify/webhook calls never double-credit.
+4. In MOCK mode (no `PAYSTACK_SECRET_KEY`) verify/webhook succeed automatically
+   so the flow is testable offline.
+
+Set the webhook URL in the Paystack dashboard to:
+`https://<your-render-host>/api/fund/webhook/`
+
 ## Before go-live (TODO)
 - Wire real VTpass service IDs / variation codes in `utility/providers.py`.
-- Add Paystack funding + webhook endpoint and an idempotency guard on webhooks.
+- Set `PAYSTACK_SECRET_KEY` + configure the webhook URL above.
 - Move auth to an `Authorization: Bearer` header instead of token-in-body.
 - Replace seeded plans with the live aggregator catalogue.

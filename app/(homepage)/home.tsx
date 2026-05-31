@@ -90,7 +90,7 @@ const Home = () => {
             <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 12.5, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Acct: 9012 345 678</Text>
             <ZIcon name="copy" size={14} color="rgba(255,255,255,.82)" />
           </View>
-          <Pressable onPress={() => router.push('/comingsoon')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
+          <Pressable onPress={() => router.push('/addmoney')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
             <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
             <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>
           </Pressable>

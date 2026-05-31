@@ -16,6 +16,7 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="sendmoney" />
         <Stack.Screen name="getloan" />
         <Stack.Screen name="exams" />
+        <Stack.Screen name="addmoney" />
         <Stack.Screen name="comingsoon" />
       </Stack>
     </AuthGuard>

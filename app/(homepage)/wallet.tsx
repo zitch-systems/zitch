@@ -23,7 +23,7 @@ const Wallet = () => {
           {showBal ? money(balance) : '₦ ••••••'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
-          <Pressable onPress={() => router.push('/comingsoon')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: '#fff', alignItems: 'center' }}>
+          <Pressable onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: '#fff', alignItems: 'center' }}>
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>
           </Pressable>
           <Pressable onPress={() => router.push('/comingsoon')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
