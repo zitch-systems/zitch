@@ -13,7 +13,7 @@ const GRID = [
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
-  { label: 'Save', icon: 'fixed', go: () => router.push('/comingsoon') },
+  { label: 'Save', icon: 'fixed', go: () => router.push('/fixedsave') },
   { label: 'Loan', icon: 'loan', badge: 'Hot', hot: true, go: () => router.push('/getloan') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
@@ -133,7 +133,7 @@ const Home = () => {
       </Card>
 
       {/* promo */}
-      <Pressable onPress={() => router.push('/comingsoon')} style={{ marginHorizontal: 16, marginTop: 14 }}>
+      <Pressable onPress={() => router.push('/fixedsave')} style={{ marginHorizontal: 16, marginTop: 14 }}>
         <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
           <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="fixed" size={23} color={c.brand} />

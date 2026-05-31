@@ -61,6 +61,13 @@ get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
 buyelectricity}/`
 Exams: `/api/exams/list/` · `/api/exams/buy/`
 Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `/api/loans/repay/`
+Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
+
+## Fixed Save maturities
+Matured plans are paid out (principal + interest credited to the wallet) by a
+daily cron: `python manage.py run_maturities`. Render runs this via the
+`zitch-maturities` cron service in `render.yaml`. Payout is idempotent per plan,
+so a re-run never double-pays.
 
 ## Wallet funding flow (Paystack)
 1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
