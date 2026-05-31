@@ -1,8 +1,19 @@
-# Welcome to your Expo app 👋
+# Zitch
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Zitch is a Nigerian fintech / utility-payments + wallet mobile app: airtime, data,
+cable TV, electricity, exams, loans, transfers and a wallet. Built with
+[Expo](https://expo.dev) (SDK 51), [expo-router](https://docs.expo.dev/router/introduction)
+file-based routing, and [NativeWind](https://www.nativewind.dev/).
 
-## Get started
+## Tech stack
+
+- **Expo SDK 51** / React Native 0.74
+- **expo-router v3** — file-based routing (route groups under `app/`)
+- **NativeWind v2** — Tailwind-style styling (`tailwind.config.js`)
+- **expo-secure-store** — encrypted storage for the access token
+- **AsyncStorage** — non-sensitive local state
+
+## Getting started
 
 1. Install dependencies
 
@@ -13,38 +24,43 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
 2. Start the app
 
    ```bash
-    npx expo start
+   npx expo start
    ```
 
-In the output, you'll find options to open the app in a
+   Then open it in a development build, Android emulator, iOS simulator, or Expo Go.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Project structure
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```
+app/
+  index.tsx              # landing screen
+  (auth)/                # onboarding & auth (signin, register, otp, setpin, setpassword, ...)
+  (homepage)/            # authenticated tabs (home, wallet, loan, profile) — gated by AuthGuard
+  (servicesscreen)/      # service flows (buyairtime, buydata, buycable, buyelectricity, ...) — gated
+components/              # reusable UI (CustomButtons, CustomField, AuthGuard, ComingSoonView)
+components/configFiles/  # apiConfig (base URL) and links (legal URLs)
+constants/               # images, icons, colors
+lib/secureStore.ts       # token storage (SecureStore on native, AsyncStorage on web)
+docs/design_handoff_zitch_revamp/   # design reference / prototype (NOT shipped code)
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Configuration
 
-## Learn more
+- **API base URL:** `components/configFiles/apiConfig.tsx`
+- **Legal links:** `components/configFiles/links.ts` (placeholders — replace with real URLs)
+- **Design tokens:** mirrored into `tailwind.config.js` from
+  `docs/design_handoff_zitch_revamp/assets/tokens.css`
 
-To learn more about developing your project with Expo, look at the following resources:
+## Testing
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+npm test        # single run
+npm run test:watch
+```
 
-## Join the community
+## Notes
 
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- Several service flows (loans, exams, send money, biometric setup) are placeholders that
+  render a "Coming Soon" screen until implemented.
+- The `docs/design_handoff_zitch_revamp/` bundle is an HTML/React prototype used as the
+  visual source of truth for the planned revamp. It is **not** production code.

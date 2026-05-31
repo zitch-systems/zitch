@@ -33,7 +33,13 @@
       "favicon": "./assets/images/logo1.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Zitch to use Face ID to sign you in and approve payments."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

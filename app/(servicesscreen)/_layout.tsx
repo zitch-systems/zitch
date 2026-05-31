@@ -1,41 +1,25 @@
-import { StyleSheet, Text, View } from 'react-native'
-import React from 'react'
-import { Stack } from 'expo-router'
+import React from 'react';
+import { Stack } from 'expo-router';
+import AuthGuard from '@/components/AuthGuard';
+import { useTheme } from '@/lib/theme';
+
 const ServicesScreenLayout = () => {
+  const { c } = useTheme();
   return (
-    <>
-    <Stack>
-    <Stack.Screen name="buydata" 
-    options={{ headerShown: false}}/>
-
-<Stack.Screen name="buyairtime" 
-    options={{ headerShown: false}}/>
-
-<Stack.Screen name="buycable" 
-    options={{ headerShown: false}}/>
-
-<Stack.Screen name="utility" 
-    options={{ headerShown: false}}/>
-
-
-<Stack.Screen name="buyelectricity" 
-    options={{ headerShown: false}}/>
-
-    <Stack.Screen name="sendmoney" 
-    options={{ headerShown: false}}/>
-
-<Stack.Screen name="getloan" 
-    options={{ headerShown: false}}/>
-
-
-
-<Stack.Screen name="exams" 
-    options={{ headerShown: false}}/>
-    </Stack>
-    </>
-  )
-}
+    <AuthGuard>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.bg } }}>
+        <Stack.Screen name="buydata" />
+        <Stack.Screen name="buyairtime" />
+        <Stack.Screen name="buycable" />
+        <Stack.Screen name="utility" />
+        <Stack.Screen name="buyelectricity" />
+        <Stack.Screen name="sendmoney" />
+        <Stack.Screen name="getloan" />
+        <Stack.Screen name="exams" />
+        <Stack.Screen name="comingsoon" />
+      </Stack>
+    </AuthGuard>
+  );
+};
 
 export default ServicesScreenLayout;
-
-const styles = StyleSheet.create({})

@@ -1,6 +1,9 @@
 /** @type {import('tailwindcss').Config} */
+// Zitch brand color tokens below are sourced from the design handoff:
+// docs/design_handoff_zitch_revamp/assets/tokens.css
 module.exports = {
   content: ["./app/**/*.{js,jsx,ts,tsx}", "./components/**/*.{js,jsx,ts,tsx}"],
+  darkMode: "class",
   theme: {
     extend: {
       colors: {
@@ -18,6 +21,26 @@ module.exports = {
         gray: {
           100: "#CDCDE0",
         },
+        // ---- Zitch brand tokens (design revamp) ----
+        teal: {
+          50: "#E6F7F4",
+          100: "#C2EDE7",
+          200: "#8FDDD4",
+          300: "#54C9BD",
+          400: "#23B1A8",
+          500: "#0FA295", // primary brand
+          600: "#00847B", // deep brand
+          700: "#066E66",
+          800: "#0C5249",
+          900: "#073A34",
+          950: "#04221F",
+        },
+        zcyan: "#5CF5EB",
+        zink: "#04201C",
+        znavy: "#02344A",
+        success: "#00B51D",
+        warning: "#F5A623",
+        danger: "#FF3B3B",
       },
       fontFamily: {
         pthin: ["Poppins-Thin", "sans-serif"],

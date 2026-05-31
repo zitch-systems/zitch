@@ -1,273 +1,202 @@
-import { Text, View, Image, Alert, ActivityIndicator } from 'react-native';
 import React, { useEffect, useState } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { LinearGradient } from 'expo-linear-gradient';
-import { ScrollView } from 'react-native-gesture-handler';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { Picker } from '@react-native-picker/picker';
-import { images } from "../../constants";
-import ContinueButton from '@/components/CustomButtons/CustomButton';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, Text, Alert, ActivityIndicator } from 'react-native';
+import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
-import SelectForm from '@/components/CustomField/selectfield';
+import { getToken } from '@/lib/secureStore';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, PlanList, ConfirmSheet } from '@/components/design/flowkit';
+import Receipt from '@/components/design/Receipt';
+import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
+
+const PROVIDERS = [
+  { id: '1', name: 'GoTV', color: '#92C020' },
+  { id: '2', name: 'DSTV', color: '#0A66C2' },
+  { id: '3', name: 'StarTimes', color: '#F47B20' },
+];
+
+type Step = null | 'confirm' | 'pin';
+
 const BuyCable = () => {
-  const [isBuying, setIsBuying] = useState(false);
-  const [memoryEmail, setMemoryEmail] = useState('');
-  
+  const { c } = useTheme();
+  const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
+  const [prov, setProv] = useState('1');
+  const [iuc, setIuc] = useState('');
+  const [plan, setPlan] = useState('');
   const [price, setPrice] = useState('');
-  const [cablePlanOptions, setCablePlanOptions] = useState([]);
+  const [plans, setPlans] = useState<{ id: string; label: string; sub?: string; price: number }[]>([]);
+  const [loadingPlans, setLoadingPlans] = useState(false);
+  const [validatedName, setValidatedName] = useState('');
+  const [validating, setValidating] = useState(false);
+  const [step, setStep] = useState<Step>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
 
-  const [dataForm, setDataForm] = useState({
-    cablenetwork: '',
-    iuc: '',
-    selectedcablePlan: '',
-    transactionPin: ''
-  });
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
+  // Fetch bouquets for the chosen provider.
   useEffect(() => {
-    const loadUserData = async () => {
-      try {
-        const access_token = await AsyncStorage.getItem('access_token');
-        if (access_token) setMemoryEmail(access_token);
-      } catch (error) {
-        console.error('Error loading user data:', error);
-      }
-    }
-    loadUserData();
-  }, []);
+    if (!prov) return;
+    setLoadingPlans(true);
+    setPlan('');
+    setPlans([]);
+    setValidatedName('');
+    fetch(`${baseUrl}/api/utility/get_cable_plans/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cablenetwork: prov }),
+    })
+      .then((r) => r.json())
+      .then((res) => {
+        if (res?.cable_plans) {
+          setPlans(res.cable_plans.map((p: any) => ({
+            id: String(p.cable_plan_code),
+            label: p.name,
+            sub: p.validity,
+            price: Number(p.price ?? 0),
+          })));
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingPlans(false));
+  }, [prov]);
 
+  // Authoritative price for the chosen bouquet.
   useEffect(() => {
-    if (dataForm.cablenetwork) {
-      fetchCablePlan();
-    }
-  }, [dataForm.cablenetwork]);
+    if (!plan) { setPrice(''); return; }
+    fetch(`${baseUrl}/api/utility/get_cable_plans_price/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cable_plan_code: plan }),
+    })
+      .then((r) => r.json())
+      .then((res) => { if (res?.cable_plans_price != null) setPrice(String(res.cable_plans_price)); })
+      .catch(() => {});
+  }, [plan]);
 
-  useEffect(() => {
-    if (dataForm.selectedcablePlan) {
-      fetchCablePlanPrices();
-    }
-  }, [dataForm.selectedcablePlan]);
+  const provider = PROVIDERS.find((p) => p.id === prov)!;
+  const planObj = plans.find((p) => p.id === plan);
+  const amount = Number(price || planObj?.price || 0);
+  const valid = iuc.length >= 8 && !!plan;
 
-
-  const fetchCablePlan = async () => {
-   // console.log("ade " +baseUrl)
+  const validateIuc = async () => {
+    if (iuc.trim().length < 8) { Alert.alert('Error', 'Enter a valid IUC / smartcard number.'); return; }
+    setValidating(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/get_cable_plans/`, {
+      const response = await fetch(`${baseUrl}/api/utility/validate_iuc/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          cablenetwork: dataForm.cablenetwork,
-          
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ iuc, cablenetwork: prov }),
       });
-
       const result = await response.json();
       if (response.ok) {
-        const options = result.cable_plans.map(plan => ({
-          label: `${plan.name} (${plan.validity})`,
-          value: plan.cable_plan_code,
-}));
-        setCablePlanOptions(options);
+        setValidatedName(result.customer_name || result.name || 'Verified');
       } else {
-        Alert.alert('Error', result.message || 'Failed to fetch data plans');
+        Alert.alert('Error', result.message || 'Could not verify this IUC number.');
       }
-    } catch (error) {
-      console.error('API request error:', error);
+    } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setValidating(false);
     }
   };
 
-
-
-  const handleValidate = async () => {
-    // console.log("ade " +baseUrl)
-     try {
-       const response = await fetch(`${baseUrl}/api/utility/validate_iuc/`, {
-         method: 'POST',
-         headers: {
-           'Content-Type': 'application/json',
-         },
-         body: JSON.stringify({
-          iuc: dataForm.iuc,
-          cablenetwork: dataForm.cablenetwork,
-           
-         }),
-       });
- 
-       const result = await response.json();
-       if (response.ok) {
-         const options = result.cable_plans.map(plan => ({
-           label: `${plan.name} (${plan.validity})`,
-           value: plan.cable_plan_code,
- }));
-         setCablePlanOptions(options);
-       } else {
-         Alert.alert('Error', result.message || 'Failed to fetch data plans');
-       }
-     } catch (error) {
-       console.error('API request error:', error);
-       Alert.alert('Error', 'Something went wrong. Please try again later.');
-     }
-   };
-
-  const fetchCablePlanPrices = async () => {
-    console.log("prices form"+dataForm.selectedcablePlan)
-    try {
-      const response = await fetch(`${baseUrl}/api/utility/get_cable_plans_price/`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          cable_plan_code: dataForm.selectedcablePlan,
-        }),
-      });
-
-      const result = await response.json();
-      if (response.ok) {
-        setPrice(result.cable_plans_price || '');
-        console.log(result)
-      } else {
-        console.log('API response:', result); // Debug statement
-        Alert.alert('Error', result.message || 'Failed to fetch data plan price');
-      }
-    } catch (error) {
-      console.error('API request error:', error);
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
-    }
-  };
-
-
-
-  const handleBuyCable = async () => {
-    setIsBuying(true);
-    console.log(dataForm.selectedcablePlan,  dataForm.cablenetwork, dataForm.iuc, dataForm.transactionPin)
-
+  const purchase = async (enteredPin: string) => {
+    setBusy(true);
     try {
       const response = await fetch(`${baseUrl}/api/utility/buycable/`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          iuc: dataForm.iuc,
-          cablenetwork: dataForm.cablenetwork,
-          selectedcablePlan: dataForm.selectedcablePlan,
-          access_token: memoryEmail,
-          transaction_pin: dataForm.transactionPin ,
-          
-          
+          iuc,
+          cablenetwork: prov,
+          selectedcablePlan: plan,
+          access_token: token,
+          transaction_pin: enteredPin,
         }),
       });
-
       const result = await response.json();
       if (response.ok) {
-        Alert.alert('Success', result.message || "Transaction Successful");
+        setStep(null);
+        setDone(true);
+        reload();
       } else {
-        Alert.alert('Error', result.message || 'Transaction Failed');
+        Alert.alert('Error', result.message || 'Transaction failed');
+        setStep(null);
       }
-    } catch (error) {
-      console.error('API request error:', error);
+    } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.');
+      setStep(null);
     } finally {
-      setIsBuying(false);
+      setBusy(false);
     }
   };
 
-  const renderButtonTitle = (icon, text) => (
-    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-      <Image source={icon} resizeMode='contain' style={{ width: 20, height: 20, marginRight: 8 }} />
-      <Text style={{ color: 'black' }}>{text}</Text>
-    </View>
-  );
+  if (done) {
+    return (
+      <Screen scroll={false}>
+        <Receipt
+          title="Subscription active"
+          message={`${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
+          rows={[['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
+          onDone={() => router.replace('/home')}
+        />
+      </Screen>
+    );
+  }
 
   return (
-    <LinearGradient
-      colors={['#44B9B0', '#FFFFFF']}
-      start={{ x: 5, y: 1 }}
-      end={{ x: 1, y: 2 }}
-      style={{ flex: 1 }}
-    >
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaView className="h-full">
-          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingTop: 10 }}>
-            <View className="w-full justify-center px-2 my-3">
-              <View className="min-h-[85vh] justify-center  p-3 rounded-lg shadow-lg">
-                <Text className="text-[#00101A] font-semibold px-3 text-center text-xl mb-6">Pay TV Subscription</Text>
-                <Image 
-                  source={images.netprovider}
-                  resizeMode='contain'
-                  className="w-[150px] h-[35px] self-center mt-5, mb-15"
-                />
-                <View className="mt-10 mb-2">
-                 
-                  <Picker
-                    selectedValue={dataForm.cablenetwork}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, cablenetwork: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-base "
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                  >
-                    <Picker.Item label="Select Cable Provider" value="" />
-                    <Picker.Item label="GoTV" value="1" />
-                    <Picker.Item label="DSTV" value="2" />
-                    <Picker.Item label="STARTIME" value="3" />
-                    
-                  </Picker>
-                </View>
-               
-                <View className="mt-4 mb-6">
-                  
-                  <Picker
-                    selectedValue={dataForm.selectedcablePlan}
-                    onValueChange={(itemValue) => setDataForm({ ...dataForm, selectedcablePlan: itemValue })}
-                    className="w-full border border-gray-300 rounded-lg p-2 text-base"
-                    style={{ height: 50, width: '100%', borderWidth: 1, borderColor: '#000', borderRadius: 10 }}
-                    enabled={cablePlanOptions.length > 0}
-                  >
-                    <Picker.Item label="Select Data Plan" value="" />
-                    {cablePlanOptions.map((plan) => (
-                      <Picker.Item key={plan.value} label={plan.label} value={plan.value} />
-                    ))}
-                  </Picker>
-                  <SelectForm 
-                  title="IUC"
-                  value={dataForm.iuc}
-                  handleChangeText={(e) => setDataForm({ ...dataForm, iuc: e })}
-                  otherStyles="mt-2 mb-3"
-                  keyboardType="phone-pad"
-                  placeholder="IUC Number"
-                />
-                
-                <SelectForm 
-                  title="Transaction PIN"
-                  value={dataForm.transactionPin}
-                  handleChangeText={(e) => setDataForm({ ...dataForm, transactionPin: e })}
-                  otherStyles="mt-2 "
-                  keyboardType="numeric"
-                  placeholder="Enter Transaction PIN"
-                />
-                </View>
-                <View className=" mb-2">
-                  <Text className="mb-2 text-lg text-[#00101A]">  {price ? `Amount: ₦${price}.00` : 'Price'}</Text>
-                 
-                </View>
-                <ContinueButton
-                  title="Validate"
-                  handlePress={handleValidate}
-                  containerStyling="bg-[#009b8f] rounded-xl w-[300x] min-h-[40px] justify-center items-center mt-3"
-                  textStyling="text-white font-semibold text-lg px-3"
-                  isLoading={isBuying}
-                />
-              </View>
-              {isBuying && <ActivityIndicator size="large" color="#009b8f" style={{ marginTop: 10 }} />}
-                
-            </View>
-          </ScrollView>
-        </SafeAreaView>
-      </GestureHandlerRootView>
-    </LinearGradient>
+    <Screen>
+      <Header title="Cable TV" onBack={() => router.back()} />
+
+      <Label>Select provider</Label>
+      <ProviderGrid items={PROVIDERS} value={prov} onPick={setProv} cols={3} />
+
+      <Field
+        label="Smartcard / IUC number"
+        value={iuc}
+        onChangeText={(v) => { setIuc(v.replace(/\D/g, '').slice(0, 12)); setValidatedName(''); }}
+        keyboardType="number-pad"
+        placeholder="1234 5678 90"
+      />
+      <View style={{ marginTop: 8, marginBottom: 8 }}>
+        {validatedName ? (
+          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {validatedName}</Text>
+        ) : (
+          <Btn label="Validate IUC" variant="outline" size="sm" full={false} onPress={validateIuc} disabled={validating} />
+        )}
+      </View>
+
+      <Label>Choose a bouquet</Label>
+      {loadingPlans ? (
+        <ActivityIndicator color={c.brand} style={{ marginVertical: 20 }} />
+      ) : plans.length === 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No bouquets available.</Text>
+      ) : (
+        <PlanList plans={plans} value={plan} onPick={setPlan} />
+      )}
+      <View style={{ height: 18 }} />
+
+      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
+
+      <ConfirmSheet
+        open={step === 'confirm'}
+        onClose={() => setStep(null)}
+        title="Confirm subscription"
+        total={amount}
+        balance={balance}
+        rows={[['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—']]}
+        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
+      />
+
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
+        </Text>
+        <PinPad onComplete={(p) => purchase(p)} />
+      </Sheet>
+    </Screen>
   );
 };
 
