@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "savings",
     "betting",
     "transfers",
+    "cards",
 ]
 
 MIDDLEWARE = [

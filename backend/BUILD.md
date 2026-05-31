@@ -65,6 +65,7 @@ Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/crea
 Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
 Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/`
+Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/`
 
 ## Fixed Save maturities
 Matured plans are paid out (principal + interest credited to the wallet) by a
