@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "exams",
     "loans",
     "savings",
+    "betting",
 ]
 
 MIDDLEWARE = [

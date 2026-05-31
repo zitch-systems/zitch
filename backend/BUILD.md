@@ -62,6 +62,7 @@ buyelectricity}/`
 Exams: `/api/exams/list/` · `/api/exams/buy/`
 Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `/api/loans/repay/`
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
+Betting: `/api/betting/list/` · `/api/betting/fund/`
 
 ## Fixed Save maturities
 Matured plans are paid out (principal + interest credited to the wallet) by a

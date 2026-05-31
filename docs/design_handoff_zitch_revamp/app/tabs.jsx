@@ -367,13 +367,27 @@
   // ---------- HISTORY ----------
   function History() {
     const app = useApp();
+    const [filter, setFilter] = useState('All');
+    const FILTERS = {
+      All: () => true,
+      'Money in': (x) => x.amt > 0,
+      'Money out': (x) => x.amt < 0,
+      Airtime: (x) => x.cat === 'airtime' || x.cat === 'data',
+      Bills: (x) => ['tv', 'electricity', 'betting', 'exams'].includes(x.cat),
+      Transfers: (x) => x.cat === 'transfer' || x.cat === 'fund',
+    };
+    const list = app.txns.filter(FILTERS[filter]);
     return <Screen title="Transaction History" onBack={app.nav.pop}>
       <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 12, marginBottom: 4 }}>
-        {['All', 'Money in', 'Money out', 'Airtime', 'Bills', 'Transfers'].map((f, i) => (
-          <div key={f} style={{ padding: '8px 16px', borderRadius: 999, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', background: i === 0 ? 'var(--brand)' : 'var(--surface)', color: i === 0 ? '#fff' : 'var(--ink-2)', border: '1.5px solid ' + (i === 0 ? 'var(--brand)' : 'var(--line)') }}>{f}</div>
-        ))}
+        {Object.keys(FILTERS).map((f) => {
+          const on = filter === f;
+          return <Tap key={f} onClick={() => setFilter(f)}>
+            <div style={{ padding: '8px 16px', borderRadius: 999, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', background: on ? 'var(--brand)' : 'var(--surface)', color: on ? '#fff' : 'var(--ink-2)', border: '1.5px solid ' + (on ? 'var(--brand)' : 'var(--line)'), transition: 'all .15s' }}>{f}</div>
+          </Tap>;
+        })}
       </div>
-      {app.txns.map((x, i) => <TxnRow key={x.id || i} x={x} divider={i > 0} onClick={() => app.nav.push('txn', { x })} />)}
+      {list.length ? list.map((x, i) => <TxnRow key={x.id || i} x={x} divider={i > 0} onClick={() => app.nav.push('txn', { x })} />)
+        : <div style={{ textAlign: 'center', color: 'var(--ink-3)', fontSize: 14, padding: '48px 0' }}>No {filter.toLowerCase()} transactions yet</div>}
     </Screen>;
   }
 

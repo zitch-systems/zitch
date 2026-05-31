@@ -75,4 +75,23 @@ class Command(BaseCommand):
             )
             e += 1
 
-        self.stdout.write(self.style.SUCCESS(f"Seeded {d} data plans, {c} cable plans, {e} exam products."))
+        # Betting platforms.
+        from betting.models import BettingPlatform
+        BETTING = [
+            ("bet9ja", "Bet9ja", "#0B7A3B"),
+            ("sporty", "SportyBet", "#E1241B"),
+            ("onexbet", "1xBet", "#1A6BB5"),
+            ("betking", "BetKing", "#1B1B1B"),
+            ("nairabet", "NairaBet", "#1E8B45"),
+            ("msport", "MSport", "#E8530E"),
+        ]
+        b = 0
+        for code, name, color in BETTING:
+            BettingPlatform.objects.update_or_create(
+                code=code,
+                defaults={"name": name, "color": color, "service_id": code, "active": True},
+            )
+            b += 1
+
+        self.stdout.write(self.style.SUCCESS(
+            f"Seeded {d} data plans, {c} cable plans, {e} exam products, {b} betting platforms."))

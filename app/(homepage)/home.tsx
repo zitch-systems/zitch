@@ -11,7 +11,7 @@ import { useWallet } from '@/lib/wallet';
 const GRID = [
   { label: 'Airtime', icon: 'airtime', badge: '6% off', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
-  { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/fixedsave') },
   { label: 'Loan', icon: 'loan', badge: 'Hot', hot: true, go: () => router.push('/getloan') },
@@ -25,7 +25,7 @@ const MORE = [
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
-  { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'Insurance', icon: 'insurance', go: () => router.push('/comingsoon') },
   { label: 'Remita', icon: 'remita', go: () => router.push('/comingsoon') },

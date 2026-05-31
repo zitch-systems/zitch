@@ -25,6 +25,7 @@ const mapTxn = (raw: any, i: number): Txn => {
     status: String(raw?.transaction_status ?? 'Successful'),
     icon,
     dir: inflow ? 'in' : 'out',
+    reference: String(raw?.reference ?? ''),
   };
 };
 

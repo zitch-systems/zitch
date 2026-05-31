@@ -16,6 +16,7 @@ const HomeLayout = () => {
           <Tabs.Screen name="me" />
           <Tabs.Screen name="history" options={{ href: null }} />
           <Tabs.Screen name="notifications" options={{ href: null }} />
+          <Tabs.Screen name="txndetail" options={{ href: null }} />
         </Tabs>
       </WalletProvider>
     </AuthGuard>
