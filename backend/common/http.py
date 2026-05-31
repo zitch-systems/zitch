@@ -19,6 +19,31 @@ def ok(data=None, **extra):
     return JsonResponse(payload, status=200)
 
 
+def check_send_limits(user, amount, face_ok: bool):
+    """Returns an error JsonResponse if `amount` breaks the user's tier limit
+    or needs (but lacks) step-up face verification; otherwise None.
+
+    `face_ok` is True when the request carries proof of a fresh device face
+    check (the app sets face_confirmed after a successful Face ID scan), or the
+    account is already face_verified.
+    """
+    if amount > user.transaction_limit:
+        return fail(
+            f"This exceeds your Tier {user.tier} limit of ₦{user.transaction_limit:,.0f}. "
+            "Upgrade your KYC to send more.",
+            status=403, code="limit_exceeded", tier=user.tier,
+            transaction_limit=str(user.transaction_limit),
+        )
+    from accounts.models import User
+    if amount >= User.LARGE_TXN_THRESHOLD and not (face_ok or user.face_verified):
+        return fail(
+            "Face verification required for this amount.",
+            status=403, code="face_required",
+            large_txn_threshold=str(User.LARGE_TXN_THRESHOLD),
+        )
+    return None
+
+
 def fail(message, status=400, **extra):
     return JsonResponse({"message": message, **extra}, status=status)
 

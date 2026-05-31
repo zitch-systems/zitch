@@ -3,6 +3,7 @@ import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
@@ -97,32 +98,42 @@ const SendMoney = () => {
     finally { setResolving(false); }
   };
 
-  const send = async (pin: string) => {
+  const postSend = async (pin: string, faceConfirmed: boolean) => {
+    const usingBank = (picked && picked.bank_name !== 'Zitch') || (!picked && mode === 'bank');
+    if (usingBank) {
+      const accountNumber = picked ? picked.account_number : acct;
+      const bankNameFinal = picked ? picked.bank_name : bank?.name;
+      const bankCode = picked ? banks.find((b) => b.name === bankNameFinal)?.code : bank?.code;
+      return fetch(`${baseUrl}/api/transfers/send/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: token, account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt, transaction_pin: pin, note, face_confirmed: faceConfirmed }),
+      }).then((r) => r.json());
+    }
+    const id = picked ? picked.account_number : identifier;
+    return fetch(`${baseUrl}/api/transfer/send/`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: token, identifier: id, amount: amt, transaction_pin: pin, note, face_confirmed: faceConfirmed }),
+    }).then((r) => r.json());
+  };
+
+  const send = async (pin: string, faceConfirmed = false) => {
     setBusy(true);
     try {
-      let res: any;
-      if (picked || mode === 'bank') {
-        const accountNumber = picked ? picked.account_number : acct;
-        const bankCode = picked ? '' : bank?.code;
-        const bankNameFinal = picked ? picked.bank_name : bank?.name;
-        // A picked Zitch beneficiary routes through the Zitch endpoint.
-        if (picked && picked.bank_name === 'Zitch') {
-          res = await fetch(`${baseUrl}/api/transfer/send/`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ access_token: token, identifier: accountNumber, amount: amt, transaction_pin: pin, note }),
-          }).then((r) => r.json());
-        } else {
-          res = await fetch(`${baseUrl}/api/transfers/send/`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ access_token: token, account_number: accountNumber, bank: bankCode || banks.find((b) => b.name === bankNameFinal)?.code, name: recipientName, amount: amt, transaction_pin: pin, note }),
-          }).then((r) => r.json());
+      let res = await postSend(pin, faceConfirmed);
+
+      // Large transfer needs a step-up: prompt device Face ID, then retry once.
+      if (!res.success && res.code === 'face_required' && !faceConfirmed) {
+        const available = await isBiometricAvailable();
+        if (!available) {
+          Alert.alert('Face verification needed', 'Set up Face ID or a fingerprint on this device to authorize large transfers.');
+          setStep(null);
+          return;
         }
-      } else {
-        res = await fetch(`${baseUrl}/api/transfer/send/`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ access_token: token, identifier, amount: amt, transaction_pin: pin, note }),
-        }).then((r) => r.json());
+        const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
+        if (!okScan) { setStep(null); return; }
+        res = await postSend(pin, true);
       }
+
       if (res.success) { setStep(null); setDone(true); reload(); }
       else { Alert.alert('Error', res.message || 'Transfer failed'); setStep(null); }
     } catch {

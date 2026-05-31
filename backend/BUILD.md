@@ -53,6 +53,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/resend_verify_otp/` · `/api/set-password/` · `/api/set-transaction-pin/` ·
 `/api/update_info/`
+KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
 Funding (Paystack): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`

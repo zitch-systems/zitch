@@ -123,5 +123,11 @@ TERMII = {
     "API_KEY": os.environ.get("TERMII_API_KEY", ""),
     "SENDER_ID": os.environ.get("TERMII_SENDER_ID", "Zitch"),
 }
+# KYC (BVN/NIN/liveness) — Dojah example. Blank => mock mode.
+KYC = {
+    "BASE_URL": os.environ.get("KYC_BASE_URL", "https://api.dojah.io"),
+    "APP_ID": os.environ.get("KYC_APP_ID", ""),
+    "SECRET_KEY": os.environ.get("KYC_SECRET_KEY", ""),
+}
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

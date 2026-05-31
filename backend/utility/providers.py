@@ -184,3 +184,53 @@ def send_sms(phone: str, message: str) -> dict:
         return {"success": resp.ok, "raw": resp.json()}
     except requests.RequestException as exc:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# KYC — BVN / NIN / liveness (Dojah example)
+# ---------------------------------------------------------------------------
+def _kyc_live() -> bool:
+    return bool(settings.KYC["APP_ID"] and settings.KYC["SECRET_KEY"])
+
+
+def _kyc_headers() -> dict:
+    return {"AppId": settings.KYC["APP_ID"], "Authorization": settings.KYC["SECRET_KEY"]}
+
+
+def kyc_verify_bvn(bvn: str) -> dict:
+    """Verify a BVN. MOCK mode accepts any 11-digit value.
+
+    TODO: confirm the exact Dojah endpoint/response shape (or swap provider).
+    """
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if not _kyc_live():
+        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+    try:
+        resp = requests.get(
+            f"{settings.KYC['BASE_URL']}/api/v1/kyc/bvn/full",
+            params={"bvn": bvn}, headers=_kyc_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        entity = data.get("entity", {}) or {}
+        return {"success": bool(entity), "raw": data,
+                "first_name": entity.get("first_name", ""), "last_name": entity.get("last_name", "")}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def kyc_verify_nin(nin: str) -> dict:
+    """Verify a NIN. MOCK mode accepts any 11-digit value."""
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    if not _kyc_live():
+        return {"success": True, "mock": True}
+    try:
+        resp = requests.get(
+            f"{settings.KYC['BASE_URL']}/api/v1/kyc/nin",
+            params={"nin": nin}, headers=_kyc_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("entity")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}

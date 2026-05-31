@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, fail, ok, require_user
+from common.http import api, check_send_limits, fail, ok, require_user
 from utility.providers import paystack_initialize, paystack_verify, paystack_verify_signature
 
 from .models import FundingIntent
@@ -184,6 +184,10 @@ def transfer_send(request):
         return fail("Enter a valid amount")
     if amount < 10:
         return fail("Minimum transfer is ₦10")
+
+    limit_err = check_send_limits(sender, amount, bool(data.get("face_confirmed")))
+    if limit_err:
+        return limit_err
 
     recipient = _find_recipient(data.get("identifier", ""))
     if recipient is None:

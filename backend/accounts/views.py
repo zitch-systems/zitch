@@ -4,7 +4,7 @@ from django.contrib.auth import authenticate
 from django.db.models import Q
 
 from common.http import api, fail, ok, require_user
-from utility.providers import send_sms
+from utility.providers import kyc_verify_bvn, kyc_verify_nin, send_sms
 from wallet.services import get_or_create_wallet
 
 from .models import OTP, AccessToken, User
@@ -127,3 +127,68 @@ def update_info(request):
         user.phone = data["phone"]
     user.save()
     return ok(message="Account updated")
+
+
+# --------------------------------- KYC ---------------------------------
+def _kyc_state(user) -> dict:
+    return {
+        "tier": user.tier,
+        "transaction_limit": str(user.transaction_limit),
+        "bvn_verified": user.bvn_verified,
+        "nin_verified": user.nin_verified,
+        "face_verified": user.face_verified,
+        "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
+    }
+
+
+@api
+@require_user
+def kyc_status(request):
+    """POST /api/kyc/status/ {access_token} -> tier + verification flags"""
+    return ok(success=True, **_kyc_state(request.user_obj))
+
+
+@api
+@require_user
+def kyc_bvn(request):
+    """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
+    user = request.user_obj
+    bvn = (request.data.get("bvn") or "").strip()
+    result = kyc_verify_bvn(bvn)
+    if not result.get("success"):
+        return fail(result.get("message", "BVN verification failed"), status=400)
+    user.bvn = bvn
+    user.bvn_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["bvn", "bvn_verified", "tier"])
+    return ok(success=True, message="BVN verified", **_kyc_state(user))
+
+
+@api
+@require_user
+def kyc_nin(request):
+    """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
+    user = request.user_obj
+    nin = (request.data.get("nin") or "").strip()
+    result = kyc_verify_nin(nin)
+    if not result.get("success"):
+        return fail(result.get("message", "NIN verification failed"), status=400)
+    user.nin = nin
+    user.nin_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["nin", "nin_verified", "tier"])
+    return ok(success=True, message="NIN verified", **_kyc_state(user))
+
+
+@api
+@require_user
+def kyc_face(request):
+    """POST /api/kyc/face/ {access_token}
+    Marks face/liveness verified. The device proves liveness on the client
+    (expo-local-authentication); a server-side liveness/selfie-match via the
+    KYC provider is a TODO before relying on this for compliance.
+    """
+    user = request.user_obj
+    user.face_verified = True
+    user.save(update_fields=["face_verified"])
+    return ok(success=True, message="Face verification recorded", **_kyc_state(user))

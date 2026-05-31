@@ -6,7 +6,7 @@ flow is testable. Money still moves correctly out of the wallet ledger.
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user
+from common.http import api, check_send_limits, fail, ok, require_user
 from wallet.models import Transaction
 from wallet.services import InsufficientFunds, debit, refund
 
@@ -83,6 +83,10 @@ def bank_transfer(request):
         return fail("Enter a valid amount")
     if amount < 10:
         return fail("Minimum transfer is ₦10")
+
+    limit_err = check_send_limits(user, amount, bool(data.get("face_confirmed")))
+    if limit_err:
+        return limit_err
 
     name = (data.get("name") or "Bank recipient").strip()
     note = data.get("note", "")
