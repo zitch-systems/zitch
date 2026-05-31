@@ -281,6 +281,8 @@ export const Field = ({
   maxLength,
   prefix,
   suffix,
+  editable = true,
+  pointerEvents,
 }: {
   label?: string;
   value?: string;
@@ -291,12 +293,15 @@ export const Field = ({
   maxLength?: number;
   prefix?: React.ReactNode;
   suffix?: React.ReactNode;
+  editable?: boolean;
+  pointerEvents?: 'none' | 'auto' | 'box-none';
 }) => {
   const { c } = useTheme();
   return (
     <View>
       {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text>}
       <View
+        pointerEvents={pointerEvents}
         style={{
           flexDirection: 'row',
           alignItems: 'center',
@@ -311,6 +316,7 @@ export const Field = ({
       >
         {prefix}
         <TextInput
+          editable={editable}
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}

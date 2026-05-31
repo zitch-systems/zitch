@@ -93,5 +93,26 @@ class Command(BaseCommand):
             )
             b += 1
 
+        # Payout banks.
+        from transfers.models import Bank
+        BANKS = [
+            ("gtb", "GTBank", "#E35205", "058"),
+            ("access", "Access Bank", "#00488D", "044"),
+            ("zenith", "Zenith Bank", "#E2231A", "057"),
+            ("uba", "UBA", "#D4122A", "033"),
+            ("kuda", "Kuda", "#40196D", "090267"),
+            ("opay", "OPay", "#1A8E5F", "999992"),
+            ("palmpay", "PalmPay", "#6C2FB3", "999991"),
+            ("firstbank", "First Bank", "#0B4DA2", "011"),
+        ]
+        bk = 0
+        for code, name, color, bank_code in BANKS:
+            Bank.objects.update_or_create(
+                code=code,
+                defaults={"name": name, "color": color, "bank_code": bank_code, "active": True},
+            )
+            bk += 1
+
         self.stdout.write(self.style.SUCCESS(
-            f"Seeded {d} data plans, {c} cable plans, {e} exam products, {b} betting platforms."))
+            f"Seeded {d} data plans, {c} cable plans, {e} exam products, "
+            f"{b} betting platforms, {bk} banks."))

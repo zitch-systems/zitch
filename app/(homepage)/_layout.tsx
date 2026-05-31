@@ -2,13 +2,20 @@ import React from 'react';
 import { Tabs } from 'expo-router';
 import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/design/BottomNav';
+import Sidebar from '@/components/design/Sidebar';
 import { WalletProvider } from '@/lib/wallet';
+import { useIsWide } from '@/lib/device';
 
 const HomeLayout = () => {
+  const wide = useIsWide();
   return (
     <AuthGuard>
       <WalletProvider>
-        <Tabs tabBar={(props) => <BottomNav {...props} />} screenOptions={{ headerShown: false }}>
+        <Tabs
+          // Phone: bottom nav. Fold/tablet: left sidebar rail beside the scene.
+          tabBar={(props) => (wide ? <Sidebar {...props} /> : <BottomNav {...props} />)}
+          screenOptions={{ headerShown: false, tabBarPosition: wide ? 'left' : 'bottom' }}
+        >
           <Tabs.Screen name="home" />
           <Tabs.Screen name="wallet" />
           <Tabs.Screen name="loan" />
