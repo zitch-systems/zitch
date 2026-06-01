@@ -66,7 +66,7 @@ Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/crea
 Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
 Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/`
-Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/`
+Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
 
 ## Fixed Save maturities
 Matured plans are paid out (principal + interest credited to the wallet) by a
@@ -92,5 +92,7 @@ Set the webhook URL in the Paystack dashboard to:
 ## Before go-live (TODO)
 - Wire real VTpass service IDs / variation codes in `utility/providers.py`.
 - Set `PAYSTACK_SECRET_KEY` + configure the webhook URL above.
+- Set `KYC_*` (Dojah) and `CARD_ISSUER_API_KEY` (Sudo) — confirm the exact
+  request/response mapping in `utility/providers.py`.
 - Move auth to an `Authorization: Bearer` header instead of token-in-body.
 - Replace seeded plans with the live aggregator catalogue.

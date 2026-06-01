@@ -1,20 +1,32 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable, Image, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Card, Btn } from '@/components/design/ui';
+import { Screen, Btn, Field, Sheet, PinPad, money } from '@/components/design/ui';
+import { QuickAmounts } from '@/components/design/flowkit';
 import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
 
-type VCard = { id: number; brand: string; masked: string; expiry: string; holder: string; frozen: boolean };
+type VCard = { id: number; brand: string; masked: string; expiry: string; holder: string; balance: string; frozen: boolean };
+type Reveal = { pan: string; cvv: string; expiry: string; holder: string };
+const FUND_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
 const Cards = () => {
   const { c } = useTheme();
+  const { reload: reloadWallet } = useWallet();
   const [token, setToken] = useState('');
   const [card, setCard] = useState<VCard | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // sheets
+  const [fundOpen, setFundOpen] = useState(false);
+  const [fundAmt, setFundAmt] = useState('');
+  const [fundPin, setFundPin] = useState(false);
+  const [detailsPin, setDetailsPin] = useState(false);
+  const [reveal, setReveal] = useState<Reveal | null>(null);
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -55,7 +67,38 @@ const Cards = () => {
     } catch { Alert.alert('Error', 'Something went wrong.'); }
   };
 
+  const doFund = async (pin: string) => {
+    if (!card) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${baseUrl}/api/cards/fund/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: token, card_id: card.id, amount: fundAmt, transaction_pin: pin }),
+      }).then((r) => r.json());
+      setFundPin(false);
+      if (res.success) { setCard(res.card); setFundAmt(''); reloadWallet(); Alert.alert('Success', 'Card funded'); }
+      else Alert.alert('Error', res.message || 'Funding failed');
+    } catch { setFundPin(false); Alert.alert('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+
+  const doReveal = async (pin: string) => {
+    if (!card) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${baseUrl}/api/cards/details/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: token, card_id: card.id, transaction_pin: pin }),
+      }).then((r) => r.json());
+      setDetailsPin(false);
+      if (res.success) setReveal({ pan: res.pan, cvv: res.cvv, expiry: res.expiry, holder: res.holder });
+      else Alert.alert('Error', res.message || 'Could not fetch details');
+    } catch { setDetailsPin(false); Alert.alert('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+
   const frozen = card?.frozen ?? false;
+  const panGroups = reveal ? reveal.pan.replace(/(.{4})/g, '$1 ').trim() : '';
 
   return (
     <Screen pad={false} tab>
@@ -75,8 +118,9 @@ const Cards = () => {
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.bold, letterSpacing: 1.3 }}>ZITCH</Text>
               <ZIcon name="wallet" size={22} color="#fff" />
             </View>
-            <Text style={{ color: '#fff', fontSize: 21, letterSpacing: 3, marginTop: 46, fontVariant: ['tabular-nums'] }}>{card.masked}</Text>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 }}>
+            <Text style={{ color: '#fff', fontSize: 21, letterSpacing: 3, marginTop: 30, fontVariant: ['tabular-nums'] }}>{reveal ? panGroups : card.masked}</Text>
+            <Text style={{ color: 'rgba(255,255,255,.85)', fontSize: 12.5, marginTop: 8, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Balance {money(Number(card.balance))}{reveal ? `   ·   CVV ${reveal.cvv}` : ''}</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.semibold }}>{card.holder}</Text>
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontVariant: ['tabular-nums'] }}>{card.expiry}</Text>
             </View>
@@ -90,9 +134,9 @@ const Cards = () => {
           {/* actions */}
           <View style={{ flexDirection: 'row', gap: 10, marginHorizontal: 16 }}>
             {[
+              { icon: 'plus', label: 'Fund', go: () => setFundOpen(true) },
               { icon: 'lock', label: frozen ? 'Unfreeze' : 'Freeze', go: toggleFreeze },
-              { icon: 'eye', label: 'Details', go: () => router.push('/comingsoon') },
-              { icon: 'settings', label: 'Settings', go: () => router.push('/comingsoon') },
+              { icon: reveal ? 'eyeoff' : 'eye', label: reveal ? 'Hide' : 'Details', go: () => (reveal ? setReveal(null) : setDetailsPin(true)) },
             ].map((a) => (
               <Pressable key={a.label} onPress={a.go} style={{ flex: 1 }}>
                 <View style={{ alignItems: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
@@ -102,6 +146,10 @@ const Cards = () => {
               </Pressable>
             ))}
           </View>
+
+          <Text style={{ paddingHorizontal: 20, marginTop: 18, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
+            Use this card for online & USD payments. Fund it from your wallet; tap Details to reveal the number for a purchase.
+          </Text>
         </>
       ) : (
         /* empty state */
@@ -117,6 +165,29 @@ const Cards = () => {
           <Btn label="Create a virtual card" icon="plus" disabled={busy} onPress={createCard} full={false} />
         </View>
       )}
+
+      {/* Fund: amount sheet -> PIN */}
+      <Sheet open={fundOpen} onClose={() => setFundOpen(false)} title="Fund card">
+        <QuickAmounts amounts={FUND_AMOUNTS} value={fundAmt} onPick={setFundAmt} />
+        <Field value={fundAmt} onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>} />
+        <View style={{ height: 16 }} />
+        <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setTimeout(() => setFundPin(true), 320); }} />
+      </Sheet>
+
+      <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          {busy ? 'Funding…' : `Load ${money(Number(fundAmt))} onto your card`}
+        </Text>
+        <PinPad onComplete={(p) => doFund(p)} />
+      </Sheet>
+
+      {/* Details reveal: PIN */}
+      <Sheet open={detailsPin} onClose={() => !busy && setDetailsPin(false)} title="Reveal card details">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          Enter your PIN to show the full card number & CVV
+        </Text>
+        <PinPad onComplete={(p) => doReveal(p)} />
+      </Sheet>
     </Screen>
   );
 };
