@@ -71,12 +71,21 @@ def verify_otp(request):
 
 @api
 def resend_verify_otp(request):
-    """POST /api/resend_verify_otp/ {phone}"""
+    """POST /api/resend_verify_otp/ {phone, email?}
+
+    Carries the email from the original phone_verification forward so the
+    verified user is created with the right email and set-password works.
+    The client may also pass `email` explicitly to override.
+    """
     phone = (request.data.get("phone") or "").strip()
     if not phone:
         return fail("Phone is required")
+    email = (request.data.get("email") or "").strip()
+    if not email:
+        prior = OTP.objects.filter(phone=phone).order_by("-created").first()
+        email = prior.email if prior else ""
     code = f"{random.randint(0, 99999):05d}"
-    OTP.objects.create(phone=phone, code=code)
+    OTP.objects.create(phone=phone, email=email, code=code)
     send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP resent")
 
