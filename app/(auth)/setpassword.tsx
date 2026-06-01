@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, Link } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
 import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -24,7 +24,7 @@ const Rule = ({ ok, text }: { ok: boolean; text: string }) => {
 const SetPassword = () => {
   const { c } = useTheme();
   const [isUpdating, setIsUpdating] = useState(false);
-  const [memoryEmail, setMemoryEmail] = useState('');
+  const [token, setToken] = useState('');
   const [form, setForm] = useState({ password1: '', password2: '' });
 
   const p1 = form.password1;
@@ -35,7 +35,7 @@ const SetPassword = () => {
   const canSubmit = eight && hasAlpha && hasNum && tally;
 
   useEffect(() => {
-    AsyncStorage.getItem('UserEmail').then((e) => e && setMemoryEmail(e));
+    getToken().then((t) => t && setToken(t));
   }, []);
 
   const handleUpdate = async () => {
@@ -48,7 +48,7 @@ const SetPassword = () => {
       const response = await fetch(`${baseUrl}/api/set-password/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: memoryEmail, password: p1 }),
+        body: JSON.stringify({ access_token: token, password: p1 }),
       });
       const result = await response.json();
       if (response.ok) {

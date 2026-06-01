@@ -1,13 +1,21 @@
 import random
+from datetime import timedelta
 
-from django.contrib.auth import authenticate
 from django.db.models import Q
+from django.utils import timezone
 
 from common.http import api, fail, ok, require_user
 from utility.providers import kyc_verify_bvn, kyc_verify_nin, send_sms
 from wallet.services import get_or_create_wallet
 
 from .models import OTP, AccessToken, User
+
+
+def _otp_on_cooldown(phone: str) -> bool:
+    """True if a code was issued for this phone within the resend cooldown,
+    to stop OTP-flooding / rapid brute-force of a victim's number."""
+    cutoff = timezone.now() - timedelta(seconds=OTP.RESEND_COOLDOWN_SECONDS)
+    return OTP.objects.filter(phone=phone, created__gte=cutoff).exists()
 
 
 @api
@@ -36,6 +44,8 @@ def phone_verification(request):
         return fail("Phone is required")
     if User.objects.filter(phone=phone).exists():
         return fail("An account with this phone already exists")
+    if _otp_on_cooldown(phone):
+        return fail("Please wait a moment before requesting another code", status=429)
 
     code = f"{random.randint(0, 99999):05d}"
     OTP.objects.create(phone=phone, email=email, code=code)
@@ -52,10 +62,18 @@ def verify_otp(request):
         return fail("Phone and OTP are required")
 
     otp = OTP.objects.filter(phone=phone, used=False).order_by("-created").first()
-    if otp is None or otp.code != code:
+    if otp is None:
         return fail("Invalid OTP", status=400)
     if otp.is_expired:
         return fail("OTP has expired", status=400)
+    if otp.too_many_attempts:
+        # Cap reached: refuse further guesses on this code until a new one is
+        # requested, bounding an attacker to MAX_ATTEMPTS tries per code.
+        return fail("Too many incorrect attempts. Request a new code.", status=429)
+    if otp.code != code:
+        otp.attempts += 1
+        otp.save(update_fields=["attempts"])
+        return fail("Invalid OTP", status=400)
 
     otp.used = True
     otp.save(update_fields=["used"])
@@ -80,6 +98,8 @@ def resend_verify_otp(request):
     phone = (request.data.get("phone") or "").strip()
     if not phone:
         return fail("Phone is required")
+    if _otp_on_cooldown(phone):
+        return fail("Please wait a moment before requesting another code", status=429)
     email = (request.data.get("email") or "").strip()
     if not email:
         prior = OTP.objects.filter(phone=phone).order_by("-created").first()
@@ -91,30 +111,33 @@ def resend_verify_otp(request):
 
 
 @api
+@require_user
 def set_password(request):
-    """POST /api/set-password/ {email, password}"""
-    email = (request.data.get("email") or "").strip()
+    """POST /api/set-password/ {access_token, password}
+
+    Authenticated: acts on the token's user. Previously this looked the user up
+    by an email in the body with no auth, letting anyone overwrite any account's
+    password (and an empty email matched an arbitrary blank-email account).
+    """
+    user = request.user_obj
     password = request.data.get("password") or ""
     if len(password) < 8:
         return fail("Password must be at least 8 characters")
-    user = User.objects.filter(Q(email__iexact=email) | Q(phone=email)).first()
-    if user is None:
-        return fail("Account not found", status=404)
     user.set_password(password)
     user.save(update_fields=["password"])
     return ok(message="Password set")
 
 
 @api
+@require_user
 def set_transaction_pin(request):
-    """POST /api/set-transaction-pin/ {email, pin}"""
-    email = (request.data.get("email") or "").strip()
+    """POST /api/set-transaction-pin/ {access_token, pin}
+
+    Authenticated: sets the PIN on the token's user (see set_password note)."""
+    user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
     if len(pin) < 4:
         return fail("PIN must be at least 4 digits")
-    user = User.objects.filter(Q(email__iexact=email) | Q(phone=email)).first()
-    if user is None:
-        return fail("Account not found", status=404)
     user.set_transaction_pin(pin)
     user.save(update_fields=["transaction_pin"])
     return ok(message="Transaction PIN set")
@@ -126,14 +149,22 @@ def update_info(request):
     """POST /api/update_info/ {first_name, last_name, email, phone, access_token}"""
     user = request.user_obj
     data = request.data
+    new_email = (data.get("email") or "").strip()
+    new_phone = (data.get("phone") or "").strip()
+    # phone is unique in the DB — pre-check so a clash returns a clean error
+    # instead of a 500 from the IntegrityError.
+    if new_phone and User.objects.filter(phone=new_phone).exclude(pk=user.pk).exists():
+        return fail("That phone number is already in use")
+    if new_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+        return fail("That email is already in use")
     if data.get("first_name"):
         user.first_name = data["first_name"]
     if data.get("last_name"):
         user.last_name = data["last_name"]
-    if data.get("email"):
-        user.email = data["email"]
-    if data.get("phone"):
-        user.phone = data["phone"]
+    if new_email:
+        user.email = new_email
+    if new_phone:
+        user.phone = new_phone
     user.save()
     return ok(message="Account updated")
 
