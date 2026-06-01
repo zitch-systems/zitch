@@ -1,0 +1,28 @@
+{
+  "name": "Zitch (Expo + Django)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+  "forwardPorts": [8000, 8081, 19000, 19006],
+  "portsAttributes": {
+    "8000": { "label": "Django API", "onAutoForward": "notify" },
+    "8081": { "label": "Expo Metro", "onAutoForward": "silent" },
+    "19000": { "label": "Expo Dev", "onAutoForward": "silent" },
+    "19006": { "label": "Expo Web", "onAutoForward": "openPreview" }
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "dbaeumer.vscode-eslint",
+        "expo.vscode-expo-tools",
+        "bradlc.vscode-tailwindcss"
+      ]
+    }
+  }
+}

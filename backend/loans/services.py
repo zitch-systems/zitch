@@ -1,0 +1,82 @@
+"""Loan lifecycle: eligibility, disbursement, repayment.
+
+Disbursement credits the wallet; repayment debits it. Both go through the
+wallet ledger so the balance and the loan state move together atomically.
+"""
+from datetime import timedelta
+from decimal import Decimal
+
+from django.db import transaction as db_transaction
+from django.utils import timezone
+
+from wallet.models import Wallet
+from wallet.services import InsufficientFunds, credit, make_reference
+
+from .models import Loan
+
+
+def credit_limit(user) -> Decimal:
+    """Available credit = limit minus outstanding on any active loan.
+
+    A simple model to start; replace with a behaviour-based score later.
+    """
+    active = user.loans.filter(status=Loan.ACTIVE).first()
+    if active:
+        return Loan.DEFAULT_LIMIT - active.outstanding
+    return Loan.DEFAULT_LIMIT
+
+
+@db_transaction.atomic
+def disburse(user, principal, tenure_days: int) -> Loan:
+    """Create an active loan and credit the principal to the wallet."""
+    principal = Decimal(str(principal))
+    interest = Loan.quote(principal, tenure_days)
+    ref = make_reference("ZLN")
+    loan = Loan.objects.create(
+        user=user,
+        principal=principal,
+        interest=interest,
+        tenure_days=tenure_days,
+        reference=ref,
+        due_date=timezone.now() + timedelta(days=tenure_days),
+    )
+    credit(user, principal, "Loan disbursed", meta={"loan": ref}, reference=ref)
+    return loan
+
+
+@db_transaction.atomic
+def repay(user, loan: Loan, amount) -> Loan:
+    """Debit the wallet toward a loan; mark repaid when fully settled.
+
+    Locks the loan and wallet rows; raises InsufficientFunds if the balance is
+    short. Over-payment is capped at the outstanding amount.
+    """
+    from wallet.models import Transaction
+
+    amount = Decimal(str(amount))
+    loan = Loan.objects.select_for_update().get(pk=loan.pk)
+    if loan.status == Loan.REPAID:
+        return loan
+
+    pay = min(amount, loan.outstanding)
+    wallet = Wallet.objects.select_for_update().get(user=user)
+    if wallet.balance < pay:
+        raise InsufficientFunds("Insufficient wallet balance")
+
+    wallet.balance -= pay
+    wallet.save(update_fields=["balance", "updated"])
+    Transaction.objects.create(
+        user=user,
+        service="Loan repayment",
+        amount=pay,
+        direction=Transaction.OUT,
+        transaction_status=Transaction.SUCCESS,
+        reference=make_reference(f"{loan.reference}-R"),
+        meta={"loan": loan.reference},
+    )
+
+    loan.amount_repaid += pay
+    if loan.outstanding <= Decimal("0.00"):
+        loan.status = Loan.REPAID
+    loan.save(update_fields=["amount_repaid", "status", "updated"])
+    return loan

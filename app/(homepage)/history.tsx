@@ -40,9 +40,18 @@ const History = () => {
         })}
       </ScrollView>
       {filtered.length === 0 ? (
-        <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 12 }}>No transactions</Text>
+        <Text style={{ color: c.ink3, fontFamily: font.regular, textAlign: 'center', paddingVertical: 48 }}>
+          No {active.toLowerCase()} transactions yet
+        </Text>
       ) : (
-        <View>{filtered.map((x, i) => <TxnRow key={x.id} txn={x} last={i === filtered.length - 1} />)}</View>
+        <View>{filtered.map((x, i) => (
+          <TxnRow
+            key={x.id}
+            txn={x}
+            last={i === filtered.length - 1}
+            onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+          />
+        ))}</View>
       )}
     </Screen>
   );

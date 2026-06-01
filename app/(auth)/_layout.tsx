@@ -16,6 +16,7 @@ const AuthLayout = () => {
       <Stack.Screen name="completed" />
       <Stack.Screen name="securitysetup" />
       <Stack.Screen name="accountdetails" />
+      <Stack.Screen name="kyc" />
     </Stack>
   );
 };

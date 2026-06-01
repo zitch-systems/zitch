@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Transaction, Wallet
+from .models import FundingIntent, Transaction, Wallet
 
 
 @admin.register(Wallet)
@@ -15,3 +15,11 @@ class TransactionAdmin(admin.ModelAdmin):
     list_filter = ("direction", "transaction_status", "created")
     search_fields = ("reference", "user__phone", "user__email", "service")
     readonly_fields = ("reference", "created")
+
+
+@admin.register(FundingIntent)
+class FundingIntentAdmin(admin.ModelAdmin):
+    list_display = ("reference", "user", "amount", "status", "credited", "created")
+    list_filter = ("status", "credited", "created")
+    search_fields = ("reference", "user__phone", "user__email")
+    readonly_fields = ("reference", "created", "updated")

@@ -281,6 +281,8 @@ export const Field = ({
   maxLength,
   prefix,
   suffix,
+  editable = true,
+  pointerEvents,
 }: {
   label?: string;
   value?: string;
@@ -291,12 +293,15 @@ export const Field = ({
   maxLength?: number;
   prefix?: React.ReactNode;
   suffix?: React.ReactNode;
+  editable?: boolean;
+  pointerEvents?: 'none' | 'auto' | 'box-none';
 }) => {
   const { c } = useTheme();
   return (
     <View>
       {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text>}
       <View
+        pointerEvents={pointerEvents}
         style={{
           flexDirection: 'row',
           alignItems: 'center',
@@ -311,6 +316,7 @@ export const Field = ({
       >
         {prefix}
         <TextInput
+          editable={editable}
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
@@ -466,13 +472,15 @@ export type Txn = {
   time?: string;
   icon: string;
   dir: 'in' | 'out';
+  reference?: string;
 };
 
-export const TxnRow = ({ txn, last }: { txn: Txn; last?: boolean }) => {
+export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPress?: () => void }) => {
   const { c } = useTheme();
   const inflow = txn.dir === 'in';
+  const Wrap: any = onPress ? Pressable : View;
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
+    <Wrap onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
       <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: inflow ? 'rgba(0,181,29,.12)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
         <ZIcon name={txn.icon} size={20} color={inflow ? c.lime : c.ink2} stroke={2} />
       </View>
@@ -486,6 +494,6 @@ export const TxnRow = ({ txn, last }: { txn: Txn; last?: boolean }) => {
         </Text>
         <Text style={{ fontSize: 11.5, color: txn.status === 'Pending' ? c.amber : c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.status}</Text>
       </View>
-    </View>
+    </Wrap>
   );
 };

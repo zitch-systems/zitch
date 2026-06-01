@@ -23,10 +23,10 @@ const Wallet = () => {
           {showBal ? money(balance) : '₦ ••••••'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
-          <Pressable onPress={() => router.push('/comingsoon')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: '#fff', alignItems: 'center' }}>
+          <Pressable onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: '#fff', alignItems: 'center' }}>
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>
           </Pressable>
-          <Pressable onPress={() => router.push('/comingsoon')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
+          <Pressable onPress={() => router.push('/sendmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: 'rgba(255,255,255,.18)', borderWidth: 1, borderColor: 'rgba(255,255,255,.25)', alignItems: 'center' }}>
             <Text style={{ color: '#fff', fontFamily: font.bold, fontSize: 14 }}>Send</Text>
           </Pressable>
         </View>
@@ -51,7 +51,14 @@ const Wallet = () => {
         {txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
         ) : (
-          txns.map((x, i) => <TxnRow key={x.id} txn={x} last={i === txns.length - 1} />)
+          txns.map((x, i) => (
+            <TxnRow
+              key={x.id}
+              txn={x}
+              last={i === txns.length - 1}
+              onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+            />
+          ))
         )}
       </View>
     </Screen>

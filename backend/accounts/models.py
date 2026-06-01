@@ -1,5 +1,6 @@
 import secrets
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
@@ -14,8 +15,21 @@ class User(AbstractUser):
     `username` is kept (Django requires it) but we authenticate by phone/email.
     """
 
+    # KYC tier -> per-transaction limit (CBN-style; adjust to your licence).
+    TIER_LIMITS = {1: Decimal("50000"), 2: Decimal("200000"), 3: Decimal("5000000")}
+    # Single transfers at/above this require step-up (face) verification.
+    LARGE_TXN_THRESHOLD = Decimal("100000")
+
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
     transaction_pin = models.CharField(max_length=128, blank=True, default="")
+
+    # --- KYC ---
+    tier = models.PositiveSmallIntegerField(default=1)
+    bvn = models.CharField(max_length=11, blank=True, default="")
+    bvn_verified = models.BooleanField(default=False)
+    nin = models.CharField(max_length=11, blank=True, default="")
+    nin_verified = models.BooleanField(default=False)
+    face_verified = models.BooleanField(default=False)
 
     def set_transaction_pin(self, raw_pin: str) -> None:
         self.transaction_pin = make_password(raw_pin)
@@ -24,6 +38,19 @@ class User(AbstractUser):
         if not self.transaction_pin:
             return False
         return check_password(raw_pin, self.transaction_pin)
+
+    @property
+    def transaction_limit(self) -> Decimal:
+        return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[1])
+
+    def recompute_tier(self) -> None:
+        """Tier 3 needs BVN + NIN; Tier 2 needs one of them; else Tier 1."""
+        if self.bvn_verified and self.nin_verified:
+            self.tier = 3
+        elif self.bvn_verified or self.nin_verified:
+            self.tier = 2
+        else:
+            self.tier = 1
 
     def __str__(self):
         return self.phone or self.email or self.username

@@ -89,13 +89,13 @@ All purchase flows follow: **form → "Continue" → Confirm sheet → Biometric
 - **Electricity** — disco grid (3‑col); Prepaid/Postpaid segmented; meter field; amount chips; success returns a token.
 - **Betting** — platform grid; user‑ID field; amount.
 - **Exams** — exam list (WAEC/NECO/JAMB/NABTEB) with prices; quantity stepper; phone for PIN delivery.
-- **Transfer (Send money)** — segmented **To Bank (default)** / To Zitch; **searchable saved beneficiaries**; **account number entered first → bank auto‑detected** (manual bank picker via bottom sheet if needed) → resolved name chip; amount + balance hint; narration. **Every transfer to a new recipient auto‑saves as a beneficiary.**
+- **Transfer (Send money)** — bank transfer flow (no destination toggle); **searchable saved beneficiaries** (avatar rail, tap to select / Change to clear); **account number entered first → bank auto‑detected** from the leading digit, with a manual bank picker via bottom sheet; resolved‑name confirmation pill; quick‑amount chips + amount field + balance hint; optional narration. On success, a new beneficiary is auto‑saved. sheet if needed) → resolved name chip; amount + balance hint; narration. **Every transfer to a new recipient auto‑saves as a beneficiary.**
 - **Get Loan** — eligibility hero; amount slider; tenure (15/30/60 days); live interest + total repayment summary → confirm → success "Loan disbursed" (credits wallet).
 - **Fixed Save** — earnings hero; amount + chips; lock period 30/90/180/365 days with tiered rates (12/15/18/22% p.a); live "You get back" → success "Savings locked".
 - **Add money** — Bank Transfer card (big Zitch account number + Copy Number/Share Details), "OR", method rows (Cash Deposit, Top‑up with Card/Account → amount sheet, Bank USSD, Scan my QR).
 
 ### Utility screens
-- **Transaction History** — filter chips + grouped list (tap → detail).
+- **Transaction History** — **working filter chips** (All / Money in / Money out / Airtime / Bills / Transfers) backed by component state; the list filters live (Money in = `amt > 0`, Money out = `amt < 0`, Airtime = `cat ∈ {airtime,data}`, Bills = `cat ∈ {tv,electricity,betting,exams}`, Transfers = `cat ∈ {transfer,fund}`), with an empty‑state message per filter. Rows tap → detail.
 - **Transaction detail** — monogram, amount, status pill, ref/date/channel rows, Share receipt.
 - **Notifications** — list with colored icon, title, subtitle.
 - **Coming‑soon** — generic placeholder (icon, title, note) for Insurance/Remita/Movie/Convert/Invite/Support etc.

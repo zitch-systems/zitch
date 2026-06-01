@@ -7,12 +7,18 @@ the entire app flow is testable end-to-end without external accounts.
 TODO before go-live: fill in the real request/response mapping for your chosen
 aggregator (VTpass shown) and verify field names against their docs.
 """
+import hashlib
+import hmac
 import secrets
 
 import requests
 from django.conf import settings
 
 REQUEST_TIMEOUT = 30
+
+
+def paystack_live() -> bool:
+    return bool(settings.PAYSTACK["SECRET_KEY"])
 
 
 # ---------------------------------------------------------------------------
@@ -81,14 +87,27 @@ def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "")
 # ---------------------------------------------------------------------------
 # Payments (wallet funding) — Paystack example
 # ---------------------------------------------------------------------------
-def paystack_initialize(email: str, amount_naira) -> dict:
-    if not settings.PAYSTACK["SECRET_KEY"]:
-        ref = "MOCKPAY-" + secrets.token_hex(6).upper()
-        return {"success": True, "mock": True, "reference": ref, "authorization_url": ""}
+def paystack_initialize(email: str, amount_naira, reference: str) -> dict:
+    """Start a funding transaction. Returns a checkout URL the app opens.
+
+    In MOCK mode (no secret key) we return a sentinel URL the app/tester can
+    'complete' by calling the verify endpoint, so funding is testable offline.
+    """
+    if not paystack_live():
+        return {
+            "success": True,
+            "mock": True,
+            "reference": reference,
+            "authorization_url": f"mock://paystack/checkout/{reference}",
+        }
     try:
         resp = requests.post(
             "https://api.paystack.co/transaction/initialize",
-            json={"email": email, "amount": int(float(amount_naira) * 100)},
+            json={
+                "email": email,
+                "amount": int(float(amount_naira) * 100),  # kobo
+                "reference": reference,
+            },
             headers={"Authorization": f"Bearer {settings.PAYSTACK['SECRET_KEY']}"},
             timeout=REQUEST_TIMEOUT,
         )
@@ -96,12 +115,51 @@ def paystack_initialize(email: str, amount_naira) -> dict:
         d = data.get("data", {}) or {}
         return {
             "success": bool(data.get("status")),
-            "reference": d.get("reference", ""),
+            "reference": d.get("reference", reference),
             "authorization_url": d.get("authorization_url", ""),
             "raw": data,
         }
     except requests.RequestException as exc:
         return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
+
+
+def paystack_verify(reference: str) -> dict:
+    """Confirm a transaction with Paystack. Source of truth for crediting.
+
+    MOCK mode treats any reference as a successful payment so the funding flow
+    can be exercised without real money.
+    """
+    if not paystack_live():
+        return {"success": True, "mock": True, "amount_naira": None, "reference": reference}
+    try:
+        resp = requests.get(
+            f"https://api.paystack.co/transaction/verify/{reference}",
+            headers={"Authorization": f"Bearer {settings.PAYSTACK['SECRET_KEY']}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        d = data.get("data", {}) or {}
+        ok = bool(data.get("status")) and d.get("status") == "success"
+        return {
+            "success": ok,
+            "amount_naira": (d.get("amount", 0) / 100) if d.get("amount") is not None else None,
+            "reference": d.get("reference", reference),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
+
+
+def paystack_verify_signature(body: bytes, signature: str) -> bool:
+    """Validate a Paystack webhook via the x-paystack-signature header (HMAC-SHA512)."""
+    if not paystack_live():
+        return True  # mock mode: accept so local webhook testing works
+    if not signature:
+        return False
+    digest = hmac.new(
+        settings.PAYSTACK["SECRET_KEY"].encode(), body, hashlib.sha512
+    ).hexdigest()
+    return hmac.compare_digest(digest, signature)
 
 
 # ---------------------------------------------------------------------------
@@ -126,3 +184,53 @@ def send_sms(phone: str, message: str) -> dict:
         return {"success": resp.ok, "raw": resp.json()}
     except requests.RequestException as exc:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# KYC — BVN / NIN / liveness (Dojah example)
+# ---------------------------------------------------------------------------
+def _kyc_live() -> bool:
+    return bool(settings.KYC["APP_ID"] and settings.KYC["SECRET_KEY"])
+
+
+def _kyc_headers() -> dict:
+    return {"AppId": settings.KYC["APP_ID"], "Authorization": settings.KYC["SECRET_KEY"]}
+
+
+def kyc_verify_bvn(bvn: str) -> dict:
+    """Verify a BVN. MOCK mode accepts any 11-digit value.
+
+    TODO: confirm the exact Dojah endpoint/response shape (or swap provider).
+    """
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if not _kyc_live():
+        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+    try:
+        resp = requests.get(
+            f"{settings.KYC['BASE_URL']}/api/v1/kyc/bvn/full",
+            params={"bvn": bvn}, headers=_kyc_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        entity = data.get("entity", {}) or {}
+        return {"success": bool(entity), "raw": data,
+                "first_name": entity.get("first_name", ""), "last_name": entity.get("last_name", "")}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def kyc_verify_nin(nin: str) -> dict:
+    """Verify a NIN. MOCK mode accepts any 11-digit value."""
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    if not _kyc_live():
+        return {"success": True, "mock": True}
+    try:
+        resp = requests.get(
+            f"{settings.KYC['BASE_URL']}/api/v1/kyc/nin",
+            params={"nin": nin}, headers=_kyc_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("entity")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}

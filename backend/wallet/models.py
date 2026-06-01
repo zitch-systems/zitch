@@ -43,3 +43,29 @@ class Transaction(models.Model):
     def __str__(self):
         sign = "+" if self.direction == self.IN else "-"
         return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"
+
+
+class FundingIntent(models.Model):
+    """Tracks a wallet top-up from initialize -> verified, keyed by the Paystack
+    reference. Crediting is idempotent: a reference can only fund the wallet once
+    (guarded by `credited`), so retries/duplicate webhooks are safe.
+    """
+
+    PENDING = "pending"
+    PAID = "paid"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (PAID, PAID), (FAILED, FAILED)]
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="funding_intents")
+    reference = models.CharField(max_length=64, unique=True, db_index=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    credited = models.BooleanField(default=False)
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created"]
+
+    def __str__(self):
+        return f"{self.user} · ₦{self.amount} · {self.status}"

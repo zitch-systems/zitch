@@ -13,7 +13,29 @@ file-based routing, and [NativeWind](https://www.nativewind.dev/).
 - **expo-secure-store** — encrypted storage for the access token
 - **AsyncStorage** — non-sensitive local state
 
-## Getting started
+## Develop in GitHub Codespaces
+
+This repo ships a dev container (`.devcontainer/`). In GitHub: **Code ▸ Codespaces
+▸ Create codespace on this branch**. On first boot it auto-installs the backend
+(Python deps, migrations, seeded plans) and the app (`npm install`).
+
+Once it's ready, in the Codespace terminal:
+
+```bash
+# Backend (Django) — http://localhost:8000  (admin at /admin/)
+cd backend && python manage.py createsuperuser && python manage.py runserver 0.0.0.0:8000
+
+# App (Expo Metro) — new terminal
+npx expo start
+
+# Android APK (needs your Expo login)
+npx eas-cli login && npx eas-cli init && npx eas-cli build -p android --profile preview
+```
+
+> Codespaces runs the **dev environment**, not production. Deploy the backend to
+> **Render** via `backend/render.yaml` (Render dashboard ▸ New ▸ Blueprint).
+
+## Getting started (local)
 
 1. Install dependencies
 

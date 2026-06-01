@@ -5,15 +5,16 @@ import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
+import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
 const GRID = [
   { label: 'Airtime', icon: 'airtime', badge: '6% off', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
-  { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
-  { label: 'Save', icon: 'fixed', go: () => router.push('/comingsoon') },
+  { label: 'Save', icon: 'fixed', go: () => router.push('/fixedsave') },
   { label: 'Loan', icon: 'loan', badge: 'Hot', hot: true, go: () => router.push('/getloan') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
@@ -21,11 +22,11 @@ const GRID = [
 
 const MORE = [
   { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
-  { label: 'Send money', icon: 'send', go: () => router.push('/comingsoon') },
+  { label: 'Send money', icon: 'send', go: () => router.push('/sendmoney') },
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
-  { label: 'Betting', icon: 'dice', go: () => router.push('/comingsoon') },
+  { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'Insurance', icon: 'insurance', go: () => router.push('/comingsoon') },
   { label: 'Remita', icon: 'remita', go: () => router.push('/comingsoon') },
@@ -90,7 +91,7 @@ const Home = () => {
             <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 12.5, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Acct: 9012 345 678</Text>
             <ZIcon name="copy" size={14} color="rgba(255,255,255,.82)" />
           </View>
-          <Pressable onPress={() => router.push('/comingsoon')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
+          <Pressable onPress={() => router.push('/addmoney')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
             <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
             <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>
           </Pressable>
@@ -113,7 +114,7 @@ const Home = () => {
       {/* quick actions */}
       <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
         {[
-          { icon: 'send', label: 'Transfer', go: () => router.push('/comingsoon') },
+          { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
           { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
           { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/comingsoon') },
         ].map((q) => (
@@ -133,7 +134,7 @@ const Home = () => {
       </Card>
 
       {/* promo */}
-      <Pressable onPress={() => router.push('/comingsoon')} style={{ marginHorizontal: 16, marginTop: 14 }}>
+      <Pressable onPress={() => router.push('/fixedsave')} style={{ marginHorizontal: 16, marginTop: 14 }}>
         <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
           <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="fixed" size={23} color={c.brand} />
@@ -168,6 +169,9 @@ const Home = () => {
           ))}
         </View>
       </Sheet>
+
+      {/* smart paste-to-pay */}
+      <SmartPaste />
     </Screen>
   );
 };

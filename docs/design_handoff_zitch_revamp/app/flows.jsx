@@ -281,7 +281,6 @@
     return (
       <Screen title="Send money" onBack={app.nav.pop}
         footer={<PrimaryButton label="Continue" disabled={!valid} onClick={() => setStep('confirm')} />}>
-        <Segmented options={[{ v: 'bank', label: 'To Bank' }, { v: 'zitch', label: 'To Zitch' }]} value={mode} onChange={(v) => { setMode(v); setPicked(null); setAcct(''); setBank(null); }} />
         {!picked && (<>
           <Label>Saved beneficiaries</Label>
           <Field placeholder="Search by name or account" value={q} onChange={setQ} prefix={<I name="search" size={18} color="var(--ink-3)" />} />

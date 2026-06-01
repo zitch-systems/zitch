@@ -64,7 +64,7 @@ const Me = () => {
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
   const grp1: any[] = [
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
-    { icon: 'chart', title: 'Account Limits', sub: 'View your transaction limits', go: () => router.push('/comingsoon') },
+    { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
     { icon: 'card', title: 'Bank Card / Account', sub: 'Add a payment option', go: () => router.push('/accountdetails') },
     { icon: 'bank', title: 'My BizPayment', sub: 'Receive payment for business', go: () => router.push('/comingsoon') },
     { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/comingsoon') },
