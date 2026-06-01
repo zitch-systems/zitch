@@ -10,11 +10,21 @@ aggregator (VTpass shown) and verify field names against their docs.
 import hashlib
 import hmac
 import secrets
+from decimal import ROUND_HALF_UP, Decimal
 
 import requests
 from django.conf import settings
 
 REQUEST_TIMEOUT = 30
+
+
+def to_kobo(amount_naira) -> int:
+    """Exact naira -> kobo conversion.
+
+    Using floats here truncates money: int(float("1234.56") * 100) == 123455,
+    losing a kobo. Decimal keeps it exact: 123456.
+    """
+    return int((Decimal(str(amount_naira)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def paystack_live() -> bool:
@@ -105,7 +115,7 @@ def paystack_initialize(email: str, amount_naira, reference: str) -> dict:
             "https://api.paystack.co/transaction/initialize",
             json={
                 "email": email,
-                "amount": int(float(amount_naira) * 100),  # kobo
+                "amount": to_kobo(amount_naira),
                 "reference": reference,
             },
             headers={"Authorization": f"Bearer {settings.PAYSTACK['SECRET_KEY']}"},
