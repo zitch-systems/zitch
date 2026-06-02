@@ -133,3 +133,20 @@ class SavingsTests(TestCase):
         # Re-running never double-pays.
         self.assertEqual(run_maturities(), 0)
         self.assertEqual(get_or_create_wallet(self.user).balance, after)
+
+    def test_list_auto_settles_matured_plan(self):
+        """Opening savings pays out anything that matured — no cron required."""
+        self.post("/api/savings/create/", {"access_token": self.token, "amount": "100000", "days": 365, "transaction_pin": "1234"})
+        plan = FixedSave.objects.get(user=self.user)
+        plan.matures_at = timezone.now() - timezone.timedelta(days=1)
+        plan.save(update_fields=["matures_at"])
+
+        before = get_or_create_wallet(self.user).balance  # 150000 (250k - 100k locked)
+        _, body = self.post("/api/savings/list/", {"access_token": self.token})
+        after = get_or_create_wallet(self.user).balance
+        self.assertEqual(after - before, Decimal("122000.00"))  # principal + interest credited
+        self.assertEqual(FixedSave.objects.get(pk=plan.pk).status, FixedSave.MATURED)
+        self.assertEqual(body["plans"][0]["status"], FixedSave.MATURED)
+        # Idempotent: opening again must not double-credit.
+        self.post("/api/savings/list/", {"access_token": self.token})
+        self.assertEqual(get_or_create_wallet(self.user).balance, after)

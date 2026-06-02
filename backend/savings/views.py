@@ -5,7 +5,7 @@ from common.http import api, fail, ok, require_user
 from wallet.services import InsufficientFunds, get_or_create_wallet
 
 from .models import FixedSave
-from .services import lock
+from .services import lock, settle_user_maturities
 
 
 def _plan_dict(p: FixedSave) -> dict:
@@ -93,6 +93,7 @@ def savings_list(request):
     -> {total_locked, plans: [...]}
     """
     user = request.user_obj
+    settle_user_maturities(user)  # pay out anything that matured since the last visit
     plans = user.savings.all()
     total = sum((p.principal for p in plans if p.status == FixedSave.ACTIVE), Decimal("0"))
     return ok(total_locked=str(total), plans=[_plan_dict(p) for p in plans])

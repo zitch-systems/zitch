@@ -69,10 +69,15 @@ Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/a
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
 
 ## Fixed Save maturities
-Matured plans are paid out (principal + interest credited to the wallet) by a
-daily cron: `python manage.py run_maturities`. Render runs this via the
-`zitch-maturities` cron service in `render.yaml`. Payout is idempotent per plan,
-so a re-run never double-pays.
+Matured plans are paid out (principal + interest credited to the wallet) two ways:
+- **On access:** opening `/api/savings/list/` settles the caller's matured plans
+  (`settle_user_maturities`), so payouts happen with no cron — even on Render's
+  free tier.
+- **Sweep:** `python manage.py run_maturities` pays out *every* due plan (for
+  users who never open the app). Enable the `zitch-maturities` cron in
+  `render.yaml` once the service is on a paid Render plan (cron has no free tier).
+
+Payout is idempotent per plan, so overlapping runs never double-pay.
 
 ## Wallet funding flow (Monnify)
 1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
