@@ -52,29 +52,28 @@ services:
       - key: CARD_ISSUER_API_KEY
         sync: false
 
-  # TODO: re-enable the daily Fixed Save maturity payout cron after the
-  # web service is upgraded to a paid plan. Render's cron service type
-  # has no free tier, so leaving this in would break the Blueprint.
-  # Until then, run it on demand from the Render shell:
-  #   python manage.py run_maturities
-  # Original block (uncomment and switch plan to starter or above):
-  #   - type: cron
-  #     name: zitch-maturities
-  #     runtime: python
-  #     rootDir: backend
-  #     plan: starter
-  #     schedule: "0 1 * * *"   # 01:00 UTC daily
-  #     buildCommand: "pip install -r requirements.txt"
-  #     startCommand: "python manage.py run_maturities"
-  #     envVars:
-  #       - key: DJANGO_SECRET_KEY
-  #         generateValue: true
-  #       - key: DJANGO_DEBUG
-  #         value: "false"
-  #       - key: DATABASE_URL
-  #         fromDatabase:
-  #           name: zitch-db
-  #           property: connectionString
+  # Daily Fixed Save maturity sweep — pays out matured plans, including for
+  # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
+  # type has no free tier, so on a free plan this block fails the Blueprint sync.
+  # (Maturities also settle on access via /api/savings/list/, so the app stays
+  # correct even without this cron.)
+  - type: cron
+    name: zitch-maturities
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "0 1 * * *"   # 01:00 UTC daily
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py run_maturities"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
 
 databases:
   - name: zitch-db
