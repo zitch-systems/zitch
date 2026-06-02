@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
@@ -34,10 +34,7 @@ const Loans = () => {
     if (!t) return;
     setToken(t);
     try {
-      const res = await fetch(`${baseUrl}/api/loans/status/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: t }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/loans/status/');
       if (res.limit != null) setLimit(Number(res.limit));
       if (res.available != null) setAvailable(Number(res.available));
       setActive(res.active_loan ?? null);
@@ -54,10 +51,7 @@ const Loans = () => {
     if (!active) return;
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/loans/repay/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, amount: active.outstanding, transaction_pin: pin }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/loans/repay/', { amount: active.outstanding, transaction_pin: pin });
       setPinOpen(false);
       if (res.success) {
         Alert.alert('Success', 'Loan repaid');

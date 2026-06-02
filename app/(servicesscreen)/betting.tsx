@@ -3,6 +3,7 @@ import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -41,11 +42,7 @@ const Betting = () => {
   const fund = async (pin: string) => {
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/betting/fund/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, platform: selected, user_id: userId, amount: amt, transaction_pin: pin }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/betting/fund/', { platform: selected, user_id: userId, amount: amt, transaction_pin: pin });
       if (res.success) {
         setStep(null);
         setDone(true);

@@ -3,6 +3,7 @@ import { View, Text, Pressable, Alert } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -43,11 +44,7 @@ const Exams = () => {
   const purchase = async (pin: string) => {
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/exams/buy/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, exam: selected, quantity: qty, phone, transaction_pin: pin }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/exams/buy/', { exam: selected, quantity: qty, phone, transaction_pin: pin });
       if (res.success) {
         setStep(null);
         setDone(true);

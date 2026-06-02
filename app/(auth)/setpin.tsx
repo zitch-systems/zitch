@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
@@ -25,13 +25,7 @@ const SetPin = () => {
 
   const submit = async (finalPin: string) => {
     try {
-      // Fall back to a fresh read in case the async token load hasn't landed.
-      const t = token || (await getToken()) || '';
-      const response = await fetch(`${baseUrl}/api/set-transaction-pin/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: t, pin: finalPin }),
-      });
+      const response = await apiPost('/api/set-transaction-pin/', { pin: finalPin });
       const result = await response.json();
       if (response.ok) {
         router.replace('/completed');

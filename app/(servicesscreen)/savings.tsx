@@ -1,8 +1,8 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, ActivityIndicator, Pressable, RefreshControl, ScrollView } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
@@ -94,11 +94,7 @@ const MySavings = () => {
       return;
     }
     try {
-      const res = await fetch(`${baseUrl}/api/savings/list/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/savings/list/');
       if (Array.isArray(res?.plans)) {
         setPlans(res.plans);
         setTotalLocked(Number(res.total_locked ?? 0));

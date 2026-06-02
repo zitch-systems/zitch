@@ -3,6 +3,7 @@ import { View, Text, Pressable, Alert } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
@@ -72,11 +73,7 @@ const FixedSave = () => {
   const create = async (pin: string) => {
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/savings/create/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, amount: amt, days, transaction_pin: pin }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/savings/create/', { amount: amt, days, transaction_pin: pin });
       if (res.success) {
         setStep(null);
         setDone(true);

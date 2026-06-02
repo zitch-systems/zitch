@@ -2,8 +2,8 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -44,10 +44,7 @@ const Kyc = () => {
     if (!t) return;
     setToken(t);
     try {
-      const res = await fetch(`${baseUrl}/api/kyc/status/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: t }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/kyc/status/');
       if (res.success) setStatus(res);
     } catch { /* keep */ }
   }, []);
@@ -56,10 +53,7 @@ const Kyc = () => {
   const submit = async (path: string, body: object, label: string) => {
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}${path}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, ...body }),
-      }).then((r) => r.json());
+      const res = await apiJson(path, body);
       if (res.success) { setStatus(res); Alert.alert('Success', `${label} verified`); }
       else Alert.alert('Error', res.message || `${label} verification failed`);
     } catch { Alert.alert('Error', 'Something went wrong.'); }
