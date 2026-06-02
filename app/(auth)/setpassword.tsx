@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, Link } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -45,13 +45,7 @@ const SetPassword = () => {
     }
     setIsUpdating(true);
     try {
-      // Fall back to a fresh read in case the async token load hasn't landed.
-      const t = token || (await getToken()) || '';
-      const response = await fetch(`${baseUrl}/api/set-password/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: t, password: p1 }),
-      });
+      const response = await apiPost('/api/set-password/', { password: p1 });
       const result = await response.json();
       if (response.ok) {
         router.replace('/setpin');

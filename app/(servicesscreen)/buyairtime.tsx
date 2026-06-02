@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -39,16 +39,11 @@ const BuyAirtime = () => {
   const purchase = async (enteredPin: string) => {
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/buyairtime/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          access_token: token,
-          network: net,
-          phone,
-          amount: amt,
-          transaction_pin: enteredPin,
-        }),
+      const response = await apiPost('/api/utility/buyairtime/', {
+        network: net,
+        phone,
+        amount: amt,
+        transaction_pin: enteredPin,
       });
       const result = await response.json();
       if (response.ok) {

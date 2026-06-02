@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -22,11 +22,7 @@ const AccountDetails = () => {
 
   useEffect(() => {
     if (!token) return;
-    fetch(`${baseUrl}/api/wallet_balance/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: token }),
-    })
+    apiPost('/api/wallet_balance/')
       .then((r) => r.json())
       .then((data) => {
         if (data.success) {
@@ -44,16 +40,11 @@ const AccountDetails = () => {
   const handleUpdate = async () => {
     setIsUpdating(true);
     try {
-      const response = await fetch(`${baseUrl}/api/update_info/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: form.email || current.email,
-          phone: form.phone || current.phone,
-          first_name: form.firstName || current.firstName,
-          last_name: form.lastName || current.lastName,
-          access_token: token,
-        }),
+      const response = await apiPost('/api/update_info/', {
+        email: form.email || current.email,
+        phone: form.phone || current.phone,
+        first_name: form.firstName || current.firstName,
+        last_name: form.lastName || current.lastName,
       });
       const result = await response.json();
       if (response.ok) {

@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import { Screen, Header, Field, Btn, money } from '@/components/design/ui';
 import { Label, QuickAmounts } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -33,11 +33,7 @@ const AddMoney = () => {
     setBusy(true);
     try {
       // 1. initialize -> get reference + checkout url
-      const initRes = await fetch(`${baseUrl}/api/fund/initialize/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, amount: amt }),
-      }).then((r) => r.json());
+      const initRes = await apiJson('/api/fund/initialize/', { amount: amt });
 
       if (!initRes.success) {
         Alert.alert('Error', initRes.message || 'Could not start payment');
@@ -51,11 +47,7 @@ const AddMoney = () => {
       }
 
       // 3. verify -> credits the wallet once confirmed
-      const verifyRes = await fetch(`${baseUrl}/api/fund/verify/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, reference: initRes.reference }),
-      }).then((r) => r.json());
+      const verifyRes = await apiJson('/api/fund/verify/', { reference: initRes.reference });
 
       if (verifyRes.success) {
         setFunded(verifyRes.wallet ?? '0');

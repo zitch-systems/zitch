@@ -3,6 +3,7 @@ import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost, apiJson } from '@/lib/api';
 import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
@@ -51,7 +52,7 @@ const SendMoney = () => {
       setToken(t);
       fetch(`${baseUrl}/api/transfers/banks/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
         .then((r) => r.json()).then((res) => res.banks && setBanks(res.banks)).catch(() => {});
-      fetch(`${baseUrl}/api/transfers/beneficiaries/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ access_token: t }) })
+      apiPost('/api/transfers/beneficiaries/')
         .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
     });
   }, []);
@@ -77,10 +78,7 @@ const SendMoney = () => {
   const resolveBank = async () => {
     if (acct.length !== 10 || !bank) return;
     try {
-      const res = await fetch(`${baseUrl}/api/transfers/resolve/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, account_number: acct, bank: bank.code }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/transfers/resolve/', { account_number: acct, bank: bank.code });
       if (res.success) setBankName(res.name);
     } catch { /* ignore */ }
   };
@@ -90,10 +88,7 @@ const SendMoney = () => {
     if (identifier.trim().length < 4) { Alert.alert('Error', 'Enter the recipient phone number.'); return; }
     setResolving(true);
     try {
-      const res = await fetch(`${baseUrl}/api/transfer/resolve/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, identifier }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/transfer/resolve/', { identifier });
       if (res.success) setResolvedName(res.name);
       else Alert.alert('Not found', res.message || 'No Zitch user with that detail.');
     } catch { Alert.alert('Error', 'Something went wrong.'); }
@@ -106,16 +101,12 @@ const SendMoney = () => {
       const accountNumber = picked ? picked.account_number : acct;
       const bankNameFinal = picked ? picked.bank_name : bank?.name;
       const bankCode = picked ? banks.find((b) => b.name === bankNameFinal)?.code : bank?.code;
-      return fetch(`${baseUrl}/api/transfers/send/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt, transaction_pin: pin, note }),
-      }).then((r) => r.json());
+      return apiJson('/api/transfers/send/', {
+        account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt, transaction_pin: pin, note,
+      });
     }
     const id = picked ? picked.account_number : identifier;
-    return fetch(`${baseUrl}/api/transfer/send/`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: token, identifier: id, amount: amt, transaction_pin: pin, note }),
-    }).then((r) => r.json());
+    return apiJson('/api/transfer/send/', { identifier: id, amount: amt, transaction_pin: pin, note });
   };
 
   const send = async (pin: string) => {

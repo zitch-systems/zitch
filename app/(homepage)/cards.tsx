@@ -2,8 +2,8 @@ import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable, Image, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, Field, Sheet, PinPad, money } from '@/components/design/ui';
 import { QuickAmounts } from '@/components/design/flowkit';
@@ -33,10 +33,7 @@ const Cards = () => {
     if (!t) return;
     setToken(t);
     try {
-      const res = await fetch(`${baseUrl}/api/cards/list/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: t }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/cards/list/');
       setCard(res.cards?.[0] ?? null);
     } catch { /* keep last state */ }
   }, []);
@@ -46,10 +43,7 @@ const Cards = () => {
   const createCard = async () => {
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/cards/create/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/cards/create/');
       if (res.success) setCard(res.card);
       else Alert.alert('Error', res.message || 'Could not create card');
     } catch { Alert.alert('Error', 'Something went wrong.'); }
@@ -59,10 +53,7 @@ const Cards = () => {
   const toggleFreeze = async () => {
     if (!card) return;
     try {
-      const res = await fetch(`${baseUrl}/api/cards/freeze/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, card_id: card.id }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/cards/freeze/', { card_id: card.id });
       if (res.success) setCard(res.card);
     } catch { Alert.alert('Error', 'Something went wrong.'); }
   };
@@ -71,10 +62,7 @@ const Cards = () => {
     if (!card) return;
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/cards/fund/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, card_id: card.id, amount: fundAmt, transaction_pin: pin }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/cards/fund/', { card_id: card.id, amount: fundAmt, transaction_pin: pin });
       setFundPin(false);
       if (res.success) { setCard(res.card); setFundAmt(''); reloadWallet(); Alert.alert('Success', 'Card funded'); }
       else Alert.alert('Error', res.message || 'Funding failed');
@@ -86,10 +74,7 @@ const Cards = () => {
     if (!card) return;
     setBusy(true);
     try {
-      const res = await fetch(`${baseUrl}/api/cards/details/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, card_id: card.id, transaction_pin: pin }),
-      }).then((r) => r.json());
+      const res = await apiJson('/api/cards/details/', { card_id: card.id, transaction_pin: pin });
       setDetailsPin(false);
       if (res.success) setReveal({ pan: res.pan, cvv: res.cvv, expiry: res.expiry, holder: res.holder });
       else Alert.alert('Error', res.message || 'Could not fetch details');

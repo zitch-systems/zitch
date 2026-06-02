@@ -3,6 +3,7 @@ import { View, Text, Alert, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -88,16 +89,11 @@ const BuyData = () => {
   const purchase = async (enteredPin: string) => {
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/buydata/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone,
-          datanetwork: net,
-          selectedDataPlan: plan,
-          access_token: token,
-          transaction_pin: enteredPin,
-        }),
+      const response = await apiPost('/api/utility/buydata/', {
+        phone,
+        datanetwork: net,
+        selectedDataPlan: plan,
+        transaction_pin: enteredPin,
       });
       const result = await response.json();
       if (response.ok) {

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, ZItem, money } from '@/components/design/ui';
@@ -47,11 +47,7 @@ const Me = () => {
         const t = await getToken();
         if (!t) return;
         try {
-          const res = await fetch(`${baseUrl}/api/kyc/status/`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ access_token: t }),
-          }).then((r) => r.json());
+          const res = await apiJson('/api/kyc/status/');
           if (res?.tier) setTier(Number(res.tier));
         } catch {
           // keep last-known tier

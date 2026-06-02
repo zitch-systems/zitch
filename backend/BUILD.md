@@ -7,7 +7,8 @@ whole flow is testable with zero external accounts.
 ## Stack
 - Django 5.1 (plain JSON views, no DRF)
 - PostgreSQL in prod (SQLite locally)
-- Token auth (opaque `access_token` returned in the body, as the app expects)
+- Token auth: opaque token via `Authorization: Bearer <token>` (or `access_token`
+  in the body for older app builds — `require_user` accepts both)
 - Render for hosting
 
 ## Run locally
@@ -106,7 +107,10 @@ Set the webhook URL in the Monnify dashboard to:
 - Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID`, and (when a
   card issuer is chosen) `CARD_ISSUER_*` — confirm the request/response mapping
   in `utility/providers.py`.
-- Move auth to an `Authorization: Bearer` header instead of token-in-body.
+- Auth accepts `Authorization: Bearer <token>` (preferred) or body `access_token`.
+  The app's `lib/api.ts` `apiPost`/`apiJson` helpers send the Bearer header and
+  the core money screens use them; remaining screens can adopt incrementally —
+  the body token still works, so nothing breaks mid-migration.
 - Replace seeded plans with the live aggregator catalogue.
 - Bank transfers use Monnify disbursements: set `MONNIFY_SOURCE_ACCOUNT` (the
   Monnify wallet to pay out from) and point the Monnify **disbursement** webhook

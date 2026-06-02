@@ -1,8 +1,10 @@
 """Small helpers for JSON POST views without pulling in DRF.
 
-The Expo app sends JSON bodies and (for authenticated calls) an `access_token`
-field inside the body. These helpers parse the body, resolve the user from that
-token, and standardise error shapes so views stay tiny.
+The Expo app sends JSON bodies. Authenticated calls pass the token either as an
+`Authorization: Bearer <token>` header (preferred) or, for older builds, an
+`access_token` field in the body — `require_user` accepts both. These helpers
+parse the body, resolve the user, and standardise error shapes so views stay
+tiny.
 """
 import functools
 import json
@@ -68,8 +70,18 @@ def api(view):
     return wrapper
 
 
+def resolve_token(request) -> str:
+    """The access token from the `Authorization: Bearer` header, falling back to
+    the body `access_token` (older app builds send it there)."""
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return (getattr(request, "data", None) or {}).get("access_token", "")
+
+
 def require_user(view):
-    """Decorator: resolves the access_token in the body to a User.
+    """Decorator: resolves the request's access token (Bearer header or body)
+    to a User.
 
     Apply *below* @api so request.data is available. Injects `request.user_obj`.
     """
@@ -78,8 +90,7 @@ def require_user(view):
     def wrapper(request, *args, **kwargs):
         from accounts.models import AccessToken
 
-        token = (request.data or {}).get("access_token", "")
-        user = AccessToken.resolve(token)
+        user = AccessToken.resolve(resolve_token(request))
         if user is None:
             return fail("Invalid or expired session", status=401)
         request.user_obj = user
