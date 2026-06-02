@@ -46,7 +46,7 @@ class Transaction(models.Model):
 
 
 class FundingIntent(models.Model):
-    """Tracks a wallet top-up from initialize -> verified, keyed by the Paystack
+    """Tracks a wallet top-up from initialize -> verified, keyed by the payment
     reference. Crediting is idempotent: a reference can only fund the wallet once
     (guarded by `credited`), so retries/duplicate webhooks are safe.
     """

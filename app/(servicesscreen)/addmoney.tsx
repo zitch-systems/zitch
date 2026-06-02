@@ -44,7 +44,7 @@ const AddMoney = () => {
         return;
       }
 
-      // 2. open Paystack checkout (skipped in mock mode where url is mock://)
+      // 2. open Monnify checkout (skipped in mock mode where url is mock://)
       const url = initRes.authorization_url || '';
       if (url && url.startsWith('http')) {
         await WebBrowser.openBrowserAsync(url);
@@ -100,7 +100,7 @@ const AddMoney = () => {
       <View style={{ height: 24 }} />
       <Btn label={amount > 0 ? `Fund ${money(amount)}` : 'Fund wallet'} icon="plus" disabled={busy || amount < 100} onPress={fund} />
       <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 14, textAlign: 'center', fontFamily: font.regular }}>
-        Secured by Paystack · cards & bank transfer
+        Secured by Monnify · cards & bank transfer
       </Text>
     </Screen>
   );

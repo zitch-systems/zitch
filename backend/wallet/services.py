@@ -80,7 +80,7 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     """Credit the wallet for a verified funding reference, exactly once.
 
     Locks the FundingIntent row so concurrent calls (the app's verify request
-    AND the Paystack webhook hitting at the same time) can't double-credit.
+    AND the Monnify webhook hitting at the same time) can't double-credit.
     Returns the credit Transaction if this call performed the credit, else None.
     """
     try:

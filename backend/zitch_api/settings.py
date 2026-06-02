@@ -129,28 +129,34 @@ RATELIMIT_ENABLE = env_bool("RATELIMIT_ENABLE", not TESTING)
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.
-VTPASS = {
-    "BASE_URL": os.environ.get("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"),
-    "API_KEY": os.environ.get("VTPASS_API_KEY", ""),
-    "SECRET_KEY": os.environ.get("VTPASS_SECRET_KEY", ""),
+# VTU / bills aggregator — Baxi.
+BAXI = {
+    "BASE_URL": os.environ.get("BAXI_BASE_URL", "https://payments.baxipay.com.ng/api/baxipay"),
+    "API_KEY": os.environ.get("BAXI_API_KEY", ""),
 }
-PAYSTACK = {
-    "SECRET_KEY": os.environ.get("PAYSTACK_SECRET_KEY", ""),
-    "PUBLIC_KEY": os.environ.get("PAYSTACK_PUBLIC_KEY", ""),
+# Payments (wallet funding) — Monnify.
+MONNIFY = {
+    "BASE_URL": os.environ.get("MONNIFY_BASE_URL", "https://sandbox.monnify.com"),
+    "API_KEY": os.environ.get("MONNIFY_API_KEY", ""),
+    "SECRET_KEY": os.environ.get("MONNIFY_SECRET_KEY", ""),
+    "CONTRACT_CODE": os.environ.get("MONNIFY_CONTRACT_CODE", ""),
+    "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
 }
-TERMII = {
-    "API_KEY": os.environ.get("TERMII_API_KEY", ""),
-    "SENDER_ID": os.environ.get("TERMII_SENDER_ID", "Zitch"),
+# SMS / OTP — Sendchamp.
+SENDCHAMP = {
+    "BASE_URL": os.environ.get("SENDCHAMP_BASE_URL", "https://api.sendchamp.com/api/v1"),
+    "API_KEY": os.environ.get("SENDCHAMP_API_KEY", ""),
+    "SENDER_NAME": os.environ.get("SENDCHAMP_SENDER_NAME", "Sendchamp"),
 }
-# KYC (BVN/NIN/liveness) — Dojah example. Blank => mock mode.
-KYC = {
-    "BASE_URL": os.environ.get("KYC_BASE_URL", "https://api.dojah.io"),
-    "APP_ID": os.environ.get("KYC_APP_ID", ""),
-    "SECRET_KEY": os.environ.get("KYC_SECRET_KEY", ""),
+# KYC (BVN/NIN/liveness) — Prembly (IdentityPass). Blank => mock mode.
+PREMBLY = {
+    "BASE_URL": os.environ.get("PREMBLY_BASE_URL", "https://api.prembly.com"),
+    "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
+    "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
-# Card issuer (virtual cards) — Sudo Africa example. Blank => mock mode.
+# Card issuer (virtual cards) — provider TBD. Blank => mock mode.
 CARD_ISSUER = {
-    "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", "https://api.sudo.africa"),
+    "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),
     "API_KEY": os.environ.get("CARD_ISSUER_API_KEY", ""),
     "BRAND": os.environ.get("CARD_ISSUER_BRAND", "Verve"),
 }

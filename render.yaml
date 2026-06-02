@@ -28,22 +28,25 @@ services:
           name: zitch-db
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
-      - key: VTPASS_API_KEY
+      # Payments — Monnify.
+      - key: MONNIFY_API_KEY
         sync: false
-      - key: VTPASS_SECRET_KEY
+      - key: MONNIFY_SECRET_KEY
         sync: false
-      - key: PAYSTACK_SECRET_KEY
+      - key: MONNIFY_CONTRACT_CODE
         sync: false
-      - key: PAYSTACK_PUBLIC_KEY
+      # VTU / bills — Baxi.
+      - key: BAXI_API_KEY
         sync: false
-      - key: TERMII_API_KEY
+      # SMS / OTP — Sendchamp.
+      - key: SENDCHAMP_API_KEY
         sync: false
-      # KYC (Dojah) — also gates the large-transfer face/liveness check.
-      - key: KYC_APP_ID
+      # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
+      - key: PREMBLY_API_KEY
         sync: false
-      - key: KYC_SECRET_KEY
+      - key: PREMBLY_APP_ID
         sync: false
-      # Virtual card issuer (Sudo Africa).
+      # Virtual card issuer (provider TBD).
       - key: CARD_ISSUER_API_KEY
         sync: false
 
