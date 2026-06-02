@@ -5,6 +5,8 @@ Issuance / freeze / detail-reveal go through the card-issuer provider layer
 """
 from decimal import Decimal, InvalidOperation
 
+from django.db.models import F
+
 from common.http import api, fail, ok, require_user
 from utility.providers import (
     card_secure_details,
@@ -154,8 +156,10 @@ def fund_card(request):
 
     txn.transaction_status = Transaction.SUCCESS
     txn.save(update_fields=["transaction_status"])
-    card.balance += amount
-    card.save(update_fields=["balance"])
+    # Atomic DB increment so two concurrent funds can't lose an update (which
+    # would debit the wallet twice but credit the card once).
+    VirtualCard.objects.filter(pk=card.pk).update(balance=F("balance") + amount)
+    card.refresh_from_db()
 
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)

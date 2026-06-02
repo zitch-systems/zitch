@@ -1,12 +1,16 @@
 """Tests for auth onboarding, OTP hardening, and credential-setting security."""
 import json
 from datetime import timedelta
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
+from betting.models import BettingPlatform
+from exams.models import ExamProduct
+from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
 from .models import OTP
@@ -171,3 +175,95 @@ class RateLimitTests(TestCase):
         with override_settings(RATELIMIT_ENABLE=False):
             for i in range(8):
                 self.assertEqual(self.send(f"070200000{i:02d}").status_code, 200)
+
+
+class FullJourneyE2ETests(TestCase):
+    """One chained journey through the whole stack — onboarding -> sign in ->
+    fund -> spend -> history -> transfer -> KYC + large-transfer face gate ->
+    loan -> savings -> card -> betting/exams -> auth-gated lookups. Guards the
+    cross-app integration that per-app unit tests don't. (Rate limiting is off
+    under tests, so creating users via the API isn't throttled.)"""
+
+    PHONE, RECIP = "08099000001", "08099000002"
+
+    def setUp(self):
+        self.client = Client()
+        BettingPlatform.objects.create(code="bet9ja", name="Bet9ja", service_id="bet9ja")
+        ExamProduct.objects.create(code="waec", name="WAEC", description="Result PIN", price=Decimal("3500"))
+
+    def post(self, path, **body):
+        r = self.client.post(path, data=json.dumps(body), content_type="application/json")
+        return r.status_code, r.json()
+
+    def test_full_user_journey(self):
+        P, R = self.PHONE, self.RECIP
+
+        # --- onboarding -> sign in (the auth refactor, end to end) ---
+        self.assertEqual(self.post("/api/phone_verification/", phone=P, email="e2e@zitch.test")[0], 200)
+        otp = OTP.objects.filter(phone=P).latest("created").code
+        self.assertEqual(len(otp), 6)
+        s, b = self.post("/api/verify_otp/", phone=P, otp=otp)
+        self.assertEqual(s, 200)
+        tok = b["access_token"]
+        self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123")[0], 200)
+        self.assertEqual(self.post("/api/set-password/", email=P, password="hacked12345")[0], 401)  # no token
+        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="1234")[0], 200)
+        s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123")
+        self.assertEqual(s, 200)
+        tok = b["access_token"]
+
+        # --- fund (credited exactly once across a duplicate verify) ---
+        ref = self.post("/api/fund/initialize/", access_token=tok, amount="50000")[1]["reference"]
+        self.post("/api/fund/verify/", access_token=tok, reference=ref)
+        self.post("/api/fund/verify/", access_token=tok, reference=ref)
+        s, b = self.post("/api/wallet_balance/", access_token=tok)
+        self.assertEqual(b["wallet"], "50000.00")
+        self.assertIn("user_first_name", b)  # the app reads this
+
+        # --- spend + history shape the app depends on ---
+        self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
+                                   network="1", phone=P, transaction_pin="1234")[0], 200)
+        self.assertEqual(self.post("/api/wallet_balance/", access_token=tok)[1]["wallet"], "49000.00")
+        txns = self.post("/api/user-transaction-history/", access_token=tok)[1]["all_site_transactions"]
+        self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(txns[0]))
+
+        # --- transfer ---
+        recip = User.objects.create(username=R, phone=R, email="r@zitch.test", first_name="Reci", last_name="Pient")
+        get_or_create_wallet(recip)
+        self.assertEqual(self.post("/api/transfer/resolve/", access_token=tok, identifier=R)[0], 200)
+        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
+                                   amount="5000", transaction_pin="1234")[0], 200)
+        self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
+
+        # --- KYC tiers + large-transfer face gate ---
+        self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
+        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 3)
+        ref2 = self.post("/api/fund/initialize/", access_token=tok, amount="200000")[1]["reference"]
+        self.post("/api/fund/verify/", access_token=tok, reference=ref2)
+        s, b = self.post("/api/transfer/send/", access_token=tok, identifier=R, amount="150000", transaction_pin="1234")
+        self.assertEqual((s, b.get("code")), (403, "face_required"))
+        self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
+        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
+                                   amount="150000", transaction_pin="1234")[0], 200)
+
+        # --- loan, savings, card, betting, exam ---
+        self.assertEqual(self.post("/api/loans/request/", access_token=tok, amount="100000",
+                                   tenure_days=30, transaction_pin="1234")[0], 200)
+        self.assertEqual(self.post("/api/loans/repay/", access_token=tok, amount="200000",
+                                   transaction_pin="1234")[1]["loan"]["status"], "repaid")
+        self.assertEqual(self.post("/api/savings/create/", access_token=tok, amount="10000",
+                                   days=90, transaction_pin="1234")[0], 200)
+        self.assertGreaterEqual(len(self.post("/api/savings/list/", access_token=tok)[1]["plans"]), 1)
+        self.assertEqual(self.post("/api/cards/create/", access_token=tok)[0], 200)
+        self.assertEqual(self.post("/api/cards/fund/", access_token=tok, amount="5000",
+                                   transaction_pin="1234")[1]["card"]["balance"], "5000.00")
+        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="1234")[0], 200)
+        self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
+                                   user_id="ZB99999", amount="1000", transaction_pin="1234")[0], 200)
+        self.assertEqual(self.post("/api/exams/buy/", access_token=tok, exam="waec",
+                                   quantity=1, phone=P, transaction_pin="1234")[0], 200)
+
+        # --- name lookups require auth ---
+        self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)
+        self.assertEqual(self.post("/api/utility/validate_meter/", access_token=tok,
+                                   disco="1", meter="1234567890")[0], 200)
