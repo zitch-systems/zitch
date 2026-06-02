@@ -1,9 +1,9 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -66,11 +66,23 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
 
+  // Capture a live selfie and send it for server-side liveness verification.
+  // The backend gates large transfers on the result, so a real image (not a
+  // device-unlock claim) is what clears it.
   const verifyFace = async () => {
-    const available = await isBiometricAvailable();
-    if (!available) { Alert.alert('Unavailable', 'Set up Face ID or a fingerprint on this device first.'); return; }
-    const ok = await authenticate('Verify your identity');
-    if (ok) submit('/api/kyc/face/', {}, 'Face');
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Camera needed', 'Allow camera access so we can verify your identity.');
+      return;
+    }
+    const shot = await ImagePicker.launchCameraAsync({
+      cameraType: ImagePicker.CameraType.front,
+      base64: true,
+      quality: 0.4,
+      allowsEditing: false,
+    });
+    if (shot.canceled || !shot.assets?.[0]?.base64) return;
+    submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Face');
   };
 
   return (
