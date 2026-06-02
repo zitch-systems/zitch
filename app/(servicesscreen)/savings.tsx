@@ -7,6 +7,7 @@ import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
+import { daysUntil, ratePct, lockProgress } from '@/lib/savings';
 
 type Plan = {
   reference: string;
@@ -18,15 +19,6 @@ type Plan = {
   status: 'active' | 'matured';
   matures_at: string;
 };
-
-// Whole days from today until an ISO date (negative once the date has passed).
-const daysUntil = (iso: string) => {
-  const d = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return 0;
-  return Math.ceil((d.getTime() - Date.now()) / 86_400_000);
-};
-
-const pct = (rate: string) => `${(Number(rate) * 100).toFixed(0)}% p.a`;
 
 const StatusPill = ({ matured }: { matured: boolean }) => {
   const { c } = useTheme();
@@ -53,7 +45,7 @@ const PlanCard = ({ plan }: { plan: Plan }) => {
   const { c } = useTheme();
   const matured = plan.status === 'matured';
   const left = daysUntil(plan.matures_at);
-  const progress = matured ? 1 : Math.min(1, Math.max(0, (plan.duration_days - Math.max(0, left)) / plan.duration_days));
+  const progress = lockProgress(matured, plan.duration_days, left);
   const matureLine = matured
     ? 'Matured'
     : left <= 0
@@ -69,7 +61,7 @@ const PlanCard = ({ plan }: { plan: Plan }) => {
           </View>
           <View>
             <Text style={{ fontFamily: font.bold, fontSize: 15, color: c.ink1 }}>Fixed Save</Text>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{pct(plan.rate)} · {plan.duration_days} days</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{ratePct(plan.rate)} · {plan.duration_days} days</Text>
           </View>
         </View>
         <StatusPill matured={matured} />

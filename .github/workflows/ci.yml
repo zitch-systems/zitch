@@ -43,5 +43,7 @@ jobs:
       - run: npm ci
       - name: Typecheck
         run: npx tsc --noEmit
+      - name: Unit tests
+        run: npm test -- --ci
       - name: Bundle (Metro export, iOS)
         run: npx expo export --platform ios --output-dir /tmp/ciexport
