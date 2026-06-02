@@ -5,6 +5,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from common.http import api, fail, ok, require_user
+from common.ratelimit import ratelimit
 from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_sms
 from wallet.services import get_or_create_wallet
 
@@ -18,6 +19,7 @@ def _otp_on_cooldown(phone: str) -> bool:
     return OTP.objects.filter(phone=phone, created__gte=cutoff).exists()
 
 
+@ratelimit("signin", limit=10, window=300)
 @api
 def signin(request):
     """POST /api/sigin/  {email_or_phone, password} -> {access_token}"""
@@ -35,6 +37,7 @@ def signin(request):
     return ok(access_token=token.key, message="Signed in")
 
 
+@ratelimit("otp_send", limit=5, window=60)
 @api
 def phone_verification(request):
     """POST /api/phone_verification/ {email, phone} -> sends OTP"""
@@ -47,12 +50,13 @@ def phone_verification(request):
     if _otp_on_cooldown(phone):
         return fail("Please wait a moment before requesting another code", status=429)
 
-    code = f"{random.randint(0, 99999):05d}"
+    code = f"{random.randint(0, 999999):06d}"
     OTP.objects.create(phone=phone, email=email, code=code)
     send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP sent")
 
 
+@ratelimit("otp_verify", limit=20, window=60)
 @api
 def verify_otp(request):
     """POST /api/verify_otp/ {otp, phone} -> creates user + {access_token}"""
@@ -87,6 +91,7 @@ def verify_otp(request):
     return ok(access_token=token.key, message="Verified")
 
 
+@ratelimit("otp_send", limit=5, window=60)
 @api
 def resend_verify_otp(request):
     """POST /api/resend_verify_otp/ {phone, email?}
@@ -104,7 +109,7 @@ def resend_verify_otp(request):
     if not email:
         prior = OTP.objects.filter(phone=phone).order_by("-created").first()
         email = prior.email if prior else ""
-    code = f"{random.randint(0, 99999):05d}"
+    code = f"{random.randint(0, 999999):06d}"
     OTP.objects.create(phone=phone, email=email, code=code)
     send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP resent")

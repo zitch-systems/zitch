@@ -3,6 +3,7 @@ import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
@@ -11,6 +12,8 @@ import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
 const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
+// Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
+const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; initials: string; color: string };
@@ -118,6 +121,13 @@ const SendMoney = () => {
   const send = async (pin: string) => {
     setBusy(true);
     try {
+      // Defense-in-depth: a device biometric step-up for large transfers, on top
+      // of the transaction PIN and the server-side face_verified gate. If the
+      // device has no enrolled biometrics, the PIN + server checks still apply.
+      if (amount >= LARGE_TXN && (await isBiometricAvailable())) {
+        const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
+        if (!okScan) { setStep(null); return; }
+      }
       const res = await postSend(pin);
 
       // Large transfers need durable face verification (done once in KYC).

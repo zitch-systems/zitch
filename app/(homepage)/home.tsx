@@ -79,7 +79,7 @@ const Home = () => {
           </Pressable>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 }}>
-          <Text style={{ color: '#fff', fontSize: 31, fontFamily: font.bold, fontVariant: ['tabular-nums'] }}>
+          <Text style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
             {showBal ? money(balance) : '₦ ••••••'}
           </Text>
           <Pressable onPress={() => setShowBal(!showBal)}>

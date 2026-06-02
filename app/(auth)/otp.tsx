@@ -8,7 +8,7 @@ import { Screen, Header, Btn } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
 
-const OTP_LEN = 5;
+const OTP_LEN = 6;
 
 const OTPVerification = () => {
   const { c } = useTheme();
