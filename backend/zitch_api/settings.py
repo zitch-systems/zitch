@@ -5,6 +5,7 @@ Local SQLite by default; Render + Postgres in production via environment
 variables. See .env.example for the full list.
 """
 import os
+import sys
 from pathlib import Path
 
 import dj_database_url
@@ -118,6 +119,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- App-specific config ---
 TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
+
+# Per-IP rate limiting (see common/ratelimit). Off under tests so the shared
+# process cache can't bleed counts across unrelated cases; a dedicated test
+# re-enables it. In production, back the cache with Redis (or rate-limit at the
+# edge) for accurate limits across workers.
+TESTING = "test" in sys.argv
+RATELIMIT_ENABLE = env_bool("RATELIMIT_ENABLE", not TESTING)
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.

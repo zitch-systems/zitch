@@ -3,7 +3,8 @@ import json
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.test import Client, TestCase
+from django.core.cache import cache
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from wallet.tests import make_user
@@ -139,3 +140,34 @@ class KycTierTests(TestCase):
         res, body = self.post("/api/kyc/face/", {"access_token": self.token})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["face_verified"])
+
+
+@override_settings(RATELIMIT_ENABLE=True)
+class RateLimitTests(TestCase):
+    """Per-IP rate limiting (disabled elsewhere in the suite; on here)."""
+
+    def setUp(self):
+        self.client = Client()
+        cache.clear()  # LocMemCache is process-shared and not auto-cleared
+
+    def tearDown(self):
+        cache.clear()
+
+    def send(self, phone):
+        return self.client.post(
+            "/api/phone_verification/",
+            data=json.dumps({"phone": phone, "email": "a@zitch.test"}),
+            content_type="application/json",
+        )
+
+    def test_otp_send_is_ip_rate_limited(self):
+        # Distinct phones (avoids the per-phone cooldown) from one IP: the 6th
+        # request trips the per-IP "otp_send" limit of 5/min.
+        for i in range(5):
+            self.assertEqual(self.send(f"070100000{i:02d}").status_code, 200)
+        self.assertEqual(self.send("07019999999").status_code, 429)
+
+    def test_limiter_is_a_noop_when_disabled(self):
+        with override_settings(RATELIMIT_ENABLE=False):
+            for i in range(8):
+                self.assertEqual(self.send(f"070200000{i:02d}").status_code, 200)
