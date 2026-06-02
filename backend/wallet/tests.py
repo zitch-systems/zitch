@@ -66,6 +66,21 @@ class WalletTests(TestCase):
                                HTTP_AUTHORIZATION=f"Bearer {self.token}")
         self.assertEqual(res.status_code, 200)
 
+    def test_history_returns_authoritative_direction(self):
+        """History must carry a `direction` field — the app keys inflow/outflow
+        off it. The label regex alone misclassifies credits like 'Wallet top-up'
+        and 'Transfer from …', so the backend value is the source of truth."""
+        credit(self.user, Decimal("5000"), "Wallet top-up")  # an inflow
+        make_user("08020000002", "bob@zitch.test")
+        self.post("/api/transfer/send/", {  # an outflow
+            "access_token": self.token, "identifier": "08020000002",
+            "amount": "1000", "transaction_pin": "1234",
+        })
+        _, body = self.post("/api/user-transaction-history/", {"access_token": self.token})
+        dirs = {r["service"]: r["direction"] for r in body["all_site_transactions"]}
+        self.assertEqual(dirs.get("Wallet top-up"), "in")
+        self.assertTrue(any(s.startswith("Transfer to") and d == "out" for s, d in dirs.items()))
+
     # --- funding (idempotency is the whole point) ---
     def test_fund_verify_credits_once(self):
         _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "5000"})
