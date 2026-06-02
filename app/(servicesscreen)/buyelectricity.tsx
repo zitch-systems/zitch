@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -51,11 +51,7 @@ const BuyElectricity = () => {
     if (meter.trim().length < 8) { Alert.alert('Error', 'Enter a valid meter number.'); return; }
     setValidating(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/validate_meter/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, meter, disco, meter_type: meterType }),
-      });
+      const response = await apiPost('/api/utility/validate_meter/', { meter, disco, meter_type: meterType });
       const result = await response.json();
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
@@ -72,17 +68,12 @@ const BuyElectricity = () => {
   const purchase = async (enteredPin: string) => {
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/buyelectricity/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          disco,
-          meter,
-          meter_type: meterType,
-          amount: amt,
-          access_token: token,
-          transaction_pin: enteredPin,
-        }),
+      const response = await apiPost('/api/utility/buyelectricity/', {
+        disco,
+        meter,
+        meter_type: meterType,
+        amount: amt,
+        transaction_pin: enteredPin,
       });
       const result = await response.json();
       if (response.ok) {

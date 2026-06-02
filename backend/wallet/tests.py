@@ -51,6 +51,21 @@ class WalletTests(TestCase):
         res, _ = self.post("/api/wallet_balance/", {"access_token": "nope"})
         self.assertEqual(res.status_code, 401)
 
+    def test_bearer_header_authenticates(self):
+        # Token via Authorization: Bearer header, no body token at all.
+        res = self.client.post("/api/wallet_balance/", data=json.dumps({}),
+                               content_type="application/json",
+                               HTTP_AUTHORIZATION=f"Bearer {self.token}")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(Decimal(res.json()["wallet"]), Decimal("20000"))
+
+    def test_bearer_header_takes_precedence_over_body(self):
+        # Valid header beats a bogus body token (header is preferred).
+        res = self.client.post("/api/wallet_balance/", data=json.dumps({"access_token": "bogus"}),
+                               content_type="application/json",
+                               HTTP_AUTHORIZATION=f"Bearer {self.token}")
+        self.assertEqual(res.status_code, 200)
+
     # --- funding (idempotency is the whole point) ---
     def test_fund_verify_credits_once(self):
         _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "5000"})

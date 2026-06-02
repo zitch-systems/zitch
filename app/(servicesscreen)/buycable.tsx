@@ -3,6 +3,7 @@ import { View, Text, Alert, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -84,11 +85,7 @@ const BuyCable = () => {
     if (iuc.trim().length < 8) { Alert.alert('Error', 'Enter a valid IUC / smartcard number.'); return; }
     setValidating(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/validate_iuc/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, iuc, cablenetwork: prov }),
-      });
+      const response = await apiPost('/api/utility/validate_iuc/', { iuc, cablenetwork: prov });
       const result = await response.json();
       if (response.ok) {
         setValidatedName(result.customer_name || result.name || 'Verified');
@@ -105,16 +102,11 @@ const BuyCable = () => {
   const purchase = async (enteredPin: string) => {
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/utility/buycable/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          iuc,
-          cablenetwork: prov,
-          selectedcablePlan: plan,
-          access_token: token,
-          transaction_pin: enteredPin,
-        }),
+      const response = await apiPost('/api/utility/buycable/', {
+        iuc,
+        cablenetwork: prov,
+        selectedcablePlan: plan,
+        transaction_pin: enteredPin,
       });
       const result = await response.json();
       if (response.ok) {
