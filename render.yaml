@@ -38,6 +38,14 @@ services:
         sync: false
       - key: TERMII_API_KEY
         sync: false
+      # KYC (Dojah) — also gates the large-transfer face/liveness check.
+      - key: KYC_APP_ID
+        sync: false
+      - key: KYC_SECRET_KEY
+        sync: false
+      # Virtual card issuer (Sudo Africa).
+      - key: CARD_ISSUER_API_KEY
+        sync: false
 
   # TODO: re-enable the daily Fixed Save maturity payout cron after the
   # web service is upgraded to a paid plan. Render's cron service type
