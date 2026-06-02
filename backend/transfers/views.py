@@ -1,6 +1,6 @@
 """Bank transfer (payout) endpoints + saved beneficiaries.
 
-Payout to external banks needs a provider (Paystack Transfers / NIBSS); until
+Payout to external banks needs a provider (Monnify disbursements / NIBSS); until
 keys are set this runs in MOCK mode and resolves/settles automatically so the
 flow is testable. Money still moves correctly out of the wallet ledger.
 """

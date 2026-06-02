@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import api, check_send_limits, fail, ok, require_user
-from utility.providers import paystack_initialize, paystack_verify, paystack_verify_signature
+from utility.providers import payment_initialize, payment_verify, payment_verify_signature
 
 from .models import FundingIntent
 from .services import (
@@ -58,7 +58,7 @@ def transaction_history(request):
     )
 
 
-# --------------------------- WALLET FUNDING (Paystack) ---------------------------
+# --------------------------- WALLET FUNDING (Monnify) ---------------------------
 @api
 @require_user
 def fund_initialize(request):
@@ -66,7 +66,7 @@ def fund_initialize(request):
     -> {success, reference, authorization_url}
 
     The app opens authorization_url in a browser. The wallet is credited only
-    after Paystack confirms payment (verify endpoint and/or webhook).
+    after Monnify confirms payment (verify endpoint and/or webhook).
     """
     user = request.user_obj
     try:
@@ -78,7 +78,7 @@ def fund_initialize(request):
 
     reference = make_reference("ZPAY")
     FundingIntent.objects.create(user=user, reference=reference, amount=amount)
-    result = paystack_initialize(user.email or f"{user.phone}@zitch.app", amount, reference)
+    result = payment_initialize(user.email or f"{user.phone}@zitch.app", amount, reference)
     if not result.get("success"):
         return fail(result.get("message", "Could not start payment"), status=502)
     return ok(
@@ -93,13 +93,13 @@ def fund_initialize(request):
 @require_user
 def fund_verify(request):
     """POST /api/fund/verify/ {access_token, reference}
-    -> {success, wallet} — confirms with Paystack and credits once.
+    -> {success, wallet} — confirms with Monnify and credits once.
     """
     reference = (request.data.get("reference") or "").strip()
     if not reference:
         return fail("Reference is required")
 
-    result = paystack_verify(reference)
+    result = payment_verify(reference)
     if not result.get("success"):
         return fail(result.get("message", "Payment not successful"), status=402)
 
@@ -110,25 +110,26 @@ def fund_verify(request):
 
 @csrf_exempt
 def fund_webhook(request):
-    """POST /api/fund/webhook/ — Paystack server-to-server callback.
+    """POST /api/fund/webhook/ — Monnify server-to-server callback.
 
-    Verifies the HMAC signature, then credits the wallet idempotently on
-    charge.success. Always 200 on accepted events so Paystack stops retrying.
+    Verifies the HMAC signature, then credits the wallet idempotently on a
+    successful transaction. Always 200 on accepted events so Monnify stops
+    retrying.
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
-    signature = request.headers.get("x-paystack-signature", "")
-    if not paystack_verify_signature(request.body, signature):
+    signature = request.headers.get("monnify-signature", "")
+    if not payment_verify_signature(request.body, signature):
         return fail("Invalid signature", status=401)
     try:
         event = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
         return fail("Invalid payload", status=400)
 
-    if event.get("event") == "charge.success":
-        data = event.get("data", {}) or {}
-        reference = data.get("reference", "")
-        amount = (data.get("amount", 0) or 0) / 100
+    if event.get("eventType") == "SUCCESSFUL_TRANSACTION":
+        data = event.get("eventData", {}) or {}
+        reference = data.get("paymentReference", "")
+        amount = data.get("amountPaid")  # Monnify reports naira
         if reference:
             settle_funding(reference, amount)
     return ok(status=True)

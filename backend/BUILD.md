@@ -42,7 +42,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (VTpass / Paystack / Termii keys).
+3. After first deploy, set the service env vars (Monnify / Baxi / Sendchamp / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 
@@ -55,7 +55,7 @@ Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/update_info/`
 KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
-Funding (Paystack): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
+Funding (Monnify): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
@@ -74,25 +74,28 @@ daily cron: `python manage.py run_maturities`. Render runs this via the
 `zitch-maturities` cron service in `render.yaml`. Payout is idempotent per plan,
 so a re-run never double-pays.
 
-## Wallet funding flow (Paystack)
+## Wallet funding flow (Monnify)
 1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
    authorization_url}`. A `FundingIntent` row is created (pending).
-2. App opens `authorization_url` (Paystack checkout) in a browser.
+2. App opens `authorization_url` (Monnify checkout) in a browser.
 3. Wallet is credited **once**, by whichever arrives first:
    - `/api/fund/verify/` `{access_token, reference}` (app calls on return), and/or
-   - `/api/fund/webhook/` (Paystack server callback, HMAC-SHA512 verified).
+   - `/api/fund/webhook/` (Monnify callback, `monnify-signature` HMAC-SHA512 verified).
    `settle_funding()` locks the intent row and guards on `credited`, so
    duplicate verify/webhook calls never double-credit.
-4. In MOCK mode (no `PAYSTACK_SECRET_KEY`) verify/webhook succeed automatically
-   so the flow is testable offline.
+4. In MOCK mode (no Monnify keys) verify/webhook succeed automatically so the
+   flow is testable offline.
 
-Set the webhook URL in the Paystack dashboard to:
+Set the webhook URL in the Monnify dashboard to:
 `https://<your-render-host>/api/fund/webhook/`
 
 ## Before go-live (TODO)
-- Wire real VTpass service IDs / variation codes in `utility/providers.py`.
-- Set `PAYSTACK_SECRET_KEY` + configure the webhook URL above.
-- Set `KYC_*` (Dojah) and `CARD_ISSUER_API_KEY` (Sudo) — confirm the exact
-  request/response mapping in `utility/providers.py`.
+- Verify Baxi per-service endpoints / field names in `utility/providers.py`
+  (airtime, databundle, electricity, multichoice).
+- Set `MONNIFY_API_KEY` / `MONNIFY_SECRET_KEY` / `MONNIFY_CONTRACT_CODE` +
+  configure the webhook URL above; confirm the verify/webhook field shapes.
+- Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID`, and (when a
+  card issuer is chosen) `CARD_ISSUER_*` — confirm the request/response mapping
+  in `utility/providers.py`.
 - Move auth to an `Authorization: Bearer` header instead of token-in-body.
 - Replace seeded plans with the live aggregator catalogue.

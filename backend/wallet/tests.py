@@ -1,4 +1,4 @@
-"""Tests for the wallet core: balance, history, Paystack funding (idempotent),
+"""Tests for the wallet core: balance, history, Monnify funding (idempotent),
 Zitch-to-Zitch transfer, and the tier / face-verification send limits.
 
 All run in MOCK provider mode (no keys), so funding settles automatically.
@@ -10,7 +10,6 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 
 from accounts.models import AccessToken
-from utility.providers import to_kobo
 
 from .models import FundingIntent, Transaction
 from .services import credit, get_or_create_wallet
@@ -68,7 +67,8 @@ class WalletTests(TestCase):
     def test_fund_webhook_credits_once_and_dedupes_with_verify(self):
         _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "7500"})
         ref = init["reference"]
-        event = {"event": "charge.success", "data": {"reference": ref, "amount": 750000}}
+        event = {"eventType": "SUCCESSFUL_TRANSACTION",
+                 "eventData": {"paymentReference": ref, "amountPaid": 7500, "paymentStatus": "PAID"}}
         # Webhook credits (mock signature accepted).
         r1 = self.client.post("/api/fund/webhook/", data=json.dumps(event), content_type="application/json")
         self.assertEqual(r1.status_code, 200)
@@ -150,11 +150,3 @@ class WalletTests(TestCase):
         res, b = self.post("/api/transfer/send/", body)
         self.assertEqual(res.status_code, 200)
         self.assertTrue(b["success"])
-
-
-class KoboTests(TestCase):
-    def test_to_kobo_is_exact(self):
-        self.assertEqual(to_kobo(Decimal("1234.56")), 123456)  # float path gave 123455
-        self.assertEqual(to_kobo("1000"), 100000)
-        self.assertEqual(to_kobo(500), 50000)
-        self.assertEqual(to_kobo(Decimal("201.90")), 20190)
