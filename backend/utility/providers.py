@@ -269,3 +269,114 @@ def kyc_verify_nin(nin: str) -> dict:
         return {"success": bool(data.get("entity")), "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Card issuer — virtual cards (Sudo Africa example)
+# ---------------------------------------------------------------------------
+def _card_issuer_live() -> bool:
+    return bool(settings.CARD_ISSUER["API_KEY"])
+
+
+def _card_issuer_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {settings.CARD_ISSUER['API_KEY']}",
+        "Content-Type": "application/json",
+    }
+
+
+def issue_card(holder: str, customer_ref: str) -> dict:
+    """Create a virtual card with the issuer.
+
+    Returns presentation data only (token + last4/expiry/brand); the full PAN/CVV
+    stay with the issuer and are fetched on demand via card_secure_details().
+    MOCK mode fabricates a card so the flow is testable without an issuer account.
+
+    TODO: confirm the exact Sudo (or chosen issuer) request/response shape.
+    """
+    if not _card_issuer_live():
+        return {
+            "success": True, "mock": True,
+            "card_token": "mock_" + secrets.token_hex(8),
+            "brand": "Verve",
+            "last4": f"{secrets.randbelow(10000):04d}",
+            "expiry": f"{1 + secrets.randbelow(12):02d}/{29 + secrets.randbelow(3)}",
+        }
+    try:
+        resp = requests.post(
+            f"{settings.CARD_ISSUER['BASE_URL']}/cards",
+            json={
+                "type": "virtual",
+                "currency": "NGN",
+                "brand": settings.CARD_ISSUER.get("BRAND", "Verve"),
+                "holderName": holder,
+                "customerId": customer_ref,
+            },
+            headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        d = data.get("data", {}) or {}
+        ok_ = bool(d.get("_id") or d.get("id"))
+        return {
+            "success": ok_,
+            "card_token": d.get("_id") or d.get("id", ""),
+            "brand": d.get("brand", "Verve"),
+            "last4": (d.get("maskedPan") or d.get("number") or "")[-4:],
+            "expiry": f"{d.get('expiryMonth','')}/{str(d.get('expiryYear',''))[-2:]}",
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+
+
+def set_card_status(card_token: str, active: bool) -> dict:
+    """Freeze/unfreeze a card with the issuer. MOCK mode always succeeds."""
+    if not _card_issuer_live():
+        return {"success": True, "mock": True}
+    try:
+        resp = requests.put(
+            f"{settings.CARD_ISSUER['BASE_URL']}/cards/{card_token}",
+            json={"status": "active" if active else "inactive"},
+            headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        return {"success": resp.ok, "raw": resp.json()}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+
+
+def card_secure_details(card_token: str) -> dict:
+    """Fetch full PAN/CVV for a one-time reveal. Never persisted server-side.
+
+    MOCK mode returns a deterministic-looking fake so the reveal UI works.
+    """
+    if not _card_issuer_live():
+        # Stable-ish fake derived from the token so repeated reveals match.
+        seed = int(hashlib.sha256(card_token.encode()).hexdigest(), 16)
+        pan = "5061" + "".join(str((seed >> (i * 4)) % 10) for i in range(12))
+        cvv = f"{seed % 1000:03d}"
+        return {"success": True, "mock": True, "pan": pan, "cvv": cvv}
+    try:
+        resp = requests.get(
+            f"{settings.CARD_ISSUER['BASE_URL']}/cards/{card_token}/secure-data",
+            headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        d = data.get("data", {}) or {}
+        return {"success": resp.ok, "pan": d.get("number", ""), "cvv": d.get("cvv2", ""), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+
+
+def fund_card(card_token: str, amount) -> dict:
+    """Top up an issued card from the funding source. MOCK mode succeeds."""
+    if not _card_issuer_live():
+        return {"success": True, "mock": True}
+    try:
+        resp = requests.post(
+            f"{settings.CARD_ISSUER['BASE_URL']}/cards/{card_token}/fund",
+            json={"amount": float(amount), "currency": "NGN"},
+            headers=_card_issuer_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        return {"success": resp.ok, "raw": resp.json()}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Card issuer unreachable: {exc}"}

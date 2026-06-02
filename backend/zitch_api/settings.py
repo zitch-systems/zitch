@@ -140,5 +140,11 @@ KYC = {
     "APP_ID": os.environ.get("KYC_APP_ID", ""),
     "SECRET_KEY": os.environ.get("KYC_SECRET_KEY", ""),
 }
+# Card issuer (virtual cards) — Sudo Africa example. Blank => mock mode.
+CARD_ISSUER = {
+    "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", "https://api.sudo.africa"),
+    "API_KEY": os.environ.get("CARD_ISSUER_API_KEY", ""),
+    "BRAND": os.environ.get("CARD_ISSUER_BRAND", "Verve"),
+}
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
