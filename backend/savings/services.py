@@ -68,3 +68,15 @@ def run_maturities() -> int:
         if pay_out(plan):
             n += 1
     return n
+
+
+def settle_user_maturities(user) -> int:
+    """Pay out this user's matured plans (idempotent). Returns count.
+
+    Lets maturities settle the moment a user opens their savings, so payouts
+    don't depend on a cron sweep — useful on Render's free tier, which has no
+    cron service. `run_maturities` still sweeps everyone (e.g. users who never
+    open the app) when run on a paid plan.
+    """
+    due = user.savings.filter(status=FixedSave.ACTIVE, paid_out=False, matures_at__lte=timezone.now())
+    return sum(1 for plan in due if pay_out(plan))
