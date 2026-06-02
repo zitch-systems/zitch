@@ -127,7 +127,29 @@ def payment_verify_signature(body: bytes, signature: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # VTU aggregator (airtime / data / cable / electricity) — Baxi
+#
+# Baxi exposes a distinct endpoint per service (not one generic path), so we
+# route on the service_id the views pass ("mtn-airtime", "mtn-data", "dstv",
+# "ikeja-electric", ...) and translate to Baxi's request body.
+#
+# VERIFY-BEFORE-LIVE: the endpoint *paths* below are stable, but the exact
+# service_type codes, body field names, and the prepaid meter token's location
+# in the response must be confirmed against your Baxi dashboard/docs (they
+# couldn't be fetched from CI). The maps below are the single place to adjust.
 # ---------------------------------------------------------------------------
+_BAXI_AIRTIME = {  # network slug -> Baxi service_type
+    "mtn": "mtn", "glo": "glo", "airtel": "airtel",
+    "9mobile": "etisalat", "etisalat": "etisalat",
+}
+_BAXI_CABLE = {"dstv": "dstv", "gotv": "gotv", "startimes": "startimes"}
+_BAXI_DISCO = {  # disco slug -> Baxi service_type
+    "ikeja": "ikeja_electric", "eko": "eko_electric", "abuja": "abuja_electric",
+    "kano": "kano_electric", "port harcourt": "portharcourt_electric",
+    "jos": "jos_electric", "kaduna": "kaduna_electric", "enugu": "enugu_electric",
+    "ibadan": "ibadan_electric", "benin": "benin_electric",
+}
+
+
 def _baxi_live() -> bool:
     return bool(settings.BAXI["API_KEY"])
 
@@ -136,12 +158,81 @@ def _baxi_headers() -> dict:
     return {"x-api-key": settings.BAXI["API_KEY"], "Content-Type": "application/json"}
 
 
-def vtu_purchase(service_id: str, payload: dict) -> dict:
-    """Submit a VTU purchase. MOCK-succeeds when no key is configured.
+def _baxi_amount(value) -> int:
+    try:
+        return int(round(float(value)))  # VTU amounts are whole naira
+    except (TypeError, ValueError):
+        return 0
 
-    TODO: Baxi uses per-service endpoints (airtime/databundle/electricity/
-    multichoice) and field names — map service_id to the right endpoint/body per
-    their docs. This generic call is scaffolding.
+
+def _disco_service_type(slug: str) -> str:
+    return _BAXI_DISCO.get(slug, slug.replace(" ", "") + "_electric")
+
+
+def _baxi_build_request(service_id: str, payload: dict):
+    """Map (service_id, view payload) -> (endpoint_path, Baxi request body).
+
+    Returns (None, {}) for an unrecognised service. agentReference must be
+    unique per transaction; ideally thread the wallet reference through here for
+    reconciliation (TODO) — for now we mint one.
+    """
+    sid = service_id.lower()
+    ref = "ZB-" + secrets.token_hex(6).upper()
+    if sid.endswith("-airtime"):
+        net = sid[: -len("-airtime")]
+        return "services/airtime/request", {
+            "service_type": _BAXI_AIRTIME.get(net, net),
+            "phone": payload.get("phone", ""),
+            "amount": _baxi_amount(payload.get("amount")),
+            "agentReference": ref,
+        }
+    if sid.endswith("-data"):
+        net = sid[: -len("-data")]
+        return "services/databundle/request", {
+            "service_type": f"{_BAXI_AIRTIME.get(net, net)}-data",
+            "phone": payload.get("phone") or payload.get("billersCode", ""),
+            "datacode": payload.get("variation_code", ""),
+            "agentReference": ref,
+        }
+    if sid.endswith("-electric"):
+        return "services/electricity/request", {
+            "service_type": _disco_service_type(sid[: -len("-electric")]),
+            "account_number": payload.get("billersCode", ""),
+            "amount": _baxi_amount(payload.get("amount")),
+            "MeterType": payload.get("variation_code") or "prepaid",
+            "phone": payload.get("phone", ""),
+            "agentReference": ref,
+        }
+    if sid in _BAXI_CABLE:
+        return "services/multichoice/request", {
+            "service_type": _BAXI_CABLE[sid],
+            "account_number": payload.get("billersCode", ""),
+            "product_code": payload.get("variation_code", ""),
+            "agentReference": ref,
+        }
+    return None, {}
+
+
+def _baxi_parse(data: dict) -> dict:
+    d = data.get("data", {}) or {}
+    success = (
+        str(data.get("code")) == "200"
+        or str(data.get("status")).lower() == "success"
+        or str(d.get("statusCode")) == "0"
+    )
+    return {
+        "success": success,
+        "message": data.get("message") or d.get("transactionMessage", "Transaction processed"),
+        "provider_reference": str(d.get("transactionReference") or d.get("baxiReference", "")),
+        "token": d.get("token") or (d.get("rawOutput", {}) or {}).get("standardTokenValue", ""),
+        "raw": data,
+    }
+
+
+def vtu_purchase(service_id: str, payload: dict) -> dict:
+    """Submit a VTU purchase, routing to Baxi's per-service endpoint.
+
+    MOCK-succeeds when no key is configured so the flow is testable offline.
     """
     if not _baxi_live():
         return {
@@ -149,24 +240,15 @@ def vtu_purchase(service_id: str, payload: dict) -> dict:
             "message": "Transaction Successful (mock mode — no aggregator keys set)",
             "provider_reference": "MOCK-" + secrets.token_hex(6).upper(),
         }
+    endpoint, body = _baxi_build_request(service_id, payload)
+    if endpoint is None:
+        return {"success": False, "message": f"Unsupported service: {service_id}"}
     try:
         resp = requests.post(
-            f"{settings.BAXI['BASE_URL']}/services/{service_id}/request",
-            json=payload, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
+            f"{settings.BAXI['BASE_URL']}/{endpoint}",
+            json=body, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
         )
-        data = resp.json()
-        # Baxi signals success via code "200"/status "success"/statusCode 0.
-        success = (
-            str(data.get("code")) == "200"
-            or str(data.get("status")).lower() == "success"
-            or str((data.get("data", {}) or {}).get("statusCode")) == "0"
-        )
-        return {
-            "success": success,
-            "message": data.get("message", "Transaction processed"),
-            "provider_reference": str((data.get("data", {}) or {}).get("transactionReference", "")),
-            "raw": data,
-        }
+        return _baxi_parse(resp.json())
     except requests.RequestException as exc:
         return {"success": False, "message": f"Aggregator unreachable: {exc}"}
 
@@ -175,15 +257,23 @@ def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "")
     """Validate a meter / smartcard number, returning the customer name."""
     if not _baxi_live():
         return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM"}
+    sid = service_id.lower()
+    if sid.endswith("-electric"):
+        service_type = _disco_service_type(sid[: -len("-electric")])
+    else:
+        service_type = _BAXI_CABLE.get(sid, sid)
+    body = {"service_type": service_type, "account_number": billers_code}
+    if variation:
+        body["type"] = variation  # prepaid / postpaid for electricity
     try:
         resp = requests.post(
             f"{settings.BAXI['BASE_URL']}/services/verify",
-            json={"service_type": service_id, "account_number": billers_code, "type": variation},
-            headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
+            json=body, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
         )
         data = resp.json()
         d = data.get("data", {}) or {}
-        name = d.get("name") or d.get("customer_name") or d.get("customerName") or ""
+        name = (d.get("name") or d.get("customer_name") or d.get("customerName")
+                or (d.get("customer", {}) or {}).get("name", ""))
         return {"success": bool(name), "customer_name": name, "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"Aggregator unreachable: {exc}"}

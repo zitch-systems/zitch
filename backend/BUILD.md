@@ -90,10 +90,14 @@ Set the webhook URL in the Monnify dashboard to:
 `https://<your-render-host>/api/fund/webhook/`
 
 ## Before go-live (TODO)
-- Verify Baxi per-service endpoints / field names in `utility/providers.py`
-  (airtime, databundle, electricity, multichoice).
-- Set `MONNIFY_API_KEY` / `MONNIFY_SECRET_KEY` / `MONNIFY_CONTRACT_CODE` +
-  configure the webhook URL above; confirm the verify/webhook field shapes.
+- Baxi per-service routing is wired (airtime/databundle/electricity/multichoice
+  endpoints) in `utility/providers.py`. Confirm the `service_type` code maps
+  (`_BAXI_AIRTIME` / `_BAXI_DISCO` / `_BAXI_CABLE`), body field names, and the
+  prepaid-meter token location against your Baxi dashboard — these couldn't be
+  fetched from CI.
+- Monnify webhook + verify shapes are confirmed against Monnify's docs (no
+  change needed). Just set `MONNIFY_API_KEY` / `MONNIFY_SECRET_KEY` /
+  `MONNIFY_CONTRACT_CODE` and configure the webhook URL above.
 - Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID`, and (when a
   card issuer is chosen) `CARD_ISSUER_*` — confirm the request/response mapping
   in `utility/providers.py`.
