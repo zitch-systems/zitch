@@ -229,6 +229,31 @@ def kyc_verify_bvn(bvn: str) -> dict:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
 
 
+def kyc_verify_face(selfie: str = "") -> dict:
+    """Liveness / selfie-match check, the gate for large transfers.
+
+    MOCK mode accepts it so onboarding + large transfers are testable offline.
+    LIVE mode requires a real liveness result from the provider AND a captured
+    selfie — it fails closed if none is supplied, so the large-transfer step-up
+    can't be cleared without genuine verification once a provider is configured.
+    (Capturing the selfie on-device is the remaining client-side TODO.)
+    """
+    if not _kyc_live():
+        return {"success": True, "mock": True}
+    if not selfie:
+        return {"success": False, "message": "A selfie capture is required for face verification"}
+    try:
+        resp = requests.post(
+            f"{settings.KYC['BASE_URL']}/api/v1/kyc/liveness",
+            json={"image": selfie}, headers=_kyc_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        entity = data.get("entity", {}) or {}
+        return {"success": bool(entity.get("liveness") or entity.get("match")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
 def kyc_verify_nin(nin: str) -> dict:
     """Verify a NIN. MOCK mode accepts any 11-digit value."""
     if len(nin) != 11 or not nin.isdigit():

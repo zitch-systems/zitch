@@ -5,7 +5,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from common.http import api, fail, ok, require_user
-from utility.providers import kyc_verify_bvn, kyc_verify_nin, send_sms
+from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_sms
 from wallet.services import get_or_create_wallet
 
 from .models import OTP, AccessToken, User
@@ -223,12 +223,17 @@ def kyc_nin(request):
 @api
 @require_user
 def kyc_face(request):
-    """POST /api/kyc/face/ {access_token}
-    Marks face/liveness verified. The device proves liveness on the client
-    (expo-local-authentication); a server-side liveness/selfie-match via the
-    KYC provider is a TODO before relying on this for compliance.
+    """POST /api/kyc/face/ {access_token, selfie?}
+
+    Verifies liveness via the KYC provider (mock-accepts offline) and, only on
+    success, marks the user face-verified. Large transfers gate on this
+    server-side flag, so it must never be a bare client claim.
     """
     user = request.user_obj
+    selfie = request.data.get("selfie") or request.data.get("image") or ""
+    result = kyc_verify_face(selfie)
+    if not result.get("success"):
+        return fail(result.get("message", "Face verification failed"), status=400)
     user.face_verified = True
     user.save(update_fields=["face_verified"])
     return ok(success=True, message="Face verification recorded", **_kyc_state(user))

@@ -124,3 +124,8 @@ class KycTierTests(TestCase):
     def test_bvn_rejects_bad_format(self):
         res, _ = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "123"})
         self.assertEqual(res.status_code, 400)
+
+    def test_face_verification_sets_durable_flag(self):
+        res, body = self.post("/api/kyc/face/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["face_verified"])

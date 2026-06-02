@@ -19,13 +19,14 @@ def ok(data=None, **extra):
     return JsonResponse(payload, status=200)
 
 
-def check_send_limits(user, amount, face_ok: bool):
+def check_send_limits(user, amount):
     """Returns an error JsonResponse if `amount` breaks the user's tier limit
-    or needs (but lacks) step-up face verification; otherwise None.
+    or (at/above the large-txn threshold) the user isn't face-verified;
+    otherwise None.
 
-    `face_ok` is True when the request carries proof of a fresh device face
-    check (the app sets face_confirmed after a successful Face ID scan), or the
-    account is already face_verified.
+    Large transfers require durable, server-side face verification
+    (`user.face_verified`, set via the provider-backed KYC face step) — not a
+    per-request flag, which a caller hitting the API directly could just assert.
     """
     if amount > user.transaction_limit:
         return fail(
@@ -35,7 +36,7 @@ def check_send_limits(user, amount, face_ok: bool):
             transaction_limit=str(user.transaction_limit),
         )
     from accounts.models import User
-    if amount >= User.LARGE_TXN_THRESHOLD and not (face_ok or user.face_verified):
+    if amount >= User.LARGE_TXN_THRESHOLD and not user.face_verified:
         return fail(
             "Face verification required for this amount.",
             status=403, code="face_required",

@@ -133,20 +133,23 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.json()["code"], "limit_exceeded")
 
-    def test_large_transfer_needs_face_then_succeeds_with_it(self):
-        rich, token = make_user("08030000003", "rich@zitch.test", balance="500000", tier=3)
+    def test_large_transfer_requires_server_side_face_verification(self):
+        _, token = make_user("08030000003", "rich@zitch.test", balance="500000", tier=3)
         make_user("08040000004", "x@zitch.test")
         body = {"access_token": token, "identifier": "08040000004",
                 "amount": "150000", "transaction_pin": "1234"}
-        # >= 100,000 needs step-up face verification.
-        res = self.client.post("/api/transfer/send/", data=json.dumps(body), content_type="application/json")
+        # >= 100,000 needs face verification.
+        res, b = self.post("/api/transfer/send/", body)
         self.assertEqual(res.status_code, 403)
-        self.assertEqual(res.json()["code"], "face_required")
-        # With a fresh face check it goes through.
-        res2 = self.client.post("/api/transfer/send/",
-                                data=json.dumps({**body, "face_confirmed": True}),
-                                content_type="application/json")
-        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(b["code"], "face_required")
+        # A client-asserted face_confirmed must NOT bypass the gate.
+        res, _ = self.post("/api/transfer/send/", {**body, "face_confirmed": True})
+        self.assertEqual(res.status_code, 403)
+        # Durable, server-side face verification (mock-accepted) clears it.
+        self.post("/api/kyc/face/", {"access_token": token})
+        res, b = self.post("/api/transfer/send/", body)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(b["success"])
 
 
 class KoboTests(TestCase):
