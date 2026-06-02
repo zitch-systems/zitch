@@ -65,7 +65,7 @@ Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
 Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
-Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/`
+Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/` · `/api/transfers/webhook/`
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
 
 ## Fixed Save maturities
@@ -104,5 +104,11 @@ Set the webhook URL in the Monnify dashboard to:
 - Move auth to an `Authorization: Bearer` header instead of token-in-body.
 - Replace seeded plans with the live aggregator catalogue.
 - Bank transfers use Monnify disbursements: set `MONNIFY_SOURCE_ACCOUNT` (the
-  Monnify wallet to pay out from). PENDING payouts still need the OTP-auth step
-  and a disbursement webhook (`SUCCESSFUL/FAILED_DISBURSEMENT`) to reconcile.
+  Monnify wallet to pay out from) and point the Monnify **disbursement** webhook
+  at `https://<your-render-host>/api/transfers/webhook/` — it refunds the wallet
+  on `FAILED/REVERSED_DISBURSEMENT` (payouts settle optimistically on send).
+- Disable 2FA on the Monnify disbursement account for programmatic transfers:
+  the authorization OTP is sent to the merchant, not the app user, so it can't
+  fit the in-app flow. A 2FA-required send currently fails-and-refunds rather
+  than silently succeeding (safe). Wiring the OTP-authorization step is future
+  work if you must keep 2FA on.
