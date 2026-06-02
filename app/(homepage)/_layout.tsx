@@ -13,8 +13,10 @@ const HomeLayout = () => {
       <WalletProvider>
         <Tabs
           // Phone: bottom nav. Fold/tablet: left sidebar rail beside the scene.
+          // (The custom tabBar handles placement, so no tabBarPosition needed —
+          // it isn't a valid bottom-tabs option and tripped the typecheck.)
           tabBar={(props) => (wide ? <Sidebar {...props} /> : <BottomNav {...props} />)}
-          screenOptions={{ headerShown: false, tabBarPosition: wide ? 'left' : 'bottom' }}
+          screenOptions={{ headerShown: false }}
         >
           <Tabs.Screen name="home" />
           <Tabs.Screen name="wallet" />

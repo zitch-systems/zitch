@@ -10,11 +10,21 @@ aggregator (VTpass shown) and verify field names against their docs.
 import hashlib
 import hmac
 import secrets
+from decimal import ROUND_HALF_UP, Decimal
 
 import requests
 from django.conf import settings
 
 REQUEST_TIMEOUT = 30
+
+
+def to_kobo(amount_naira) -> int:
+    """Exact naira -> kobo conversion.
+
+    Using floats here truncates money: int(float("1234.56") * 100) == 123455,
+    losing a kobo. Decimal keeps it exact: 123456.
+    """
+    return int((Decimal(str(amount_naira)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def paystack_live() -> bool:
@@ -105,7 +115,7 @@ def paystack_initialize(email: str, amount_naira, reference: str) -> dict:
             "https://api.paystack.co/transaction/initialize",
             json={
                 "email": email,
-                "amount": int(float(amount_naira) * 100),  # kobo
+                "amount": to_kobo(amount_naira),
                 "reference": reference,
             },
             headers={"Authorization": f"Bearer {settings.PAYSTACK['SECRET_KEY']}"},
@@ -215,6 +225,31 @@ def kyc_verify_bvn(bvn: str) -> dict:
         entity = data.get("entity", {}) or {}
         return {"success": bool(entity), "raw": data,
                 "first_name": entity.get("first_name", ""), "last_name": entity.get("last_name", "")}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def kyc_verify_face(selfie: str = "") -> dict:
+    """Liveness / selfie-match check, the gate for large transfers.
+
+    MOCK mode accepts it so onboarding + large transfers are testable offline.
+    LIVE mode requires a real liveness result from the provider AND a captured
+    selfie — it fails closed if none is supplied, so the large-transfer step-up
+    can't be cleared without genuine verification once a provider is configured.
+    (Capturing the selfie on-device is the remaining client-side TODO.)
+    """
+    if not _kyc_live():
+        return {"success": True, "mock": True}
+    if not selfie:
+        return {"success": False, "message": "A selfie capture is required for face verification"}
+    try:
+        resp = requests.post(
+            f"{settings.KYC['BASE_URL']}/api/v1/kyc/liveness",
+            json={"image": selfie}, headers=_kyc_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        entity = data.get("entity", {}) or {}
+        return {"success": bool(entity.get("liveness") or entity.get("match")), "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
 

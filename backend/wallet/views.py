@@ -185,7 +185,7 @@ def transfer_send(request):
     if amount < 10:
         return fail("Minimum transfer is ₦10")
 
-    limit_err = check_send_limits(sender, amount, bool(data.get("face_confirmed")))
+    limit_err = check_send_limits(sender, amount)
     if limit_err:
         return limit_err
 

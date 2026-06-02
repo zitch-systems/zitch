@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
@@ -15,20 +15,22 @@ const SetPin = () => {
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState<string | null>(null);
   const [err, setErr] = useState(false);
-  const [memoryEmail, setMemoryEmail] = useState('');
+  const [token, setToken] = useState('');
 
   const active = confirm === null ? pin : confirm;
 
   useEffect(() => {
-    AsyncStorage.getItem('UserEmail').then((e) => e && setMemoryEmail(e));
+    getToken().then((t) => t && setToken(t));
   }, []);
 
   const submit = async (finalPin: string) => {
     try {
+      // Fall back to a fresh read in case the async token load hasn't landed.
+      const t = token || (await getToken()) || '';
       const response = await fetch(`${baseUrl}/api/set-transaction-pin/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: memoryEmail, pin: finalPin }),
+        body: JSON.stringify({ access_token: t, pin: finalPin }),
       });
       const result = await response.json();
       if (response.ok) {

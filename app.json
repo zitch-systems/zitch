@@ -40,6 +40,12 @@
         {
           "faceIDPermission": "Allow Zitch to use Face ID to sign you in and approve payments."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check)."
+        }
       ]
     ],
     "experiments": {

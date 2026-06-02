@@ -93,12 +93,19 @@ class OTP(models.Model):
     email = models.EmailField(blank=True, default="")
     created = models.DateTimeField(auto_now_add=True)
     used = models.BooleanField(default=False)
+    attempts = models.PositiveSmallIntegerField(default=0)
 
     EXPIRY_MINUTES = 10
+    MAX_ATTEMPTS = 5          # wrong guesses before a code is burned
+    RESEND_COOLDOWN_SECONDS = 20  # min gap between codes for a phone
 
     @property
     def is_expired(self) -> bool:
         return timezone.now() - self.created > timedelta(minutes=self.EXPIRY_MINUTES)
+
+    @property
+    def too_many_attempts(self) -> bool:
+        return self.attempts >= self.MAX_ATTEMPTS
 
     def __str__(self):
         return f"{self.phone} · {self.code}"

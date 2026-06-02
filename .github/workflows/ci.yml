@@ -28,6 +28,8 @@ jobs:
         run: |
           python manage.py migrate --no-input
           python manage.py seed_plans
+      - name: Tests
+        run: python manage.py test
 
   app:
     name: App (Expo)
@@ -39,5 +41,7 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
       - name: Bundle (Metro export, iOS)
         run: npx expo export --platform ios --output-dir /tmp/ciexport

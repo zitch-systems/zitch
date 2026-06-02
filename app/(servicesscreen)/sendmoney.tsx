@@ -3,7 +3,6 @@ import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
@@ -98,7 +97,7 @@ const SendMoney = () => {
     finally { setResolving(false); }
   };
 
-  const postSend = async (pin: string, faceConfirmed: boolean) => {
+  const postSend = async (pin: string) => {
     const usingBank = (picked && picked.bank_name !== 'Zitch') || (!picked && mode === 'bank');
     if (usingBank) {
       const accountNumber = picked ? picked.account_number : acct;
@@ -106,32 +105,33 @@ const SendMoney = () => {
       const bankCode = picked ? banks.find((b) => b.name === bankNameFinal)?.code : bank?.code;
       return fetch(`${baseUrl}/api/transfers/send/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt, transaction_pin: pin, note, face_confirmed: faceConfirmed }),
+        body: JSON.stringify({ access_token: token, account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt, transaction_pin: pin, note }),
       }).then((r) => r.json());
     }
     const id = picked ? picked.account_number : identifier;
     return fetch(`${baseUrl}/api/transfer/send/`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: token, identifier: id, amount: amt, transaction_pin: pin, note, face_confirmed: faceConfirmed }),
+      body: JSON.stringify({ access_token: token, identifier: id, amount: amt, transaction_pin: pin, note }),
     }).then((r) => r.json());
   };
 
-  const send = async (pin: string, faceConfirmed = false) => {
+  const send = async (pin: string) => {
     setBusy(true);
     try {
-      let res = await postSend(pin, faceConfirmed);
+      const res = await postSend(pin);
 
-      // Large transfer needs a step-up: prompt device Face ID, then retry once.
-      if (!res.success && res.code === 'face_required' && !faceConfirmed) {
-        const available = await isBiometricAvailable();
-        if (!available) {
-          Alert.alert('Face verification needed', 'Set up Face ID or a fingerprint on this device to authorize large transfers.');
-          setStep(null);
-          return;
-        }
-        const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
-        if (!okScan) { setStep(null); return; }
-        res = await postSend(pin, true);
+      // Large transfers need durable face verification (done once in KYC).
+      if (!res.success && res.code === 'face_required') {
+        setStep(null);
+        Alert.alert(
+          'Face verification needed',
+          'For transfers this large, verify your identity once in KYC. It only takes a moment.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Verify now', onPress: () => router.push('/kyc') },
+          ],
+        );
+        return;
       }
 
       if (res.success) { setStep(null); setDone(true); reload(); }

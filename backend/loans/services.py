@@ -22,7 +22,9 @@ def credit_limit(user) -> Decimal:
     """
     active = user.loans.filter(status=Loan.ACTIVE).first()
     if active:
-        return Loan.DEFAULT_LIMIT - active.outstanding
+        # Never report negative head-room (outstanding includes interest, so a
+        # loan taken at the full limit leaves slightly negative arithmetic).
+        return max(Decimal("0.00"), Loan.DEFAULT_LIMIT - active.outstanding)
     return Loan.DEFAULT_LIMIT
 
 

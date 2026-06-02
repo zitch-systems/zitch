@@ -1,13 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
+import baseUrl from '@/components/configFiles/apiConfig';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, ZItem, money } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
-import { clearSession } from '@/lib/secureStore';
+import { clearSession, getToken } from '@/lib/secureStore';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 
 const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
@@ -32,10 +33,32 @@ const Me = () => {
   const { c, theme, setTheme } = useTheme();
   const { balance, firstName, showBal } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
+  const [tier, setTier] = useState(1);
 
   useEffect(() => {
     isBiometricEnabled().then(setBiometrics);
   }, []);
+
+  // Reflect the real KYC tier (was hardcoded "Tier 3"); refresh on focus so it
+  // updates after the user completes a KYC step.
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const t = await getToken();
+        if (!t) return;
+        try {
+          const res = await fetch(`${baseUrl}/api/kyc/status/`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ access_token: t }),
+          }).then((r) => r.json());
+          if (res?.tier) setTier(Number(res.tier));
+        } catch {
+          // keep last-known tier
+        }
+      })();
+    }, [])
+  );
 
   // Enabling requires a live biometric scan; disabling is immediate.
   const toggleBio = async (v: boolean) => {
@@ -109,7 +132,7 @@ const Me = () => {
           <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(245,166,35,.16)', alignSelf: 'flex-start' }}>
             <ZIcon name="check" size={11} color="#B27400" stroke={2.6} />
-            <Text style={{ color: '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier 3</Text>
+            <Text style={{ color: '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
           </View>
         </View>
         <Pressable onPress={() => router.push('/comingsoon')} style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
