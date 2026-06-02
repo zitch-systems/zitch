@@ -100,3 +100,33 @@ class BankTransferTests(TestCase):
         self.assertTrue(Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
         # A failed payout must not save the beneficiary.
         self.assertEqual(Beneficiary.objects.filter(user=self.user).count(), 0)
+
+    def test_disbursement_webhook_refunds_failed_payout(self):
+        """A payout that succeeds on send but fails later (webhook) is refunded."""
+        _, body = self.post("/api/transfers/send/", {
+            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+        })
+        ref = body["reference"]
+        self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
+
+        event = {"eventType": "FAILED_DISBURSEMENT", "eventData": {"reference": ref, "status": "FAILED"}}
+        r = self.client.post("/api/transfers/webhook/", data=json.dumps(event), content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.balance(), Decimal("50000"))  # refunded by the webhook
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
+
+        # Duplicate webhook (Monnify retry) must not double-refund.
+        self.client.post("/api/transfers/webhook/", data=json.dumps(event), content_type="application/json")
+        self.assertEqual(self.balance(), Decimal("50000"))
+
+    def test_disbursement_webhook_ignores_success_event(self):
+        """A successful-disbursement callback is a no-op (already settled)."""
+        _, body = self.post("/api/transfers/send/", {
+            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+        })
+        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": body["reference"]}}
+        self.client.post("/api/transfers/webhook/", data=json.dumps(event), content_type="application/json")
+        self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)

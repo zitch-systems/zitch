@@ -76,6 +76,31 @@ def refund(txn: Transaction) -> None:
 
 
 @db_transaction.atomic
+def reverse_transfer(reference: str) -> Transaction | None:
+    """Refund a settled outbound transfer the provider later failed/reversed.
+
+    Bank payouts are settled optimistically on send, so the disbursement webhook
+    is the safety net. Locks the row and guards on status, so only the first
+    call (while the row is still Successful/Pending) credits the money back and
+    marks it Failed — duplicate webhooks can't double-refund. Returns the row if
+    this call performed the reversal, else None.
+    """
+    txn = (
+        Transaction.objects.select_for_update()
+        .filter(reference=reference, direction=Transaction.OUT)
+        .first()
+    )
+    if txn is None or txn.transaction_status == Transaction.FAILED:
+        return None
+    wallet = Wallet.objects.select_for_update().get(user=txn.user)
+    wallet.balance += txn.amount
+    wallet.save(update_fields=["balance", "updated"])
+    txn.transaction_status = Transaction.FAILED
+    txn.save(update_fields=["transaction_status"])
+    return txn
+
+
+@db_transaction.atomic
 def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     """Credit the wallet for a verified funding reference, exactly once.
 

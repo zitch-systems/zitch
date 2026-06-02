@@ -4,12 +4,19 @@ Payout to external banks needs a provider (Monnify disbursements / NIBSS); until
 keys are set this runs in MOCK mode and resolves/settles automatically so the
 flow is testable. Money still moves correctly out of the wallet ledger.
 """
+import json
 from decimal import Decimal, InvalidOperation
 
+from django.views.decorators.csrf import csrf_exempt
+
 from common.http import api, check_send_limits, fail, ok, require_user
-from utility.providers import disbursement_resolve_account, disbursement_send
+from utility.providers import (
+    disbursement_resolve_account,
+    disbursement_send,
+    payment_verify_signature,
+)
 from wallet.models import Transaction
-from wallet.services import InsufficientFunds, debit, refund
+from wallet.services import InsufficientFunds, debit, refund, reverse_transfer
 
 from .models import Bank, Beneficiary
 
@@ -122,3 +129,27 @@ def bank_transfer(request):
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, message="Money sent")
+
+
+@csrf_exempt
+def disbursement_webhook(request):
+    """POST /api/transfers/webhook/ — Monnify disbursement (payout) callback.
+
+    Payouts are settled optimistically on send, so this is the safety net: a
+    failed/reversed disbursement refunds the wallet. HMAC-verified, idempotent,
+    and always 200 on accepted events so Monnify stops retrying.
+    """
+    if request.method != "POST":
+        return fail("Method not allowed", status=405)
+    if not payment_verify_signature(request.body, request.headers.get("monnify-signature", "")):
+        return fail("Invalid signature", status=401)
+    try:
+        event = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return fail("Invalid payload", status=400)
+
+    data = event.get("eventData", {}) or {}
+    reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
+    if event.get("eventType") in ("FAILED_DISBURSEMENT", "REVERSED_DISBURSEMENT") and reference:
+        reverse_transfer(reference)
+    return ok(status=True)
