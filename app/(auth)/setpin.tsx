@@ -25,10 +25,12 @@ const SetPin = () => {
 
   const submit = async (finalPin: string) => {
     try {
+      // Fall back to a fresh read in case the async token load hasn't landed.
+      const t = token || (await getToken()) || '';
       const response = await fetch(`${baseUrl}/api/set-transaction-pin/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, pin: finalPin }),
+        body: JSON.stringify({ access_token: t, pin: finalPin }),
       });
       const result = await response.json();
       if (response.ok) {

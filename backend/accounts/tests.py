@@ -105,6 +105,16 @@ class CredentialSecurityTests(TestCase):
         self.assertEqual(res.status_code, 400)  # clean error, not a 500 IntegrityError
         self.assertIn("phone", body["message"].lower())
 
+    def test_update_info_name_change_does_not_trip_on_shared_email(self):
+        # email isn't DB-unique; updating only the name while re-sending one's own
+        # (here, a duplicated) email must not be blocked by the uniqueness guard.
+        make_user("08010000001", "dup@zitch.test")
+        _, token = make_user("08020000002", "dup@zitch.test")
+        res, _ = self.post("/api/update_info/", {
+            "access_token": token, "first_name": "Renamed", "email": "dup@zitch.test",
+        })
+        self.assertEqual(res.status_code, 200)
+
 
 class KycTierTests(TestCase):
     def setUp(self):

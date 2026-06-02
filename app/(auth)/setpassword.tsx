@@ -45,10 +45,12 @@ const SetPassword = () => {
     }
     setIsUpdating(true);
     try {
+      // Fall back to a fresh read in case the async token load hasn't landed.
+      const t = token || (await getToken()) || '';
       const response = await fetch(`${baseUrl}/api/set-password/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token, password: p1 }),
+        body: JSON.stringify({ access_token: t, password: p1 }),
       });
       const result = await response.json();
       if (response.ok) {

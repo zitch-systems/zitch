@@ -151,11 +151,16 @@ def update_info(request):
     data = request.data
     new_email = (data.get("email") or "").strip()
     new_phone = (data.get("phone") or "").strip()
-    # phone is unique in the DB — pre-check so a clash returns a clean error
-    # instead of a 500 from the IntegrityError.
-    if new_phone and User.objects.filter(phone=new_phone).exclude(pk=user.pk).exists():
+    # Only validate uniqueness when the value is actually changing, so a plain
+    # name update never trips on the user's own (or a legacy duplicate) value.
+    # phone is unique in the DB — the pre-check turns a clash into a clean error
+    # instead of a 500; email isn't unique but a clash would make sign-in (which
+    # matches by email) ambiguous, so we guard it too.
+    changing_phone = new_phone and new_phone != (user.phone or "")
+    changing_email = new_email and new_email.lower() != (user.email or "").lower()
+    if changing_phone and User.objects.filter(phone=new_phone).exclude(pk=user.pk).exists():
         return fail("That phone number is already in use")
-    if new_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+    if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
         return fail("That email is already in use")
     if data.get("first_name"):
         user.first_name = data["first_name"]
