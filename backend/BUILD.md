@@ -103,3 +103,6 @@ Set the webhook URL in the Monnify dashboard to:
   in `utility/providers.py`.
 - Move auth to an `Authorization: Bearer` header instead of token-in-body.
 - Replace seeded plans with the live aggregator catalogue.
+- Bank transfers use Monnify disbursements: set `MONNIFY_SOURCE_ACCOUNT` (the
+  Monnify wallet to pay out from). PENDING payouts still need the OTP-auth step
+  and a disbursement webhook (`SUCCESSFUL/FAILED_DISBURSEMENT`) to reconcile.

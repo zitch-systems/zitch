@@ -141,6 +141,8 @@ MONNIFY = {
     "SECRET_KEY": os.environ.get("MONNIFY_SECRET_KEY", ""),
     "CONTRACT_CODE": os.environ.get("MONNIFY_CONTRACT_CODE", ""),
     "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
+    # Monnify wallet account funds are disbursed from (bank transfers / payouts).
+    "SOURCE_ACCOUNT": os.environ.get("MONNIFY_SOURCE_ACCOUNT", ""),
 }
 # SMS / OTP — Sendchamp.
 SENDCHAMP = {

@@ -126,6 +126,79 @@ def payment_verify_signature(body: bytes, signature: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Bank transfers / payouts — Monnify disbursements
+#
+# Draws from your Monnify wallet (MONNIFY_SOURCE_ACCOUNT) to any NIBSS bank.
+# Name enquiry is mandatory: Monnify rejects a single transfer whose
+# destinationAccountName doesn't match the enquiry result, so callers resolve
+# server-side and pass the authoritative name.
+# ---------------------------------------------------------------------------
+def disbursement_resolve_account(account_number: str, bank_code: str) -> dict:
+    """Name enquiry: account number + NIBSS bank code -> account holder name."""
+    if not payments_live():
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
+    try:
+        token = _monnify_token()
+        m = settings.MONNIFY
+        resp = requests.get(
+            f"{m['BASE_URL']}/api/v1/disbursements/account/validate",
+            params={"accountNumber": account_number, "bankCode": bank_code},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        name = rb.get("accountName", "")
+        return {"success": bool(data.get("requestSuccessful")) and bool(name), "name": name, "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Payout provider unreachable: {exc}"}
+
+
+def disbursement_send(amount_naira, reference: str, narration: str,
+                      bank_code: str, account_number: str, account_name: str) -> dict:
+    """Initiate a single transfer to a bank account.
+
+    SUCCESS/PENDING means Monnify accepted it (money sent or queued); anything
+    else — including a 2FA OTP-authorization requirement — is treated as
+    not-sent so the caller refunds the wallet.
+    TODO before relying on PENDING: handle the OTP-authorization step and a
+    disbursement webhook (SUCCESSFUL/FAILED_DISBURSEMENT) to reconcile finally.
+    """
+    if not payments_live():
+        return {"success": True, "mock": True, "status": "SUCCESS"}
+    m = settings.MONNIFY
+    if not m.get("SOURCE_ACCOUNT"):
+        return {"success": False, "message": "MONNIFY_SOURCE_ACCOUNT is not configured"}
+    try:
+        token = _monnify_token()
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v2/disbursements/single",
+            json={
+                "amount": float(amount_naira),
+                "reference": reference,
+                "narration": narration or "Zitch transfer",
+                "destinationBankCode": bank_code,
+                "destinationAccountNumber": account_number,
+                "destinationAccountName": account_name,
+                "currency": "NGN",
+                "sourceAccountNumber": m["SOURCE_ACCOUNT"],
+            },
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        status = (data.get("responseBody", {}) or {}).get("status", "")
+        return {
+            "success": bool(data.get("requestSuccessful")) and status in ("SUCCESS", "PENDING", "COMPLETED"),
+            "status": status,
+            "message": data.get("responseMessage", "Transfer not completed"),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Payout provider unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
 # VTU aggregator (airtime / data / cable / electricity) — Baxi
 #
 # Baxi exposes a distinct endpoint per service (not one generic path), so we

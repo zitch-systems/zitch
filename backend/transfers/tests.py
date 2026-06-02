@@ -1,6 +1,7 @@
 """Tests for bank transfer (payout) + saved beneficiaries."""
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import Client, TestCase
 
@@ -85,3 +86,17 @@ class BankTransferTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(body["code"], "limit_exceeded")
         self.assertEqual(self.balance(), Decimal("50000"))
+
+    def test_send_refunds_when_payout_fails(self):
+        """If the payout provider declines, the wallet debit must be reversed."""
+        with patch("transfers.views.disbursement_send",
+                   return_value={"success": False, "message": "bank declined"}):
+            res, _ = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(self.balance(), Decimal("50000"))  # fully refunded
+        self.assertTrue(Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
+        # A failed payout must not save the beneficiary.
+        self.assertEqual(Beneficiary.objects.filter(user=self.user).count(), 0)
