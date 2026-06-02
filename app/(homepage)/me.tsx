@@ -146,7 +146,7 @@ const Me = () => {
           <Text style={{ color: c.ink3, fontSize: 13, fontFamily: font.regular }}>Total balance</Text>
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
         </View>
-        <Text style={{ fontSize: 30, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
+        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
           {showBal ? money(balance) : '₦ ••••••'}
         </Text>
       </View>

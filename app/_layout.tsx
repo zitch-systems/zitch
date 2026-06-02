@@ -1,11 +1,22 @@
 import { useEffect } from "react";
+import { Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { SplashScreen, Stack } from "expo-router";
-import { ThemeProvider, manropeFonts, useTheme } from "@/lib/theme";
+import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
+
+// Default every Text/TextInput to Manrope so nothing can fall back to the
+// platform font. An explicit fontFamily on a component still wins, since the
+// component's own style is merged after this default.
+const TextAny = RNText as any;
+const InputAny = RNTextInput as any;
+TextAny.defaultProps = TextAny.defaultProps || {};
+TextAny.defaultProps.style = [{ fontFamily: font.regular }, TextAny.defaultProps.style];
+InputAny.defaultProps = InputAny.defaultProps || {};
+InputAny.defaultProps.style = [{ fontFamily: font.regular }, InputAny.defaultProps.style];
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();
@@ -26,18 +37,8 @@ const RootStack = () => {
 };
 
 const _layout = () => {
-  const [fontsLoaded, error] = useFonts({
-    "Poppins-Black": require("../assets/fonts/Poppins-Black.ttf"),
-    "Poppins-Bold": require("../assets/fonts/Poppins-Bold.ttf"),
-    "Poppins-ExtraBold": require("../assets/fonts/Poppins-ExtraBold.ttf"),
-    "Poppins-ExtraLight": require("../assets/fonts/Poppins-ExtraLight.ttf"),
-    "Poppins-Light": require("../assets/fonts/Poppins-Light.ttf"),
-    "Poppins-Medium": require("../assets/fonts/Poppins-Medium.ttf"),
-    "Poppins-Regular": require("../assets/fonts/Poppins-Regular.ttf"),
-    "Poppins-SemiBold": require("../assets/fonts/Poppins-SemiBold.ttf"),
-    "Poppins-Thin": require("../assets/fonts/Poppins-Thin.ttf"),
-    ...manropeFonts,
-  });
+  // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
+  const [fontsLoaded, error] = useFonts(manropeFonts);
 
   useEffect(() => {
     if (error) throw error;

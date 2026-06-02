@@ -118,11 +118,11 @@ const Cards = () => {
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.bold, letterSpacing: 1.3 }}>ZITCH</Text>
               <ZIcon name="wallet" size={22} color="#fff" />
             </View>
-            <Text style={{ color: '#fff', fontSize: 21, letterSpacing: 3, marginTop: 30, fontVariant: ['tabular-nums'] }}>{reveal ? panGroups : card.masked}</Text>
+            <Text style={{ color: '#fff', fontSize: 21, letterSpacing: 3, marginTop: 30, fontFamily: font.semibold, fontVariant: ['tabular-nums'] }}>{reveal ? panGroups : card.masked}</Text>
             <Text style={{ color: 'rgba(255,255,255,.85)', fontSize: 12.5, marginTop: 8, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Balance {money(Number(card.balance))}{reveal ? `   ·   CVV ${reveal.cvv}` : ''}</Text>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 12 }}>
               <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.semibold }}>{card.holder}</Text>
-              <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontVariant: ['tabular-nums'] }}>{card.expiry}</Text>
+              <Text style={{ color: 'rgba(255,255,255,.9)', fontSize: 13, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>{card.expiry}</Text>
             </View>
             {frozen && (
               <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(5,32,28,.4)' }}>
