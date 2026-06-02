@@ -7,6 +7,7 @@ flow is testable. Money still moves correctly out of the wallet ledger.
 from decimal import Decimal, InvalidOperation
 
 from common.http import api, check_send_limits, fail, ok, require_user
+from utility.providers import disbursement_resolve_account, disbursement_send
 from wallet.models import Transaction
 from wallet.services import InsufficientFunds, debit, refund
 
@@ -51,8 +52,10 @@ def resolve_account(request):
     bank = Bank.objects.filter(code=str(request.data.get("bank", ""))).first()
     if bank is None:
         return fail("Select a bank", status=404)
-    # TODO: real name enquiry via payout provider.
-    return ok(success=True, name="ADEYEMI WILLIAM")
+    res = disbursement_resolve_account(acct, bank.bank_code)
+    if not res.get("success"):
+        return fail(res.get("message", "Could not verify this account number"), status=400)
+    return ok(success=True, name=res.get("name", ""))
 
 
 @api
@@ -88,8 +91,13 @@ def bank_transfer(request):
     if limit_err:
         return limit_err
 
-    name = (data.get("name") or "Bank recipient").strip()
     note = data.get("note", "")
+    # Resolve server-side for the authoritative account name — Monnify rejects a
+    # payout whose name doesn't match the enquiry, and we don't trust the client.
+    resolved = disbursement_resolve_account(acct, bank.bank_code)
+    if not resolved.get("success"):
+        return fail(resolved.get("message", "Could not verify this account number"), status=400)
+    name = resolved.get("name") or (data.get("name") or "Bank recipient").strip()
 
     try:
         txn = debit(user, amount, f"Transfer to {name}",
@@ -97,7 +105,11 @@ def bank_transfer(request):
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 
-    # TODO: real payout via provider; mock settles immediately.
+    result = disbursement_send(amount, txn.reference, note or f"Transfer to {name}",
+                               bank.bank_code, acct, name)
+    if not result.get("success"):
+        refund(txn)
+        return fail(result.get("message", "Transfer failed"), status=502)
     txn.transaction_status = Transaction.SUCCESS
     txn.save(update_fields=["transaction_status"])
 

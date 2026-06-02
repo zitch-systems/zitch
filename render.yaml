@@ -35,6 +35,8 @@ services:
         sync: false
       - key: MONNIFY_CONTRACT_CODE
         sync: false
+      - key: MONNIFY_SOURCE_ACCOUNT
+        sync: false
       # VTU / bills — Baxi.
       - key: BAXI_API_KEY
         sync: false
