@@ -87,7 +87,7 @@ const BuyCable = () => {
       const response = await fetch(`${baseUrl}/api/utility/validate_iuc/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ iuc, cablenetwork: prov }),
+        body: JSON.stringify({ access_token: token, iuc, cablenetwork: prov }),
       });
       const result = await response.json();
       if (response.ok) {

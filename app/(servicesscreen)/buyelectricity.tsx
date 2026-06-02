@@ -54,7 +54,7 @@ const BuyElectricity = () => {
       const response = await fetch(`${baseUrl}/api/utility/validate_meter/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ meter, disco, meter_type: meterType }),
+        body: JSON.stringify({ access_token: token, meter, disco, meter_type: meterType }),
       });
       const result = await response.json();
       if (response.ok) {

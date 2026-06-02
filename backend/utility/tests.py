@@ -77,3 +77,21 @@ class UtilityTests(TestCase):
             "meter": "1234567890", "transaction_pin": "1234",
         })
         self.assertEqual(res.status_code, 400)
+
+    # --- customer-name lookups require auth (they return PII + hit a paid
+    #     provider, like the bank/Zitch resolve endpoints) ---
+    def test_validate_meter_requires_auth(self):
+        res, _ = self.post("/api/utility/validate_meter/", {"disco": "1", "meter": "1234567890"})
+        self.assertEqual(res.status_code, 401)
+        res, body = self.post("/api/utility/validate_meter/",
+                              {"access_token": self.token, "disco": "1", "meter": "1234567890"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["customer_name"])
+
+    def test_validate_iuc_requires_auth(self):
+        res, _ = self.post("/api/utility/validate_iuc/", {"cablenetwork": "2", "iuc": "1234567890"})
+        self.assertEqual(res.status_code, 401)
+        res, body = self.post("/api/utility/validate_iuc/",
+                             {"access_token": self.token, "cablenetwork": "2", "iuc": "1234567890"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["customer_name"])

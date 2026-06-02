@@ -140,6 +140,7 @@ def get_cable_plans_price(request):
 
 
 @api
+@require_user
 def validate_iuc(request):
     prov = str(request.data.get("cablenetwork", ""))
     iuc = request.data.get("iuc", "")
@@ -174,6 +175,7 @@ def buycable(request):
 
 # ---------------- ELECTRICITY ----------------
 @api
+@require_user
 def validate_meter(request):
     disco = str(request.data.get("disco", ""))
     meter = request.data.get("meter", "")
