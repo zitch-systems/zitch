@@ -25,6 +25,11 @@ const TxnDetail = () => {
   const inflow = p.dir === 'in';
   const amount = Number(p.amount || 0);
   const mono = (p.type || 'TX').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  // Status badge reflects the real status — not always "success".
+  const status = p.status || 'Successful';
+  const sl = status.toLowerCase();
+  const statusColor = sl === 'failed' ? c.red : sl === 'pending' ? c.amber : c.lime;
+  const statusIcon = sl === 'failed' ? 'x' : sl === 'pending' ? 'history' : 'check';
 
   return (
     <Screen>
@@ -35,9 +40,9 @@ const TxnDetail = () => {
         <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: inflow ? c.lime : c.ink1, marginTop: 14, fontVariant: ['tabular-nums'] }}>
           {(inflow ? '+' : '-') + money(Math.abs(amount))}
         </Text>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: 'rgba(0,181,29,.12)' }}>
-          <ZIcon name="check" size={13} color={c.lime} />
-          <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.lime }}>{p.status || 'Successful'}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: `${statusColor}1F` }}>
+          <ZIcon name={statusIcon} size={13} color={statusColor} />
+          <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: statusColor }}>{status}</Text>
         </View>
       </View>
 
