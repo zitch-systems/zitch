@@ -1,9 +1,10 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { getToken } from '@/lib/secureStore';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { apiPost } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
 
-// Picks an icon + direction for a transaction from its service label.
+// Picks an icon from the service label. Direction comes from the backend's
+// authoritative `direction` field; the label regex is only a fallback.
 const mapTxn = (raw: any, i: number): Txn => {
   const service = String(raw?.service ?? raw?.type ?? 'Transaction');
   const s = service.toLowerCase();
@@ -24,7 +25,7 @@ const mapTxn = (raw: any, i: number): Txn => {
     amount: Number(raw?.amount ?? 0),
     status: String(raw?.transaction_status ?? 'Successful'),
     icon,
-    dir: inflow ? 'in' : 'out',
+    dir: raw?.direction === 'in' || raw?.direction === 'out' ? raw.direction : inflow ? 'in' : 'out',
     reference: String(raw?.reference ?? ''),
   };
 };
@@ -65,16 +66,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         return;
       }
       const [balRes, txRes] = await Promise.allSettled([
-        fetch(`${baseUrl}/api/wallet_balance/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ access_token: token }),
-        }).then((r) => r.json()),
-        fetch(`${baseUrl}/api/user-transaction-history/`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ access_token: token }),
-        }).then((r) => r.json()),
+        apiPost('/api/wallet_balance/').then((r) => r.json()),
+        apiPost('/api/user-transaction-history/').then((r) => r.json()),
       ]);
 
       if (balRes.status === 'fulfilled' && balRes.value?.success) {
