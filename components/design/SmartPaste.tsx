@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn } from '@/components/design/ui';
@@ -13,6 +14,8 @@ const SEEN_KEY_PREFIX = 'zpaste:';
  * holds a Nigerian phone (11 digits) or account number (10 digits), offers to
  * send money or buy airtime, routing into the matching flow prefilled.
  * Per the design, a detected phone has its leading 0 stripped when transferring.
+ * Each copied number is offered only once (tracked in AsyncStorage) so the sheet
+ * doesn't re-pop on every home visit.
  */
 const SmartPaste = () => {
   const { c } = useTheme();
@@ -26,10 +29,14 @@ const SmartPaste = () => {
         const text = (await Clipboard.getStringAsync()) || '';
         const digits = text.replace(/[\s-]/g, '');
         const m = digits.match(/^\+?(\d{10,11})$/);
-        if (active && m) {
-          setNum(m[1]);
-          setOpen(true);
-        }
+        if (!active || !m) return;
+        // Offer each number once — skip if we've already prompted for it.
+        const key = SEEN_KEY_PREFIX + m[1];
+        if (await AsyncStorage.getItem(key)) return;
+        await AsyncStorage.setItem(key, '1');
+        if (!active) return;
+        setNum(m[1]);
+        setOpen(true);
       } catch {
         // clipboard unavailable — silently skip
       }
