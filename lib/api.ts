@@ -38,8 +38,18 @@ export async function apiPost(path: string, body: Record<string, any> = {}): Pro
   return res;
 }
 
-/** POST and parse the JSON response (for call sites that don't branch on status). */
+/** POST and parse the JSON response (for call sites that don't branch on status).
+ *
+ * Guards against a non-JSON body — a gateway HTML error page or an empty 502/504
+ * from the host — which would otherwise throw a SyntaxError mid-flow. On a parse
+ * failure it resolves to a uniform error shape so callers' `success`/`message`
+ * checks degrade gracefully instead of crashing. */
 export async function apiJson<T = any>(path: string, body: Record<string, any> = {}): Promise<T> {
   const res = await apiPost(path, body);
-  return res.json();
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return { success: false, message: 'Service temporarily unavailable. Please try again.' } as T;
+  }
 }

@@ -84,7 +84,7 @@ const BuyData = () => {
   const network = NETWORKS.find((n) => n.id === net)!;
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
-  const valid = phone.length >= 10 && !!plan;
+  const valid = phone.length >= 10 && !!plan && amount > 0;
 
   const purchase = async (enteredPin: string) => {
     setBusy(true);

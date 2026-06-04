@@ -79,7 +79,7 @@ const BuyCable = () => {
   const provider = PROVIDERS.find((p) => p.id === prov)!;
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
-  const valid = iuc.length >= 8 && !!plan;
+  const valid = iuc.length >= 8 && !!plan && amount > 0;
 
   const validateIuc = async () => {
     if (iuc.trim().length < 8) { Alert.alert('Error', 'Enter a valid IUC / smartcard number.'); return; }
