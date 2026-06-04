@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, check_send_limits, fail, ok, require_user
+from common.http import api, check_send_limits, fail, ok, require_user, verify_transaction_pin
 from utility.providers import (
     disbursement_resolve_account,
     disbursement_send,
@@ -74,11 +74,9 @@ def bank_transfer(request):
     """
     user, data = request.user_obj, request.data
 
-    pin = (data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not user.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     acct = (data.get("account_number") or "").strip()
     if len(acct) != 10:

@@ -8,8 +8,10 @@ tiny.
 """
 import functools
 import json
+from datetime import timedelta
 
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 
@@ -45,6 +47,57 @@ def check_send_limits(user, amount):
             large_txn_threshold=str(User.LARGE_TXN_THRESHOLD),
         )
     return None
+
+
+def verify_transaction_pin(user, raw_pin):
+    """Verify a user's transaction PIN with brute-force protection.
+
+    The PIN is the second factor gating every money-movement endpoint, so a
+    stolen session token must not be enough to guess it. Returns an error
+    JsonResponse when no PIN is set, when the PIN is temporarily locked after too
+    many wrong tries, or when the PIN is wrong; otherwise None.
+
+    The failure count and lockout live on the user row and are updated under a
+    row lock, so concurrent guesses can't slip past the cap.
+    """
+    from django.db import transaction as db_transaction
+
+    from accounts.models import User
+
+    if not user.transaction_pin:
+        return fail("No transaction PIN set on this account", status=403)
+
+    with db_transaction.atomic():
+        u = User.objects.select_for_update().get(pk=user.pk)
+        if u.pin_locked:
+            mins = max(1, int((u.pin_locked_until - timezone.now()).total_seconds() // 60) + 1)
+            return fail(
+                f"Transaction PIN locked after too many wrong attempts. Try again in {mins} minute(s).",
+                status=429, code="pin_locked",
+            )
+        if u.check_transaction_pin((raw_pin or "").strip()):
+            # Correct PIN: clear any accumulated failures / stale lock.
+            if u.pin_failed_attempts or u.pin_locked_until:
+                u.pin_failed_attempts = 0
+                u.pin_locked_until = None
+                u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+            return None
+        u.pin_failed_attempts += 1
+        if u.pin_failed_attempts >= User.PIN_MAX_ATTEMPTS:
+            u.pin_failed_attempts = 0  # reset the counter; the lock is the gate now
+            u.pin_locked_until = timezone.now() + timedelta(minutes=User.PIN_LOCKOUT_MINUTES)
+            u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+            return fail(
+                f"Transaction PIN locked for {User.PIN_LOCKOUT_MINUTES} minutes "
+                "after too many wrong attempts.",
+                status=429, code="pin_locked",
+            )
+        u.save(update_fields=["pin_failed_attempts"])
+        left = User.PIN_MAX_ATTEMPTS - u.pin_failed_attempts
+        return fail(
+            f"Incorrect transaction PIN. {left} attempt(s) left before lock.",
+            status=403, code="pin_incorrect",
+        )
 
 
 def fail(message, status=400, **extra):

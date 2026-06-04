@@ -3,7 +3,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, check_send_limits, fail, ok, require_user
+from common.http import api, check_send_limits, fail, ok, require_user, verify_transaction_pin
 from utility.providers import payment_initialize, payment_verify, payment_verify_signature
 
 from .models import FundingIntent
@@ -173,11 +173,9 @@ def transfer_send(request):
     sender = request.user_obj
     data = request.data
 
-    pin = (data.get("transaction_pin") or "").strip()
-    if not sender.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not sender.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(sender, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     try:
         amount = Decimal(str(data.get("amount")))

@@ -1,7 +1,7 @@
 """Loan endpoints: eligibility/quote, request (disburse), repay."""
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user
+from common.http import api, fail, ok, require_user, verify_transaction_pin
 from wallet.services import InsufficientFunds, get_or_create_wallet
 
 from .models import Loan
@@ -71,11 +71,9 @@ def loan_request(request):
     """
     user, data = request.user_obj, request.data
 
-    pin = (data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not user.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     if user.loans.filter(status=Loan.ACTIVE).exists():
         return fail("You already have an active loan", status=409)
@@ -106,11 +104,9 @@ def loan_repay(request):
     """
     user, data = request.user_obj, request.data
 
-    pin = (data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not user.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     active = user.loans.filter(status=Loan.ACTIVE).first()
     if active is None:

@@ -5,7 +5,7 @@ aggregator -> mark the row Successful, or refund on failure.
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user
+from common.http import api, fail, ok, require_user, verify_transaction_pin
 from wallet.models import Transaction
 from wallet.services import InsufficientFunds, debit, refund
 
@@ -28,12 +28,8 @@ def _amount(value):
 
 
 def _check_pin(user, data):
-    pin = (data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return "No transaction PIN set on this account"
-    if not user.check_transaction_pin(pin):
-        return "Incorrect transaction PIN"
-    return None
+    """PIN gate with brute-force lockout; returns an error response or None."""
+    return verify_transaction_pin(user, data.get("transaction_pin"))
 
 
 def _run_purchase(user, amount, service, meta, provider_call):
@@ -60,7 +56,7 @@ def buyairtime(request):
     user, data = request.user_obj, request.data
     err = _check_pin(user, data)
     if err:
-        return fail(err, status=403)
+        return err
     amount = _amount(data.get("amount"))
     if amount is None or amount < 50:
         return fail("Enter a valid amount")
@@ -103,7 +99,7 @@ def buydata(request):
     user, data = request.user_obj, request.data
     err = _check_pin(user, data)
     if err:
-        return fail(err, status=403)
+        return err
     plan = DataPlan.objects.filter(plan_code=str(data.get("selectedDataPlan", ""))).first()
     if plan is None:
         return fail("Plan not found", status=404)
@@ -156,7 +152,7 @@ def buycable(request):
     user, data = request.user_obj, request.data
     err = _check_pin(user, data)
     if err:
-        return fail(err, status=403)
+        return err
     plan = CablePlan.objects.filter(cable_plan_code=str(data.get("selectedcablePlan", ""))).first()
     if plan is None:
         return fail("Plan not found", status=404)
@@ -192,7 +188,7 @@ def buyelectricity(request):
     user, data = request.user_obj, request.data
     err = _check_pin(user, data)
     if err:
-        return fail(err, status=403)
+        return err
     amount = _amount(data.get("amount"))
     if amount is None or amount < 500:
         return fail("Minimum amount is ₦500")
