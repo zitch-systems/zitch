@@ -20,8 +20,16 @@ class User(AbstractUser):
     # Single transfers at/above this require step-up (face) verification.
     LARGE_TXN_THRESHOLD = Decimal("100000")
 
+    # Transaction-PIN brute-force policy: after this many wrong PINs in a row,
+    # lock further attempts for PIN_LOCKOUT_MINUTES. A stolen session token then
+    # can't be used to guess the short PIN (10k combos) that gates money movement.
+    PIN_MAX_ATTEMPTS = 5
+    PIN_LOCKOUT_MINUTES = 15
+
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
     transaction_pin = models.CharField(max_length=128, blank=True, default="")
+    pin_failed_attempts = models.PositiveSmallIntegerField(default=0)
+    pin_locked_until = models.DateTimeField(null=True, blank=True)
 
     # --- KYC ---
     tier = models.PositiveSmallIntegerField(default=1)
@@ -38,6 +46,12 @@ class User(AbstractUser):
         if not self.transaction_pin:
             return False
         return check_password(raw_pin, self.transaction_pin)
+
+    @property
+    def pin_locked(self) -> bool:
+        """True while the transaction PIN is temporarily locked after too many
+        wrong attempts (see PIN_MAX_ATTEMPTS / PIN_LOCKOUT_MINUTES)."""
+        return self.pin_locked_until is not None and timezone.now() < self.pin_locked_until
 
     @property
     def transaction_limit(self) -> Decimal:

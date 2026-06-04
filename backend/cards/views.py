@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.db.models import F
 
-from common.http import api, fail, ok, require_user
+from common.http import api, fail, ok, require_user, verify_transaction_pin
 from utility.providers import (
     card_secure_details,
     fund_card as issuer_fund_card,
@@ -97,11 +97,9 @@ def card_details(request):
     PIN-gated one-time reveal of full card number + CVV. Never stored.
     """
     user = request.user_obj
-    pin = (request.data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not user.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(user, request.data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     card_id = request.data.get("card_id")
     card = user.cards.filter(id=card_id).first() if card_id else user.cards.first()
@@ -124,11 +122,9 @@ def fund_card(request):
     Debits the wallet ledger and loads the card. Refunds on issuer failure.
     """
     user = request.user_obj
-    pin = (request.data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not user.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(user, request.data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     card_id = request.data.get("card_id")
     card = user.cards.filter(id=card_id).first() if card_id else user.cards.first()

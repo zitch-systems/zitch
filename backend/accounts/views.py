@@ -4,7 +4,7 @@ from datetime import timedelta
 from django.db.models import Q
 from django.utils import timezone
 
-from common.http import api, fail, ok, require_user
+from common.http import api, fail, ok, require_user, resolve_token
 from common.ratelimit import ratelimit
 from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_sms
 from wallet.services import get_or_create_wallet
@@ -117,6 +117,18 @@ def resend_verify_otp(request):
 
 @api
 @require_user
+def logout(request):
+    """POST /api/logout/ {access_token} — revokes the presented token.
+
+    Server-side revocation so a signed-out (or otherwise leaked-then-cleared)
+    token can't be replayed for the remainder of its TTL.
+    """
+    AccessToken.objects.filter(key=resolve_token(request)).delete()
+    return ok(message="Logged out")
+
+
+@api
+@require_user
 def set_password(request):
     """POST /api/set-password/ {access_token, password}
 
@@ -130,6 +142,10 @@ def set_password(request):
         return fail("Password must be at least 8 characters")
     user.set_password(password)
     user.save(update_fields=["password"])
+    # Revoke other sessions on a credential change: any token issued before this
+    # change is now invalid. Keep the caller's current token so the onboarding
+    # flow (set-password -> set-pin) and a change-password screen don't 401.
+    user.tokens.exclude(key=resolve_token(request)).delete()
     return ok(message="Password set")
 
 

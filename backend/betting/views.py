@@ -5,7 +5,7 @@ call the aggregator -> settle the ledger (refund on failure).
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user
+from common.http import api, fail, ok, require_user, verify_transaction_pin
 from utility.providers import vtu_purchase
 from wallet.models import Transaction
 from wallet.services import InsufficientFunds, debit, refund
@@ -31,11 +31,9 @@ def fund_betting(request):
     """
     user, data = request.user_obj, request.data
 
-    pin = (data.get("transaction_pin") or "").strip()
-    if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
-    if not user.check_transaction_pin(pin):
-        return fail("Incorrect transaction PIN", status=403)
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
 
     platform = BettingPlatform.objects.filter(code=str(data.get("platform", "")), active=True).first()
     if platform is None:

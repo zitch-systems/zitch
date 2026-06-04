@@ -13,7 +13,7 @@ from exams.models import ExamProduct
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
-from .models import OTP
+from .models import OTP, AccessToken
 
 User = get_user_model()
 
@@ -267,3 +267,103 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)
         self.assertEqual(self.post("/api/utility/validate_meter/", access_token=tok,
                                    disco="1", meter="1234567890")[0], 200)
+
+
+class TransactionPinLockoutTests(TestCase):
+    """A stolen session token must not be usable to brute-force the short
+    transaction PIN that gates money movement. The lock is per-user, so it can't
+    be sidestepped by switching to a different money endpoint."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test", pin="1234", balance="20000")
+        make_user("08020000002", "bob@zitch.test")  # a transfer recipient
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def transfer(self, pin):
+        return self.post("/api/transfer/send/", {
+            "access_token": self.token, "identifier": "08020000002",
+            "amount": "1000", "transaction_pin": pin,
+        })
+
+    def balance(self):
+        return get_or_create_wallet(self.user).balance
+
+    def test_pin_locks_after_max_attempts_and_then_blocks_correct_pin(self):
+        # The first MAX-1 wrong PINs are rejected as 'incorrect' (with a count).
+        for _ in range(User.PIN_MAX_ATTEMPTS - 1):
+            res, body = self.transfer("0000")
+            self.assertEqual(res.status_code, 403)
+            self.assertEqual(body.get("code"), "pin_incorrect")
+        # The MAX-th wrong PIN trips the lock.
+        res, body = self.transfer("0000")
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(body.get("code"), "pin_locked")
+        # While locked, even the CORRECT PIN is refused — no money moves.
+        res, body = self.transfer("1234")
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(body.get("code"), "pin_locked")
+        self.assertEqual(self.balance(), Decimal("20000"))
+
+    def test_lockout_is_per_user_not_per_endpoint(self):
+        # Trip the lock on the transfer endpoint...
+        for _ in range(User.PIN_MAX_ATTEMPTS):
+            self.transfer("0000")
+        # ...and a *different* money endpoint is locked too, even with the right
+        # PIN — so an attacker can't just hop endpoints to keep guessing.
+        res, body = self.post("/api/savings/create/", {
+            "access_token": self.token, "amount": "5000", "days": 90, "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(body.get("code"), "pin_locked")
+
+    def test_correct_pin_resets_the_failure_counter(self):
+        # A burst of wrong tries short of the cap...
+        for _ in range(User.PIN_MAX_ATTEMPTS - 1):
+            self.assertEqual(self.transfer("0000")[0].status_code, 403)
+        # ...then a correct PIN succeeds and clears the count.
+        self.assertEqual(self.transfer("1234")[0].status_code, 200)
+        # So the next wrong PIN is 'incorrect' again, not an immediate lock.
+        res, body = self.transfer("0000")
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "pin_incorrect")
+
+    def test_lock_expires_after_the_window(self):
+        for _ in range(User.PIN_MAX_ATTEMPTS):
+            self.transfer("0000")
+        self.assertEqual(self.transfer("1234")[0].status_code, 429)  # locked
+        # Age the lock into the past; the next correct PIN is accepted.
+        User.objects.filter(pk=self.user.pk).update(
+            pin_locked_until=timezone.now() - timedelta(seconds=1))
+        self.assertEqual(self.transfer("1234")[0].status_code, 200)
+
+
+class SessionRevocationTests(TestCase):
+    """Tokens must be revocable server-side: logout invalidates the presented
+    token, and a password change invalidates other (possibly stolen) sessions."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def post(self, path, token, **payload):
+        res = self.client.post(path, data=json.dumps({"access_token": token, **payload}),
+                               content_type="application/json")
+        return res, res.json()
+
+    def test_logout_revokes_the_presented_token(self):
+        _, token = make_user("08010000001", "a@zitch.test")
+        self.assertEqual(self.post("/api/wallet_balance/", token)[0].status_code, 200)
+        self.assertEqual(self.post("/api/logout/", token)[0].status_code, 200)
+        self.assertEqual(self.post("/api/wallet_balance/", token)[0].status_code, 401)
+
+    def test_password_change_revokes_other_sessions_but_keeps_current(self):
+        user, old_token = make_user("08010000001", "a@zitch.test")
+        new_token = AccessToken.issue(user).key  # a second device/session
+        self.assertEqual(self.post("/api/set-password/", new_token, password="Passw0rd123")[0].status_code, 200)
+        # The other session is revoked...
+        self.assertEqual(self.post("/api/wallet_balance/", old_token)[0].status_code, 401)
+        # ...but the one that changed the password stays signed in.
+        self.assertEqual(self.post("/api/wallet_balance/", new_token)[0].status_code, 200)
