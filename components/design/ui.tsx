@@ -368,17 +368,18 @@ export const Sheet = ({
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = 4 }: { onComplete?: (pin: string) => void; length?: number }) => {
+export const PinPad = ({ onComplete, length = 4, busy = false }: { onComplete?: (pin: string) => void; length?: number; busy?: boolean }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   const press = (d: string) => {
+    if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
       const np = pin + d;
       setPin(np);
       if (np.length === length) setTimeout(() => { onComplete && onComplete(np); setPin(''); }, 120);
     }
   };
-  const del = () => setPin((p) => p.slice(0, -1));
+  const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
   return (
     <View>
@@ -434,11 +435,13 @@ export const PinSheet = ({
   onClose,
   onComplete,
   title = 'Enter your PIN',
+  busy = false,
 }: {
   open: boolean;
   onClose: () => void;
   onComplete?: (pin: string) => void;
   title?: string;
+  busy?: boolean;
 }) => {
   const { c } = useTheme();
   return (
@@ -446,7 +449,7 @@ export const PinSheet = ({
       <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
         Confirm this transaction with your 4-digit PIN
       </Text>
-      <PinPad onComplete={onComplete} />
+      <PinPad onComplete={onComplete} busy={busy} />
     </Sheet>
   );
 };

@@ -158,7 +158,7 @@ const GetLoan = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Authorize loan of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => request(p)} />
+        <PinPad onComplete={(p) => request(p)} busy={busy} />
       </Sheet>
     </Screen>
   );

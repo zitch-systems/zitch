@@ -14,8 +14,15 @@ class UserAdmin(BaseUserAdmin):
 
 @admin.register(AccessToken)
 class AccessTokenAdmin(admin.ModelAdmin):
-    list_display = ("user", "key", "created")
-    search_fields = ("user__phone", "user__email", "key")
+    list_display = ("user", "masked_key", "created")
+    search_fields = ("user__phone", "user__email")
+    readonly_fields = ("created",)
+
+    @admin.display(description="token")
+    def masked_key(self, obj):
+        # Never surface a full live bearer token in the admin (it could be
+        # lifted to impersonate the user); show only a short prefix.
+        return f"{obj.key[:6]}…" if obj.key else ""
 
 
 @admin.register(OTP)

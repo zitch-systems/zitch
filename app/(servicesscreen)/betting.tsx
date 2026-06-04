@@ -116,7 +116,7 @@ const Betting = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => fund(p)} />
+        <PinPad onComplete={(p) => fund(p)} busy={busy} />
       </Sheet>
     </Screen>
   );
