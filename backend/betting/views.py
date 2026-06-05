@@ -5,10 +5,9 @@ call the aggregator -> settle the ledger (refund on failure).
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user, verify_transaction_pin
+from common.http import api, fail, ok, provider_purchase_response, require_user, verify_transaction_pin
 from utility.providers import vtu_purchase
-from wallet.models import Transaction
-from wallet.services import InsufficientFunds, debit, refund
+from wallet.services import InsufficientFunds, run_provider_purchase
 
 from .models import BettingPlatform
 
@@ -51,19 +50,12 @@ def fund_betting(request):
         return fail("Minimum funding is ₦100")
 
     try:
-        txn = debit(user, amount, f"{platform.name} funding", meta={"platform": platform.code, "user_id": user_id})
+        status, txn, result = run_provider_purchase(
+            user, amount, f"{platform.name} funding",
+            {"platform": platform.code, "user_id": user_id},
+            lambda ref: vtu_purchase(platform.service_id or f"{platform.code}-betting",
+                                     {"billersCode": user_id, "amount": str(amount)}, reference=ref),
+        )
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
-
-    result = vtu_purchase(
-        platform.service_id or f"{platform.code}-betting",
-        {"billersCode": user_id, "amount": str(amount)},
-    )
-    if result.get("success"):
-        txn.transaction_status = Transaction.SUCCESS
-        txn.meta = {**txn.meta, "provider_reference": result.get("provider_reference", "")}
-        txn.save(update_fields=["transaction_status", "meta"])
-        return ok(success=True, message="Betting wallet funded", reference=txn.reference)
-
-    refund(txn)
-    return fail(result.get("message", "Transaction failed"), status=502)
+    return provider_purchase_response(status, txn, result, success_message="Betting wallet funded")

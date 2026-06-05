@@ -242,15 +242,16 @@ def _disco_service_type(slug: str) -> str:
     return _BAXI_DISCO.get(slug, slug.replace(" ", "") + "_electric")
 
 
-def _baxi_build_request(service_id: str, payload: dict):
+def _baxi_build_request(service_id: str, payload: dict, reference: str | None = None):
     """Map (service_id, view payload) -> (endpoint_path, Baxi request body).
 
-    Returns (None, {}) for an unrecognised service. agentReference must be
-    unique per transaction; ideally thread the wallet reference through here for
-    reconciliation (TODO) — for now we mint one.
+    Returns (None, {}) for an unrecognised service. The wallet ledger reference
+    is threaded through as Baxi's agentReference (its idempotency key), so a
+    retry or requery of the same purchase reconciles to one provider
+    transaction rather than charging twice.
     """
     sid = service_id.lower()
-    ref = "ZB-" + secrets.token_hex(6).upper()
+    ref = reference or ("ZB-" + secrets.token_hex(6).upper())
     if sid.endswith("-airtime"):
         net = sid[: -len("-airtime")]
         return "services/airtime/request", {
@@ -302,10 +303,14 @@ def _baxi_parse(data: dict) -> dict:
     }
 
 
-def vtu_purchase(service_id: str, payload: dict) -> dict:
+def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit a VTU purchase, routing to Baxi's per-service endpoint.
 
-    MOCK-succeeds when no key is configured so the flow is testable offline.
+    Pass the wallet ledger `reference` so it becomes Baxi's agentReference
+    (idempotency key). MOCK-succeeds when no key is configured so the flow is
+    testable offline. On a network error returns ``pending=True``: the purchase
+    may actually have landed, so the caller must NOT refund — reconciliation
+    requeries it by reference instead.
     """
     if not _baxi_live():
         return {
@@ -313,7 +318,7 @@ def vtu_purchase(service_id: str, payload: dict) -> dict:
             "message": "Transaction Successful (mock mode — no aggregator keys set)",
             "provider_reference": "MOCK-" + secrets.token_hex(6).upper(),
         }
-    endpoint, body = _baxi_build_request(service_id, payload)
+    endpoint, body = _baxi_build_request(service_id, payload, reference)
     if endpoint is None:
         return {"success": False, "message": f"Unsupported service: {service_id}"}
     try:
@@ -323,7 +328,34 @@ def vtu_purchase(service_id: str, payload: dict) -> dict:
         )
         return _baxi_parse(resp.json())
     except requests.RequestException as exc:
-        return {"success": False, "message": f"Aggregator unreachable: {exc}"}
+        return {"success": False, "pending": True, "message": f"Aggregator unreachable: {exc}"}
+
+
+def vtu_requery(reference: str) -> dict:
+    """Requery a submitted purchase by our agentReference to settle a PENDING
+    transaction (e.g. one whose original send timed out).
+
+    Returns the {"success", "pending", ...} shape settle_or_refund expects:
+    success => delivered; pending => still unknown (retry later); neither =>
+    a definitive failure the caller refunds. MOCK treats it as delivered.
+
+    VERIFY-BEFORE-LIVE: confirm Baxi's requery path and response shape; an
+    unrecognised/empty result is kept PENDING so a delivered purchase is never
+    refunded by mistake.
+    """
+    if not _baxi_live():
+        return {"success": True, "mock": True, "message": "Delivered (mock requery)"}
+    try:
+        resp = requests.post(
+            f"{settings.BAXI['BASE_URL']}/services/transaction/requery",
+            json={"agentReference": reference}, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        parsed = _baxi_parse(resp.json())
+        if not parsed.get("success") and not parsed.get("provider_reference"):
+            parsed["pending"] = True  # no confirmed status yet — don't refund
+        return parsed
+    except requests.RequestException:
+        return {"success": False, "pending": True, "message": "Requery failed; will retry"}
 
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:

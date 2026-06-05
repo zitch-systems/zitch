@@ -3,10 +3,9 @@
 Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
-from common.http import api, fail, ok, require_user, verify_transaction_pin
+from common.http import api, fail, ok, provider_purchase_response, require_user, verify_transaction_pin
 from utility.providers import vtu_purchase
-from wallet.models import Transaction
-from wallet.services import InsufficientFunds, debit, refund
+from wallet.services import InsufficientFunds, run_provider_purchase
 
 from .models import ExamProduct
 
@@ -46,20 +45,13 @@ def buy_exam(request):
     amount = product.price * quantity
 
     try:
-        txn = debit(user, amount, f"{product.name} PIN x{quantity}", meta={"exam": product.code, "phone": phone, "quantity": quantity})
+        status, txn, result = run_provider_purchase(
+            user, amount, f"{product.name} PIN x{quantity}",
+            {"exam": product.code, "phone": phone, "quantity": quantity},
+            lambda ref: vtu_purchase(product.service_id or f"{product.code}-pin",
+                                     {"billersCode": phone, "quantity": quantity, "phone": phone}, reference=ref),
+        )
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
-
-    result = vtu_purchase(
-        product.service_id or f"{product.code}-pin",
-        {"billersCode": phone, "quantity": quantity, "phone": phone},
-    )
-    if result.get("success"):
-        pins = result.get("pins") or result.get("Pin") or []
-        txn.transaction_status = Transaction.SUCCESS
-        txn.meta = {**txn.meta, "pins": pins, "provider_reference": result.get("provider_reference", "")}
-        txn.save(update_fields=["transaction_status", "meta"])
-        return ok(success=True, message="Exam PIN purchased", pins=pins, reference=txn.reference)
-
-    refund(txn)
-    return fail(result.get("message", "Transaction failed"), status=502)
+    pins = result.get("pins") or result.get("Pin") or []
+    return provider_purchase_response(status, txn, result, success_message="Exam PIN purchased", pins=pins)

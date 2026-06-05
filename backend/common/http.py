@@ -100,6 +100,22 @@ def verify_transaction_pin(user, raw_pin):
         )
 
 
+def provider_purchase_response(status, txn, result, *, success_message, **success_extra):
+    """Map a wallet.services.run_provider_purchase outcome to a JSON response.
+
+    success -> 200 with the success message (plus any extra fields, e.g. a meter
+               token or exam PINs); pending -> 200 with pending=True and a
+               'processing' note (the money is held while reconciliation confirms
+               or refunds it later); failed -> 502 with the provider's message.
+    """
+    if status == "pending":
+        return ok(pending=True, reference=txn.reference,
+                  message="Your purchase is processing and will be confirmed shortly.")
+    if status != "success":
+        return fail(result.get("message", "Transaction failed"), status=502)
+    return ok(success=True, message=success_message, reference=txn.reference, **success_extra)
+
+
 def fail(message, status=400, **extra):
     return JsonResponse({"message": message, **extra}, status=status)
 

@@ -4,6 +4,7 @@ import json
 from decimal import Decimal
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import Client, TestCase
 
 from wallet.models import Transaction
@@ -146,3 +147,74 @@ class BaxiRoutingTests(TestCase):
         _, b1 = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "0805"})
         _, b2 = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "0805"})
         self.assertNotEqual(b1["agentReference"], b2["agentReference"])
+
+    def test_ledger_reference_is_used_as_agent_reference(self):
+        # Threading the wallet reference through makes it Baxi's idempotency key,
+        # so a retry/requery reconciles to one provider transaction.
+        _, body = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "0805"}, "ZTCHABC12345")
+        self.assertEqual(body["agentReference"], "ZTCHABC12345")
+
+
+class VtuReconciliationTests(TestCase):
+    """A provider timeout must hold the purchase PENDING — never refund a
+    possibly-delivered service. The reconcile job later requeries and settles."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def balance(self):
+        return get_or_create_wallet(self.user).balance
+
+    def _buy_airtime_timed_out(self):
+        """Buy airtime where the provider call times out (pending). Returns the ref."""
+        with patch("utility.views.vtu_purchase",
+                   return_value={"success": False, "pending": True, "message": "Aggregator unreachable"}):
+            res, body = self.post("/api/utility/buyairtime/", {
+                "access_token": self.token, "amount": "1000", "network": "1",
+                "phone": "08010000001", "transaction_pin": "1234",
+            })
+        return res, body
+
+    def test_timeout_holds_pending_without_refunding(self):
+        res, body = self._buy_airtime_timed_out()
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("pending"))
+        self.assertEqual(self.balance(), Decimal("19000"))  # money held, not refunded
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertTrue(txn.meta.get("reconcile"))
+
+    def test_reconcile_marks_delivered_purchase_successful(self):
+        _, body = self._buy_airtime_timed_out()
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery", return_value={"success": True}):
+            call_command("reconcile_vtu", older_than_minutes=0)
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
+        self.assertEqual(self.balance(), Decimal("19000"))  # correctly spent
+
+    def test_reconcile_refunds_definitively_failed_purchase(self):
+        _, body = self._buy_airtime_timed_out()
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "provider_reference": "BX1", "message": "not found"}):
+            call_command("reconcile_vtu", older_than_minutes=0)
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.FAILED)
+        self.assertEqual(self.balance(), Decimal("20000"))  # refunded
+
+    def test_reconcile_leaves_still_unknown_pending(self):
+        _, body = self._buy_airtime_timed_out()
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "pending": True}):
+            call_command("reconcile_vtu", older_than_minutes=0)
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.PENDING)
+        self.assertEqual(self.balance(), Decimal("19000"))
+
+    def test_reconcile_settle_is_idempotent(self):
+        _, body = self._buy_airtime_timed_out()
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery", return_value={"success": False, "provider_reference": "BX1"}):
+            call_command("reconcile_vtu", older_than_minutes=0)
+            call_command("reconcile_vtu", older_than_minutes=0)  # second run must not double-refund
+        self.assertEqual(self.balance(), Decimal("20000"))

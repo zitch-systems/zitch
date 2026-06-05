@@ -5,9 +5,8 @@ aggregator -> mark the row Successful, or refund on failure.
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user, verify_transaction_pin
-from wallet.models import Transaction
-from wallet.services import InsufficientFunds, debit, refund
+from common.http import api, fail, ok, provider_purchase_response, require_user, verify_transaction_pin
+from wallet.services import InsufficientFunds, run_provider_purchase
 
 from .models import CablePlan, DataPlan
 from .providers import vtu_purchase, vtu_verify_customer
@@ -33,20 +32,15 @@ def _check_pin(user, data):
 
 
 def _run_purchase(user, amount, service, meta, provider_call):
-    """Shared debit -> provider -> settle/refund wrapper."""
+    """Debit -> provider -> settle, mapping insufficient funds to a 402.
+
+    Returns (status, txn, result) from run_provider_purchase, or a fail()
+    response when the wallet can't cover the amount.
+    """
     try:
-        txn = debit(user, amount, service, meta=meta)
+        return run_provider_purchase(user, amount, service, meta, provider_call)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
-
-    result = provider_call()
-    if result.get("success"):
-        txn.transaction_status = Transaction.SUCCESS
-        txn.meta = {**txn.meta, **{k: v for k, v in result.items() if k != "raw"}}
-        txn.save(update_fields=["transaction_status", "meta"])
-        return txn, result
-    refund(txn)
-    return fail(result.get("message", "Transaction failed"), status=502)
 
 
 # ---------------- AIRTIME ----------------
@@ -65,12 +59,12 @@ def buyairtime(request):
     outcome = _run_purchase(
         user, amount, f"Airtime — {NETWORK_NAMES.get(net, net)}",
         {"phone": phone, "network": net},
-        lambda: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
-                             {"amount": str(amount), "phone": phone}),
+        lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
+                                 {"amount": str(amount), "phone": phone}, reference=ref),
     )
-    if isinstance(outcome, tuple):
-        return ok(message="Airtime purchase successful", reference=outcome[0].reference)
-    return outcome
+    if not isinstance(outcome, tuple):
+        return outcome
+    return provider_purchase_response(*outcome, success_message="Airtime purchase successful")
 
 
 # ---------------- DATA ----------------
@@ -108,12 +102,12 @@ def buydata(request):
     outcome = _run_purchase(
         user, plan.price, f"Data — {NETWORK_NAMES.get(net, net)} {plan.name}",
         {"phone": phone, "network": net, "plan_code": plan.plan_code},
-        lambda: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-data",
-                             {"billersCode": phone, "variation_code": plan.plan_code, "phone": phone}),
+        lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-data",
+                                 {"billersCode": phone, "variation_code": plan.plan_code, "phone": phone}, reference=ref),
     )
-    if isinstance(outcome, tuple):
-        return ok(message="Data purchase successful", reference=outcome[0].reference)
-    return outcome
+    if not isinstance(outcome, tuple):
+        return outcome
+    return provider_purchase_response(*outcome, success_message="Data purchase successful")
 
 
 # ---------------- CABLE ----------------
@@ -161,12 +155,12 @@ def buycable(request):
     outcome = _run_purchase(
         user, plan.price, f"Cable — {CABLE_NAMES.get(prov, prov)} {plan.name}",
         {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code},
-        lambda: vtu_purchase(CABLE_NAMES.get(prov, "dstv").lower(),
-                             {"billersCode": iuc, "variation_code": plan.cable_plan_code}),
+        lambda ref: vtu_purchase(CABLE_NAMES.get(prov, "dstv").lower(),
+                                 {"billersCode": iuc, "variation_code": plan.cable_plan_code}, reference=ref),
     )
-    if isinstance(outcome, tuple):
-        return ok(message="Cable subscription successful", reference=outcome[0].reference)
-    return outcome
+    if not isinstance(outcome, tuple):
+        return outcome
+    return provider_purchase_response(*outcome, success_message="Cable subscription successful")
 
 
 # ---------------- ELECTRICITY ----------------
@@ -198,12 +192,13 @@ def buyelectricity(request):
     outcome = _run_purchase(
         user, amount, f"Electricity — {DISCO_NAMES.get(disco, disco)}",
         {"meter": meter, "disco": disco, "meter_type": meter_type},
-        lambda: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
-                             {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}),
+        lambda ref: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
+                                 {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
     )
-    if isinstance(outcome, tuple):
-        txn, result = outcome
-        # Prepaid purchases return a recharge token from the aggregator.
-        token = result.get("token") or result.get("provider_reference", "")
-        return ok(message="Electricity purchase successful", token=token, reference=txn.reference)
-    return outcome
+    if not isinstance(outcome, tuple):
+        return outcome
+    status, txn, result = outcome
+    # Prepaid purchases return a recharge token from the aggregator (success only).
+    token = (result.get("token") or result.get("provider_reference", "")) if status == "success" else ""
+    return provider_purchase_response(status, txn, result,
+                                      success_message="Electricity purchase successful", token=token)
