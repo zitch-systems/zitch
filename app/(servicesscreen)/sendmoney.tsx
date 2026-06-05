@@ -265,7 +265,7 @@ const SendMoney = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => send(p)} />
+        <PinPad onComplete={(p) => send(p)} busy={busy} />
       </Sheet>
     </Screen>
   );

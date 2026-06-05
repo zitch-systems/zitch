@@ -86,11 +86,10 @@ const Home = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-            <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 12.5, fontFamily: font.medium, fontVariant: ['tabular-nums'] }}>Acct: 9012 345 678</Text>
-            <ZIcon name="copy" size={14} color="rgba(255,255,255,.82)" />
-          </View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 12 }}>
+          {/* A deposit account number is shown here once the wallet is provisioned
+              with one — never a hardcoded placeholder (it could be mistaken for a
+              real account and shared). */}
           <Pressable onPress={() => router.push('/addmoney')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
             <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
             <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>

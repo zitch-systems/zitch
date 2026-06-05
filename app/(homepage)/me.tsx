@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { apiJson } from '@/lib/api';
+import { apiJson, apiPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, ZItem, money } from '@/components/design/ui';
@@ -76,6 +76,9 @@ const Me = () => {
   };
 
   const handleLogout = async () => {
+    // Revoke the token server-side first so a leaked copy can't be replayed;
+    // best-effort — a network error must not block signing out locally.
+    try { await apiPost('/api/logout/'); } catch { /* fall through to local clear */ }
     await clearSession();
     router.replace('/signin');
   };

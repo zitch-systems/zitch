@@ -152,13 +152,19 @@ def set_password(request):
 @api
 @require_user
 def set_transaction_pin(request):
-    """POST /api/set-transaction-pin/ {access_token, pin}
+    """POST /api/set-transaction-pin/ {access_token, pin, password?}
 
-    Authenticated: sets the PIN on the token's user (see set_password note)."""
+    First-time set (onboarding) needs only the session token. CHANGING an
+    already-set PIN additionally requires the account password, so a stolen
+    session token alone can't overwrite the PIN that gates money movement.
+    """
     user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
     if len(pin) < 4:
         return fail("PIN must be at least 4 digits")
+    if user.transaction_pin and not user.check_password(request.data.get("password") or ""):
+        return fail("Enter your account password to change your PIN",
+                    status=403, code="password_required")
     user.set_transaction_pin(pin)
     user.save(update_fields=["transaction_pin"])
     return ok(message="Transaction PIN set")

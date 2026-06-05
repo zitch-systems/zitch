@@ -115,7 +115,7 @@ const Loans = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Repay ${active ? money(Number(active.outstanding)) : ''} from your wallet`}
         </Text>
-        <PinPad onComplete={(p) => repay(p)} />
+        <PinPad onComplete={(p) => repay(p)} busy={busy} />
       </Sheet>
     </Screen>
   );

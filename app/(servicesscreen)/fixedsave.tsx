@@ -180,7 +180,7 @@ const FixedSave = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Locking…' : `Lock ${money(amount)} for ${days} days`}
         </Text>
-        <PinPad onComplete={(p) => create(p)} />
+        <PinPad onComplete={(p) => create(p)} busy={busy} />
       </Sheet>
     </Screen>
   );

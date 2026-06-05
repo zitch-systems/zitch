@@ -136,7 +136,7 @@ const Exams = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => purchase(p)} />
+        <PinPad onComplete={(p) => purchase(p)} busy={busy} />
       </Sheet>
     </Screen>
   );

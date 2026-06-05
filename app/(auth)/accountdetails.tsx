@@ -38,6 +38,14 @@ const AccountDetails = () => {
   }, [token]);
 
   const handleUpdate = async () => {
+    if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+      Alert.alert('Invalid email', 'Enter a valid email address.');
+      return;
+    }
+    if (form.phone && form.phone.length !== 11) {
+      Alert.alert('Invalid phone', 'Enter a valid 11-digit phone number.');
+      return;
+    }
     setIsUpdating(true);
     try {
       const response = await apiPost('/api/update_info/', {

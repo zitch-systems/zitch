@@ -163,7 +163,7 @@ const Cards = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Funding…' : `Load ${money(Number(fundAmt))} onto your card`}
         </Text>
-        <PinPad onComplete={(p) => doFund(p)} />
+        <PinPad onComplete={(p) => doFund(p)} busy={busy} />
       </Sheet>
 
       {/* Details reveal: PIN */}
@@ -171,7 +171,7 @@ const Cards = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           Enter your PIN to show the full card number & CVV
         </Text>
-        <PinPad onComplete={(p) => doReveal(p)} />
+        <PinPad onComplete={(p) => doReveal(p)} busy={busy} />
       </Sheet>
     </Screen>
   );

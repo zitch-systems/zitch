@@ -98,10 +98,29 @@ class CredentialSecurityTests(TestCase):
     def test_set_pin_requires_auth_and_sets_owner(self):
         res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "1357"})
         self.assertEqual(res.status_code, 401)
-        user, token = make_user("08040000004", "d@zitch.test", pin="0000")
+        # First-time PIN set (no existing PIN) needs only the session token.
+        user = User.objects.create(username="08040000004", phone="08040000004", email="d@zitch.test")
+        token = AccessToken.issue(user).key
         res, _ = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "1357"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1357"))
+
+    def test_changing_existing_pin_requires_account_password(self):
+        # A token alone must not be enough to OVERWRITE an existing PIN (else the
+        # brute-force lockout is moot — an attacker would just reset the PIN).
+        user = User.objects.create(username="08050000005", phone="08050000005", email="e@zitch.test")
+        user.set_password("Passw0rd123")
+        user.set_transaction_pin("1234")
+        user.save()
+        token = AccessToken.issue(user).key
+        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "9999"})
+        self.assertEqual((res.status_code, body.get("code")), (403, "password_required"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
+        # With the account password, the change goes through.
+        res, _ = self.post("/api/set-transaction-pin/", {
+            "access_token": token, "pin": "9999", "password": "Passw0rd123"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("9999"))
 
     def test_update_info_rejects_phone_collision_cleanly(self):
         make_user("08010000001", "a@zitch.test")
