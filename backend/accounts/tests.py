@@ -386,3 +386,57 @@ class SessionRevocationTests(TestCase):
         self.assertEqual(self.post("/api/wallet_balance/", old_token)[0].status_code, 401)
         # ...but the one that changed the password stays signed in.
         self.assertEqual(self.post("/api/wallet_balance/", new_token)[0].status_code, 200)
+
+
+class PasswordRecoveryTests(TestCase):
+    """OTP-based password reset for users who can't sign in. Reset codes are a
+    distinct OTP purpose, so they can't be replayed on the signup verifier."""
+
+    def setUp(self):
+        self.client = Client()
+
+    def post(self, path, **payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def _reset_code(self, phone):
+        return OTP.objects.filter(phone=phone, purpose=OTP.RESET).latest("created").code
+
+    def test_forgot_sends_reset_code_for_a_registered_phone(self):
+        make_user("08010000001", "a@zitch.test")
+        res, _ = self.post("/api/password/forgot/", phone="08010000001")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(OTP.objects.filter(phone="08010000001", purpose=OTP.RESET).exists())
+
+    def test_forgot_does_not_reveal_an_unknown_number(self):
+        res, _ = self.post("/api/password/forgot/", phone="07000000000")
+        self.assertEqual(res.status_code, 200)  # same generic response...
+        self.assertFalse(OTP.objects.filter(phone="07000000000").exists())  # ...but no code issued
+
+    def test_reset_sets_new_password_revokes_sessions_and_returns_token(self):
+        user, old_token = make_user("08010000001", "a@zitch.test")
+        self.post("/api/password/forgot/", phone="08010000001")
+        res, body = self.post("/api/password/reset/", phone="08010000001",
+                              otp=self._reset_code("08010000001"), password="NewPassw0rd1")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1"))
+        # Old session is revoked; the freshly issued one works.
+        self.assertEqual(self._auth(old_token), 401)
+        self.assertEqual(self._auth(body["access_token"]), 200)
+
+    def test_reset_rejects_a_wrong_code(self):
+        make_user("08010000001", "a@zitch.test")
+        self.post("/api/password/forgot/", phone="08010000001")
+        res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1")
+        self.assertEqual(res.status_code, 400)
+
+    def test_signup_verifier_will_not_honour_a_reset_code(self):
+        make_user("08010000001", "a@zitch.test")
+        self.post("/api/password/forgot/", phone="08010000001")
+        res, _ = self.post("/api/verify_otp/", phone="08010000001", otp=self._reset_code("08010000001"))
+        self.assertEqual(res.status_code, 400)  # reset code is not a signup/login code
+
+    def _auth(self, token):
+        return self.client.post("/api/wallet_balance/", data=json.dumps({"access_token": token}),
+                                content_type="application/json").status_code

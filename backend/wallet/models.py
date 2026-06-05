@@ -11,6 +11,13 @@ class Wallet(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            # Defence-in-depth behind the service-layer balance checks: the DB
+            # itself rejects a negative balance, so no bug or race can overdraw.
+            models.CheckConstraint(check=models.Q(balance__gte=0), name="wallet_balance_non_negative"),
+        ]
+
     def __str__(self):
         return f"{self.user} · ₦{self.balance}"
 
@@ -39,6 +46,11 @@ class Transaction(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        constraints = [
+            # Amounts are always positive; `direction` carries the sign. A DB
+            # check keeps a zero/negative amount from ever entering the ledger.
+            models.CheckConstraint(check=models.Q(amount__gt=0), name="txn_amount_positive"),
+        ]
 
     def __str__(self):
         sign = "+" if self.direction == self.IN else "-"

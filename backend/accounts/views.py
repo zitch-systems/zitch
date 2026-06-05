@@ -65,7 +65,7 @@ def verify_otp(request):
     if not phone or not code:
         return fail("Phone and OTP are required")
 
-    otp = OTP.objects.filter(phone=phone, used=False).order_by("-created").first()
+    otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.SIGNUP).order_by("-created").first()
     if otp is None:
         return fail("Invalid OTP", status=400)
     if otp.is_expired:
@@ -113,6 +113,69 @@ def resend_verify_otp(request):
     OTP.objects.create(phone=phone, email=email, code=code)
     send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP resent")
+
+
+# ------------------------------ ACCOUNT RECOVERY ------------------------------
+@ratelimit("otp_send", limit=5, window=60)
+@api
+def password_forgot(request):
+    """POST /api/password/forgot/ {phone} — send a reset code to a registered
+    phone.
+
+    Always returns the same success message whether or not the phone is
+    registered, so the endpoint can't be used to enumerate accounts.
+    """
+    phone = (request.data.get("phone") or "").strip()
+    if not phone:
+        return fail("Phone is required")
+    user = User.objects.filter(phone=phone).first()
+    if user is not None and not _otp_on_cooldown(phone):
+        code = f"{random.randint(0, 999999):06d}"
+        OTP.objects.create(phone=phone, email=user.email or "", code=code, purpose=OTP.RESET)
+        send_sms(phone, f"Your Zitch password reset code is {code}")
+    return ok(message="If that number has a Zitch account, a reset code has been sent.")
+
+
+@ratelimit("otp_verify", limit=20, window=60)
+@api
+def password_reset(request):
+    """POST /api/password/reset/ {phone, otp, password} -> {access_token}
+
+    Verifies a RESET code and sets a new password. Revokes every existing
+    session (a reset means the old credential is gone) and returns a fresh token
+    so the resetting device is signed in.
+    """
+    phone = (request.data.get("phone") or "").strip()
+    code = (request.data.get("otp") or "").strip()
+    password = request.data.get("password") or ""
+    if not phone or not code:
+        return fail("Phone and reset code are required")
+    if len(password) < 8:
+        return fail("Password must be at least 8 characters")
+
+    otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.RESET).order_by("-created").first()
+    if otp is None:
+        return fail("Invalid reset code", status=400)
+    if otp.is_expired:
+        return fail("Reset code has expired", status=400)
+    if otp.too_many_attempts:
+        return fail("Too many incorrect attempts. Request a new code.", status=429)
+    if otp.code != code:
+        otp.attempts += 1
+        otp.save(update_fields=["attempts"])
+        return fail("Invalid reset code", status=400)
+
+    user = User.objects.filter(phone=phone).first()
+    if user is None:
+        return fail("Account not found", status=404)
+
+    otp.used = True
+    otp.save(update_fields=["used"])
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    user.tokens.all().delete()  # a password reset invalidates every prior session
+    token = AccessToken.issue(user)
+    return ok(access_token=token.key, message="Password reset")
 
 
 @api
