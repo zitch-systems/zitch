@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken, clearSession } from '@/lib/secureStore';
+import { touchActivity } from '@/lib/session';
 
 // On an authenticated 401 the session is dead (expired or revoked): clear it and
 // bounce to sign-in. Guarded so several in-flight requests failing together only
@@ -35,6 +36,7 @@ export async function apiPost(path: string, body: Record<string, any> = {}): Pro
   // (Sign-in and other token-less calls also 401 on bad input, but `token` is
   // null there, so this won't fire for them.)
   if (token && res.status === 401) await onSessionExpired();
+  else if (token) void touchActivity(); // record activity for the idle timeout
   return res;
 }
 

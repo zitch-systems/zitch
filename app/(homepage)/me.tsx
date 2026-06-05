@@ -94,6 +94,7 @@ const Me = () => {
   ];
   const grp2: any[] = [
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
+    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 4-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'help', title: 'Customer Service Center', go: () => router.push('/comingsoon') },
     { icon: 'gift', title: 'Invitation', sub: 'Invite friends & earn up to ₦5,600', go: () => router.push('/comingsoon') },
     { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/comingsoon') },

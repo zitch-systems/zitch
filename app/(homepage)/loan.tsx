@@ -28,6 +28,7 @@ const Loans = () => {
   const [active, setActive] = useState<ActiveLoan | null>(null);
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pinError, setPinError] = useState('');
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -52,12 +53,16 @@ const Loans = () => {
     setBusy(true);
     try {
       const res = await apiJson('/api/loans/repay/', { amount: active.outstanding, transaction_pin: pin });
-      setPinOpen(false);
       if (res.success) {
+        setPinOpen(false);
+        setPinError('');
         Alert.alert('Success', 'Loan repaid');
         reloadWallet();
         load();
+      } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
+        setPinError(res.message || 'Incorrect PIN');
       } else {
+        setPinOpen(false);
         Alert.alert('Error', res.message || 'Repayment failed');
       }
     } catch {
@@ -103,7 +108,7 @@ const Loans = () => {
               <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{money(Number(active.outstanding))}</Text>
             </View>
             <View style={{ marginTop: 14 }}>
-              <Btn label={`Repay ${money(Number(active.outstanding))}`} onPress={() => setPinOpen(true)} />
+              <Btn label={`Repay ${money(Number(active.outstanding))}`} onPress={() => { setPinError(''); setPinOpen(true); }} />
             </View>
           </View>
         ) : (
@@ -115,7 +120,7 @@ const Loans = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Repay ${active ? money(Number(active.outstanding)) : ''} from your wallet`}
         </Text>
-        <PinPad onComplete={(p) => repay(p)} busy={busy} />
+        <PinPad onComplete={(p) => repay(p)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );

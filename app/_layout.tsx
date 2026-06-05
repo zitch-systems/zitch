@@ -1,12 +1,13 @@
 import { useEffect } from "react";
-import { Text as RNText, TextInput as RNTextInput } from "react-native";
+import { AppState, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { SplashScreen, Stack } from "expo-router";
+import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
+import { enforceIdleTimeout } from "@/lib/session";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
@@ -46,6 +47,21 @@ const _layout = () => {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, error]);
+
+  // Inactivity timeout: clear a session idle past the limit and bounce to
+  // sign-in. Checked once on launch and whenever the app returns to the
+  // foreground; active use keeps the stamp fresh via authenticated API calls.
+  useEffect(() => {
+    const check = () =>
+      enforceIdleTimeout().then((loggedOut) => {
+        if (loggedOut) router.replace("/signin");
+      });
+    check();
+    const sub = AppState.addEventListener("change", (s) => {
+      if (s === "active") check();
+    });
+    return () => sub.remove();
+  }, []);
 
   if (!fontsLoaded && !error) {
     return null;

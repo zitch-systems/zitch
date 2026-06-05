@@ -35,6 +35,7 @@ const GetLoan = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pinError, setPinError] = useState('');
 
   useEffect(() => {
     getToken().then((t) => {
@@ -65,6 +66,8 @@ const GetLoan = () => {
         setStep(null);
         setDone(true);
         reload();
+      } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
+        setPinError(res.message || 'Incorrect PIN');
       } else {
         Alert.alert('Error', res.message || 'Loan request failed');
         setStep(null);
@@ -151,14 +154,14 @@ const GetLoan = () => {
         total={amount}
         balance={available}
         rows={[['Amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repay', money(repay)]]}
-        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Authorize loan of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => request(p)} busy={busy} />
+        <PinPad onComplete={(p) => request(p)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );
