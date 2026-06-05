@@ -75,6 +75,28 @@ services:
           name: zitch-db
           property: connectionString
 
+  # VTU reconciliation — settle purchases left PENDING by a provider timeout:
+  # requery the aggregator by reference, then mark Successful (delivered) or
+  # refund (definitively failed). Also requires a paid plan (cron has no free
+  # tier). Runs every 10 minutes so stuck purchases clear quickly.
+  - type: cron
+    name: zitch-reconcile-vtu
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "*/10 * * * *"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py reconcile_vtu"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+
 databases:
   - name: zitch-db
     plan: free   # upgrade before go-live; free Postgres expires

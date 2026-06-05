@@ -76,6 +76,69 @@ def refund(txn: Transaction) -> None:
 
 
 @db_transaction.atomic
+def settle_or_refund(txn: Transaction, result: dict) -> str:
+    """Resolve a PENDING provider-backed debit from the provider's result.
+
+    Returns one of:
+      "success" — provider delivered; row marked Successful.
+      "pending" — outcome unknown (e.g. a send timeout); row left Pending and
+                  flagged ``meta.reconcile`` so the reconcile job requeries it.
+                  The money stays debited — we never refund a maybe-delivered
+                  purchase, which would leak money if it actually went through.
+      "failed"  — definitive failure; wallet refunded, row marked Failed.
+
+    Locks the row and guards on its status, so a later reconcile call can't
+    double-settle (credit twice / mark a delivered purchase failed).
+    """
+    txn = Transaction.objects.select_for_update().get(pk=txn.pk)
+    if txn.transaction_status == Transaction.SUCCESS:
+        return "success"
+    if txn.transaction_status == Transaction.FAILED:
+        return "failed"
+
+    meta = dict(txn.meta or {})
+    if result.get("success"):
+        meta.pop("reconcile", None)
+        meta.update({k: v for k, v in result.items() if k != "raw"})
+        txn.meta = meta
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status", "meta"])
+        return "success"
+    if result.get("pending"):
+        if not meta.get("reconcile"):
+            meta["reconcile"] = True
+            txn.meta = meta
+            txn.save(update_fields=["meta"])
+        return "pending"
+
+    # Definitive failure: refund and mark Failed.
+    wallet = Wallet.objects.select_for_update().get(user=txn.user)
+    wallet.balance += txn.amount
+    wallet.save(update_fields=["balance", "updated"])
+    meta.pop("reconcile", None)
+    meta["failure"] = result.get("message", "")
+    txn.meta = meta
+    txn.transaction_status = Transaction.FAILED
+    txn.save(update_fields=["transaction_status", "meta"])
+    return "failed"
+
+
+def run_provider_purchase(user, amount, service: str, meta: dict, provider_call):
+    """Debit the wallet (PENDING) → call the provider → settle the row.
+
+    ``provider_call(reference)`` receives the ledger reference to use as the
+    provider's idempotency key and returns the provider result dict. The network
+    call runs OUTSIDE the debit transaction, so no row lock is held during I/O.
+    Returns ``(status, txn, result)`` where status is the settle_or_refund code.
+    Raises InsufficientFunds (the caller maps it to a 402).
+    """
+    txn = debit(user, amount, service, meta=meta)
+    result = provider_call(txn.reference)
+    status = settle_or_refund(txn, result)
+    return status, txn, result
+
+
+@db_transaction.atomic
 def reverse_transfer(reference: str) -> Transaction | None:
     """Refund a settled outbound transfer the provider later failed/reversed.
 

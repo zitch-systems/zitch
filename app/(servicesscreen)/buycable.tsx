@@ -33,6 +33,7 @@ const BuyCable = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pinError, setPinError] = useState('');
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
@@ -113,6 +114,8 @@ const BuyCable = () => {
         setStep(null);
         setDone(true);
         reload();
+      } else if (result.code === 'pin_incorrect' || result.code === 'pin_locked') {
+        setPinError(result.message || 'Incorrect PIN');
       } else {
         Alert.alert('Error', result.message || 'Transaction failed');
         setStep(null);
@@ -179,14 +182,14 @@ const BuyCable = () => {
         total={amount}
         balance={balance}
         rows={[['Provider', provider.name], ['Smartcard', iuc], ['Plan', planObj?.label || '—']]}
-        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => purchase(p)} busy={busy} />
+        <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );

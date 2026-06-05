@@ -368,7 +368,7 @@ export const Sheet = ({
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = 4, busy = false }: { onComplete?: (pin: string) => void; length?: number; busy?: boolean }) => {
+export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComplete?: (pin: string) => void; length?: number; busy?: boolean; error?: string }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   const press = (d: string) => {
@@ -383,7 +383,7 @@ export const PinPad = ({ onComplete, length = 4, busy = false }: { onComplete?: 
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
   return (
     <View>
-      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 8, marginBottom: 26 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 8, marginBottom: error ? 10 : 26 }}>
         {Array.from({ length }).map((_, i) => (
           <View
             key={i}
@@ -393,11 +393,16 @@ export const PinPad = ({ onComplete, length = 4, busy = false }: { onComplete?: 
               borderRadius: 8,
               backgroundColor: i < pin.length ? c.brand : c.surface3,
               borderWidth: 2,
-              borderColor: i < pin.length ? c.brand : c.line,
+              borderColor: error ? c.red : i < pin.length ? c.brand : c.line,
             }}
           />
         ))}
       </View>
+      {error ? (
+        <Text style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginBottom: 16 }}>
+          {error}
+        </Text>
+      ) : null}
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', maxWidth: 280, alignSelf: 'center' }}>
         {keys.map((k, i) =>
           k === '' ? (
@@ -436,12 +441,14 @@ export const PinSheet = ({
   onComplete,
   title = 'Enter your PIN',
   busy = false,
+  error,
 }: {
   open: boolean;
   onClose: () => void;
   onComplete?: (pin: string) => void;
   title?: string;
   busy?: boolean;
+  error?: string;
 }) => {
   const { c } = useTheme();
   return (
@@ -449,7 +456,7 @@ export const PinSheet = ({
       <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
         Confirm this transaction with your 4-digit PIN
       </Text>
-      <PinPad onComplete={onComplete} busy={busy} />
+      <PinPad onComplete={onComplete} busy={busy} error={error} />
     </Sheet>
   );
 };

@@ -45,6 +45,7 @@ const SendMoney = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pinError, setPinError] = useState('');
 
   useEffect(() => {
     getToken().then((t) => {
@@ -136,6 +137,7 @@ const SendMoney = () => {
       }
 
       if (res.success) { setStep(null); setDone(true); reload(); }
+      else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
       else { Alert.alert('Error', res.message || 'Transfer failed'); setStep(null); }
     } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.'); setStep(null);
@@ -258,14 +260,14 @@ const SendMoney = () => {
         total={amount}
         balance={balance}
         rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
-        onPay={() => { setStep(null); setTimeout(() => setStep('pin'), 320); }}
+        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}`}
         </Text>
-        <PinPad onComplete={(p) => send(p)} busy={busy} />
+        <PinPad onComplete={(p) => send(p)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );

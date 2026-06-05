@@ -3,7 +3,8 @@ import { View, Text, Alert, Pressable } from 'react-native';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
-import { saveToken, clearSession, getToken } from '@/lib/secureStore';
+import { saveToken, getToken } from '@/lib/secureStore';
+import { touchActivity } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -39,16 +40,6 @@ const Signin = () => {
     if (ok) router.replace('/home');
   };
 
-  // Keeps the user signed out after an hour of inactivity.
-  const setSessionTimeout = () => {
-    const sessionDuration = 3600000;
-    setTimeout(async () => {
-      await clearSession();
-      Alert.alert('Session expired', 'You have been logged out due to inactivity.');
-      router.replace('/signin');
-    }, sessionDuration);
-  };
-
   const handleSignin = async () => {
     setIsChecking(true);
     if (form.email.trim() === '') {
@@ -73,7 +64,7 @@ const Signin = () => {
         await saveToken(result.access_token);
         await AsyncStorage.setItem('userID', form.email);
         await AsyncStorage.setItem('sessionExpiration', Date.now().toString());
-        setSessionTimeout();
+        await touchActivity();
         router.replace('/home');
       } else {
         Alert.alert('Error', result.message || 'Incorrect Details');
@@ -133,7 +124,10 @@ const Signin = () => {
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
-      <Text style={{ textAlign: 'right', marginTop: 10, fontSize: 13, fontFamily: font.semibold, color: c.brand }}>
+      <Text
+        onPress={() => router.push('/forgotpassword')}
+        style={{ textAlign: 'right', marginTop: 10, fontSize: 13, fontFamily: font.semibold, color: c.brand }}
+      >
         Forgot password?
       </Text>
 

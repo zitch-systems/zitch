@@ -27,6 +27,7 @@ const Cards = () => {
   const [fundPin, setFundPin] = useState(false);
   const [detailsPin, setDetailsPin] = useState(false);
   const [reveal, setReveal] = useState<Reveal | null>(null);
+  const [pinError, setPinError] = useState('');
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -63,9 +64,9 @@ const Cards = () => {
     setBusy(true);
     try {
       const res = await apiJson('/api/cards/fund/', { card_id: card.id, amount: fundAmt, transaction_pin: pin });
-      setFundPin(false);
-      if (res.success) { setCard(res.card); setFundAmt(''); reloadWallet(); Alert.alert('Success', 'Card funded'); }
-      else Alert.alert('Error', res.message || 'Funding failed');
+      if (res.success) { setFundPin(false); setPinError(''); setCard(res.card); setFundAmt(''); reloadWallet(); Alert.alert('Success', 'Card funded'); }
+      else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
+      else { setFundPin(false); Alert.alert('Error', res.message || 'Funding failed'); }
     } catch { setFundPin(false); Alert.alert('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
@@ -75,9 +76,9 @@ const Cards = () => {
     setBusy(true);
     try {
       const res = await apiJson('/api/cards/details/', { card_id: card.id, transaction_pin: pin });
-      setDetailsPin(false);
-      if (res.success) setReveal({ pan: res.pan, cvv: res.cvv, expiry: res.expiry, holder: res.holder });
-      else Alert.alert('Error', res.message || 'Could not fetch details');
+      if (res.success) { setDetailsPin(false); setPinError(''); setReveal({ pan: res.pan, cvv: res.cvv, expiry: res.expiry, holder: res.holder }); }
+      else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
+      else { setDetailsPin(false); Alert.alert('Error', res.message || 'Could not fetch details'); }
     } catch { setDetailsPin(false); Alert.alert('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
@@ -121,7 +122,7 @@ const Cards = () => {
             {[
               { icon: 'plus', label: 'Fund', go: () => setFundOpen(true) },
               { icon: 'lock', label: frozen ? 'Unfreeze' : 'Freeze', go: toggleFreeze },
-              { icon: reveal ? 'eyeoff' : 'eye', label: reveal ? 'Hide' : 'Details', go: () => (reveal ? setReveal(null) : setDetailsPin(true)) },
+              { icon: reveal ? 'eyeoff' : 'eye', label: reveal ? 'Hide' : 'Details', go: () => (reveal ? setReveal(null) : (setPinError(''), setDetailsPin(true))) },
             ].map((a) => (
               <Pressable key={a.label} onPress={a.go} style={{ flex: 1 }}>
                 <View style={{ alignItems: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
@@ -156,14 +157,14 @@ const Cards = () => {
         <QuickAmounts amounts={FUND_AMOUNTS} value={fundAmt} onPick={setFundAmt} />
         <Field value={fundAmt} onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>} />
         <View style={{ height: 16 }} />
-        <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setTimeout(() => setFundPin(true), 320); }} />
+        <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setPinError(''); setTimeout(() => setFundPin(true), 320); }} />
       </Sheet>
 
       <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN">
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Funding…' : `Load ${money(Number(fundAmt))} onto your card`}
         </Text>
-        <PinPad onComplete={(p) => doFund(p)} busy={busy} />
+        <PinPad onComplete={(p) => doFund(p)} busy={busy} error={pinError} />
       </Sheet>
 
       {/* Details reveal: PIN */}
@@ -171,7 +172,7 @@ const Cards = () => {
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           Enter your PIN to show the full card number & CVV
         </Text>
-        <PinPad onComplete={(p) => doReveal(p)} busy={busy} />
+        <PinPad onComplete={(p) => doReveal(p)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );

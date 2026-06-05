@@ -100,11 +100,21 @@ class AccessToken(models.Model):
 
 
 class OTP(models.Model):
-    """One-time code sent during phone verification."""
+    """One-time code sent during phone verification or account recovery.
+
+    `purpose` keeps a recovery code from being accepted by the signup verifier
+    (which would mint a token for an existing account without a password) and
+    vice-versa — each verifier filters to its own purpose.
+    """
+
+    SIGNUP = "signup"
+    RESET = "reset"
+    PURPOSES = [(SIGNUP, SIGNUP), (RESET, RESET)]
 
     phone = models.CharField(max_length=20, db_index=True)
     code = models.CharField(max_length=6)
     email = models.EmailField(blank=True, default="")
+    purpose = models.CharField(max_length=10, choices=PURPOSES, default=SIGNUP)
     created = models.DateTimeField(auto_now_add=True)
     used = models.BooleanField(default=False)
     attempts = models.PositiveSmallIntegerField(default=0)

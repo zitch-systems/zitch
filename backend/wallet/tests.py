@@ -7,6 +7,7 @@ import json
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction as db_transaction
 from django.test import Client, TestCase
 
 from accounts.models import AccessToken
@@ -180,3 +181,22 @@ class WalletTests(TestCase):
         res, b = self.post("/api/transfer/send/", body)
         self.assertEqual(res.status_code, 200)
         self.assertTrue(b["success"])
+
+
+class LedgerConstraintTests(TestCase):
+    """DB-level guards that back up the service-layer money checks."""
+
+    def test_wallet_balance_cannot_go_negative(self):
+        user, _ = make_user("08010000001", "a@zitch.test", balance="100")
+        wallet = get_or_create_wallet(user)
+        wallet.balance = Decimal("-1")
+        with self.assertRaises(IntegrityError), db_transaction.atomic():
+            wallet.save()
+
+    def test_transaction_amount_must_be_positive(self):
+        user, _ = make_user("08020000002", "b@zitch.test")
+        with self.assertRaises(IntegrityError), db_transaction.atomic():
+            Transaction.objects.create(
+                user=user, service="bad", amount=Decimal("0"),
+                direction=Transaction.OUT, reference="ZBAD000001",
+            )
