@@ -5,11 +5,12 @@ import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark, ZWordmark, Avatar } from '@/components/design/Brand';
 import { useTheme, font } from '@/lib/theme';
-import { useDeviceClass } from '@/lib/device';
+import { useRailWidth } from '@/lib/device';
 
 const ITEMS: { name: string; icon: string; label: string }[] = [
   { name: 'home', icon: 'home', label: 'Home' },
   { name: 'wallet', icon: 'wallet', label: 'Wallet' },
+  { name: 'convert', icon: 'convert', label: 'Convert' },
   { name: 'loan', icon: 'loan', label: 'Loans' },
   { name: 'cards', icon: 'card', label: 'Cards' },
   { name: 'me', icon: 'user', label: 'Me' },
@@ -19,15 +20,18 @@ const ITEMS: { name: string; icon: string; label: string }[] = [
  * Left navigation rail for fold/tablet — replaces the bottom nav on wide
  * screens (logo, nav items with active highlight, profile footer).
  */
-const Sidebar = ({ state, navigation }: BottomTabBarProps) => {
+const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: number }) => {
   const { c } = useTheme();
   const insets = useSafeAreaInsets();
-  const device = useDeviceClass();
+  const fallbackW = useRailWidth();
   const activeName = state.routes[state.index]?.name;
-  const railW = device === 'tablet' ? 240 : 200;
+  const railW = width || fallbackW || 200;
 
   return (
-    <View style={{ width: railW, height: '100%', backgroundColor: c.surface, borderRightWidth: 1, borderRightColor: c.line, paddingTop: insets.top + 18, paddingHorizontal: 16, paddingBottom: 18 }}>
+    // Pinned to the left edge as a full-height rail. bottom-tabs renders the
+    // tabBar at the bottom of a column, so absolute positioning is what lifts it
+    // into a side rail; the scene is padded by railW in the Tabs layout.
+    <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: railW, backgroundColor: c.surface, borderRightWidth: 1, borderRightColor: c.line, paddingTop: insets.top + 18, paddingHorizontal: 16, paddingBottom: 18, zIndex: 20 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, paddingBottom: 22 }}>
         <ZMark size={26} />
         <ZWordmark size={17} color={c.ink1} />

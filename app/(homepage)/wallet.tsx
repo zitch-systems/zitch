@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useCallback } from 'react';
 import { View, Text, Pressable } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Screen, TxnRow, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
@@ -8,7 +8,10 @@ import { useWallet } from '@/lib/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, txns, showBal } = useWallet();
+  const { balance, txns, showBal, reload } = useWallet();
+
+  // Keep balance & transactions fresh each time the tab is opened.
+  useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
   const moneyIn = txns.filter((t) => t.dir === 'in').reduce((s, t) => s + Math.abs(t.amount), 0);
   const moneyOut = txns.filter((t) => t.dir === 'out').reduce((s, t) => s + Math.abs(t.amount), 0);

@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "betting",
     "transfers",
     "cards",
+    "convert",
 ]
 
 MIDDLEWARE = [
@@ -125,7 +126,10 @@ TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
 # re-enables it. In production, back the cache with Redis (or rate-limit at the
 # edge) for accurate limits across workers.
 TESTING = "test" in sys.argv
-RATELIMIT_ENABLE = env_bool("RATELIMIT_ENABLE", not TESTING)
+# Force-off under tests regardless of any RATELIMIT_ENABLE in the environment /
+# .env, so a dev's local rate-limit setting can't bleed shared cache counts into
+# unrelated test cases (RateLimitTests opts back in via override_settings).
+RATELIMIT_ENABLE = False if TESTING else env_bool("RATELIMIT_ENABLE", True)
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.

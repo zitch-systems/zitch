@@ -20,6 +20,18 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="fixedsave" />
         <Stack.Screen name="savings" />
         <Stack.Screen name="betting" />
+        <Stack.Screen name="support" />
+        <Stack.Screen name="invite" />
+        <Stack.Screen name="settings" />
+        <Stack.Screen name="safetytips" />
+        <Stack.Screen name="bizpayment" />
+        <Stack.Screen name="junior" />
+        <Stack.Screen name="bnpl" />
+        <Stack.Screen name="ussd" />
+        <Stack.Screen name="insurance" />
+        <Stack.Screen name="remita" />
+        <Stack.Screen name="movies" />
+        <Stack.Screen name="water" />
         <Stack.Screen name="comingsoon" />
       </Stack>
     </AuthGuard>

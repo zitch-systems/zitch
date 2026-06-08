@@ -34,4 +34,5 @@ urlpatterns = [
     path("api/betting/", include("betting.urls")),
     path("api/transfers/", include("transfers.urls")),
     path("api/cards/", include("cards.urls")),
+    path("api/convert/", include("convert.urls")),
 ]
