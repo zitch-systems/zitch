@@ -32,6 +32,7 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="remita" />
         <Stack.Screen name="movies" />
         <Stack.Screen name="water" />
+        <Stack.Screen name="scan" />
         <Stack.Screen name="comingsoon" />
       </Stack>
     </AuthGuard>

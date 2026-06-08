@@ -31,7 +31,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { balance, firstName, showBal, reload: reloadWallet } = useWallet();
+  const { balance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [tier, setTier] = useState(1);
 
@@ -128,7 +128,7 @@ const Me = () => {
     <Screen pad={false} tab>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 6 }}>
-        <Avatar size={50} ring={c.brand} surface={c.surface} />
+        <Avatar size={50} ring={c.brand} surface={c.surface} uri={avatar} />
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(245,166,35,.16)', alignSelf: 'flex-start' }}>

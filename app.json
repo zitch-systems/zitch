@@ -46,6 +46,13 @@
         {
           "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check)."
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
+          "recordAudioAndroid": false
+        }
       ]
     ],
     "experiments": {

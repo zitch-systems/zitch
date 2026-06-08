@@ -33,6 +33,7 @@ const mapTxn = (raw: any, i: number): Txn => {
 type WalletValue = {
   balance: number;
   firstName: string;
+  avatar: string;
   txns: Txn[];
   loading: boolean;
   showBal: boolean;
@@ -43,6 +44,7 @@ type WalletValue = {
 const WalletContext = createContext<WalletValue>({
   balance: 0,
   firstName: '',
+  avatar: '',
   txns: [],
   loading: true,
   showBal: true,
@@ -53,6 +55,7 @@ const WalletContext = createContext<WalletValue>({
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [balance, setBalance] = useState(0);
   const [firstName, setFirstName] = useState('');
+  const [avatar, setAvatar] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
   const [showBal, setShowBal] = useState(true);
@@ -73,6 +76,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
       if (balRes.status === 'fulfilled' && balRes.value?.success) {
         setBalance(Number(balRes.value.wallet ?? 0));
         setFirstName(String(balRes.value.user_first_name ?? balRes.value.user_last_name ?? ''));
+        setAvatar(String(balRes.value.user_avatar ?? ''));
       }
       if (txRes.status === 'fulfilled' && txRes.value?.status) {
         const list = txRes.value.all_site_transactions ?? [];
@@ -90,7 +94,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   }, [load]);
 
   return (
-    <WalletContext.Provider value={{ balance, firstName, txns, loading, showBal, setShowBal, reload: load }}>
+    <WalletContext.Provider value={{ balance, firstName, avatar, txns, loading, showBal, setShowBal, reload: load }}>
       {children}
     </WalletContext.Provider>
   );
