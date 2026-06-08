@@ -229,7 +229,11 @@ def set_transaction_pin(request):
         return fail("Enter your account password to change your PIN",
                     status=403, code="password_required")
     user.set_transaction_pin(pin)
-    user.save(update_fields=["transaction_pin"])
+    # Clear any brute-force lockout so a legitimate (password-authenticated) PIN
+    # change isn't blocked by a stale lock against the old PIN.
+    user.pin_failed_attempts = 0
+    user.pin_locked_until = None
+    user.save(update_fields=["transaction_pin", "pin_failed_attempts", "pin_locked_until"])
     return ok(message="Transaction PIN set")
 
 

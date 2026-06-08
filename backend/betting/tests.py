@@ -66,3 +66,16 @@ class BettingTests(TestCase):
             "amount": "2000", "transaction_pin": "1234",
         })
         self.assertEqual(res.status_code, 404)
+
+    def test_fund_idempotent(self):
+        payload = {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "2000", "transaction_pin": "1234", "idempotency_key": "bet-key-1",
+        }
+        res1, _ = self.post("/api/betting/fund/", payload)
+        res2, body2 = self.post("/api/betting/fund/", payload)
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res2.status_code, 200)
+        self.assertTrue(body2.get("duplicate"))
+        # Debited exactly once despite the retry.
+        self.assertEqual(self.balance(), Decimal("8000"))

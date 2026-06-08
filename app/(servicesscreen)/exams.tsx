@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiJson } from '@/lib/api';
+import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -29,6 +29,7 @@ const Exams = () => {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [pinError, setPinError] = useState('');
+  const idemKey = useRef('');  // stable across retries of one purchase attempt
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
@@ -43,16 +44,19 @@ const Exams = () => {
   const valid = !!exam && phone.length >= 10;
 
   const purchase = async (pin: string) => {
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/exams/buy/', { exam: selected, quantity: qty, phone, transaction_pin: pin });
+      const res = await apiJson('/api/exams/buy/', { exam: selected, quantity: qty, phone, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) {
+        idemKey.current = '';
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
+        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
         Alert.alert('Error', res.message || 'Transaction failed');
         setStep(null);
       }

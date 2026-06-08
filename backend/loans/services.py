@@ -6,6 +6,7 @@ wallet ledger so the balance and the loan state move together atomically.
 from datetime import timedelta
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
@@ -13,6 +14,12 @@ from wallet.models import Wallet
 from wallet.services import InsufficientFunds, credit, make_reference
 
 from .models import Loan
+
+User = get_user_model()
+
+
+class LoanError(Exception):
+    """Eligibility violated at disbursement time (raced past the view's checks)."""
 
 
 def credit_limit(user) -> Decimal:
@@ -30,8 +37,22 @@ def credit_limit(user) -> Decimal:
 
 @db_transaction.atomic
 def disburse(user, principal, tenure_days: int) -> Loan:
-    """Create an active loan and credit the principal to the wallet."""
+    """Create an active loan and credit the principal to the wallet.
+
+    The view's eligibility checks (one-active-loan, credit limit) run outside any
+    lock, so two concurrent requests could both pass them. Here we take a row
+    lock on the user to serialise concurrent disbursements and RE-ASSERT
+    eligibility inside the lock; a partial unique constraint on the Loan table
+    (one active loan per user) is the final DB-level backstop.
+    """
     principal = Decimal(str(principal))
+    # Serialise concurrent loan_requests for this user on the user row.
+    User.objects.select_for_update().get(pk=user.pk)
+    if Loan.objects.filter(user=user, status=Loan.ACTIVE).exists():
+        raise LoanError("You already have an active loan")
+    if principal > credit_limit(user):
+        raise LoanError("Amount exceeds your available credit")
+
     interest = Loan.quote(principal, tenure_days)
     ref = make_reference("ZLN")
     loan = Loan.objects.create(

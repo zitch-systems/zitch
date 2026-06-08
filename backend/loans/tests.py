@@ -9,6 +9,7 @@ from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
 from .models import Loan
+from .services import LoanError, disburse
 
 
 class LoanTests(TestCase):
@@ -81,3 +82,13 @@ class LoanTests(TestCase):
         self.post("/api/loans/request/", {"access_token": self.token, "amount": "500000", "tenure_days": 60, "transaction_pin": "1234"})
         _, body = self.post("/api/loans/status/", {"access_token": self.token})
         self.assertEqual(Decimal(body["available"]), Decimal("0.00"))
+
+    def test_disburse_service_blocks_second_active_loan(self):
+        """Race backstop: the service re-checks eligibility inside the row lock,
+        so a second disburse (even one that bypassed the view's checks) is
+        rejected and never credits the wallet twice."""
+        disburse(self.user, Decimal("100000"), 30)
+        with self.assertRaises(LoanError):
+            disburse(self.user, Decimal("50000"), 30)
+        self.assertEqual(Loan.objects.filter(user=self.user, status=Loan.ACTIVE).count(), 1)
+        self.assertEqual(self.balance(), Decimal("120000"))  # credited once: 20000 + 100000

@@ -122,6 +122,24 @@ class CredentialSecurityTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("9999"))
 
+    def test_setting_new_pin_clears_brute_force_lockout(self):
+        # A user who locked their PIN and then legitimately changes it (which
+        # requires the password) must not stay locked out against the new PIN.
+        user = User.objects.create(username="08060000006", phone="08060000006", email="f@zitch.test")
+        user.set_password("Passw0rd123")
+        user.set_transaction_pin("1234")
+        user.pin_failed_attempts = 5
+        user.pin_locked_until = timezone.now() + timedelta(minutes=15)
+        user.save()
+        token = AccessToken.issue(user).key
+        res, _ = self.post("/api/set-transaction-pin/", {
+            "access_token": token, "pin": "5678", "password": "Passw0rd123"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(pk=user.pk)
+        self.assertEqual(u.pin_failed_attempts, 0)
+        self.assertIsNone(u.pin_locked_until)
+        self.assertTrue(u.check_transaction_pin("5678"))
+
     def test_update_info_rejects_phone_collision_cleanly(self):
         make_user("08010000001", "a@zitch.test")
         _, token = make_user("08020000002", "b@zitch.test")

@@ -3,9 +3,9 @@
 Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
-from common.http import api, fail, ok, provider_purchase_response, require_user, verify_transaction_pin
+from common.http import api, fail, idempotent_replay, ok, provider_purchase_response, require_user, verify_transaction_pin
 from utility.providers import vtu_purchase
-from wallet.services import InsufficientFunds, run_provider_purchase
+from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
 from .models import ExamProduct
 
@@ -44,13 +44,22 @@ def buy_exam(request):
     phone = data.get("phone", "")
     amount = product.price * quantity
 
+    # Idempotency: a retried / double-tapped request must not debit twice.
+    key = (data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
         status, txn, result = run_provider_purchase(
             user, amount, f"{product.name} PIN x{quantity}",
             {"exam": product.code, "phone": phone, "quantity": quantity},
             lambda ref: vtu_purchase(product.service_id or f"{product.code}-pin",
                                      {"billersCode": phone, "quantity": quantity, "phone": phone}, reference=ref),
+            idempotency_key=key,
         )
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
     pins = result.get("pins") or result.get("Pin") or []

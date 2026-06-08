@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import { View, ActivityIndicator, AppState } from 'react-native';
 import { Redirect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { isSessionLocked } from '@/lib/session';
@@ -11,13 +11,17 @@ type AuthState = 'loading' | 'authed' | 'unauthed';
  * authenticated groups must not be reachable without signing in — nor while the
  * session is locked by the idle timeout (the token survives a lock, so we must
  * check the lock flag too, otherwise a locked session would still pass).
+ *
+ * The check re-runs on a short timer and when the app returns to the foreground,
+ * not just on mount — so a session that LOCKS while an authed screen is already
+ * rendered is dropped to /signin rather than staying visible until remount.
  */
 const AuthGuard = ({ children }: { children: React.ReactNode }) => {
   const [state, setState] = useState<AuthState>('loading');
 
   useEffect(() => {
     let active = true;
-    (async () => {
+    const check = async () => {
       try {
         const token = await getToken();
         const locked = token ? await isSessionLocked() : false;
@@ -25,9 +29,16 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => {
       } catch {
         if (active) setState('unauthed');
       }
-    })();
+    };
+    check();
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') check();
+    });
+    const timer = setInterval(check, 5000);
     return () => {
       active = false;
+      sub.remove();
+      clearInterval(timer);
     };
   }, []);
 
