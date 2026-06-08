@@ -71,20 +71,35 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
 
 
 @db_transaction.atomic
-def credit(user, amount, service: str, meta: dict | None = None, reference: str | None = None) -> Transaction:
+def credit(user, amount, service: str, meta: dict | None = None, reference: str | None = None,
+           idempotency_key: str = "") -> Transaction:
+    """Atomically credit the wallet and write a Successful inbound ledger row.
+
+    With an `idempotency_key`, a duplicate (same user + key) raises
+    DuplicateTransaction and the credit is rolled back, so a retried/raced
+    request never credits twice. Server-originated credits (settlements,
+    funding) pass no key and are unconstrained.
+    """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
     wallet.balance += amount
     wallet.save(update_fields=["balance", "updated"])
-    return Transaction.objects.create(
-        user=user,
-        service=service,
-        amount=amount,
-        direction=Transaction.IN,
-        transaction_status=Transaction.SUCCESS,
-        reference=reference or make_reference("ZFND"),
-        meta=meta or {},
-    )
+    try:
+        with db_transaction.atomic():  # savepoint: contain the unique violation
+            return Transaction.objects.create(
+                user=user,
+                service=service,
+                amount=amount,
+                direction=Transaction.IN,
+                transaction_status=Transaction.SUCCESS,
+                reference=reference or make_reference("ZFND"),
+                meta=meta or {},
+                idempotency_key=idempotency_key,
+            )
+    except IntegrityError:
+        if idempotency_key:
+            raise DuplicateTransaction(idempotency_key)
+        raise
 
 
 @db_transaction.atomic

@@ -6,7 +6,7 @@ const Utility = () => {
   const items = [
     { icon: 'bills', title: 'Electricity', sub: 'Pay your electricity bill in seconds', to: '/buyelectricity' },
     { icon: 'tv', title: 'TV Subscriptions', sub: 'Renew DSTV, GOtv & StarTimes', to: '/buycable' },
-    { icon: 'data', title: 'Water', sub: 'Pay your water utility bill', to: '/comingsoon' },
+    { icon: 'bills', title: 'Water', sub: 'Pay your water utility bill', to: '/water' },
   ];
   return (
     <Screen>

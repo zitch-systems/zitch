@@ -7,6 +7,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
+import { WalletProvider } from "@/lib/wallet";
 import { enforceIdleTimeout } from "@/lib/session";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
@@ -71,7 +72,14 @@ const _layout = () => {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <ThemeProvider>
-          <RootStack />
+          {/* Wallet state lives at the root so it is shared across BOTH the
+              (homepage) tabs and the (servicesscreen) flows. A purchase/transfer
+              screen calling reload() updates the same balance Home/Wallet render —
+              previously the provider only wrapped the tabs, so service screens got
+              a no-op default context and the balance never refreshed. */}
+          <WalletProvider>
+            <RootStack />
+          </WalletProvider>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

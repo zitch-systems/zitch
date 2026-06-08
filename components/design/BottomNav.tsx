@@ -10,6 +10,7 @@ import { useTheme, font } from '@/lib/theme';
 const ITEMS: { name: string; icon: string; label: string }[] = [
   { name: 'home', icon: 'home', label: 'Home' },
   { name: 'wallet', icon: 'wallet', label: 'Wallet' },
+  { name: 'convert', icon: 'convert', label: 'Convert' },
   { name: 'loan', icon: 'loan', label: 'Loans' },
   { name: 'cards', icon: 'card', label: 'Cards' },
   { name: 'me', icon: 'user', label: 'Me' },

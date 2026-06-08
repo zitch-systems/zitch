@@ -31,7 +31,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { balance, firstName, showBal } = useWallet();
+  const { balance, firstName, showBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [tier, setTier] = useState(1);
 
@@ -43,6 +43,7 @@ const Me = () => {
   // updates after the user completes a KYC step.
   useFocusEffect(
     useCallback(() => {
+      reloadWallet(); // keep the balance shown here in sync
       (async () => {
         const t = await getToken();
         if (!t) return;
@@ -53,7 +54,7 @@ const Me = () => {
           // keep last-known tier
         }
       })();
-    }, [])
+    }, [reloadWallet])
   );
 
   // Enabling requires a live biometric scan; disabling is immediate.
@@ -88,16 +89,16 @@ const Me = () => {
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
     { icon: 'card', title: 'Bank Card / Account', sub: 'Add a payment option', go: () => router.push('/accountdetails') },
-    { icon: 'bank', title: 'My BizPayment', sub: 'Receive payment for business', go: () => router.push('/comingsoon') },
-    { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/comingsoon') },
-    { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Shop now, spread the cost', badge: 'Enjoy ₦0', go: () => router.push('/comingsoon') },
+    { icon: 'bank', title: 'My BizPayment', sub: 'Receive payment for business', go: () => router.push('/bizpayment') },
+    { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/junior') },
+    { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Shop now, spread the cost', badge: 'Enjoy ₦0', go: () => router.push('/bnpl') },
   ];
   const grp2: any[] = [
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 4-digit PIN', go: () => router.push('/resetpin') },
-    { icon: 'help', title: 'Customer Service Center', go: () => router.push('/comingsoon') },
-    { icon: 'gift', title: 'Invitation', sub: 'Invite friends & earn up to ₦5,600', go: () => router.push('/comingsoon') },
-    { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/comingsoon') },
+    { icon: 'help', title: 'Customer Service Center', go: () => router.push('/support') },
+    { icon: 'gift', title: 'Invitation', sub: 'Invite friends & earn up to ₦5,600', go: () => router.push('/invite') },
+    { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/ussd') },
   ];
 
   const Group = ({ items }: { items: any[] }) => (
@@ -135,7 +136,7 @@ const Me = () => {
             <Text style={{ color: '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
           </View>
         </View>
-        <Pressable onPress={() => router.push('/comingsoon')} style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
+        <Pressable onPress={() => router.push('/settings')} style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name="settings" size={20} color={c.ink1} />
         </Pressable>
       </View>
@@ -152,7 +153,7 @@ const Me = () => {
       </View>
 
       {/* safety tips */}
-      <Pressable onPress={() => router.push('/comingsoon')} style={{ marginHorizontal: 16, marginTop: 12 }}>
+      <Pressable onPress={() => router.push('/safetytips')} style={{ marginHorizontal: 16, marginTop: 12 }}>
         <Hero style={{ padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }} watermark={0}>
           <ZIcon name="insurance" size={22} color="#fff" />
           <View style={{ flex: 1 }}>

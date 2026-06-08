@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money } from '@/components/design/ui';
@@ -28,17 +28,22 @@ const MORE = [
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
-  { label: 'Insurance', icon: 'insurance', go: () => router.push('/comingsoon') },
-  { label: 'Remita', icon: 'remita', go: () => router.push('/comingsoon') },
-  { label: 'Movie', icon: 'movie', go: () => router.push('/comingsoon') },
-  { label: 'Convert', icon: 'convert', go: () => router.push('/comingsoon') },
-  { label: 'Invite', icon: 'invite', go: () => router.push('/comingsoon') },
+  { label: 'Insurance', icon: 'insurance', go: () => router.push('/insurance') },
+  { label: 'Remita', icon: 'remita', go: () => router.push('/remita') },
+  { label: 'Movie', icon: 'movie', go: () => router.push('/movies') },
+  { label: 'Convert', icon: 'convert', go: () => router.push('/convert') },
+  { label: 'Invite', icon: 'invite', go: () => router.push('/invite') },
 ];
 
 const Home = () => {
   const { c, theme } = useTheme();
-  const { balance, firstName, txns, showBal, setShowBal } = useWallet();
+  const { balance, firstName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
+
+  // Refresh balance & activity whenever Home regains focus — after sign-in and
+  // after returning from a transfer/purchase — so the dashboard never shows a
+  // stale figure.
+  useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
   return (
     <Screen pad={false} tab>
@@ -51,7 +56,7 @@ const Home = () => {
           Hi, {firstName || 'there'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <Pressable onPress={() => router.push('/comingsoon')}><ZIcon name="help" size={22} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={22} color={c.ink1} /></Pressable>
           <Pressable onPress={() => router.push('/comingsoon')}><ZIcon name="scan" size={22} color={c.ink1} /></Pressable>
           <Pressable onPress={() => router.push('/notifications')}>
             <View>
@@ -98,7 +103,7 @@ const Home = () => {
       </Hero>
 
       {/* daily interest strip */}
-      <Pressable onPress={() => router.push('/comingsoon')} style={{ marginHorizontal: 16, marginTop: -4 }}>
+      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: -4 }}>
         <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16 }}>
           <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="spark" size={16} color={c.lime} />
@@ -115,7 +120,7 @@ const Home = () => {
         {[
           { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
           { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
-          { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/comingsoon') },
+          { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/sendmoney') },
         ].map((q) => (
           <ServiceTile key={q.label} icon={q.icon} label={q.label} onPress={q.go} round />
         ))}

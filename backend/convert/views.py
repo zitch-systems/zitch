@@ -1,0 +1,123 @@
+"""Airtime → Cash conversion.
+
+The user converts unused airtime from a SIM into Zitch wallet cash at a
+per-network rate. Flow: verify PIN -> validate -> credit the wallet (cash value)
+and record the conversion, idempotently.
+
+PROVIDER SEAM (verify-before-live): a real airtime-to-cash product must confirm
+the airtime was actually transferred to the collection number before crediting —
+otherwise it pays out for airtime it never received. `collect_airtime()` is that
+hook; in MOCK mode (no provider configured) it confirms instantly so the flow is
+testable offline, exactly like the VTU/payments providers elsewhere.
+"""
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
+
+from django.db import transaction as db_transaction
+
+from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
+from wallet.services import DuplicateTransaction, credit, existing_for_key, make_reference
+
+from .models import ConversionRequest
+
+NETWORK_NAMES = {"1": "MTN", "2": "GLO", "3": "Airtel", "4": "9mobile"}
+
+# Payout fraction per network (what the user receives in cash per ₦1 of airtime).
+# Tunable here; surfaced to the app via /api/convert/rates/.
+RATES = {
+    "1": Decimal("0.80"),  # MTN
+    "2": Decimal("0.75"),  # GLO
+    "3": Decimal("0.80"),  # Airtel
+    "4": Decimal("0.75"),  # 9mobile
+}
+DEFAULT_RATE = Decimal("0.75")
+MIN_AIRTIME = Decimal("100")
+MAX_AIRTIME = Decimal("50000")
+
+
+def _amount(value):
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def collect_airtime(network: str, phone: str, amount: Decimal, reference: str) -> dict:
+    """Confirm the airtime was received (provider hook).
+
+    MOCK mode confirms instantly. Wire a real airtime-collection provider here
+    before go-live and gate the wallet credit on its confirmation.
+    """
+    return {"success": True, "mock": True, "reference": reference}
+
+
+@api
+def rates(request):
+    """POST /api/convert/rates/ -> the per-network payout rates the UI shows."""
+    return ok(rates=[
+        {"network": net, "name": NETWORK_NAMES.get(net, net), "rate": str(RATES.get(net, DEFAULT_RATE)),
+         "percent": int(RATES.get(net, DEFAULT_RATE) * 100)}
+        for net in NETWORK_NAMES
+    ], min_amount=str(MIN_AIRTIME), max_amount=str(MAX_AIRTIME))
+
+
+@api
+@require_user
+def convert_airtime(request):
+    """POST /api/convert/airtime/
+    {network, phone, amount, transaction_pin, idempotency_key}
+    -> {success, message, reference, payout}
+
+    Credits the wallet the cash value of the airtime, idempotently.
+    """
+    user, data = request.user_obj, request.data
+
+    pin_err = verify_transaction_pin(user, data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+
+    net = str(data.get("network", ""))
+    if net not in RATES:
+        return fail("Select a valid network")
+
+    phone = str(data.get("phone", "")).strip()
+    if len(phone) < 10:
+        return fail("Enter a valid phone number")
+
+    airtime = _amount(data.get("amount"))
+    if airtime is None or airtime < MIN_AIRTIME:
+        return fail(f"Minimum airtime is ₦{MIN_AIRTIME:,.0f}")
+    if airtime > MAX_AIRTIME:
+        return fail(f"Maximum airtime is ₦{MAX_AIRTIME:,.0f}")
+
+    key = data.get("idempotency_key", "")
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
+    rate = RATES.get(net, DEFAULT_RATE)
+    payout = (airtime * rate).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    reference = make_reference("ZCNV")
+    collected = collect_airtime(net, phone, airtime, reference)
+    if not collected.get("success"):
+        return fail(collected.get("message", "Could not confirm the airtime transfer"), status=502)
+
+    try:
+        with db_transaction.atomic():
+            conv = ConversionRequest.objects.create(
+                user=user, network=net, phone=phone, airtime_amount=airtime,
+                rate=rate, payout_amount=payout, status=ConversionRequest.SUCCESS,
+                reference=reference,
+            )
+            txn = credit(
+                user, payout, f"Airtime → Cash — {NETWORK_NAMES.get(net, net)}",
+                meta={"network": net, "phone": phone, "airtime": str(airtime), "rate": str(rate)},
+                reference=reference, idempotency_key=key,
+            )
+            conv.reference = txn.reference
+            conv.save(update_fields=["reference"])
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
+
+    return ok(success=True, message="Airtime converted to wallet cash",
+              reference=txn.reference, payout=str(payout))
