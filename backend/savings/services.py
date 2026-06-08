@@ -6,18 +6,22 @@ go through the wallet ledger atomically. Payout is idempotent per plan.
 from datetime import timedelta
 from decimal import Decimal
 
-from django.db import transaction as db_transaction
+from django.db import IntegrityError, transaction as db_transaction
 from django.utils import timezone
 
 from wallet.models import Transaction, Wallet
-from wallet.services import InsufficientFunds, credit, make_reference
+from wallet.services import DuplicateTransaction, InsufficientFunds, credit, make_reference
 
 from .models import FixedSave
 
 
 @db_transaction.atomic
-def lock(user, principal, days: int) -> FixedSave:
-    """Debit the wallet and create an active Fixed Save plan."""
+def lock(user, principal, days: int, idempotency_key: str = "") -> FixedSave:
+    """Debit the wallet and create an active Fixed Save plan.
+
+    With an `idempotency_key`, a duplicate request raises DuplicateTransaction
+    (nothing locked), so a retry/race can't lock twice or create two plans.
+    """
     principal = Decimal(str(principal))
     interest = FixedSave.quote(principal, days)
     rate = FixedSave.RATES.get(days, Decimal("0"))
@@ -29,11 +33,18 @@ def lock(user, principal, days: int) -> FixedSave:
     wallet.balance -= principal
     wallet.save(update_fields=["balance", "updated"])
 
-    Transaction.objects.create(
-        user=user, service="Fixed Save locked", amount=principal,
-        direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
-        reference=ref, meta={"days": days, "rate": str(rate)},
-    )
+    try:
+        with db_transaction.atomic():  # savepoint: contain the unique violation
+            Transaction.objects.create(
+                user=user, service="Fixed Save locked", amount=principal,
+                direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+                reference=ref, meta={"days": days, "rate": str(rate)},
+                idempotency_key=idempotency_key,
+            )
+    except IntegrityError:
+        if idempotency_key:
+            raise DuplicateTransaction(idempotency_key)
+        raise
     return FixedSave.objects.create(
         user=user, principal=principal, interest=interest, rate=rate,
         duration_days=days, reference=ref,

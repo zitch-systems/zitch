@@ -1,8 +1,8 @@
 """Fixed Save endpoints: rates, quote, lock, list."""
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, require_user, verify_transaction_pin
-from wallet.services import InsufficientFunds, get_or_create_wallet
+from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
+from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import FixedSave
 from .services import lock, settle_user_maturities
@@ -75,8 +75,15 @@ def savings_create(request):
     if days not in FixedSave.RATES:
         return fail("Invalid lock period")
 
+    key = (data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
-        plan = lock(user, principal, days)
+        plan = lock(user, principal, days, idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 

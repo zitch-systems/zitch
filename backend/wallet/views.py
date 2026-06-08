@@ -3,12 +3,16 @@ from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, check_send_limits, fail, ok, require_user, verify_transaction_pin
+from common.http import (
+    api, check_send_limits, fail, idempotent_replay, ok, require_user, verify_transaction_pin,
+)
 from utility.providers import payment_initialize, payment_verify, payment_verify_signature
 
 from .models import FundingIntent
 from .services import (
+    DuplicateTransaction,
     InsufficientFunds,
+    existing_for_key,
     get_or_create_wallet,
     make_reference,
     settle_funding,
@@ -194,8 +198,15 @@ def transfer_send(request):
     if recipient.id == sender.id:
         return fail("You can't send money to yourself", status=400)
 
+    key = (data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(sender, key))
+    if replay:
+        return replay
+
     try:
-        debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""))
+        debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""), idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(sender, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 

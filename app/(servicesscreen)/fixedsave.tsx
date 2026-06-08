@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Alert } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiJson } from '@/lib/api';
+import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
@@ -71,17 +71,22 @@ const FixedSave = () => {
   const maturity = amount + interest;
   const valid = amount >= minAmt && amount <= balance;
 
+  const idemKey = useRef('');  // stable across retries of one lock attempt
+
   const create = async (pin: string) => {
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/savings/create/', { amount: amt, days, transaction_pin: pin });
+      const res = await apiJson('/api/savings/create/', { amount: amt, days, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) {
+        idemKey.current = '';
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
-        setPinError(res.message || 'Incorrect PIN');
+        setPinError(res.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
+        idemKey.current = '';  // definitive server failure — retry is a fresh attempt
         Alert.alert('Error', res.message || 'Could not lock savings');
         setStep(null);
       }

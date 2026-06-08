@@ -1,9 +1,9 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, Pressable, Image, Alert } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiJson } from '@/lib/api';
+import { apiJson, newIdempotencyKey } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, Field, Sheet, PinPad, money } from '@/components/design/ui';
 import { QuickAmounts } from '@/components/design/flowkit';
@@ -59,14 +59,17 @@ const Cards = () => {
     } catch { Alert.alert('Error', 'Something went wrong.'); }
   };
 
+  const idemKey = useRef('');  // stable across retries of one card-funding attempt
+
   const doFund = async (pin: string) => {
     if (!card) return;
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/cards/fund/', { card_id: card.id, amount: fundAmt, transaction_pin: pin });
-      if (res.success) { setFundPin(false); setPinError(''); setCard(res.card); setFundAmt(''); reloadWallet(); Alert.alert('Success', 'Card funded'); }
+      const res = await apiJson('/api/cards/fund/', { card_id: card.id, amount: fundAmt, transaction_pin: pin, idempotency_key: idemKey.current });
+      if (res.success) { idemKey.current = ''; setFundPin(false); setPinError(''); setCard(res.card); setFundAmt(''); reloadWallet(); Alert.alert('Success', 'Card funded'); }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
-      else { setFundPin(false); Alert.alert('Error', res.message || 'Funding failed'); }
+      else { idemKey.current = ''; setFundPin(false); Alert.alert('Error', res.message || 'Funding failed'); }
     } catch { setFundPin(false); Alert.alert('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };

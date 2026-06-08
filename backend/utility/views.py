@@ -5,8 +5,10 @@ aggregator -> mark the row Successful, or refund on failure.
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, provider_purchase_response, require_user, verify_transaction_pin
-from wallet.services import InsufficientFunds, run_provider_purchase
+from common.http import (
+    api, fail, idempotent_replay, ok, provider_purchase_response, require_user, verify_transaction_pin,
+)
+from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
 from .providers import vtu_purchase, vtu_verify_customer
@@ -31,14 +33,21 @@ def _check_pin(user, data):
     return verify_transaction_pin(user, data.get("transaction_pin"))
 
 
-def _run_purchase(user, amount, service, meta, provider_call):
+def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""):
     """Debit -> provider -> settle, mapping insufficient funds to a 402.
 
-    Returns (status, txn, result) from run_provider_purchase, or a fail()
-    response when the wallet can't cover the amount.
+    With an idempotency key, a retried/raced request replays the original
+    outcome instead of debiting and re-calling the provider. Returns
+    (status, txn, result) from run_provider_purchase, or a response (fail/replay).
     """
+    replay = idempotent_replay(existing_for_key(user, idempotency_key))
+    if replay:
+        return replay
     try:
-        return run_provider_purchase(user, amount, service, meta, provider_call)
+        return run_provider_purchase(user, amount, service, meta, provider_call,
+                                     idempotency_key=idempotency_key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, idempotency_key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 
@@ -61,6 +70,7 @@ def buyairtime(request):
         {"phone": phone, "network": net},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
                                  {"amount": str(amount), "phone": phone}, reference=ref),
+        idempotency_key=data.get("idempotency_key", ""),
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -104,6 +114,7 @@ def buydata(request):
         {"phone": phone, "network": net, "plan_code": plan.plan_code},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-data",
                                  {"billersCode": phone, "variation_code": plan.plan_code, "phone": phone}, reference=ref),
+        idempotency_key=data.get("idempotency_key", ""),
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -157,6 +168,7 @@ def buycable(request):
         {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code},
         lambda ref: vtu_purchase(CABLE_NAMES.get(prov, "dstv").lower(),
                                  {"billersCode": iuc, "variation_code": plan.cable_plan_code}, reference=ref),
+        idempotency_key=data.get("idempotency_key", ""),
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -194,6 +206,7 @@ def buyelectricity(request):
         {"meter": meter, "disco": disco, "meter_type": meter_type},
         lambda ref: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
                                  {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
+        idempotency_key=data.get("idempotency_key", ""),
     )
     if not isinstance(outcome, tuple):
         return outcome

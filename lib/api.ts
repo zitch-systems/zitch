@@ -55,3 +55,13 @@ export async function apiJson<T = any>(path: string, body: Record<string, any> =
     return { success: false, message: 'Service temporarily unavailable. Please try again.' } as T;
   }
 }
+
+/**
+ * A stable key for a single spend attempt. Pass it as `idempotency_key` on a
+ * money-moving request so a double-tap / retry / network race is deduped
+ * server-side and never debits twice. Generate one per authorization and reuse
+ * it across retries of that same attempt.
+ */
+export function newIdempotencyKey(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
+}
