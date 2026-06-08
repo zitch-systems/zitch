@@ -1,22 +1,42 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getToken, clearSession } from '@/lib/secureStore';
+import { getToken } from '@/lib/secureStore';
 
 /**
  * Client-side inactivity timeout.
  *
  * The server access-token TTL is the hard security bound; this is the softer
- * client limit that signs a user out after a stretch of no activity. "Activity"
- * is recorded on every authenticated API call (see lib/api), and the limit is
- * enforced when the app returns to the foreground (see app/_layout). This
- * replaces an older one-shot `setTimeout` that fired a fixed hour after login —
- * even mid-transaction — regardless of whether the user was active.
+ * client limit that *locks* the app after a stretch of no activity. "Activity"
+ * is recorded on every authenticated API call (see lib/api) and on sign-in, and
+ * the limit is enforced on launch, when the app returns to the foreground, and
+ * on a short repeating timer (see app/_layout).
+ *
+ * On timeout the session is LOCKED rather than cleared: the access token stays
+ * on the device so the user can unlock instantly with biometrics (or a password
+ * sign-in). A full sign-out (Me → Log out) still clears the token outright.
  */
-export const IDLE_LIMIT_MS = 60 * 60 * 1000; // 1 hour
+export const IDLE_LIMIT_MS = 5 * 60 * 1000; // 5 minutes
 const LAST_ACTIVE_KEY = 'lastActiveAt';
+export const LOCK_KEY = 'z-locked';
 
 /** Record that the user is active now. */
 export async function touchActivity(): Promise<void> {
   await AsyncStorage.setItem(LAST_ACTIVE_KEY, Date.now().toString());
+}
+
+/** Lock the session (keep the token; require biometric/password to re-enter). */
+export async function lockSession(): Promise<void> {
+  await AsyncStorage.setItem(LOCK_KEY, '1');
+}
+
+/** Clear the lock after a successful re-authentication, and mark activity. */
+export async function unlockSession(): Promise<void> {
+  await AsyncStorage.removeItem(LOCK_KEY);
+  await touchActivity();
+}
+
+/** True while the session is locked by the idle timeout. */
+export async function isSessionLocked(): Promise<boolean> {
+  return (await AsyncStorage.getItem(LOCK_KEY)) === '1';
 }
 
 /** True if a session exists but has been idle beyond the limit. */
@@ -31,14 +51,17 @@ export async function isSessionIdleExpired(): Promise<boolean> {
 }
 
 /**
- * Clear the session if it's been idle too long; otherwise mark activity.
- * Returns true if it logged the user out.
+ * Lock the session if it's been idle too long. Returns true if it just locked
+ * (so the caller can bounce to the sign-in / unlock screen). A no-op —
+ * returning false — when there's no session, the session is fresh, or it's
+ * already locked. Note: this does NOT refresh activity; real activity is
+ * stamped by authenticated API calls and on sign-in.
  */
 export async function enforceIdleTimeout(): Promise<boolean> {
+  if (await isSessionLocked()) return false; // already locked — nothing to do
   if (await isSessionIdleExpired()) {
-    await clearSession();
+    await lockSession();
     return true;
   }
-  await touchActivity();
   return false;
 }

@@ -39,5 +39,5 @@ export async function clearToken(): Promise<void> {
 /** Clears the token plus the non-sensitive profile keys kept in AsyncStorage. */
 export async function clearSession(): Promise<void> {
   await clearToken();
-  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt']);
+  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked']);
 }

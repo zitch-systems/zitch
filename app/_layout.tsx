@@ -49,19 +49,25 @@ const _layout = () => {
     }
   }, [fontsLoaded, error]);
 
-  // Inactivity timeout: clear a session idle past the limit and bounce to
-  // sign-in. Checked once on launch and whenever the app returns to the
-  // foreground; active use keeps the stamp fresh via authenticated API calls.
+  // Inactivity timeout: lock a session idle past the limit and bounce to the
+  // sign-in / unlock screen. Checked on launch, whenever the app returns to the
+  // foreground, and on a short repeating timer so it also fires while the app
+  // stays open and idle. Active use keeps the stamp fresh via authenticated API
+  // calls, so the timer only trips after a real stretch of inactivity.
   useEffect(() => {
     const check = () =>
-      enforceIdleTimeout().then((loggedOut) => {
-        if (loggedOut) router.replace("/signin");
+      enforceIdleTimeout().then((locked) => {
+        if (locked) router.replace("/signin");
       });
     check();
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "active") check();
     });
-    return () => sub.remove();
+    const timer = setInterval(check, 30 * 1000);
+    return () => {
+      sub.remove();
+      clearInterval(timer);
+    };
   }, []);
 
   if (!fontsLoaded && !error) {
