@@ -116,6 +116,12 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
+# User-uploaded media (profile photos). Served by Django in DEBUG; in production
+# the local disk is ephemeral on most PaaS, so point DEFAULT_FILE_STORAGE at S3
+# (or similar) before relying on avatars persisting across deploys.
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- App-specific config ---

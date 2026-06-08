@@ -37,7 +37,7 @@ const MORE = [
 
 const Home = () => {
   const { c, theme } = useTheme();
-  const { balance, firstName, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, avatar, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
 
   // Refresh balance & activity whenever Home regains focus — after sign-in and
@@ -50,14 +50,14 @@ const Home = () => {
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
         <Pressable onPress={() => router.push('/me')}>
-          <Avatar size={38} ring={c.brand} surface={c.surface} />
+          <Avatar size={38} ring={c.brand} surface={c.surface} uri={avatar} />
         </Pressable>
         <Text style={{ flex: 1, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>
           Hi, {firstName || 'there'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
           <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={22} color={c.ink1} /></Pressable>
-          <Pressable onPress={() => router.push('/comingsoon')}><ZIcon name="scan" size={22} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/scan')}><ZIcon name="scan" size={22} color={c.ink1} /></Pressable>
           <Pressable onPress={() => router.push('/notifications')}>
             <View>
               <ZIcon name="bell" size={22} color={c.ink1} />

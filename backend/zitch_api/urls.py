@@ -36,3 +36,10 @@ urlpatterns = [
     path("api/cards/", include("cards.urls")),
     path("api/convert/", include("convert.urls")),
 ]
+
+# Serve user-uploaded media (avatars) in development. In production this is
+# handled by the object store / CDN (see MEDIA settings note).
+if settings.DEBUG:
+    from django.conf.urls.static import static
+
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
