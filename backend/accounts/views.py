@@ -264,6 +264,63 @@ def update_info(request):
     return ok(message="Account updated")
 
 
+def avatar_url(request, user) -> str:
+    """Absolute URL for a user's profile photo, or '' if none set."""
+    from django.conf import settings
+
+    return request.build_absolute_uri(settings.MEDIA_URL + user.avatar) if user.avatar else ""
+
+
+@api
+@require_user
+def avatar_upload(request):
+    """POST /api/profile/avatar/ {access_token, image}
+    `image` is a base64 data URL (or bare base64). Stores the photo and returns
+    its absolute URL. -> {success, message, avatar}
+    """
+    import base64
+    import binascii
+    import secrets
+
+    from django.conf import settings
+    from django.core.files.base import ContentFile
+    from django.core.files.storage import default_storage
+
+    user = request.user_obj
+    raw = (request.data.get("image") or request.data.get("avatar") or "").strip()
+    if not raw:
+        return fail("No image provided")
+
+    ext = "png"
+    if raw.startswith("data:"):
+        header, _, b64 = raw.partition(",")
+        if "jpeg" in header or "jpg" in header:
+            ext = "jpg"
+        elif "webp" in header:
+            ext = "webp"
+    else:
+        b64 = raw
+
+    try:
+        blob = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return fail("Invalid image data")
+    if not blob:
+        return fail("Empty image")
+    if len(blob) > 3 * 1024 * 1024:
+        return fail("Image too large (max 3MB)")
+
+    # Drop the previous photo so we don't orphan files on re-upload.
+    if user.avatar and default_storage.exists(user.avatar):
+        default_storage.delete(user.avatar)
+
+    path = default_storage.save(f"avatars/{user.id}-{secrets.token_hex(4)}.{ext}", ContentFile(blob))
+    user.avatar = path
+    user.save(update_fields=["avatar"])
+    return ok(success=True, message="Photo updated",
+              avatar=request.build_absolute_uri(settings.MEDIA_URL + path))
+
+
 # --------------------------------- KYC ---------------------------------
 def _kyc_state(user) -> dict:
     return {

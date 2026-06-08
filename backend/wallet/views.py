@@ -26,6 +26,8 @@ def wallet_balance(request):
     """POST /api/wallet_balance/ {access_token}
     -> {success, wallet, user_first_name, user_last_name, user_phone_number, user_email}
     """
+    from accounts.views import avatar_url
+
     user = request.user_obj
     wallet = get_or_create_wallet(user)
     return ok(
@@ -35,6 +37,7 @@ def wallet_balance(request):
         user_last_name=user.last_name or "",
         user_phone_number=user.phone or "",
         user_email=user.email or "",
+        user_avatar=avatar_url(request, user),
     )
 
 

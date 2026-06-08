@@ -31,10 +31,25 @@ export const ZWordmark = ({ size = 20, color = '#000' }: { size?: number; color?
 );
 
 // Avatar — gradient disc with a simple person silhouette (matches prototype).
-export const Avatar = ({ size = 44, ring, surface = '#fff' }: { size?: number; ring?: string; surface?: string }) => {
+export const Avatar = ({ size = 44, ring, surface = '#fff', uri }: { size?: number; ring?: string; surface?: string; uri?: string }) => {
   const ringStyle = ring
     ? { borderWidth: 2, borderColor: surface, ...StyleSheet.flatten({}) }
     : null;
+  const wrapStyle = {
+    width: size,
+    height: size,
+    borderRadius: size / 2,
+    overflow: 'hidden' as const,
+    ...(ring ? { borderWidth: 4, borderColor: ring } : {}),
+  };
+  // Show the user's uploaded photo when present; otherwise the default illustration.
+  if (uri) {
+    return (
+      <View style={wrapStyle}>
+        <Image source={{ uri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+      </View>
+    );
+  }
   return (
     <View
       style={{

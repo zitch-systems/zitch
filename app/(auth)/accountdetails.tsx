@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { useWallet } from '@/lib/wallet';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -11,7 +13,10 @@ import { useTheme, font } from '@/lib/theme';
 
 const AccountDetails = () => {
   const { c } = useTheme();
+  const { reload: reloadWallet } = useWallet();
   const [isUpdating, setIsUpdating] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [avatar, setAvatar] = useState('');
   const [token, setToken] = useState<string | null>(null);
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', phone: '' });
@@ -32,10 +37,44 @@ const AccountDetails = () => {
             email: data.user_email ?? '',
             phone: data.user_phone_number ?? '',
           });
+          setAvatar(data.user_avatar ?? '');
         }
       })
       .catch(() => {});
   }, [token]);
+
+  const updatePhoto = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission needed', 'Allow photo access to update your picture.');
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.6,
+      base64: true,
+    });
+    if (res.canceled || !res.assets?.[0]?.base64) return;
+    const asset = res.assets[0];
+    setAvatar(asset.uri); // optimistic local preview
+    setUploadingPhoto(true);
+    try {
+      const r = await apiPost('/api/profile/avatar/', { image: `data:image/jpeg;base64,${asset.base64}` });
+      const body = await r.json();
+      if (r.ok && body.success) {
+        setAvatar(body.avatar);
+        reloadWallet(); // refresh the photo shown on home/profile headers
+      } else {
+        Alert.alert('Error', body.message || 'Could not update photo');
+      }
+    } catch {
+      Alert.alert('Error', 'Something went wrong uploading your photo.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   const handleUpdate = async () => {
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
@@ -74,14 +113,14 @@ const AccountDetails = () => {
       <Header title="Account Details" sub="Your account profile details" onBack={() => router.back()} />
 
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20 }}>
-        <Avatar size={64} ring={c.brand} surface={c.surface} />
+        <Avatar size={64} ring={c.brand} surface={c.surface} uri={avatar} />
         <View style={{ flex: 1 }}>
           <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 16 }}>
             {current.firstName} {current.lastName}
           </Text>
           <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{current.phone}</Text>
         </View>
-        <Btn label="Update photo" variant="outline" size="sm" full={false} onPress={() => router.push('/comingsoon')} />
+        <Btn label={uploadingPhoto ? 'Uploading…' : 'Update photo'} variant="outline" size="sm" full={false} disabled={uploadingPhoto} onPress={updatePhoto} />
       </View>
 
       <View style={{ gap: 16 }}>

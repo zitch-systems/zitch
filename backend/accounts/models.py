@@ -39,6 +39,10 @@ class User(AbstractUser):
     nin_verified = models.BooleanField(default=False)
     face_verified = models.BooleanField(default=False)
 
+    # Profile photo: storage-relative path (e.g. "avatars/3-ab12.png"); resolved
+    # to an absolute URL via MEDIA_URL when returned to the app.
+    avatar = models.CharField(max_length=255, blank=True, default="")
+
     def set_transaction_pin(self, raw_pin: str) -> None:
         self.transaction_pin = make_password(raw_pin)
 
