@@ -6,13 +6,25 @@ always written together, atomically, with row locking to prevent double-spend.
 import secrets
 from decimal import Decimal
 
-from django.db import transaction as db_transaction
+from django.db import IntegrityError, transaction as db_transaction
 
 from .models import FundingIntent, Transaction, Wallet
 
 
 class InsufficientFunds(Exception):
     pass
+
+
+class DuplicateTransaction(Exception):
+    """A spend was retried with an idempotency key already used — the caller
+    should replay the original outcome instead of debiting again."""
+
+
+def existing_for_key(user, key: str) -> Transaction | None:
+    """The prior ledger row for this user + idempotency key, if any."""
+    if not key:
+        return None
+    return Transaction.objects.filter(user=user, idempotency_key=key).first()
 
 
 def make_reference(prefix: str = "ZTCH") -> str:
@@ -25,11 +37,14 @@ def get_or_create_wallet(user) -> Wallet:
 
 
 @db_transaction.atomic
-def debit(user, amount, service: str, meta: dict | None = None, reference: str | None = None) -> Transaction:
+def debit(user, amount, service: str, meta: dict | None = None, reference: str | None = None,
+          idempotency_key: str = "") -> Transaction:
     """Atomically debit the wallet and write a PENDING ledger row.
 
-    Raises InsufficientFunds if the balance can't cover `amount`. The caller
-    flips the row to Successful/Failed after the provider responds.
+    Raises InsufficientFunds if the balance can't cover `amount`. With an
+    `idempotency_key`, a duplicate (same user + key) raises DuplicateTransaction
+    and the debit is rolled back, so a retried/raced request never debits twice.
+    The caller flips the row to Successful/Failed after the provider responds.
     """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
@@ -37,15 +52,22 @@ def debit(user, amount, service: str, meta: dict | None = None, reference: str |
         raise InsufficientFunds("Insufficient wallet balance")
     wallet.balance -= amount
     wallet.save(update_fields=["balance", "updated"])
-    return Transaction.objects.create(
-        user=user,
-        service=service,
-        amount=amount,
-        direction=Transaction.OUT,
-        transaction_status=Transaction.PENDING,
-        reference=reference or make_reference(),
-        meta=meta or {},
-    )
+    try:
+        with db_transaction.atomic():  # savepoint: contain the unique violation
+            return Transaction.objects.create(
+                user=user,
+                service=service,
+                amount=amount,
+                direction=Transaction.OUT,
+                transaction_status=Transaction.PENDING,
+                reference=reference or make_reference(),
+                meta=meta or {},
+                idempotency_key=idempotency_key,
+            )
+    except IntegrityError:
+        if idempotency_key:
+            raise DuplicateTransaction(idempotency_key)
+        raise
 
 
 @db_transaction.atomic
@@ -123,16 +145,18 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
     return "failed"
 
 
-def run_provider_purchase(user, amount, service: str, meta: dict, provider_call):
+def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
+                          idempotency_key: str = ""):
     """Debit the wallet (PENDING) → call the provider → settle the row.
 
     ``provider_call(reference)`` receives the ledger reference to use as the
     provider's idempotency key and returns the provider result dict. The network
     call runs OUTSIDE the debit transaction, so no row lock is held during I/O.
-    Returns ``(status, txn, result)`` where status is the settle_or_refund code.
-    Raises InsufficientFunds (the caller maps it to a 402).
+    With an `idempotency_key`, a duplicate request raises DuplicateTransaction
+    before any debit or provider call. Returns ``(status, txn, result)`` where
+    status is the settle_or_refund code. Raises InsufficientFunds (-> 402).
     """
-    txn = debit(user, amount, service, meta=meta)
+    txn = debit(user, amount, service, meta=meta, idempotency_key=idempotency_key)
     result = provider_call(txn.reference)
     status = settle_or_refund(txn, result)
     return status, txn, result
@@ -190,12 +214,14 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
 
 
 @db_transaction.atomic
-def transfer(sender, recipient, amount, note: str = "") -> tuple[Transaction, Transaction]:
+def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "") -> tuple[Transaction, Transaction]:
     """Move funds between two Zitch wallets atomically.
 
     Both wallet rows are locked (in a stable order to avoid deadlocks) so the
     debit and credit either both happen or neither does. Raises InsufficientFunds
-    if the sender can't cover the amount. Returns (debit_txn, credit_txn).
+    if the sender can't cover the amount. With an `idempotency_key`, a duplicate
+    send (same sender + key) raises DuplicateTransaction with nothing moved.
+    Returns (debit_txn, credit_txn).
     """
     amount = Decimal(str(amount))
 
@@ -218,14 +244,21 @@ def transfer(sender, recipient, amount, note: str = "") -> tuple[Transaction, Tr
     recipient_name = (recipient.get_full_name() or recipient.phone or "Zitch user").strip()
     sender_name = (sender.get_full_name() or sender.phone or "Zitch user").strip()
 
-    debit_txn = Transaction.objects.create(
-        user=sender, service=f"Transfer to {recipient_name}", amount=amount,
-        direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
-        reference=ref, meta={"to": recipient.phone, "note": note},
-    )
-    credit_txn = Transaction.objects.create(
-        user=recipient, service=f"Transfer from {sender_name}", amount=amount,
-        direction=Transaction.IN, transaction_status=Transaction.SUCCESS,
-        reference=f"{ref}-C", meta={"from": sender.phone, "note": note},
-    )
+    try:
+        with db_transaction.atomic():  # savepoint: contain the unique violation
+            debit_txn = Transaction.objects.create(
+                user=sender, service=f"Transfer to {recipient_name}", amount=amount,
+                direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+                reference=ref, meta={"to": recipient.phone, "note": note},
+                idempotency_key=idempotency_key,
+            )
+            credit_txn = Transaction.objects.create(
+                user=recipient, service=f"Transfer from {sender_name}", amount=amount,
+                direction=Transaction.IN, transaction_status=Transaction.SUCCESS,
+                reference=f"{ref}-C", meta={"from": sender.phone, "note": note},
+            )
+    except IntegrityError:
+        if idempotency_key:
+            raise DuplicateTransaction(idempotency_key)
+        raise
     return debit_txn, credit_txn

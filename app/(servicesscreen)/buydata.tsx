@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiPost } from '@/lib/api';
+import { apiPost, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -86,8 +86,10 @@ const BuyData = () => {
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
   const valid = phone.length >= 10 && !!plan && amount > 0;
+  const idemKey = useRef('');  // stable across retries of one purchase attempt
 
   const purchase = async (enteredPin: string) => {
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
       const response = await apiPost('/api/utility/buydata/', {
@@ -95,15 +97,18 @@ const BuyData = () => {
         datanetwork: net,
         selectedDataPlan: plan,
         transaction_pin: enteredPin,
+        idempotency_key: idemKey.current,
       });
       const result = await response.json();
       if (response.ok) {
+        idemKey.current = '';
         setStep(null);
         setDone(true);
         reload();
       } else if (result.code === 'pin_incorrect' || result.code === 'pin_locked') {
-        setPinError(result.message || 'Incorrect PIN');
+        setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
+        idemKey.current = '';  // definitive server failure — retry is a fresh attempt
         Alert.alert('Error', result.message || 'Transaction failed');
         setStep(null);
       }

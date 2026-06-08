@@ -200,3 +200,52 @@ class LedgerConstraintTests(TestCase):
                 user=user, service="bad", amount=Decimal("0"),
                 direction=Transaction.OUT, reference="ZBAD000001",
             )
+
+
+class IdempotencyTests(TestCase):
+    """A spend retried with the same idempotency_key debits / charges once."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="20000")
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def bal(self):
+        return get_or_create_wallet(self.user).balance
+
+    def test_repeated_key_debits_airtime_once(self):
+        body = {"access_token": self.token, "amount": "1000", "network": "1",
+                "phone": "08010000001", "transaction_pin": "1234", "idempotency_key": "k-air-1"}
+        r1, _ = self.post("/api/utility/buyairtime/", body)
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(self.bal(), Decimal("19000"))
+        # Same key (client retry / double-fire): replay, not a second debit.
+        r2, b2 = self.post("/api/utility/buyairtime/", body)
+        self.assertEqual(r2.status_code, 200)
+        self.assertTrue(b2.get("duplicate"))
+        self.assertEqual(self.bal(), Decimal("19000"))  # would be 18000 without the guard
+        self.assertEqual(Transaction.objects.filter(user=self.user, service__startswith="Airtime").count(), 1)
+        # A different key is a genuinely new purchase.
+        self.post("/api/utility/buyairtime/", {**body, "idempotency_key": "k-air-2"})
+        self.assertEqual(self.bal(), Decimal("18000"))
+
+    def test_repeated_key_transfers_once(self):
+        make_user("08020000002", "bob@zitch.test")
+        body = {"access_token": self.token, "identifier": "08020000002",
+                "amount": "5000", "transaction_pin": "1234", "idempotency_key": "k-trf-1"}
+        self.post("/api/transfer/send/", body)
+        self.assertEqual(self.bal(), Decimal("15000"))
+        _, b2 = self.post("/api/transfer/send/", body)  # retry
+        self.assertEqual(self.bal(), Decimal("15000"))  # not 10000
+        self.assertTrue(b2.get("duplicate"))
+
+    def test_debit_duplicate_key_raises_and_rolls_back(self):
+        """The DB unique constraint backs up the pre-check against a real race."""
+        from wallet.services import DuplicateTransaction, debit
+        debit(self.user, Decimal("100"), "X", idempotency_key="k-raw-1")
+        with self.assertRaises(DuplicateTransaction):
+            debit(self.user, Decimal("100"), "X", idempotency_key="k-raw-1")
+        self.assertEqual(self.bal(), Decimal("19900"))  # the second debit rolled back

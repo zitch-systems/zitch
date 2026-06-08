@@ -9,14 +9,18 @@ from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, check_send_limits, fail, ok, require_user, verify_transaction_pin
+from common.http import (
+    api, check_send_limits, fail, idempotent_replay, ok, require_user, verify_transaction_pin,
+)
 from utility.providers import (
     disbursement_resolve_account,
     disbursement_send,
     payment_verify_signature,
 )
 from wallet.models import Transaction
-from wallet.services import InsufficientFunds, debit, refund, reverse_transfer
+from wallet.services import (
+    DuplicateTransaction, InsufficientFunds, debit, existing_for_key, refund, reverse_transfer,
+)
 
 from .models import Bank, Beneficiary
 
@@ -96,6 +100,11 @@ def bank_transfer(request):
     if limit_err:
         return limit_err
 
+    key = (data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     note = data.get("note", "")
     # Resolve server-side for the authoritative account name — Monnify rejects a
     # payout whose name doesn't match the enquiry, and we don't trust the client.
@@ -106,7 +115,9 @@ def bank_transfer(request):
 
     try:
         txn = debit(user, amount, f"Transfer to {name}",
-                    meta={"account": acct, "bank": bank.name, "note": note})
+                    meta={"account": acct, "bank": bank.name, "note": note}, idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 

@@ -49,6 +49,18 @@ def check_send_limits(user, amount):
     return None
 
 
+def idempotent_replay(prior):
+    """Standard response for a duplicate idempotent spend, or None when there's
+    no prior row for the key. Replays the original outcome so a retried or raced
+    request never debits / charges twice."""
+    if prior is None:
+        return None
+    from wallet.models import Transaction
+    if prior.transaction_status == Transaction.FAILED:
+        return fail("This request already failed — please start a new one", status=409, code="duplicate")
+    return ok(success=True, reference=prior.reference, message="Already processed", duplicate=True)
+
+
 def verify_transaction_pin(user, raw_pin):
     """Verify a user's transaction PIN with brute-force protection.
 

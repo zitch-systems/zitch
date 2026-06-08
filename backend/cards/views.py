@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.db.models import F
 
-from common.http import api, fail, ok, require_user, verify_transaction_pin
+from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
 from utility.providers import (
     card_secure_details,
     fund_card as issuer_fund_card,
@@ -15,7 +15,7 @@ from utility.providers import (
     set_card_status,
 )
 from wallet.models import Transaction
-from wallet.services import InsufficientFunds, debit, refund
+from wallet.services import DuplicateTransaction, InsufficientFunds, debit, existing_for_key, refund
 
 from .models import VirtualCard
 
@@ -140,8 +140,15 @@ def fund_card(request):
     if amount < 100:
         return fail("Minimum card funding is ₦100")
 
+    key = (request.data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
-        txn = debit(user, amount, "Card funding", meta={"card": card.id})
+        txn = debit(user, amount, "Card funding", meta={"card": card.id}, idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 

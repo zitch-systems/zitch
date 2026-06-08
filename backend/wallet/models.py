@@ -42,6 +42,10 @@ class Transaction(models.Model):
     reference = models.CharField(max_length=64, unique=True, db_index=True)
     # Free-form details (meter token, recipient, plan, provider response…).
     meta = models.JSONField(default=dict, blank=True)
+    # Client-supplied key making a spend idempotent: a retried or duplicated
+    # request with the same key won't debit the wallet or call the provider
+    # twice. Blank for server-originated rows (credits, settlements).
+    idempotency_key = models.CharField(max_length=80, blank=True, default="", db_index=True)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -50,6 +54,13 @@ class Transaction(models.Model):
             # Amounts are always positive; `direction` carries the sign. A DB
             # check keeps a zero/negative amount from ever entering the ledger.
             models.CheckConstraint(check=models.Q(amount__gt=0), name="txn_amount_positive"),
+            # One ledger row per (user, idempotency_key) when a key is supplied —
+            # the DB backstop for the dedupe, even under a concurrent race.
+            models.UniqueConstraint(
+                fields=["user", "idempotency_key"],
+                condition=~models.Q(idempotency_key=""),
+                name="uniq_user_idempotency_key",
+            ),
         ]
 
     def __str__(self):

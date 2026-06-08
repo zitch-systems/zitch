@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, apiJson } from '@/lib/api';
+import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
@@ -103,14 +103,20 @@ const SendMoney = () => {
       const bankNameFinal = picked ? picked.bank_name : bank?.name;
       const bankCode = picked ? banks.find((b) => b.name === bankNameFinal)?.code : bank?.code;
       return apiJson('/api/transfers/send/', {
-        account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt, transaction_pin: pin, note,
+        account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt,
+        transaction_pin: pin, note, idempotency_key: idemKey.current,
       });
     }
     const id = picked ? picked.account_number : identifier;
-    return apiJson('/api/transfer/send/', { identifier: id, amount: amt, transaction_pin: pin, note });
+    return apiJson('/api/transfer/send/', {
+      identifier: id, amount: amt, transaction_pin: pin, note, idempotency_key: idemKey.current,
+    });
   };
 
+  const idemKey = useRef('');  // stable across retries of one transfer attempt
+
   const send = async (pin: string) => {
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
       // Defense-in-depth: a device biometric step-up for large transfers, on top
@@ -136,9 +142,9 @@ const SendMoney = () => {
         return;
       }
 
-      if (res.success) { setStep(null); setDone(true); reload(); }
+      if (res.success) { idemKey.current = ''; setStep(null); setDone(true); reload(); }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
-      else { Alert.alert('Error', res.message || 'Transfer failed'); setStep(null); }
+      else { idemKey.current = ''; Alert.alert('Error', res.message || 'Transfer failed'); setStep(null); }
     } catch {
       Alert.alert('Error', 'Something went wrong. Please try again later.'); setStep(null);
     } finally { setBusy(false); }
