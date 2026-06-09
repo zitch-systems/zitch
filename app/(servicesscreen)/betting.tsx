@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiJson } from '@/lib/api';
+import { apiJson, newIdempotencyKey } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -27,6 +27,7 @@ const Betting = () => {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const [pinError, setPinError] = useState('');
+  const idemKey = useRef('');  // stable across retries of one funding attempt
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
@@ -41,16 +42,19 @@ const Betting = () => {
   const valid = !!platform && userId.length >= 4 && amount >= 100;
 
   const fund = async (pin: string) => {
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/betting/fund/', { platform: selected, user_id: userId, amount: amt, transaction_pin: pin });
+      const res = await apiJson('/api/betting/fund/', { platform: selected, user_id: userId, amount: amt, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) {
+        idemKey.current = '';
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
+        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
         Alert.alert('Error', res.message || 'Transaction failed');
         setStep(null);
       }

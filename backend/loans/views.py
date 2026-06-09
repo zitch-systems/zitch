@@ -1,11 +1,13 @@
 """Loan endpoints: eligibility/quote, request (disburse), repay."""
 from decimal import Decimal, InvalidOperation
 
+from django.db import IntegrityError
+
 from common.http import api, fail, ok, require_user, verify_transaction_pin
 from wallet.services import InsufficientFunds, get_or_create_wallet
 
 from .models import Loan
-from .services import credit_limit, disburse, repay
+from .services import LoanError, credit_limit, disburse, repay
 
 ALLOWED_TENURES = {15, 30, 60}
 MIN_PRINCIPAL = Decimal("10000")
@@ -91,7 +93,14 @@ def loan_request(request):
     if tenure not in ALLOWED_TENURES:
         return fail("Tenure must be 15, 30 or 60 days")
 
-    loan = disburse(user, principal, tenure)
+    try:
+        loan = disburse(user, principal, tenure)
+    except LoanError as e:
+        # Eligibility re-check inside the lock caught a race past the checks above.
+        return fail(str(e), status=409)
+    except IntegrityError:
+        # DB partial-unique backstop: a concurrent disbursement won the race.
+        return fail("You already have an active loan", status=409)
     wallet = get_or_create_wallet(user)
     return ok(success=True, wallet=str(wallet.balance), loan=_loan_dict(loan), message="Loan disbursed")
 

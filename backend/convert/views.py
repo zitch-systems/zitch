@@ -12,12 +12,70 @@ testable offline, exactly like the VTU/payments providers elsewhere.
 """
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
+import requests
+from django.core.cache import cache
 from django.db import transaction as db_transaction
 
 from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
 from wallet.services import DuplicateTransaction, credit, existing_for_key, make_reference
 
 from .models import ConversionRequest
+
+# ---------------------------------------------------------------------------
+# Live currency converter (NGN -> other currencies)
+#
+# A read-only rate lookup the app uses to convert a Naira amount into other
+# currencies at live mid-market rates. No money moves — it's a calculator. Rates
+# come from a free, no-key provider (open.er-api.com, NGN base) and are cached
+# briefly so we don't hit it on every keystroke / focus.
+# ---------------------------------------------------------------------------
+FX_API_URL = "https://open.er-api.com/v6/latest/NGN"
+FX_CACHE_KEY = "fx_rates_ngn"
+FX_CACHE_TTL = 600  # seconds (10 min)
+
+# The currencies surfaced in the converter UI: (ISO code, display name, symbol).
+FX_CURRENCIES = [
+    ("USD", "US Dollar", "$"),
+    ("GBP", "British Pound", "£"),
+    ("EUR", "Euro", "€"),
+]
+
+
+def _fetch_fx_rates():
+    """NGN-based rates, cached. Returns {'rates': {...}, 'updated': str} or None."""
+    cached = cache.get(FX_CACHE_KEY)
+    if cached:
+        return cached
+    try:
+        resp = requests.get(FX_API_URL, timeout=8)
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return None
+    if data.get("result") != "success":
+        return None
+    payload = {"rates": data.get("rates", {}), "updated": data.get("time_last_update_utc")}
+    cache.set(FX_CACHE_KEY, payload, FX_CACHE_TTL)
+    return payload
+
+
+@api
+def fx_rates(request):
+    """POST /api/convert/fx/ -> live NGN->currency rates for the converter UI.
+
+    -> {success, base: 'NGN', updated, currencies: [{code, name, symbol, rate}]}
+    where `rate` is the value of ₦1 in that currency (amount_ngn * rate).
+    """
+    payload = _fetch_fx_rates()
+    if not payload:
+        return fail("Couldn't fetch live rates. Please try again shortly.", status=502)
+    rates = payload["rates"]
+    currencies = [
+        {"code": code, "name": name, "symbol": symbol, "rate": rates[code]}
+        for code, name, symbol in FX_CURRENCIES
+        if rates.get(code) is not None
+    ]
+    return ok(success=True, base="NGN", updated=payload.get("updated"), currencies=currencies)
+
 
 NETWORK_NAMES = {"1": "MTN", "2": "GLO", "3": "Airtel", "4": "9mobile"}
 

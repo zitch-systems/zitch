@@ -5,9 +5,9 @@ call the aggregator -> settle the ledger (refund on failure).
 """
 from decimal import Decimal, InvalidOperation
 
-from common.http import api, fail, ok, provider_purchase_response, require_user, verify_transaction_pin
+from common.http import api, fail, idempotent_replay, ok, provider_purchase_response, require_user, verify_transaction_pin
 from utility.providers import vtu_purchase
-from wallet.services import InsufficientFunds, run_provider_purchase
+from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
 from .models import BettingPlatform
 
@@ -49,13 +49,22 @@ def fund_betting(request):
     if amount < 100:
         return fail("Minimum funding is ₦100")
 
+    # Idempotency: a retried / double-tapped request must not debit twice.
+    key = (data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
         status, txn, result = run_provider_purchase(
             user, amount, f"{platform.name} funding",
             {"platform": platform.code, "user_id": user_id},
             lambda ref: vtu_purchase(platform.service_id or f"{platform.code}-betting",
                                      {"billersCode": user_id, "amount": str(amount)}, reference=ref),
+            idempotency_key=key,
         )
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
     return provider_purchase_response(status, txn, result, success_message="Betting wallet funded")

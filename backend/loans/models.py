@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 
 class Loan(models.Model):
@@ -31,6 +32,15 @@ class Loan(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        constraints = [
+            # DB-level backstop for the one-active-loan rule: a second concurrent
+            # disbursement that races past the view + service checks fails here.
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=Q(status="active"),
+                name="one_active_loan_per_user",
+            ),
+        ]
 
     @property
     def total_repayment(self) -> Decimal:
