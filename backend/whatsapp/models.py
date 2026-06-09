@@ -101,3 +101,30 @@ class WaMessageLog(models.Model):
 
     def __str__(self):
         return f"{self.direction} {self.msisdn}: {self.text[:40]}"
+
+
+class SystemSetting(models.Model):
+    """Key/value runtime config flippable from the admin — the AI kill switch
+    (`ai_enabled_global`), FX margin, etc. Read-through with a default, so a
+    missing row is fine."""
+
+    key = models.CharField(max_length=64, unique=True)
+    value = models.CharField(max_length=255, blank=True, default="")
+    updated = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get(cls, key, default=""):
+        row = cls.objects.filter(key=key).first()
+        return row.value if row else default
+
+    @classmethod
+    def get_bool(cls, key, default=False):
+        row = cls.objects.filter(key=key).first()
+        return (row.value.strip().lower() in {"1", "true", "yes", "on"}) if row else default
+
+    @classmethod
+    def set(cls, key, value):
+        cls.objects.update_or_create(key=key, defaults={"value": str(value)})
+
+    def __str__(self):
+        return f"{self.key}={self.value}"
