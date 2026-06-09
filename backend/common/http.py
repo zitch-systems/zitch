@@ -23,26 +23,39 @@ def ok(data=None, **extra):
     return JsonResponse(payload, status=200)
 
 
-def check_send_limits(user, amount):
-    """Returns an error JsonResponse if `amount` breaks the user's tier limit
-    or (at/above the large-txn threshold) the user isn't face-verified;
-    otherwise None.
+def send_limit_error(user, amount) -> str | None:
+    """User-facing reason `amount` can't be sent — tier cap or (at/above the
+    large-txn threshold) missing face verification — or None if it's allowed.
+
+    The single source of truth for the limit rules + copy, shared by the HTTP
+    `check_send_limits` and non-HTTP callers (e.g. the WhatsApp router).
 
     Large transfers require durable, server-side face verification
     (`user.face_verified`, set via the provider-backed KYC face step) — not a
     per-request flag, which a caller hitting the API directly could just assert.
     """
     if amount > user.transaction_limit:
+        return (f"This exceeds your Tier {user.tier} limit of ₦{user.transaction_limit:,.0f}. "
+                "Upgrade your KYC to send more.")
+    from accounts.models import User
+    if amount >= User.LARGE_TXN_THRESHOLD and not user.face_verified:
+        return "Face verification required for this amount."
+    return None
+
+
+def check_send_limits(user, amount):
+    """HTTP wrapper around `send_limit_error`: returns an error JsonResponse if
+    `amount` breaks a limit, otherwise None."""
+    if amount > user.transaction_limit:
         return fail(
-            f"This exceeds your Tier {user.tier} limit of ₦{user.transaction_limit:,.0f}. "
-            "Upgrade your KYC to send more.",
+            send_limit_error(user, amount),
             status=403, code="limit_exceeded", tier=user.tier,
             transaction_limit=str(user.transaction_limit),
         )
     from accounts.models import User
     if amount >= User.LARGE_TXN_THRESHOLD and not user.face_verified:
         return fail(
-            "Face verification required for this amount.",
+            send_limit_error(user, amount),
             status=403, code="face_required",
             large_txn_threshold=str(User.LARGE_TXN_THRESHOLD),
         )
@@ -61,55 +74,59 @@ def idempotent_replay(prior):
     return ok(success=True, reference=prior.reference, message="Already processed", duplicate=True)
 
 
-def verify_transaction_pin(user, raw_pin):
-    """Verify a user's transaction PIN with brute-force protection.
-
-    The PIN is the second factor gating every money-movement endpoint, so a
-    stolen session token must not be enough to guess it. Returns an error
-    JsonResponse when no PIN is set, when the PIN is temporarily locked after too
-    many wrong tries, or when the PIN is wrong; otherwise None.
+def evaluate_transaction_pin(user, raw_pin):
+    """Brute-force-protected PIN check shared by HTTP views and the WhatsApp
+    router. Returns ``(ok, code, message)``: ok=True on a correct PIN; otherwise
+    code is one of ``no_pin`` / ``pin_locked`` / ``pin_incorrect`` with a
+    user-facing message.
 
     The failure count and lockout live on the user row and are updated under a
-    row lock, so concurrent guesses can't slip past the cap.
+    row lock, so concurrent guesses (across channels) can't slip past the cap.
     """
     from django.db import transaction as db_transaction
 
     from accounts.models import User
 
     if not user.transaction_pin:
-        return fail("No transaction PIN set on this account", status=403)
+        return False, "no_pin", "No transaction PIN set on this account"
 
     with db_transaction.atomic():
         u = User.objects.select_for_update().get(pk=user.pk)
         if u.pin_locked:
             mins = max(1, int((u.pin_locked_until - timezone.now()).total_seconds() // 60) + 1)
-            return fail(
-                f"Transaction PIN locked after too many wrong attempts. Try again in {mins} minute(s).",
-                status=429, code="pin_locked",
-            )
+            return (False, "pin_locked",
+                    f"Transaction PIN locked after too many wrong attempts. Try again in {mins} minute(s).")
         if u.check_transaction_pin((raw_pin or "").strip()):
             # Correct PIN: clear any accumulated failures / stale lock.
             if u.pin_failed_attempts or u.pin_locked_until:
                 u.pin_failed_attempts = 0
                 u.pin_locked_until = None
                 u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
-            return None
+            return True, None, None
         u.pin_failed_attempts += 1
         if u.pin_failed_attempts >= User.PIN_MAX_ATTEMPTS:
             u.pin_failed_attempts = 0  # reset the counter; the lock is the gate now
             u.pin_locked_until = timezone.now() + timedelta(minutes=User.PIN_LOCKOUT_MINUTES)
             u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
-            return fail(
-                f"Transaction PIN locked for {User.PIN_LOCKOUT_MINUTES} minutes "
-                "after too many wrong attempts.",
-                status=429, code="pin_locked",
-            )
+            return (False, "pin_locked",
+                    f"Transaction PIN locked for {User.PIN_LOCKOUT_MINUTES} minutes after too many wrong attempts.")
         u.save(update_fields=["pin_failed_attempts"])
         left = User.PIN_MAX_ATTEMPTS - u.pin_failed_attempts
-        return fail(
-            f"Incorrect transaction PIN. {left} attempt(s) left before lock.",
-            status=403, code="pin_incorrect",
-        )
+        return False, "pin_incorrect", f"Incorrect transaction PIN. {left} attempt(s) left before lock."
+
+
+def verify_transaction_pin(user, raw_pin):
+    """HTTP wrapper around `evaluate_transaction_pin`: returns an error
+    JsonResponse on a bad/locked/missing PIN, otherwise None. The PIN is the
+    second factor gating every money-movement endpoint, so a stolen session
+    token isn't enough to guess it."""
+    ok, code, message = evaluate_transaction_pin(user, raw_pin)
+    if ok:
+        return None
+    if code == "no_pin":
+        return fail(message, status=403)
+    status = 429 if code == "pin_locked" else 403
+    return fail(message, status=status, code=code)
 
 
 def provider_purchase_response(status, txn, result, *, success_message, **success_extra):

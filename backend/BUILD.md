@@ -95,6 +95,31 @@ Payout is idempotent per plan, so overlapping runs never double-pay.
 Set the webhook URL in the Monnify dashboard to:
 `https://<your-render-host>/api/fund/webhook/`
 
+## WhatsApp channel (deterministic; AI layer comes later)
+A WhatsApp banking channel where a **linked** user checks balance and sends money
+from chat. Built deterministic-first so money never depends on the AI being up.
+
+- **Webhook:** `GET/POST /webhooks/whatsapp` — GET verifies against
+  `WHATSAPP_VERIFY_TOKEN`; POST takes inbound messages (HMAC-verified via
+  `WHATSAPP_APP_SECRET`, deduped on Meta's message id, acked 200, processed
+  inline). Blank `WHATSAPP_TOKEN` ⇒ MOCK mode (outbound logged, inbound unsigned
+  accepted) so the flow is testable with no Meta app.
+- **Linking:** app calls `POST /api/whatsapp/link/start/` → a one-time code; the
+  user sends `LINK <code>` from WhatsApp and the number binds to their account
+  (`link/status/`, `link/unlink/` manage it). Unknown numbers get only the link flow.
+- **Router (`whatsapp/router.py`):** keyword + numbered-menu + slot-filling that
+  drives the SAME money services the app uses — balance, and NGN bank transfer
+  (name-enquiry → confirm card → transaction PIN → idempotent payout via
+  `transfers.services.execute_payout`, shared with `/api/transfers/send/`). PINs
+  are masked in the message log; the flow cancels after one wrong PIN.
+- **Not yet (next slices):** the LLM intent layer + global/per-user AI toggle,
+  airtime/data & bills over chat, multi-currency + FX (Fincra), and the operator
+  surfaces (admin dashboard, broadcasts, conversation monitor + handover). The
+  deterministic router stays as the permanent AI-off fallback.
+
+Set the webhook URL + `WHATSAPP_VERIFY_TOKEN` in the Meta app dashboard and fill
+the `WHATSAPP_*` env vars (see `.env.example`).
+
 ## Before go-live (TODO)
 - **HTTPS hardening is automatic.** With `DJANGO_DEBUG=false` (set in
   `render.yaml`), Django enforces the HTTPS redirect, secure session/CSRF

@@ -12,17 +12,11 @@ from django.views.decorators.csrf import csrf_exempt
 from common.http import (
     api, check_send_limits, fail, idempotent_replay, ok, require_user, verify_transaction_pin,
 )
-from utility.providers import (
-    disbursement_resolve_account,
-    disbursement_send,
-    payment_verify_signature,
-)
-from wallet.models import Transaction
-from wallet.services import (
-    DuplicateTransaction, InsufficientFunds, debit, existing_for_key, refund, reverse_transfer,
-)
+from utility.providers import disbursement_resolve_account, payment_verify_signature
+from wallet.services import existing_for_key, reverse_transfer
 
-from .models import Bank, Beneficiary
+from .models import Bank
+from .services import PayoutError, execute_payout
 
 
 @api
@@ -114,26 +108,13 @@ def bank_transfer(request):
     name = resolved.get("name") or (data.get("name") or "Bank recipient").strip()
 
     try:
-        txn = debit(user, amount, f"Transfer to {name}",
-                    meta={"account": acct, "bank": bank.name, "note": note}, idempotency_key=key)
-    except DuplicateTransaction:
-        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
-    except InsufficientFunds:
-        return fail("Insufficient wallet balance", status=402)
-
-    result = disbursement_send(amount, txn.reference, note or f"Transfer to {name}",
-                               bank.bank_code, acct, name)
-    if not result.get("success"):
-        refund(txn)
-        return fail(result.get("message", "Transfer failed"), status=502)
-    txn.transaction_status = Transaction.SUCCESS
-    txn.save(update_fields=["transaction_status"])
-
-    # Auto-save / dedupe the beneficiary.
-    Beneficiary.objects.get_or_create(
-        user=user, account_number=acct, bank_name=bank.name,
-        defaults={"name": name, "bank_code": bank.bank_code, "color": bank.color or "#0FA295"},
-    )
+        txn = execute_payout(user, amount, acct, bank, name, note=note, idempotency_key=key)
+    except PayoutError as exc:
+        if exc.kind == "duplicate":
+            return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
+        if exc.kind == "insufficient":
+            return fail("Insufficient wallet balance", status=402)
+        return fail(exc.message, status=502)
 
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)

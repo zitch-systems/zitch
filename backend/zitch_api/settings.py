@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "transfers",
     "cards",
     "convert",
+    "whatsapp",
 ]
 
 MIDDLEWARE = [
@@ -171,6 +172,18 @@ CARD_ISSUER = {
     "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),
     "API_KEY": os.environ.get("CARD_ISSUER_API_KEY", ""),
     "BRAND": os.environ.get("CARD_ISSUER_BRAND", "Verve"),
+}
+
+# WhatsApp Cloud API (Meta). Blank TOKEN => MOCK mode: outbound is logged and
+# inbound signatures are accepted, so the channel is fully testable without a
+# Meta app (same pattern as the other providers).
+WHATSAPP = {
+    "BASE_URL": os.environ.get("WHATSAPP_BASE_URL", "https://graph.facebook.com/v21.0"),
+    "TOKEN": os.environ.get("WHATSAPP_TOKEN", ""),
+    "PHONE_NUMBER_ID": os.environ.get("WHATSAPP_PHONE_NUMBER_ID", ""),
+    "VERIFY_TOKEN": os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
+    "APP_SECRET": os.environ.get("WHATSAPP_APP_SECRET", ""),
+    "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
 }
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

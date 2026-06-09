@@ -89,7 +89,7 @@ class BankTransferTests(TestCase):
 
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""
-        with patch("transfers.views.disbursement_send",
+        with patch("transfers.services.disbursement_send",
                    return_value={"success": False, "message": "bank declined"}):
             res, _ = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",

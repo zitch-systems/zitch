@@ -3,6 +3,8 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
 
+from whatsapp.views import webhook as whatsapp_webhook
+
 
 def health(_request):
     """Liveness probe + which integrations are live (True) vs MOCK (False).
@@ -25,6 +27,9 @@ def health(_request):
 urlpatterns = [
     path("", health),
     path("admin/", admin.site.urls),
+    # Meta calls this exact path (no /api prefix, no trailing slash).
+    path("webhooks/whatsapp", whatsapp_webhook),
+    path("api/whatsapp/", include("whatsapp.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),
     path("api/utility/", include("utility.urls")),
