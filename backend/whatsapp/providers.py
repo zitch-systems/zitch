@@ -61,3 +61,35 @@ def send_text(msisdn: str, text: str) -> dict:
     except requests.RequestException as exc:
         log.warning("wa send failed -> %s: %s", msisdn, exc)
         return {"success": False, "message": str(exc)}
+
+
+def send_template(msisdn: str, template_name: str, params: list | None = None, lang: str = "en_US") -> dict:
+    """Send a pre-approved template message (used for broadcasts outside the
+    24-hr window). MOCK mode logs and returns success."""
+    if not wa_live():
+        log.info("[wa-mock] template %s -> %s %s", template_name, msisdn, params or [])
+        return {"success": True, "mock": True, "message_id": f"mockt-{msisdn}-{template_name}"}
+    components = (
+        [{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}]
+        if params else []
+    )
+    payload = {
+        "messaging_product": "whatsapp", "to": msisdn, "type": "template",
+        "template": {"name": template_name, "language": {"code": lang}, "components": components},
+    }
+    try:
+        r = requests.post(
+            f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages",
+            json=payload,
+            headers={"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"},
+            timeout=15,
+        )
+        data = r.json() if r.content else {}
+        return {
+            "success": r.ok,
+            "message_id": (data.get("messages") or [{}])[0].get("id", ""),
+            "error_code": (data.get("error") or {}).get("code"),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "message": str(exc)}

@@ -18,7 +18,10 @@ from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
-from .models import PendingAction, WaMessageLog, WhatsAppLink
+from .models import (
+    AuditLog, Broadcast, BroadcastRecipient, ConversationState,
+    PendingAction, WaMessageLog, WhatsAppLink,
+)
 
 User = get_user_model()
 MSISDN = "2348011112222"
@@ -411,3 +414,79 @@ class ForexServiceTests(TestCase):
             execute_fx(self.user, q.quote_ref)        # already used
         self.assertEqual(currency_balance(self.user, "USD"), Decimal("10.00"))  # not doubled
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("34000"))
+
+
+class OperatorTests(TestCase):
+    """STOP opt-out, human handover, broadcasts, audit, staff gating (§9-§11)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="10000")
+        self.staff = User.objects.create(username="adm", phone="08099999999", email="adm@zitch.test", is_staff=True)
+        self.staff_token = AccessToken.issue(self.staff).key
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event), content_type="application/json")
+
+    def last_reply(self):
+        row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
+        return row.text if row else ""
+
+    def post_as(self, path, token, payload):
+        body = {"access_token": token, **payload}
+        res = self.client.post(path, data=json.dumps(body), content_type="application/json")
+        return res, res.json()
+
+    def test_stop_unsubscribes_marketing(self):
+        link = WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                           status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
+        self.inbound("stop", "s1")
+        link.refresh_from_db()
+        self.assertFalse(link.marketing_opt_in)
+        self.assertIn("unsubscribed", self.last_reply().lower())
+
+    def test_human_handover_silences_bot(self):
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        ConversationState.objects.create(msisdn=MSISDN, status=ConversationState.HUMAN, ai_enabled=False)
+        before = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).count()
+        self.inbound("balance", "h1")          # bot must not auto-reply
+        after = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).count()
+        self.assertEqual(before, after)
+
+    def test_handover_endpoint_pauses_ai(self):
+        res, body = self.post_as("/api/whatsapp/ops/handover/", self.staff_token, {"msisdn": MSISDN})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["status"], "human")
+        convo = ConversationState.objects.get(msisdn=MSISDN)
+        self.assertFalse(convo.ai_enabled)
+        self.assertEqual(convo.assigned_agent_id, self.staff.id)
+        self.assertTrue(AuditLog.objects.filter(action="conversation.handover").exists())
+
+    def test_ops_requires_staff(self):
+        res, _ = self.post_as("/api/whatsapp/ops/handover/", self.token, {"msisdn": MSISDN})  # normal user
+        self.assertEqual(res.status_code, 403)
+
+    def test_broadcast_only_opted_in(self):
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
+        bob, _ = make_user("08020000002", "bob@zitch.test")
+        WhatsAppLink.objects.create(user=bob, wa_msisdn="2348020000002",
+                                    status=WhatsAppLink.ACTIVE, marketing_opt_in=False)
+        res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
+                                 {"template_name": "promo", "category": "marketing"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["queued"], 1)        # only the opted-in user
+        self.assertEqual(body["sent"], 1)
+        recips = BroadcastRecipient.objects.all()
+        self.assertEqual(recips.count(), 1)
+        self.assertEqual(recips.first().wa_msisdn, MSISDN)
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.send").exists())
+
+    def test_utility_broadcast_ignores_opt_in(self):
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, marketing_opt_in=False)
+        res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
+                                 {"template_name": "txn_alert", "category": "utility"})
+        self.assertEqual(body["sent"], 1)          # utility reaches non-opted-in users

@@ -26,7 +26,7 @@ from wallet.services import (
 )
 
 from . import ai
-from .models import PendingAction, SystemSetting, WaMessageLog, WhatsAppLink
+from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WhatsAppLink
 from .providers import send_text
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
@@ -115,7 +115,19 @@ def handle_inbound(msisdn: str, text: str) -> None:
     user = link.user
     low = text.lower()
 
-    if low in ("cancel", "stop", "quit"):
+    # Honor marketing opt-out regardless of state (hard-rule #8).
+    if low in ("stop", "unsubscribe", "stop promotions"):
+        if link.marketing_opt_in:
+            link.marketing_opt_in = False
+            link.save(update_fields=["marketing_opt_in"])
+        return reply(msisdn, "Done — you're unsubscribed from Zitch promotions. Reply \"menu\" to keep banking.")
+
+    # Human handover: the bot stays silent; the agent replies from the console.
+    convo = ConversationState.for_msisdn(msisdn)
+    if convo.status == ConversationState.HUMAN:
+        return
+
+    if low in ("cancel", "quit"):
         _clear_actions(msisdn)
         return reply(msisdn, "Okay, cancelled. Reply \"menu\" for options.")
 
@@ -154,7 +166,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return
     # Free-form text: let the AI route it (when active) — but the deterministic
     # paths above always win, so core flows never depend on the AI being up.
-    if ai_active(link):
+    if ai_active(link, convo):
         intent = ai.extract_intent(text)
         if intent:
             _record_intent(msisdn, intent)
@@ -725,11 +737,14 @@ def _pick(text: str, choices: list, fetch):
 NET_BY_NAME = {v.lower(): k for k, v in NETWORK_NAMES.items()}  # "mtn" -> "1"
 
 
-def ai_active(link: WhatsAppLink) -> bool:
+def ai_active(link: WhatsAppLink, convo: ConversationState) -> bool:
     """AI runs only if all scopes are on: an LLM key is set, the global kill
-    switch is on, and this user's AI is enabled. (Per-conversation comes with
-    the handover slice.)"""
-    return ai.llm_available() and SystemSetting.get_bool("ai_enabled_global", True) and link.ai_enabled
+    switch is on, this user's AI is enabled, and this conversation's AI is on
+    (handover turns the conversation scope off)."""
+    return (ai.llm_available()
+            and SystemSetting.get_bool("ai_enabled_global", True)
+            and link.ai_enabled
+            and convo.ai_enabled)
 
 
 def _record_intent(msisdn: str, intent: dict) -> None:

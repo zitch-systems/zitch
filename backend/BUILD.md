@@ -133,8 +133,23 @@ from chat. Built deterministic-first so money never depends on the AI being up.
   and expiry-checked, so a stale rate is never settled. Corridor-aware: CNY is
   quote/display-only (blocked from settlement, §13). Blank `FINCRA_SECRET_KEY`
   => MOCK rates so it's testable offline.
-- **Not yet (next slice):** the operator surfaces — admin dashboard + RBAC,
-  broadcasts, conversation monitor + handover, audit log.
+- **Operator backend (Django admin + staff endpoints):**
+  - **Conversation monitor + handover (§10):** `ConversationState` per number;
+    `POST /api/whatsapp/ops/handover/` pauses the bot (and the conversation's AI
+    scope), `ops/return-to-bot/` re-enables it, `ops/reply/` sends an agent
+    message. While a conversation is `human`, the bot stays silent. The message
+    log (with the parsed AI intent) is the inbox, browsable in Django admin.
+  - **Broadcasts (§9):** `Broadcast` + `BroadcastRecipient`; `ops/broadcast/`
+    sends a template to a segment — **marketing only reaches opted-in users**,
+    utility reaches all linked. `STOP`/`UNSUBSCRIBE` inbound flips
+    `marketing_opt_in` off. Delivery callbacks update per-recipient status +
+    roll-up counts. A provider block (e.g. Meta 131049) is recorded, not retried.
+  - **Audit (§hard-rule #10):** `AuditLog` records handovers, agent replies, and
+    broadcasts (actor + before/after).
+  - **RBAC (§11):** staff-gated endpoints today (`require_staff`); the
+    super_admin/finance/support/read_only roles map to Django groups/permissions
+    as the dedicated web dashboard is built (a follow-up — the money-correctness
+    surface lives in these services + Django admin).
 
 Set the webhook URL + `WHATSAPP_VERIFY_TOKEN` in the Meta app dashboard and fill
 the `WHATSAPP_*` env vars (see `.env.example`).
