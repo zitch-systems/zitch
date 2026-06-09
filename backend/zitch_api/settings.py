@@ -186,6 +186,21 @@ WHATSAPP = {
     "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
 }
 
+# LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
+# handles everything). The model only proposes intents; it never moves money.
+LLM = {
+    "API_KEY": os.environ.get("LLM_API_KEY", ""),
+    "MODEL": os.environ.get("LLM_MODEL", ""),
+}
+
+# FX rail — Fincra (multi-currency conversion). Blank SECRET_KEY => MOCK mode
+# (deterministic rates, auto-settle) so conversion is testable without keys.
+FINCRA = {
+    "BASE_URL": os.environ.get("FINCRA_BASE_URL", "https://api.fincra.com"),
+    "SECRET_KEY": os.environ.get("FINCRA_SECRET_KEY", ""),
+    "BUSINESS_ID": os.environ.get("FINCRA_BUSINESS_ID", ""),
+}
+
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # --- Production security hardening ----------------------------------------

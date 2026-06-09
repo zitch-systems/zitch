@@ -37,6 +37,9 @@ class Transaction(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
     service = models.CharField(max_length=80)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
+    # Currency of `amount`: NGN for the primary wallet, other ISO codes for FX
+    # holdings (see CurrencyWallet). Defaults NGN so every existing row is correct.
+    currency = models.CharField(max_length=3, default="NGN")
     direction = models.CharField(max_length=3, choices=DIRECTIONS, default=OUT)
     transaction_status = models.CharField(max_length=12, choices=STATUSES, default=PENDING)
     reference = models.CharField(max_length=64, unique=True, db_index=True)
@@ -92,3 +95,51 @@ class FundingIntent(models.Model):
 
     def __str__(self):
         return f"{self.user} · ₦{self.amount} · {self.status}"
+
+
+class CurrencyWallet(models.Model):
+    """A non-NGN balance the user holds (USD / GBP / CAD …).
+
+    NGN stays in `Wallet` (all existing money code uses it); this table covers FX
+    holdings, one row per (user, currency). A DB check keeps balances non-negative.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="currency_wallets")
+    currency = models.CharField(max_length=3)
+    balance = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    updated = models.DateTimeField(auto_now=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "currency"], name="uniq_user_currency_wallet"),
+            models.CheckConstraint(check=models.Q(balance__gte=0), name="currency_wallet_balance_non_negative"),
+        ]
+
+    def __str__(self):
+        return f"{self.user} · {self.currency} {self.balance}"
+
+
+class FxQuote(models.Model):
+    """A time-boxed FX quote (Fincra). Execution is valid only until `expires_at`,
+    and a `used` quote can't run again — so a stale rate is never settled and a
+    quote is spent at most once (alongside the ledger idempotency key)."""
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="fx_quotes")
+    quote_ref = models.CharField(max_length=80, unique=True, db_index=True)
+    from_currency = models.CharField(max_length=3)
+    to_currency = models.CharField(max_length=3)
+    sell_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    receive_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    rate = models.DecimalField(max_digits=18, decimal_places=8)
+    expires_at = models.DateTimeField()
+    used = models.BooleanField(default=False)
+    created = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def expired(self) -> bool:
+        from django.utils import timezone
+        return timezone.now() >= self.expires_at
+
+    def __str__(self):
+        return f"{self.sell_amount} {self.from_currency}->{self.to_currency} @ {self.rate}"

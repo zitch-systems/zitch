@@ -17,6 +17,7 @@ from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
 from utility.providers import disbursement_resolve_account, vtu_purchase, vtu_verify_customer
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
+from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
@@ -24,7 +25,8 @@ from wallet.services import (
     run_provider_purchase,
 )
 
-from .models import PendingAction, WaMessageLog, WhatsAppLink
+from . import ai
+from .models import PendingAction, SystemSetting, WaMessageLog, WhatsAppLink
 from .providers import send_text
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
@@ -145,11 +147,19 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("4", "bill", "bills", "pay bill"):
         return reply(msisdn, "Reply \"electricity\" or \"cable\".")
     if low in ("5", "convert", "conversion"):
-        return reply(msisdn, "Currency conversion on WhatsApp is coming soon. Use the Zitch app for now.")
+        return _start_convert(user, msisdn)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
         return
+    # Free-form text: let the AI route it (when active) — but the deterministic
+    # paths above always win, so core flows never depend on the AI being up.
+    if ai_active(link):
+        intent = ai.extract_intent(text)
+        if intent:
+            _record_intent(msisdn, intent)
+            if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent):
+                return
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + MENU)
 
 
@@ -182,8 +192,11 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
 # balance
 # --------------------------------------------------------------------------- #
 def _do_balance(user, msisdn: str) -> None:
-    wallet = get_or_create_wallet(user)
-    reply(msisdn, f"💰 Your Zitch balance is {_money(wallet.balance)}.")
+    bals = all_balances(user)
+    if len(bals) == 1:
+        return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}.")
+    lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]
+    reply(msisdn, "💰 Your balances:\n" + "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +218,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "data": _advance_data,
         "electricity": _advance_electricity,
         "cable": _advance_cable,
+        "convert": _advance_convert,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)
@@ -355,19 +369,25 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
     """Parse "0123456789 GTBank John Doe 5000" → jump straight to name-enquiry.
-
-    Returns True if it looked like a paste (and was handled), else False.
-    """
+    Returns True if handled as a transfer paste, else False."""
     tokens = text.split()
     acct = next((re.sub(r"\D", "", t) for t in tokens if len(re.sub(r"\D", "", t)) == 10), None)
     amount = None
     for t in reversed(tokens):
+        if len(re.sub(r"\D", "", t)) >= 10:  # skip account- / phone-length tokens
+            continue
         amount = parse_amount(t)
         if amount is not None:
             break
     if not acct or amount is None:
         return False
-    matches = _match_banks(text)
+    return _begin_bank_transfer(user, msisdn, amount, acct, text)
+
+
+def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str) -> bool:
+    """Validate then open a transfer at the bank step — shared by the paste path
+    and the LLM. Returns False only when the bank can't be matched (caller decides)."""
+    matches = _match_banks(bank_query)
     if not matches:
         return False
     if amount < 10:
@@ -377,15 +397,11 @@ def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
     if limit_msg:
         reply(msisdn, limit_msg)
         return True
-    if get_or_create_wallet(user).balance < amount:
+    if _insufficient(user, amount):
         reply(msisdn, f"Insufficient balance. You have {_money(get_or_create_wallet(user).balance)}.")
         return True
-    _clear_actions(msisdn)
-    pa = PendingAction.objects.create(
-        user=user, msisdn=msisdn, action_type="transfer", state="bank",
-        payload={"amount": str(amount), "account": acct, "pin_attempts": 0},
-        expires_at=timezone.now() + FLOW_TTL,
-    )
+    pa = _new_flow(user, msisdn, "transfer", "bank",
+                   {"amount": str(amount), "account": acct, "pin_attempts": 0})
     if len(matches) == 1:
         _resolve_and_confirm(pa, user, msisdn, matches[0])
     else:
@@ -701,3 +717,161 @@ def _pick(text: str, choices: list, fetch):
     if not (0 <= idx < len(choices)):
         return None
     return fetch(choices[idx])
+
+
+# --------------------------------------------------------------------------- #
+# AI intent layer — the LLM proposes; these map its intent to the SAME flows
+# --------------------------------------------------------------------------- #
+NET_BY_NAME = {v.lower(): k for k, v in NETWORK_NAMES.items()}  # "mtn" -> "1"
+
+
+def ai_active(link: WhatsAppLink) -> bool:
+    """AI runs only if all scopes are on: an LLM key is set, the global kill
+    switch is on, and this user's AI is enabled. (Per-conversation comes with
+    the handover slice.)"""
+    return ai.llm_available() and SystemSetting.get_bool("ai_enabled_global", True) and link.ai_enabled
+
+
+def _record_intent(msisdn: str, intent: dict) -> None:
+    """Attach the parsed intent to the inbound row (for QA / the monitor)."""
+    row = WaMessageLog.objects.filter(msisdn=msisdn, direction=WaMessageLog.IN).order_by("-created").first()
+    if row is not None:
+        row.intent_json = intent
+        row.save(update_fields=["intent_json"])
+
+
+def _network_id(network) -> str | None:
+    return NET_BY_NAME.get(str(network).strip().lower()) if network else None
+
+
+def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
+    """Map one LLM tool call to a deterministic flow. Returns False for
+    clarify/unknown so the caller shows the menu. Money still requires the
+    flow's confirm + PIN — the LLM only routes here."""
+    name = intent.get("name")
+    p = intent.get("input", {}) or {}
+
+    if name == "check_balance":
+        _do_balance(user, msisdn)
+        return True
+    if name == "transfer":
+        amt, acct, bank = p.get("amount"), p.get("account_number"), p.get("bank_name")
+        if amt and acct and bank:
+            try:
+                if _begin_bank_transfer(user, msisdn, Decimal(str(amt)), re.sub(r"\D", "", str(acct)), str(bank)):
+                    return True
+            except (InvalidOperation, TypeError):
+                pass
+        _start_transfer(user, msisdn)  # partial details -> guided flow
+        return True
+    if name == "buy_airtime":
+        return _begin_airtime(user, msisdn, p.get("amount"), p.get("phone"), p.get("network"))
+    if name == "buy_data":
+        _start_data(user, msisdn)
+        return True
+    if name == "pay_bill":
+        cat = (p.get("category") or "").lower()
+        if "electric" in cat:
+            _start_electricity(user, msisdn)
+        elif "cable" in cat or "tv" in cat:
+            _start_cable(user, msisdn)
+        else:
+            reply(msisdn, "Reply \"electricity\" or \"cable\".")
+        return True
+    if name == "convert_currency":
+        _start_convert(user, msisdn)
+        return True
+    return False  # clarify / unknown
+
+
+def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
+    """LLM airtime: if amount + network + phone are all known, jump to confirm;
+    otherwise start the guided flow."""
+    netid = _network_id(network)
+    ph = _phone_from(str(phone), user) if phone else None
+    try:
+        amt = Decimal(str(amount)) if amount is not None else None
+    except (InvalidOperation, TypeError):
+        amt = None
+    if amt and amt >= 50 and netid and ph:
+        if _insufficient(user, amt):
+            reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+            return True
+        net = NETWORK_NAMES[netid]
+        _new_flow(user, msisdn, "airtime", "pin",
+                  {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(int(amt)),
+                   "meta": {"phone": ph, "network": netid}})
+        reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}\n"
+                      "Reply with your PIN to confirm, or \"cancel\".")
+        return True
+    _start_airtime(user, msisdn)
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# currency conversion (FX) — quote -> PIN-within-TTL -> settle (Fincra rail)
+# --------------------------------------------------------------------------- #
+CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (blocked)
+
+
+def _start_convert(user, msisdn: str) -> None:
+    _new_flow(user, msisdn, "convert", "from")
+    reply(msisdn, "Convert currency.\nWhich currency are you selling? (NGN, USD, GBP, CAD)")
+
+
+def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    st = pa.state
+    if st == "from":
+        c = text.strip().upper()
+        if c not in CONVERT_CCYS:
+            return reply(msisdn, "Reply a currency code: NGN, USD, GBP or CAD.")
+        pa.payload["from"] = c
+        _touch(pa, state="to", payload=pa.payload)
+        return reply(msisdn, "Which currency do you want to receive?")
+    if st == "to":
+        c = text.strip().upper()
+        if c not in CONVERT_CCYS:
+            return reply(msisdn, "Reply a currency code: NGN, USD, GBP or CAD.")
+        if c == pa.payload["from"]:
+            return reply(msisdn, "Pick a different currency to receive.")
+        pa.payload["to"] = c
+        _touch(pa, state="amount", payload=pa.payload)
+        return reply(msisdn, f"How much {pa.payload['from']} do you want to sell?")
+    if st == "amount":
+        amount = parse_amount(text)
+        if amount is None or amount <= 0:
+            return reply(msisdn, "Enter a valid amount.")
+        try:
+            quote = create_fx_quote(user, pa.payload["from"], pa.payload["to"], amount)
+        except FxError as exc:
+            _clear_actions(msisdn)
+            return reply(msisdn, exc.message)
+        pa.payload["quote_ref"] = quote.quote_ref
+        _touch(pa, state="pin", payload=pa.payload)
+        secs = max(1, int((quote.expires_at - timezone.now()).total_seconds()))
+        return reply(
+            msisdn,
+            "Confirm conversion\n"
+            f"Sell {quote.sell_amount:,.2f} {quote.from_currency} → "
+            f"Receive {quote.receive_amount:,.2f} {quote.to_currency}\n"
+            f"Rate {quote.rate:.4f} • expires in {secs}s\n"
+            "Reply with your PIN now to lock this rate.",
+        )
+    if st == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return
+        try:
+            quote = execute_fx(user, pa.payload["quote_ref"], idempotency_key=f"wa-fx-{pa.id}")
+        except FxError as exc:
+            _clear_actions(msisdn)
+            return reply(msisdn, exc.message)
+        _clear_actions(msisdn)
+        new_bal = currency_balance(user, quote.to_currency)
+        return reply(
+            msisdn,
+            f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
+            f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
+            f"New {quote.to_currency} balance: {new_bal:,.2f}.",
+        )
+    _clear_actions(msisdn)
+    return reply(msisdn, MENU)
