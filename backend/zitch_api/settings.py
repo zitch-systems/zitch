@@ -186,6 +186,13 @@ WHATSAPP = {
     "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
 }
 
+# LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
+# handles everything). The model only proposes intents; it never moves money.
+LLM = {
+    "API_KEY": os.environ.get("LLM_API_KEY", ""),
+    "MODEL": os.environ.get("LLM_MODEL", ""),
+}
+
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # --- Production security hardening ----------------------------------------
