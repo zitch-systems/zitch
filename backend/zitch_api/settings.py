@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "cards",
     "convert",
     "whatsapp",
+    "portal",
 ]
 
 MIDDLEWARE = [

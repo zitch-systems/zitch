@@ -12,4 +12,6 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         n = run_maturities()
+        from whatsapp.ops import record_audit
+        record_audit("recon.maturities_run", actor_type="system", after={"paid_out": n})
         self.stdout.write(self.style.SUCCESS(f"Paid out {n} matured plan(s)."))
