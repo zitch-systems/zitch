@@ -128,3 +128,97 @@ class SystemSetting(models.Model):
 
     def __str__(self):
         return f"{self.key}={self.value}"
+
+
+class ConversationState(models.Model):
+    """Per-number conversation control for monitoring + human handover (§10).
+
+    `status=human` pauses the bot (the agent replies); `ai_enabled` is the
+    per-conversation AI scope (auto-off during handover)."""
+
+    BOT = "bot"
+    HUMAN = "human"
+    PAUSED = "paused"
+    STATUSES = [(BOT, BOT), (HUMAN, HUMAN), (PAUSED, PAUSED)]
+
+    msisdn = models.CharField(max_length=20, unique=True, db_index=True)
+    status = models.CharField(max_length=8, choices=STATUSES, default=BOT)
+    assigned_agent = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                       on_delete=models.SET_NULL, related_name="wa_conversations")
+    ai_enabled = models.BooleanField(default=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def for_msisdn(cls, msisdn):
+        return cls.objects.get_or_create(msisdn=msisdn)[0]
+
+    def __str__(self):
+        return f"{self.msisdn} [{self.status}]"
+
+
+class AuditLog(models.Model):
+    """Append-only record of every admin action / sensitive event (hard-rule #10)."""
+
+    actor_type = models.CharField(max_length=20, default="admin")  # admin | system | user
+    actor_id = models.CharField(max_length=64, blank=True, default="")
+    action = models.CharField(max_length=80)
+    target = models.CharField(max_length=120, blank=True, default="")
+    before = models.JSONField(default=dict, blank=True)
+    after = models.JSONField(default=dict, blank=True)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created"]
+
+    def __str__(self):
+        return f"{self.actor_type}:{self.actor_id} {self.action} {self.target}"
+
+
+class Broadcast(models.Model):
+    """An outbound template campaign to opted-in users (§9)."""
+
+    DRAFT = "draft"
+    SENDING = "sending"
+    DONE = "done"
+    STATUSES = [(DRAFT, DRAFT), (SENDING, SENDING), (DONE, DONE)]
+
+    UTILITY = "utility"
+    MARKETING = "marketing"
+    AUTHENTICATION = "authentication"
+    CATEGORIES = [(UTILITY, UTILITY), (MARKETING, MARKETING), (AUTHENTICATION, AUTHENTICATION)]
+
+    template_name = models.CharField(max_length=120)
+    category = models.CharField(max_length=20, choices=CATEGORIES, default=UTILITY)
+    body_params = models.JSONField(default=list, blank=True)   # template placeholder values
+    segment = models.JSONField(default=dict, blank=True)       # audience query
+    status = models.CharField(max_length=10, choices=STATUSES, default=DRAFT)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name="wa_broadcasts")
+    count_queued = models.IntegerField(default=0)
+    count_sent = models.IntegerField(default=0)
+    count_delivered = models.IntegerField(default=0)
+    count_read = models.IntegerField(default=0)
+    count_failed = models.IntegerField(default=0)
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created"]
+
+    def __str__(self):
+        return f"{self.template_name} ({self.category}) [{self.status}]"
+
+
+class BroadcastRecipient(models.Model):
+    """One row per recipient of a broadcast, tracked from queued -> read/failed."""
+
+    broadcast = models.ForeignKey(Broadcast, on_delete=models.CASCADE, related_name="recipients")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                             on_delete=models.SET_NULL, related_name="wa_broadcast_receipts")
+    wa_msisdn = models.CharField(max_length=20, db_index=True)
+    status = models.CharField(max_length=12, default="queued")  # queued|sent|delivered|read|failed
+    wa_message_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
+    error = models.CharField(max_length=200, blank=True, default="")
+    created = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.wa_msisdn} [{self.status}]"
