@@ -96,6 +96,16 @@ Set the webhook URL in the Monnify dashboard to:
 `https://<your-render-host>/api/fund/webhook/`
 
 ## Before go-live (TODO)
+- **HTTPS hardening is automatic.** With `DJANGO_DEBUG=false` (set in
+  `render.yaml`), Django enforces the HTTPS redirect, secure session/CSRF
+  cookies, and 1-year HSTS behind Render's TLS proxy, so `manage.py check
+  --deploy` is clean. HSTS **preload** stays opt-in (`DJANGO_HSTS_PRELOAD=true`)
+  because it's hard to reverse, and a deploy still running on the dev
+  `SECRET_KEY` now fails fast instead of booting insecure.
+- **Upgrade off the free tier.** Flip the web service and Postgres in
+  `render.yaml` from `plan: free` to a paid plan before real money: free web
+  sleeps (webhooks need always-on) and free Postgres expires. The two crons
+  (`zitch-maturities`, `zitch-reconcile-vtu`) already require a paid plan.
 - Baxi per-service routing is wired (airtime/databundle/electricity/multichoice
   endpoints) in `utility/providers.py`. Confirm the `service_type` code maps
   (`_BAXI_AIRTIME` / `_BAXI_DISCO` / `_BAXI_CABLE`), body field names, and the
