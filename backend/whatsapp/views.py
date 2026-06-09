@@ -6,6 +6,7 @@ and processed inline by the deterministic router. Linking endpoints are the
 app-side of the OTP-style link (a signed-in user gets a code to send from
 WhatsApp).
 """
+import functools
 import json
 import secrets
 from datetime import timedelta
@@ -16,9 +17,10 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, ok, require_user
+from common.http import api, fail, ok, require_user
 
-from .models import WaMessageLog, WhatsAppLink
+from .models import Broadcast, BroadcastRecipient, ConversationState, WaMessageLog, WhatsAppLink
+from .ops import record_audit, send_broadcast
 from .providers import verify_signature
 from .router import handle_inbound, is_awaiting_pin, reply
 
@@ -49,6 +51,8 @@ def webhook(request):
     # Ack fast; process inline (no queue yet — handlers are quick).
     for message in _iter_messages(event):
         _process(message)
+    for status in _iter_statuses(event):
+        _apply_status(status)
     return JsonResponse({"status": True})
 
 
@@ -57,6 +61,30 @@ def _iter_messages(event: dict):
         for change in entry.get("changes", []) or []:
             for msg in (change.get("value", {}) or {}).get("messages", []) or []:
                 yield msg
+
+
+def _iter_statuses(event: dict):
+    for entry in event.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            for st in (change.get("value", {}) or {}).get("statuses", []) or []:
+                yield st
+
+
+def _apply_status(st: dict) -> None:
+    """Delivery callback -> update the broadcast recipient + roll up counts."""
+    mid, status = st.get("id", ""), st.get("status", "")
+    if not mid or status not in ("delivered", "read", "failed"):
+        return
+    rec = BroadcastRecipient.objects.filter(wa_message_id=mid).first()
+    if rec is None:
+        return
+    rec.status = status
+    rec.error = (st.get("errors") or [{}])[0].get("code", "") if status == "failed" else rec.error
+    rec.save(update_fields=["status", "error"])
+    b = rec.broadcast
+    b.count_delivered = b.recipients.filter(status="delivered").count()
+    b.count_read = b.recipients.filter(status="read").count()
+    b.save(update_fields=["count_delivered", "count_read"])
 
 
 def _process(msg: dict) -> None:
@@ -123,3 +151,83 @@ def link_unlink(request):
     """POST /api/whatsapp/link/unlink/ {access_token} -> {success}"""
     request.user_obj.whatsapp_links.filter(status=WhatsAppLink.ACTIVE).delete()
     return ok(success=True, message="WhatsApp unlinked")
+
+
+# --------------------------------------------------------------------------- #
+# operator endpoints (staff only) — handover, agent reply, broadcast (§9-§11)
+# --------------------------------------------------------------------------- #
+def require_staff(view):
+    """Gate an endpoint to Django staff users (RBAC; super_admin/finance/support
+    map to staff + groups as the dashboard grows)."""
+    @functools.wraps(view)
+    @require_user
+    def wrapped(request, *args, **kwargs):
+        if not getattr(request.user_obj, "is_staff", False):
+            return fail("Staff access required", status=403)
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
+@api
+@require_staff
+def ops_handover(request):
+    """POST /api/whatsapp/ops/handover/ {msisdn} — pause the bot, assign to agent."""
+    msisdn = (request.data.get("msisdn") or "").strip()
+    if not msisdn:
+        return fail("msisdn required")
+    convo = ConversationState.for_msisdn(msisdn)
+    before = {"status": convo.status, "ai_enabled": convo.ai_enabled}
+    convo.status = ConversationState.HUMAN
+    convo.ai_enabled = False
+    convo.assigned_agent = request.user_obj
+    convo.save()
+    record_audit("conversation.handover", actor=request.user_obj, target=f"wa:{msisdn}",
+                 before=before, after={"status": convo.status, "ai_enabled": False})
+    return ok(success=True, status=convo.status)
+
+
+@api
+@require_staff
+def ops_return_to_bot(request):
+    """POST /api/whatsapp/ops/return-to-bot/ {msisdn} — re-enable the bot + AI."""
+    msisdn = (request.data.get("msisdn") or "").strip()
+    if not msisdn:
+        return fail("msisdn required")
+    convo = ConversationState.for_msisdn(msisdn)
+    convo.status = ConversationState.BOT
+    convo.ai_enabled = True
+    convo.assigned_agent = None
+    convo.save()
+    record_audit("conversation.return_to_bot", actor=request.user_obj, target=f"wa:{msisdn}")
+    return ok(success=True, status=convo.status)
+
+
+@api
+@require_staff
+def ops_reply(request):
+    """POST /api/whatsapp/ops/reply/ {msisdn, text} — agent message to the user."""
+    msisdn = (request.data.get("msisdn") or "").strip()
+    text = (request.data.get("text") or "").strip()
+    if not msisdn or not text:
+        return fail("msisdn and text required")
+    reply(msisdn, text)
+    record_audit("conversation.agent_reply", actor=request.user_obj, target=f"wa:{msisdn}")
+    return ok(success=True)
+
+
+@api
+@require_staff
+def ops_broadcast(request):
+    """POST /api/whatsapp/ops/broadcast/ {template_name, category?, segment?, body_params?}
+    -> creates + sends a broadcast, returns the delivery counts."""
+    d = request.data
+    if not d.get("template_name"):
+        return fail("template_name required")
+    b = Broadcast.objects.create(
+        template_name=d["template_name"], category=d.get("category", Broadcast.UTILITY),
+        body_params=d.get("body_params", []), segment=d.get("segment", {}),
+        created_by=request.user_obj,
+    )
+    send_broadcast(b, actor=request.user_obj)
+    return ok(success=True, broadcast_id=b.id, queued=b.count_queued,
+              sent=b.count_sent, failed=b.count_failed)
