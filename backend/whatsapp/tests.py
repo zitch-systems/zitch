@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
@@ -141,6 +142,15 @@ class ChannelTests(TestCase):
         self.assertIn("Sent", self.last_reply())
         self.assertEqual(self.balance(), Decimal("45000"))
 
+    def test_paste_amount_before_account(self):
+        """"send 5k to 0123456789 gtbank" must read ₦5,000 — not the 10-digit account."""
+        self.link()
+        self.inbound("send 5k to 0123456789 gtbank", "pb1")
+        self.assertIn("Confirm transfer", self.last_reply())
+        self.assertIn("5,000.00", self.last_reply())
+        self.inbound("1234", "pb2")
+        self.assertEqual(self.balance(), Decimal("45000"))
+
     def test_duplicate_webhook_does_not_double_send(self):
         self._run_transfer()
         self.assertEqual(self.balance(), Decimal("45000"))
@@ -249,3 +259,75 @@ class VtuTests(TestCase):
         self.inbound("9", "n2")               # invalid network
         self.assertIn("network", self.last_reply().lower())
         self.assertEqual(self.bal(), Decimal("20000"))
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class AiIntentTests(TestCase):
+    """LLM intent layer: free text -> structured intent -> the SAME flows.
+    extract_intent is stubbed, so no real model call happens in tests."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event), content_type="application/json")
+
+    def last_reply(self):
+        row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
+        return row.text if row else ""
+
+    def _stub(self, intent):
+        return patch("whatsapp.ai.extract_intent", return_value=intent)
+
+    def test_freeform_balance(self):
+        with self._stub({"name": "check_balance", "input": {}}):
+            self.inbound("how much do I have?", "b1")
+        self.assertIn("balance", self.last_reply().lower())
+
+    def test_freeform_transfer_to_confirm(self):
+        # No digits in the text -> the deterministic paste path can't handle it,
+        # so this exercises the AI dispatch (stub supplies the details).
+        with self._stub({"name": "transfer",
+                         "input": {"amount": 5000, "account_number": "0123456789", "bank_name": "GTBank"}}):
+            self.inbound("please send money to my gtbank account", "t1")
+        self.assertIn("Confirm transfer", self.last_reply())
+        self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # bank-verified name
+
+    def test_freeform_airtime_prefilled_confirm(self):
+        with self._stub({"name": "buy_airtime",
+                         "input": {"amount": 200, "phone": "08099998888", "network": "MTN"}}):
+            self.inbound("load 200 mtn airtime for 08099998888", "a1")
+        self.assertIn("Confirm airtime", self.last_reply())
+
+    def test_clarify_shows_menu(self):
+        with self._stub({"name": "clarify", "input": {"reason": "unsupported"}}):
+            self.inbound("tell me a joke", "c1")
+        self.assertIn("Reply with a number", self.last_reply())
+
+    def test_parsed_intent_is_recorded(self):
+        with self._stub({"name": "check_balance", "input": {}}):
+            self.inbound("balance pls", "r1")
+        row = WaMessageLog.objects.get(wa_message_id="r1", direction=WaMessageLog.IN)
+        self.assertEqual(row.intent_json.get("name"), "check_balance")
+
+    def test_per_user_ai_off_is_deterministic(self):
+        WhatsAppLink.objects.filter(wa_msisdn=MSISDN).update(ai_enabled=False)
+        with self._stub({"name": "check_balance", "input": {}}) as m:
+            self.inbound("how much do I have", "o1")
+        m.assert_not_called()  # AI never consulted when the user's scope is off
+        self.assertIn("didn't get that", self.last_reply())  # deterministic free-text fallback
+
+    def test_global_kill_switch_is_deterministic(self):
+        from .models import SystemSetting
+        SystemSetting.set("ai_enabled_global", "false")
+        with self._stub({"name": "check_balance", "input": {}}) as m:
+            self.inbound("how much do I have", "g1")
+        m.assert_not_called()
+        # Deterministic keywords still work with AI globally off.
+        self.inbound("balance", "g2")
+        self.assertIn("50,000.00", self.last_reply())
