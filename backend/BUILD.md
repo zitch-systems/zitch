@@ -125,8 +125,16 @@ from chat. Built deterministic-first so money never depends on the AI being up.
   and PIN still gate every movement. Explicit keywords/menu/paste always run
   deterministically first, and with the AI off (no key, or either toggle) the
   channel is fully menu-driven. The parsed intent is stored on the inbound log.
-- **Not yet (next slices):** multi-currency + FX (Fincra), and the operator
-  surfaces (admin dashboard, broadcasts, conversation monitor + handover).
+- **Multi-currency + FX (`wallet/forex.py`, Fincra):** NGN lives in `Wallet`;
+  USD/GBP/CAD in `CurrencyWallet`. `balance` shows every funded currency;
+  `convert` quotes a rate (margin from `SystemSetting.fx_margin_bps`), shows a
+  time-boxed confirm, and on PIN-within-TTL settles atomically (debit source,
+  credit target, ledger pair tagged with `currency`). The quote is single-use
+  and expiry-checked, so a stale rate is never settled. Corridor-aware: CNY is
+  quote/display-only (blocked from settlement, §13). Blank `FINCRA_SECRET_KEY`
+  => MOCK rates so it's testable offline.
+- **Not yet (next slice):** the operator surfaces — admin dashboard + RBAC,
+  broadcasts, conversation monitor + handover, audit log.
 
 Set the webhook URL + `WHATSAPP_VERIFY_TOKEN` in the Meta app dashboard and fill
 the `WHATSAPP_*` env vars (see `.env.example`).

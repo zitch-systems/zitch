@@ -17,6 +17,7 @@ from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
 from utility.providers import disbursement_resolve_account, vtu_purchase, vtu_verify_customer
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
+from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
@@ -146,7 +147,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("4", "bill", "bills", "pay bill"):
         return reply(msisdn, "Reply \"electricity\" or \"cable\".")
     if low in ("5", "convert", "conversion"):
-        return reply(msisdn, "Currency conversion on WhatsApp is coming soon. Use the Zitch app for now.")
+        return _start_convert(user, msisdn)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
@@ -191,8 +192,11 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
 # balance
 # --------------------------------------------------------------------------- #
 def _do_balance(user, msisdn: str) -> None:
-    wallet = get_or_create_wallet(user)
-    reply(msisdn, f"💰 Your Zitch balance is {_money(wallet.balance)}.")
+    bals = all_balances(user)
+    if len(bals) == 1:
+        return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}.")
+    lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]
+    reply(msisdn, "💰 Your balances:\n" + "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- #
@@ -214,6 +218,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "data": _advance_data,
         "electricity": _advance_electricity,
         "cable": _advance_cable,
+        "convert": _advance_convert,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)
@@ -774,7 +779,7 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
             reply(msisdn, "Reply \"electricity\" or \"cable\".")
         return True
     if name == "convert_currency":
-        reply(msisdn, "Currency conversion on WhatsApp is coming soon. Use the Zitch app for now.")
+        _start_convert(user, msisdn)
         return True
     return False  # clarify / unknown
 
@@ -801,3 +806,72 @@ def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
         return True
     _start_airtime(user, msisdn)
     return True
+
+
+# --------------------------------------------------------------------------- #
+# currency conversion (FX) — quote -> PIN-within-TTL -> settle (Fincra rail)
+# --------------------------------------------------------------------------- #
+CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (blocked)
+
+
+def _start_convert(user, msisdn: str) -> None:
+    _new_flow(user, msisdn, "convert", "from")
+    reply(msisdn, "Convert currency.\nWhich currency are you selling? (NGN, USD, GBP, CAD)")
+
+
+def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    st = pa.state
+    if st == "from":
+        c = text.strip().upper()
+        if c not in CONVERT_CCYS:
+            return reply(msisdn, "Reply a currency code: NGN, USD, GBP or CAD.")
+        pa.payload["from"] = c
+        _touch(pa, state="to", payload=pa.payload)
+        return reply(msisdn, "Which currency do you want to receive?")
+    if st == "to":
+        c = text.strip().upper()
+        if c not in CONVERT_CCYS:
+            return reply(msisdn, "Reply a currency code: NGN, USD, GBP or CAD.")
+        if c == pa.payload["from"]:
+            return reply(msisdn, "Pick a different currency to receive.")
+        pa.payload["to"] = c
+        _touch(pa, state="amount", payload=pa.payload)
+        return reply(msisdn, f"How much {pa.payload['from']} do you want to sell?")
+    if st == "amount":
+        amount = parse_amount(text)
+        if amount is None or amount <= 0:
+            return reply(msisdn, "Enter a valid amount.")
+        try:
+            quote = create_fx_quote(user, pa.payload["from"], pa.payload["to"], amount)
+        except FxError as exc:
+            _clear_actions(msisdn)
+            return reply(msisdn, exc.message)
+        pa.payload["quote_ref"] = quote.quote_ref
+        _touch(pa, state="pin", payload=pa.payload)
+        secs = max(1, int((quote.expires_at - timezone.now()).total_seconds()))
+        return reply(
+            msisdn,
+            "Confirm conversion\n"
+            f"Sell {quote.sell_amount:,.2f} {quote.from_currency} → "
+            f"Receive {quote.receive_amount:,.2f} {quote.to_currency}\n"
+            f"Rate {quote.rate:.4f} • expires in {secs}s\n"
+            "Reply with your PIN now to lock this rate.",
+        )
+    if st == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return
+        try:
+            quote = execute_fx(user, pa.payload["quote_ref"], idempotency_key=f"wa-fx-{pa.id}")
+        except FxError as exc:
+            _clear_actions(msisdn)
+            return reply(msisdn, exc.message)
+        _clear_actions(msisdn)
+        new_bal = currency_balance(user, quote.to_currency)
+        return reply(
+            msisdn,
+            f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
+            f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
+            f"New {quote.to_currency} balance: {new_bal:,.2f}.",
+        )
+    _clear_actions(msisdn)
+    return reply(msisdn, MENU)

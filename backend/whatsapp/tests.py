@@ -331,3 +331,83 @@ class AiIntentTests(TestCase):
         # Deterministic keywords still work with AI globally off.
         self.inbound("balance", "g2")
         self.assertIn("50,000.00", self.last_reply())
+
+
+class ConvertTests(TestCase):
+    """Currency conversion over the router (NGN <-> USD/GBP/CAD; CNY blocked)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event), content_type="application/json")
+
+    def last_reply(self):
+        row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
+        return row.text if row else ""
+
+    def test_convert_ngn_to_usd(self):
+        self.inbound("convert", "x1")
+        self.inbound("NGN", "x2")
+        self.inbound("USD", "x3")
+        self.inbound("16000", "x4")           # mock rate 1600 NGN/USD -> 10.00 USD
+        self.assertIn("Confirm conversion", self.last_reply())
+        self.assertIn("10.00 USD", self.last_reply())
+        self.inbound("1234", "x5")            # PIN within TTL
+        self.assertIn("Converted", self.last_reply())
+        from wallet.forex import currency_balance
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("34000"))  # 50000 - 16000
+        self.assertEqual(currency_balance(self.user, "USD"), Decimal("10.00"))
+
+    def test_balance_shows_multicurrency(self):
+        from wallet.models import CurrencyWallet
+        CurrencyWallet.objects.create(user=self.user, currency="USD", balance=Decimal("10"))
+        self.inbound("balance", "b1")
+        r = self.last_reply()
+        self.assertIn("USD", r)
+        self.assertIn("50,000.00", r)
+
+    def test_to_currency_rejects_unsupported(self):
+        self.inbound("convert", "u1")
+        self.inbound("NGN", "u2")
+        self.inbound("CNY", "u3")             # not offered for settlement
+        self.assertIn("NGN, USD, GBP", self.last_reply())
+
+
+class ForexServiceTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user(balance="50000")
+
+    def test_cny_is_quote_only(self):
+        from wallet.forex import FxError, create_fx_quote
+        with self.assertRaises(FxError) as cm:
+            create_fx_quote(self.user, "NGN", "CNY", "1000")
+        self.assertIn("display-only", cm.exception.message)
+
+    def test_expired_quote_never_settles(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from wallet.forex import FxError, create_fx_quote, execute_fx
+        q = create_fx_quote(self.user, "NGN", "USD", "16000")
+        q.expires_at = timezone.now() - timedelta(seconds=1)
+        q.save(update_fields=["expires_at"])
+        with self.assertRaises(FxError) as cm:
+            execute_fx(self.user, q.quote_ref)
+        self.assertIn("expired", cm.exception.message.lower())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))  # untouched
+
+    def test_used_quote_not_resettled(self):
+        from wallet.forex import FxError, create_fx_quote, currency_balance, execute_fx
+        q = create_fx_quote(self.user, "NGN", "USD", "16000")
+        execute_fx(self.user, q.quote_ref)
+        self.assertEqual(currency_balance(self.user, "USD"), Decimal("10.00"))
+        with self.assertRaises(FxError):
+            execute_fx(self.user, q.quote_ref)        # already used
+        self.assertEqual(currency_balance(self.user, "USD"), Decimal("10.00"))  # not doubled
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("34000"))

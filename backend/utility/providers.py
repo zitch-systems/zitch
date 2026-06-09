@@ -583,3 +583,59 @@ def fund_card(card_token: str, amount) -> dict:
         return {"success": resp.ok, "raw": resp.json()}
     except requests.RequestException as exc:
         return {"success": False, "message": f"Card issuer unreachable: {exc}"}
+
+
+# --------------------------------------------------------------------------- #
+# Fincra — FX conversion rail (multi-currency). MOCK mode when no secret key:
+# deterministic mid-market rates + auto-settle, so the flow is testable offline.
+# --------------------------------------------------------------------------- #
+def fincra_live() -> bool:
+    return bool(settings.FINCRA.get("SECRET_KEY"))
+
+
+# Mock mid-market reference (NGN per 1 unit) — only used without keys.
+_NGN_PER = {"NGN": "1", "USD": "1600", "GBP": "2000", "CAD": "1150", "CNY": "220"}
+
+
+def fx_quote(from_ccy: str, to_ccy: str, sell_amount) -> dict:
+    """Quote a conversion: {success, rate, receive_amount, quote_ref, ttl_seconds}.
+    `rate` is units of `to` per 1 `from`."""
+    from decimal import Decimal
+
+    if not fincra_live():
+        f, t = _NGN_PER.get(from_ccy), _NGN_PER.get(to_ccy)
+        if f is None or t is None:
+            return {"success": False, "message": f"Unsupported pair {from_ccy}/{to_ccy}"}
+        rate = Decimal(f) / Decimal(t)
+        receive = Decimal(str(sell_amount)) * rate
+        return {"success": True, "mock": True, "rate": rate, "receive_amount": receive,
+                "quote_ref": "FXQ-" + secrets.token_hex(6).upper(), "ttl_seconds": 90}
+    try:
+        r = requests.post(
+            f"{settings.FINCRA['BASE_URL']}/quotes",
+            json={"action": "send", "sourceCurrency": from_ccy, "destinationCurrency": to_ccy,
+                  "amount": str(sell_amount), "feeBearer": "business"},
+            headers={"api-key": settings.FINCRA["SECRET_KEY"]}, timeout=20,
+        )
+        d = (r.json() or {}).get("data", {})
+        if not r.ok or not d.get("rate"):
+            return {"success": False, "message": (r.json() or {}).get("message", "Quote failed")}
+        return {"success": True, "rate": d["rate"], "receive_amount": d.get("destinationAmount"),
+                "quote_ref": d.get("reference") or d.get("quoteReference", ""), "ttl_seconds": int(d.get("expiry", 90))}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"FX provider unreachable: {exc}"}
+
+
+def fx_execute(quote_ref: str) -> dict:
+    """Execute a previously quoted conversion against its quote reference."""
+    if not fincra_live():
+        return {"success": True, "mock": True}
+    try:
+        r = requests.post(
+            f"{settings.FINCRA['BASE_URL']}/conversions",
+            json={"quoteReference": quote_ref, "business": settings.FINCRA.get("BUSINESS_ID", "")},
+            headers={"api-key": settings.FINCRA["SECRET_KEY"]}, timeout=30,
+        )
+        return {"success": bool(r.ok), "raw": (r.json() if r.content else {})}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"FX execute failed: {exc}"}
