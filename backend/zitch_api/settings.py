@@ -174,3 +174,34 @@ CARD_ISSUER = {
 }
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# --- Production security hardening ----------------------------------------
+# All default ON whenever DEBUG is off (any real deploy) and stay OFF in local
+# dev and tests. Render terminates TLS at its proxy and forwards
+# X-Forwarded-Proto, which SECURE_PROXY_SSL_HEADER (above) teaches Django to
+# trust — so the HTTPS redirect and secure-cookie flags behave correctly behind
+# it. Each stays env-overridable for unusual setups (e.g. a non-TLS network).
+_PROD = not DEBUG
+SECURE_SSL_REDIRECT = env_bool("DJANGO_SSL_REDIRECT", _PROD)
+# Keep the "/" liveness probe answering 200 over plain HTTP so a platform health
+# check never trips on the HTTPS redirect (it returns booleans only, no secrets).
+SECURE_REDIRECT_EXEMPT = [r"^$"]
+SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", _PROD)
+CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE", _PROD)
+# HSTS — tell browsers to use HTTPS only. One year, including subdomains; preload
+# stays opt-in (it's the hard-to-reverse part — enable once you're ready to
+# submit the domain to the browser preload list).
+SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", str(31536000 if _PROD else 0)))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_HSTS_INCLUDE_SUBDOMAINS", _PROD)
+SECURE_HSTS_PRELOAD = env_bool("DJANGO_HSTS_PRELOAD", False)
+# W021 nags to enable HSTS preload; it's a deliberate opt-in (submitting to the
+# browser preload list is hard to undo), gated behind DJANGO_HSTS_PRELOAD above.
+# Silence the nag so `check --deploy` stays a green, meaningful CI gate.
+SILENCED_SYSTEM_CHECKS = ["security.W021"]
+
+# Fail fast: a real deploy must never run on the insecure dev SECRET_KEY — a
+# loud boot error beats a silently forgeable signing key.
+if _PROD and SECRET_KEY == "dev-insecure-change-me":
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set to a strong value when DJANGO_DEBUG is off.")
