@@ -5,13 +5,14 @@ keys are set this runs in MOCK mode and resolves/settles automatically so the
 flow is testable. Money still moves correctly out of the wallet ledger.
 """
 import json
-from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
-    api, check_send_limits, fail, idempotent_replay, ok, require_user, verify_transaction_pin,
+    api, check_send_limits, fail, idempotent_replay, ok, parse_amount, require_user,
+    spend_key, verify_transaction_pin,
 )
+from common.ratelimit import ratelimit
 from utility.providers import disbursement_resolve_account, payment_verify_signature
 from wallet.services import existing_for_key, reverse_transfer
 
@@ -43,6 +44,7 @@ def list_beneficiaries(request):
 
 
 @api
+@ratelimit("resolve_account", limit=20, window=60)
 @require_user
 def resolve_account(request):
     """POST /api/transfers/resolve/ {access_token, account_number, bank}
@@ -64,6 +66,7 @@ def resolve_account(request):
 
 
 @api
+@ratelimit("bank_transfer", limit=12, window=60)
 @require_user
 def bank_transfer(request):
     """POST /api/transfers/send/
@@ -83,9 +86,8 @@ def bank_transfer(request):
     if bank is None:
         return fail("Select a bank", status=404)
 
-    try:
-        amount = Decimal(str(data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    amount = parse_amount(data.get("amount"))
+    if amount is None:
         return fail("Enter a valid amount")
     if amount < 10:
         return fail("Minimum transfer is ₦10")
@@ -94,7 +96,7 @@ def bank_transfer(request):
     if limit_err:
         return limit_err
 
-    key = (data.get("idempotency_key") or "").strip()
+    key = spend_key(data.get("idempotency_key"), user, "bank", acct, bank.code, amount)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay

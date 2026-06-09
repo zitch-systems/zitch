@@ -58,8 +58,22 @@ class CardTests(TestCase):
 
     def test_fund_rejects_insufficient_balance(self):
         self._create()
-        res, _ = self.post("/api/cards/fund/", {"access_token": self.token, "amount": "999999", "transaction_pin": "1234"})
+        # Tier 2 (₦200k limit) so the amount clears the KYC tier/face gate and is
+        # below the ₦100k face-verification threshold — it still exceeds the wallet
+        # balance (₦50k), so funding is rejected at the balance check (402) with the
+        # wallet untouched. (Card funding now also enforces send limits.)
+        self.user.tier = 2
+        self.user.save(update_fields=["tier"])
+        res, _ = self.post("/api/cards/fund/", {"access_token": self.token, "amount": "60000", "transaction_pin": "1234"})
         self.assertEqual(res.status_code, 402)
+        self.assertEqual(self.balance(), Decimal("50000"))
+
+    def test_fund_rejects_above_tier_limit(self):
+        # New guard: loading more than the KYC tier allows is blocked up front, so a
+        # low-tier user can't use card funding to bypass the transfer limits.
+        self._create()
+        res, _ = self.post("/api/cards/fund/", {"access_token": self.token, "amount": "999999", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 403)
         self.assertEqual(self.balance(), Decimal("50000"))
 
     def test_freeze_then_fund_blocked(self):

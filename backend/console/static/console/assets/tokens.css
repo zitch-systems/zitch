@@ -1,0 +1,102 @@
+/* ============================================================
+   ZITCH — Design tokens (revamp)
+   Brand DNA pulled from Zitch.fig:
+   teal #0FA295 / deep #00847B / cyan #5CF5EB / navy ink #02344A
+   Type: Space Grotesk (display + body), tabular numerals for money.
+   ============================================================ */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root {
+  /* ---- Brand ramp (teal "Zitch green") ---- */
+  --z-teal-50:  #E6F7F4;
+  --z-teal-100: #C2EDE7;
+  --z-teal-200: #8FDDD4;
+  --z-teal-300: #54C9BD;
+  --z-teal-400: #23B1A8;   /* figma primary */
+  --z-teal-500: #0FA295;   /* refined primary */
+  --z-teal-600: #00847B;   /* deep */
+  --z-teal-700: #066E66;
+  --z-teal-800: #0C5249;
+  --z-teal-900: #073A34;
+  --z-teal-950: #04221F;
+
+  --z-cyan:     #5CF5EB;   /* electric accent */
+  --z-cyan-soft:#A9FBF4;
+  --z-ink:      #04201C;   /* near-black green-tinted */
+  --z-navy:     #02344A;
+
+  --z-lime:     #00B51D;   /* success green from figma */
+  --z-amber:    #F5A623;
+  --z-red:      #FF3B3B;
+  --z-violet:   #7A5CFF;
+
+  /* network brand colors (airtime grid) */
+  --net-mtn:    #FFCC00;
+  --net-airtel: #E40000;
+  --net-glo:    #2BB24C;
+  --net-9mobile:#0A8A3D;
+
+  /* ---- Type ---- */
+  /* OPay-style: clean rounded grotesk */
+  --font: 'Manrope', system-ui, -apple-system, sans-serif;
+
+  /* ---- Radius ---- */
+  --r-sm: 12px;
+  --r-md: 18px;
+  --r-lg: 24px;
+  --r-xl: 30px;
+  --r-pill: 999px;
+
+  /* ---- Motion ---- */
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ---------- LIGHT THEME ---------- */
+.z-light {
+  --bg: #EFF7F5;
+  --bg-grad: radial-gradient(120% 60% at 50% -8%, #DDF3EF 0%, #EFF7F5 46%, #F5FAF9 100%);
+  --surface: #FFFFFF;
+  --surface-2: #F4F9F8;
+  --surface-3: #EAF3F1;
+  --line: #E2EEEB;
+  --ink-1: #06231F;
+  --ink-2: #3D5B56;
+  --ink-3: #6E8B86;
+  --ink-on-brand: #FFFFFF;
+  --brand: var(--z-teal-500);
+  --brand-deep: var(--z-teal-600);
+  --shadow-card: 0 1px 2px rgba(6,35,31,.04), 0 8px 24px -12px rgba(6,55,49,.18);
+  --shadow-pop: 0 12px 40px -12px rgba(4,55,49,.30);
+  --hero-grad: linear-gradient(135deg, #0C5249 0%, #00847B 52%, #0FA295 100%);
+}
+
+/* ---------- DARK THEME ---------- */
+.z-dark {
+  --bg: #05201C;
+  --bg-grad: radial-gradient(120% 60% at 50% -10%, #0A3A33 0%, #06251F 48%, #041714 100%);
+  --surface: #0B2A24;
+  --surface-2: #0F332C;
+  --surface-3: #143C34;
+  --line: #1B463C;
+  --ink-1: #EAFBF7;
+  --ink-2: #A6C9C1;
+  --ink-3: #6F9189;
+  --ink-on-brand: #04221F;
+  --brand: var(--z-teal-400);
+  --brand-deep: var(--z-teal-500);
+  --shadow-card: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px -14px rgba(0,0,0,.6);
+  --shadow-pop: 0 16px 50px -14px rgba(0,0,0,.7);
+  --hero-grad: linear-gradient(135deg, #073A34 0%, #00847B 60%, #12B7AA 100%);
+}
+
+* { box-sizing: border-box; }
+
+.z-screen {
+  font-family: var(--font);
+  color: var(--ink-1);
+  background: var(--bg-grad);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.z-num { font-variant-numeric: tabular-nums; letter-spacing: -.02em; }

@@ -1,11 +1,23 @@
 """Fixed Save endpoints: rates, quote, lock, list."""
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
-from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
+from common.http import (
+    api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
+)
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import FixedSave
 from .services import lock, settle_user_maturities
+
+
+def _parse_days(value):
+    """Lock period (days) as an int in the rate table, or None if not a clean
+    integer (a bare ``int()`` would 500 on ``"x"``/``None``/``"30.5"``)."""
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        return None
+    return days if days in FixedSave.RATES else None
 
 
 def _plan_dict(p: FixedSave) -> dict:
@@ -36,12 +48,11 @@ def savings_quote(request):
     """POST /api/savings/quote/ {access_token, amount, days}
     -> {principal, interest, maturity_value, rate, days}
     """
-    try:
-        principal = Decimal(str(request.data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    principal = parse_amount(request.data.get("amount"))
+    if principal is None:
         return fail("Enter a valid amount")
-    days = int(request.data.get("days", 90))
-    if days not in FixedSave.RATES:
+    days = _parse_days(request.data.get("days", 90))
+    if days is None:
         return fail("Invalid lock period")
     interest = FixedSave.quote(principal, days)
     return ok(
@@ -65,17 +76,16 @@ def savings_create(request):
     if pin_err:
         return pin_err
 
-    try:
-        principal = Decimal(str(data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    principal = parse_amount(data.get("amount"))
+    if principal is None:
         return fail("Enter a valid amount")
     if principal < FixedSave.MIN_PRINCIPAL:
         return fail(f"Minimum is ₦{FixedSave.MIN_PRINCIPAL:,.0f}")
-    days = int(data.get("days", 90))
-    if days not in FixedSave.RATES:
+    days = _parse_days(data.get("days", 90))
+    if days is None:
         return fail("Invalid lock period")
 
-    key = (data.get("idempotency_key") or "").strip()
+    key = spend_key(data.get("idempotency_key"), user, "save", principal, days)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay

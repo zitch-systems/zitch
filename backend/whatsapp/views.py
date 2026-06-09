@@ -8,6 +8,7 @@ WhatsApp).
 """
 import functools
 import json
+import re
 import secrets
 from datetime import timedelta
 
@@ -87,15 +88,46 @@ def _apply_status(st: dict) -> None:
     b.save(update_fields=["count_delivered", "count_read"])
 
 
+# A bare 4-6 digit message is almost certainly a transaction PIN — redact it
+# from the log regardless of flow state (an out-of-band or mistimed PIN would
+# otherwise be persisted in clear and shown in the agent monitor).
+_PIN_RE = re.compile(r"^\s*\d{4,6}\s*$")
+
+
+def _inbound_throttled(msisdn: str) -> bool:
+    """Per-sender inbound throttle. Meta's source IP is shared, so the per-IP
+    limiter can't help here — key on the sender number to bound link-code brute
+    force and command/PIN flooding (30 msgs / minute / number). Honours
+    RATELIMIT_ENABLE (off under tests) like the rest of the rate limiting."""
+    if not getattr(settings, "RATELIMIT_ENABLE", True):
+        return False
+    from django.core.cache import cache
+
+    key = f"wa:in:{msisdn}"
+    cache.add(key, 0, 60)
+    try:
+        return cache.incr(key) > 30
+    except ValueError:
+        cache.set(key, 1, 60)
+        return False
+
+
 def _process(msg: dict) -> None:
     mid = msg.get("id", "")
     frm = msg.get("from", "")
-    if not frm:
+    # Real Meta messages always carry a stable id; without one we cannot dedupe,
+    # so a forged/replayed payload (empty id slips past the partial-unique index)
+    # would be processed repeatedly. Drop anything missing from/id.
+    if not frm or not mid:
+        return
+    if _inbound_throttled(frm):
         return
     is_text = msg.get("type") == "text"
     body = (msg.get("text") or {}).get("body", "") if is_text else ""
-    # Mask a PIN before it ever touches the log/monitor.
-    logged = "[PIN]" if is_awaiting_pin(frm) else (body or f"[{msg.get('type', 'non-text')}]")
+    # Mask a PIN before it ever touches the log/monitor — by flow state AND by
+    # shape, so a PIN typed out-of-band is never stored in clear.
+    looks_like_pin = bool(is_text and _PIN_RE.match(body or ""))
+    logged = "[PIN]" if (is_awaiting_pin(frm) or looks_like_pin) else (body or f"[{msg.get('type', 'non-text')}]")
 
     # Dedupe on Meta's message id: the unique row is the gate against a
     # re-delivered webhook (Meta retries until it gets a 200).

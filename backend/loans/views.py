@@ -1,16 +1,28 @@
 """Loan endpoints: eligibility/quote, request (disburse), repay."""
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from django.db import IntegrityError
 
-from common.http import api, fail, ok, require_user, verify_transaction_pin
-from wallet.services import InsufficientFunds, get_or_create_wallet
+from common.http import (
+    api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
+)
+from common.ratelimit import ratelimit
+from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import Loan
 from .services import LoanError, credit_limit, disburse, repay
 
 ALLOWED_TENURES = {15, 30, 60}
 MIN_PRINCIPAL = Decimal("10000")
+
+
+def _parse_tenure(value):
+    """Tenure (days) as an int, or None if not a clean integer in the allow-list."""
+    try:
+        tenure = int(value)
+    except (TypeError, ValueError):
+        return None
+    return tenure if tenure in ALLOWED_TENURES else None
 
 
 def _loan_dict(loan: Loan) -> dict:
@@ -49,12 +61,11 @@ def loan_quote(request):
     """POST /api/loans/quote/ {access_token, amount, tenure_days}
     -> {principal, interest, total_repayment, tenure_days}
     """
-    try:
-        principal = Decimal(str(request.data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    principal = parse_amount(request.data.get("amount"))
+    if principal is None:
         return fail("Enter a valid amount")
-    tenure = int(request.data.get("tenure_days", 30))
-    if tenure not in ALLOWED_TENURES:
+    tenure = _parse_tenure(request.data.get("tenure_days", 30))
+    if tenure is None:
         return fail("Tenure must be 15, 30 or 60 days")
     interest = Loan.quote(principal, tenure)
     return ok(
@@ -66,6 +77,7 @@ def loan_quote(request):
 
 
 @api
+@ratelimit("loan_request", limit=10, window=60)
 @require_user
 def loan_request(request):
     """POST /api/loans/request/ {access_token, amount, tenure_days, transaction_pin}
@@ -80,17 +92,16 @@ def loan_request(request):
     if user.loans.filter(status=Loan.ACTIVE).exists():
         return fail("You already have an active loan", status=409)
 
-    try:
-        principal = Decimal(str(data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    principal = parse_amount(data.get("amount"))
+    if principal is None:
         return fail("Enter a valid amount")
     if principal < MIN_PRINCIPAL:
         return fail(f"Minimum loan is ₦{MIN_PRINCIPAL:,.0f}")
     if principal > credit_limit(user):
         return fail("Amount exceeds your available credit", status=403)
 
-    tenure = int(data.get("tenure_days", 30))
-    if tenure not in ALLOWED_TENURES:
+    tenure = _parse_tenure(data.get("tenure_days", 30))
+    if tenure is None:
         return fail("Tenure must be 15, 30 or 60 days")
 
     try:
@@ -106,6 +117,7 @@ def loan_request(request):
 
 
 @api
+@ratelimit("loan_repay", limit=12, window=60)
 @require_user
 def loan_repay(request):
     """POST /api/loans/repay/ {access_token, amount, transaction_pin}
@@ -121,15 +133,19 @@ def loan_repay(request):
     if active is None:
         return fail("You have no active loan", status=404)
 
-    try:
-        amount = Decimal(str(data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
-        return fail("Enter a valid amount")
-    if amount <= 0:
+    amount = parse_amount(data.get("amount"))
+    if amount is None:
         return fail("Enter a valid amount")
 
+    key = spend_key(data.get("idempotency_key"), user, "loan-repay", active.reference, amount)
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
-        loan = repay(user, active, amount)
+        loan = repay(user, active, amount, idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
 

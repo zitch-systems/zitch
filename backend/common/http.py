@@ -62,6 +62,49 @@ def check_send_limits(user, amount):
     return None
 
 
+def parse_amount(value):
+    """Coerce a request amount to a safe money Decimal, or None if invalid.
+
+    Rejects non-finite values (``Infinity``/``NaN``/``1e500`` all parse as
+    Decimals and would otherwise crash money math with InvalidOperation/500) and
+    non-positive amounts, and quantizes to 2 places (rounding down) so the value
+    can never carry sub-kobo precision the ledger column would silently round —
+    which would let the stored row, the provider call, and the debit disagree.
+    Callers keep their own min/max copy; this only guarantees a clean number.
+    """
+    from decimal import ROUND_DOWN, Decimal, InvalidOperation
+
+    try:
+        d = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not d.is_finite() or d <= 0:
+        return None
+    return d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+
+def spend_key(client_key, user, *parts, window_seconds: int = 30):
+    """The idempotency key to use for a spend.
+
+    Prefers the client-supplied key (stable across that client's own retries —
+    the Expo app sends one per authorization). When absent (older or third-party
+    clients), derives a deterministic fallback from the user + spend details
+    within a short time window, so an accidental double-submit is still deduped
+    by the ledger's unique (user, idempotency_key) constraint instead of
+    debiting twice. The real client always sends a unique key, so it never hits
+    the fallback.
+    """
+    import hashlib
+    import time
+
+    key = (client_key or "").strip()
+    if key:
+        return key
+    bucket = int(time.time() // max(1, window_seconds))
+    raw = "|".join([str(getattr(user, "id", user)), *[str(p) for p in parts], str(bucket)])
+    return "auto-" + hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
 def idempotent_replay(prior):
     """Standard response for a duplicate idempotent spend, or None when there's
     no prior row for the key. Replays the original outcome so a retried or raced

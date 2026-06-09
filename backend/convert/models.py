@@ -22,7 +22,10 @@ class ConversionRequest(models.Model):
     rate = models.DecimalField(max_digits=5, decimal_places=4)  # payout fraction, e.g. 0.8000
     payout_amount = models.DecimalField(max_digits=14, decimal_places=2)
     status = models.CharField(max_length=12, choices=STATUSES, default=PENDING)
-    reference = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # Unique like every other money-linked table (Loan/FixedSave/Transaction/
+    # FundingIntent): the conversion row is the audit record that pairs with the
+    # wallet credit, so two rows must never share (or blank) a reference.
+    reference = models.CharField(max_length=64, unique=True, db_index=True)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
