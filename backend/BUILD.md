@@ -108,14 +108,19 @@ from chat. Built deterministic-first so money never depends on the AI being up.
   user sends `LINK <code>` from WhatsApp and the number binds to their account
   (`link/status/`, `link/unlink/` manage it). Unknown numbers get only the link flow.
 - **Router (`whatsapp/router.py`):** keyword + numbered-menu + slot-filling that
-  drives the SAME money services the app uses — balance, and NGN bank transfer
-  (name-enquiry → confirm card → transaction PIN → idempotent payout via
-  `transfers.services.execute_payout`, shared with `/api/transfers/send/`). PINs
-  are masked in the message log; the flow cancels after one wrong PIN.
+  drives the SAME money services the app uses:
+  - **Balance** and **NGN bank transfer** (name-enquiry → confirm → PIN →
+    idempotent payout via `transfers.services.execute_payout`, shared with
+    `/api/transfers/send/`).
+  - **Airtime / data** (network → plan → phone → confirm → PIN) and **bills —
+    electricity / cable** (meter/smartcard **validation** → confirm with the
+    validated customer name → PIN), all via the shared `run_provider_purchase`
+    (Baxi). Prepaid electricity returns the token in the receipt.
+  - PINs are masked in the message log; every flow cancels after one wrong PIN.
 - **Not yet (next slices):** the LLM intent layer + global/per-user AI toggle,
-  airtime/data & bills over chat, multi-currency + FX (Fincra), and the operator
-  surfaces (admin dashboard, broadcasts, conversation monitor + handover). The
-  deterministic router stays as the permanent AI-off fallback.
+  multi-currency + FX (Fincra), and the operator surfaces (admin dashboard,
+  broadcasts, conversation monitor + handover). The deterministic router stays
+  as the permanent AI-off fallback.
 
 Set the webhook URL + `WHATSAPP_VERIFY_TOKEN` in the Meta app dashboard and fill
 the `WHATSAPP_*` env vars (see `.env.example`).
