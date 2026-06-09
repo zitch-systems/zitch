@@ -13,6 +13,7 @@ from django.test import Client, TestCase, override_settings
 
 from accounts.models import AccessToken
 from transfers.models import Bank
+from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
@@ -172,3 +173,79 @@ class ChannelTests(TestCase):
         self.inbound("cancel", "c3")
         self.assertIn("cancelled", self.last_reply().lower())
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+
+class VtuTests(TestCase):
+    """Airtime / data / electricity / cable over the deterministic router."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="20000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        DataPlan.objects.create(network="1", plan_type="3", name="1GB", validity="30 days",
+                                plan_code="mtn-1gb", price=Decimal("500"), active=True)
+        CablePlan.objects.create(provider="2", name="DStv Compact", cable_plan_code="dstv-compact",
+                                 price=Decimal("9000"), active=True)
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event), content_type="application/json")
+
+    def last_reply(self):
+        row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
+        return row.text if row else ""
+
+    def bal(self):
+        return get_or_create_wallet(self.user).balance
+
+    def test_airtime(self):
+        self.inbound("airtime", "a1")
+        self.inbound("1", "a2")               # MTN -> ask phone
+        self.inbound("08099998888", "a3")     # phone -> ask amount
+        self.inbound("200", "a4")             # amount -> confirm
+        self.assertIn("Confirm airtime", self.last_reply())
+        self.inbound("1234", "a5")            # PIN
+        self.assertIn("airtime sent", self.last_reply())
+        self.assertEqual(self.bal(), Decimal("19800"))
+
+    def test_data(self):
+        self.inbound("data", "d1")
+        self.inbound("1", "d2")               # MTN -> plan list
+        self.assertIn("1GB", self.last_reply())
+        self.inbound("1", "d3")               # pick plan -> ask phone
+        self.inbound("me", "d4")              # phone -> confirm
+        self.assertIn("Confirm data", self.last_reply())
+        self.inbound("1234", "d5")
+        self.assertIn("sent to", self.last_reply())
+        self.assertEqual(self.bal(), Decimal("19500"))
+
+    def test_electricity_returns_token(self):
+        self.inbound("electricity", "e1")
+        self.inbound("1", "e2")               # Ikeja -> meter type
+        self.inbound("1", "e3")               # prepaid -> ask meter
+        self.inbound("01234567890", "e4")     # meter -> validated -> ask amount
+        self.assertIn("verified", self.last_reply())
+        self.inbound("3000", "e5")            # amount -> confirm
+        self.assertIn("Confirm electricity", self.last_reply())
+        self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # validated customer name
+        self.inbound("1234", "e6")
+        self.assertIn("Token", self.last_reply())            # prepaid token in the receipt
+        self.assertEqual(self.bal(), Decimal("17000"))
+
+    def test_cable(self):
+        self.inbound("cable", "c1")
+        self.inbound("2", "c2")               # DSTV -> package list
+        self.assertIn("DStv Compact", self.last_reply())
+        self.inbound("1", "c3")               # pick -> ask IUC
+        self.inbound("1234567890", "c4")      # IUC -> validated -> confirm
+        self.assertIn("Confirm cable", self.last_reply())
+        self.inbound("1234", "c5")
+        self.assertIn("activated", self.last_reply())
+        self.assertEqual(self.bal(), Decimal("11000"))
+
+    def test_wrong_network_reprompts(self):
+        self.inbound("airtime", "n1")
+        self.inbound("9", "n2")               # invalid network
+        self.assertIn("network", self.last_reply().lower())
+        self.assertEqual(self.bal(), Decimal("20000"))
