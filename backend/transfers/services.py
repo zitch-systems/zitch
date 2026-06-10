@@ -59,8 +59,19 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         refund(txn)
         raise PayoutError("provider", result.get("message", "Transfer failed"))
 
-    txn.transaction_status = Transaction.SUCCESS
-    txn.save(update_fields=["transaction_status"])
+    if (result.get("status") or "").upper() == "PENDING":
+        # Accepted by the rail but not yet confirmed (queued / awaiting auth). Keep
+        # the row PENDING and flag it for the disbursement webhook + reconciliation
+        # rather than claiming success — the money stays debited, and the webhook
+        # later settles it (settle_payout) or reverses it (reverse_transfer). This
+        # avoids telling the user "sent" for money that may not have moved.
+        meta = dict(txn.meta or {})
+        meta["reconcile"] = True
+        txn.meta = meta
+        txn.save(update_fields=["meta"])
+    else:
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status"])
 
     # Auto-save / dedupe the beneficiary for next time.
     Beneficiary.objects.get_or_create(

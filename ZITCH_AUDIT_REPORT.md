@@ -15,6 +15,33 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 
 ---
 
+## Update — pre-launch hardening (follow-up PR)
+
+A follow-up branch closed the highest-value items that were previously **OPEN**, with regression tests
+(**196 backend tests passing**):
+
+- **Observability (§11 Critical):** added a `LOGGING` config (JSON/text to stdout) and **optional Sentry** init
+  (gated on `SENTRY_DSN`, `send_default_pii=False`); now logging **failed sign-ins** (with IP) and **PIN lockouts**
+  as security events. `sentry-sdk` added to requirements; `anthropic` upper-bounded.
+- **Ledger immutability (§5 High):** `Transaction.save()` now rejects any change to `amount`/`direction`/`currency`
+  on an existing row (settlement/flagging still update status/meta). *(Back with a Postgres trigger for `.update()`.)*
+- **Optimistic-payout `PENDING` (§3/§9 High):** payouts the rail returns as `PENDING` are kept `PENDING`
+  (flagged for reconcile) instead of being marked `SUCCESS`; the disbursement webhook now **settles** a confirmed
+  payout (`settle_payout`) as well as reversing a failed one. The HTTP response says "processing", not "sent".
+- **WhatsApp link-binding (§3/§7 High):** a link code now only binds when sent **from the number on the user's
+  Zitch account** (national-significant-number match) — closes the leaked-code account-takeover vector.
+- **WhatsApp VTU tier/face limits (§3/§9 Medium):** airtime/data/electricity/cable over chat now enforce
+  `send_limit_error` like transfers, so bills can't exceed the KYC tier / large-txn face gate.
+- **Airtime→cash free-money seam (§4/§9):** the mock collection seam now refuses to credit in a real deploy
+  (production, non-test) until a real airtime-collection provider is wired — a real provider bypasses the gate.
+
+**Still OPEN** (need external inputs / larger work): betting & exam **Baxi routing** (needs Baxi's real
+betting/e-PIN API — fails-safe today: fail + refund); queue-backed webhook/broadcast processing + Redis +
+multi-worker (§10); paid infra + DB backups (§11); mobile HTTPS-enforcement + cert pinning (§8); exam PIN
+count-mismatch refund; AI destination-prefill hardening + `PendingAction` lock (§7).
+
+---
+
 ## §A. What was built & wired this session
 
 > **Reconciliation note (post-merge with `main`#39):** `main` independently shipped a parallel implementation of

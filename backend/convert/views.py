@@ -13,6 +13,7 @@ testable offline, exactly like the VTU/payments providers elsewhere.
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 
 import requests
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction as db_transaction
 
@@ -159,6 +160,14 @@ def convert_airtime(request):
 
     reference = make_reference("ZCNV")
     collected = collect_airtime(net, phone, airtime, reference)
+    # Don't mint wallet cash off a MOCK confirmation in a real deploy: the actual
+    # airtime-collection provider must verify the transfer first. Until it's
+    # wired, refuse the conversion in production rather than pay out for airtime we
+    # never received — a free-money seam otherwise. (A real provider returns no
+    # `mock` flag, so it bypasses this gate. The test runner forces DEBUG=False but
+    # legitimately exercises the mock flow, so exempt it via TESTING.)
+    if collected.get("mock") and not settings.DEBUG and not getattr(settings, "TESTING", False):
+        return fail("Airtime-to-cash isn't available yet — please try another option.", status=503)
     if not collected.get("success"):
         return fail(collected.get("message", "Could not confirm the airtime transfer"), status=502)
 

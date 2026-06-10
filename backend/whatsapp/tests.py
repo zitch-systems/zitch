@@ -95,6 +95,10 @@ class ChannelTests(TestCase):
         self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
 
     def test_link_code_links_number(self):
+        # The code must be sent from the number on the user's Zitch account
+        # (national significant number matches MSISDN's last 10 digits).
+        self.user.phone = "08011112222"
+        self.user.save(update_fields=["phone"])
         res = self.client.post("/api/whatsapp/link/start/",
                                data=json.dumps({"access_token": self.token}), content_type="application/json")
         code = res.json()["code"]
@@ -103,6 +107,16 @@ class ChannelTests(TestCase):
         self.assertEqual(link.status, WhatsAppLink.ACTIVE)
         self.assertEqual(link.user_id, self.user.id)
         self.assertIn("Linked", self.last_reply())
+
+    def test_link_rejected_from_unregistered_number(self):
+        # Default user phone (08010000001) does NOT match MSISDN — a leaked code
+        # sent from another WhatsApp number must not bind the account.
+        res = self.client.post("/api/whatsapp/link/start/",
+                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+        code = res.json()["code"]
+        self.inbound(f"LINK {code}", "m1")
+        self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
+        self.assertIn("your Zitch account", self.last_reply())
 
     # --- balance ---
     def test_balance(self):
@@ -262,6 +276,20 @@ class VtuTests(TestCase):
         self.inbound("9", "n2")               # invalid network
         self.assertIn("network", self.last_reply().lower())
         self.assertEqual(self.bal(), Decimal("20000"))
+
+    def test_electricity_over_tier_limit_refused(self):
+        # KYC tier limits apply to bills over chat too (not just transfers): a
+        # tier-1 user (₦50k cap) buying ₦60k of electricity is stopped before PIN.
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("200000")
+        w.save()
+        self.inbound("electricity", "l1")
+        self.inbound("1", "l2")               # Ikeja
+        self.inbound("1", "l3")               # prepaid
+        self.inbound("01234567890", "l4")     # meter -> ask amount
+        self.inbound("60000", "l5")           # over the tier-1 ₦50k limit
+        self.assertIn("Tier", self.last_reply())
+        self.assertEqual(self.bal(), Decimal("200000"))  # not debited
 
 
 @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})

@@ -14,7 +14,8 @@ from common.http import (
 )
 from common.ratelimit import ratelimit
 from utility.providers import disbursement_resolve_account, payment_verify_signature
-from wallet.services import existing_for_key, reverse_transfer
+from wallet.models import Transaction
+from wallet.services import existing_for_key, reverse_transfer, settle_payout
 
 from .models import Bank
 from .services import PayoutError, execute_payout
@@ -120,6 +121,10 @@ def bank_transfer(request):
 
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)
+    if txn.transaction_status == Transaction.PENDING:
+        # Rail queued it but hasn't confirmed — don't claim "sent".
+        return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference,
+                  message="Your transfer is processing and will be confirmed shortly.")
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, message="Money sent")
 
 
@@ -127,9 +132,10 @@ def bank_transfer(request):
 def disbursement_webhook(request):
     """POST /api/transfers/webhook/ — Monnify disbursement (payout) callback.
 
-    Payouts are settled optimistically on send, so this is the safety net: a
-    failed/reversed disbursement refunds the wallet. HMAC-verified, idempotent,
-    and always 200 on accepted events so Monnify stops retrying.
+    The terminal-state safety net: a success/completed event settles a payout we
+    left PENDING on send; a failed/reversed event refunds the wallet. HMAC-verified,
+    idempotent (status-guarded), and always 200 on accepted events so Monnify stops
+    retrying.
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
@@ -142,8 +148,12 @@ def disbursement_webhook(request):
 
     data = event.get("eventData", {}) or {}
     reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
-    if event.get("eventType") in ("FAILED_DISBURSEMENT", "REVERSED_DISBURSEMENT") and reference:
+    etype = event.get("eventType", "")
+    if etype in ("FAILED_DISBURSEMENT", "REVERSED_DISBURSEMENT") and reference:
         reverse_transfer(reference)
+    elif etype in ("SUCCESSFUL_DISBURSEMENT", "COMPLETED_DISBURSEMENT") and reference:
+        # Confirm a previously-PENDING payout (we no longer settle on send).
+        settle_payout(reference)
     from whatsapp.ops import record_audit
     record_audit("webhook.monnify_disbursement", actor_type="system", target=reference,
                  after={"event": event.get("eventType", ""), "signature": "verified"})

@@ -8,11 +8,14 @@ tiny.
 """
 import functools
 import json
+import logging
 from datetime import timedelta
 
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
+
+log = logging.getLogger("zitch.security")
 
 
 def ok(data=None, **extra):
@@ -154,6 +157,9 @@ def evaluate_transaction_pin(user, raw_pin):
             u.pin_failed_attempts = 0  # reset the counter; the lock is the gate now
             u.pin_locked_until = timezone.now() + timedelta(minutes=User.PIN_LOCKOUT_MINUTES)
             u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+            # Security event: a locked PIN means repeated wrong guesses against the
+            # second factor that gates money movement — worth surfacing in logs.
+            log.warning("transaction_pin_locked user=%s", u.pk)
             return (False, "pin_locked",
                     f"Transaction PIN locked for {User.PIN_LOCKOUT_MINUTES} minutes after too many wrong attempts.")
         u.save(update_fields=["pin_failed_attempts"])

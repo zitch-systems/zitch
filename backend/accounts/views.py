@@ -1,3 +1,4 @@
+import logging
 import random
 from datetime import timedelta
 
@@ -5,7 +6,9 @@ from django.db.models import Q
 from django.utils import timezone
 
 from common.http import api, fail, ok, require_user, resolve_token
-from common.ratelimit import ratelimit
+from common.ratelimit import client_ip, ratelimit
+
+log = logging.getLogger("zitch.security")
 from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_sms
 from wallet.services import get_or_create_wallet
 
@@ -30,6 +33,9 @@ def signin(request):
 
     user = User.objects.filter(Q(email__iexact=ident) | Q(phone=ident) | Q(username=ident)).first()
     if user is None or not user.check_password(password):
+        # Security event: surfaces credential-stuffing / targeted brute force in
+        # the logs (the per-IP rate limiter caps it; this makes it observable).
+        log.warning("signin_failed ident=%r ip=%s", ident, client_ip(request))
         return fail("Incorrect details", status=401)
 
     get_or_create_wallet(user)
