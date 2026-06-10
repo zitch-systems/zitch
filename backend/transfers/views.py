@@ -142,4 +142,7 @@ def disbursement_webhook(request):
     reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
     if event.get("eventType") in ("FAILED_DISBURSEMENT", "REVERSED_DISBURSEMENT") and reference:
         reverse_transfer(reference)
+    from whatsapp.ops import record_audit
+    record_audit("webhook.monnify_disbursement", actor_type="system", target=reference,
+                 after={"event": event.get("eventType", ""), "signature": "verified"})
     return ok(status=True)

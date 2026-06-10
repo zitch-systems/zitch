@@ -64,6 +64,10 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     if blocked:
         c = blocked.pop()
         raise FxError(f"{c} is display-only for now — we can quote it but can't settle {c} yet.")
+    from whatsapp.models import SystemSetting
+    for c in {frm, to} - {"NGN"}:
+        if SystemSetting.get(f"fx_corridor_{c.lower()}_enabled", "true") == "false":
+            raise FxError(f"The {c} corridor is paused right now. Try again later.")
     sell = Decimal(str(sell_amount))
     if sell <= 0:
         raise FxError("Enter a valid amount.")

@@ -53,6 +53,11 @@ class Transaction(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        indexes = [
+            # The history screens and the operator portal both page a user's
+            # ledger newest-first; without this every view walks the table.
+            models.Index(fields=["user", "-created"], name="txn_user_created_idx"),
+        ]
         constraints = [
             # Amounts are always positive; `direction` carries the sign. A DB
             # check keeps a zero/negative amount from ever entering the ledger.

@@ -91,6 +91,10 @@ class WaMessageLog(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        indexes = [
+            # The operator inbox replays a conversation oldest-first per number.
+            models.Index(fields=["msisdn", "created"], name="wamsg_msisdn_created_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["wa_message_id"],
@@ -169,6 +173,11 @@ class AuditLog(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        indexes = [
+            # The audit screen pages newest-first; recon filters by action prefix.
+            models.Index(fields=["-created"], name="audit_created_idx"),
+            models.Index(fields=["action"], name="audit_action_idx"),
+        ]
 
     def __str__(self):
         return f"{self.actor_type}:{self.actor_id} {self.action} {self.target}"
