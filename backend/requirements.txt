@@ -6,4 +6,5 @@ whitenoise>=6.7
 python-dotenv>=1.0
 requests>=2.32
 django-cors-headers>=4.9
-anthropic>=0.40        # WhatsApp LLM intent layer (lazy-imported; only used when LLM_API_KEY is set)
+anthropic>=0.40,<1.0   # WhatsApp LLM intent layer (lazy-imported; only used when LLM_API_KEY is set)
+sentry-sdk[django]>=2.0,<3   # error reporting (lazy-init; only active when SENTRY_DSN is set)

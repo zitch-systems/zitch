@@ -87,6 +87,39 @@ class BankTransferTests(TestCase):
         self.assertEqual(body["code"], "limit_exceeded")
         self.assertEqual(self.balance(), Decimal("50000"))
 
+    def test_pending_payout_is_not_settled(self):
+        # A rail that returns PENDING (queued / awaiting auth) must NOT be settled
+        # as Successful — the row stays Pending (money debited, flagged for the
+        # webhook) and the response says "processing", not "sent".
+        with patch("transfers.services.disbursement_send",
+                   return_value={"success": True, "status": "PENDING"}):
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("pending"))
+        self.assertFalse(body.get("success"))
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertTrue(txn.meta.get("reconcile"))
+        self.assertEqual(self.balance(), Decimal("40000"))  # debited, not refunded
+
+    def test_pending_payout_settled_by_webhook(self):
+        from utility.providers import payment_verify_signature  # noqa: F401 (sig mocked below)
+        with patch("transfers.services.disbursement_send",
+                   return_value={"success": True, "status": "PENDING"}):
+            _, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        ref = body["reference"]
+        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": ref}}
+        with patch("transfers.views.payment_verify_signature", return_value=True):
+            self.client.post("/api/transfers/webhook/", data=json.dumps(event),
+                             content_type="application/json")
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
+
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""
         with patch("transfers.services.disbursement_send",

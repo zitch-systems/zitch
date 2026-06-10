@@ -203,6 +203,33 @@ def reverse_transfer(reference: str) -> Transaction | None:
 
 
 @db_transaction.atomic
+def settle_payout(reference: str) -> Transaction | None:
+    """Mark a PENDING outbound transfer Successful once the rail confirms it.
+
+    Payouts the provider returns as PENDING (queued / awaiting authorization) are
+    kept PENDING rather than optimistically settled, so the user is never told
+    "sent" for money that might not have moved. The disbursement webhook calls
+    this on a success/completed event. Locks the row and guards on status, so only
+    the first call settles it (a duplicate webhook is a no-op) and a row that was
+    already reversed (Failed) is never resurrected. Returns the row if this call
+    settled it, else None.
+    """
+    txn = (
+        Transaction.objects.select_for_update()
+        .filter(reference=reference, direction=Transaction.OUT)
+        .first()
+    )
+    if txn is None or txn.transaction_status != Transaction.PENDING:
+        return None
+    meta = dict(txn.meta or {})
+    meta.pop("reconcile", None)
+    txn.meta = meta
+    txn.transaction_status = Transaction.SUCCESS
+    txn.save(update_fields=["transaction_status", "meta"])
+    return txn
+
+
+@db_transaction.atomic
 def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     """Credit the wallet for a verified funding reference, exactly once.
 

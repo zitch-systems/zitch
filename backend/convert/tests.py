@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import requests
 from django.core.cache import cache
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
@@ -59,6 +59,17 @@ class ConvertTests(TestCase):
             "amount": "50", "transaction_pin": "1234",
         })
         self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.balance(), Decimal("5000"))
+
+    @override_settings(DEBUG=False, TESTING=False)
+    def test_convert_blocked_in_prod_while_provider_is_mock(self):
+        # In a real deploy the mock airtime-collection seam must NOT mint cash
+        # (free-money guard): refuse with 503 and leave the wallet untouched.
+        res, _ = self.post("/api/convert/airtime/", {
+            "access_token": self.token, "network": "1", "phone": "08030000002",
+            "amount": "1000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 503)
         self.assertEqual(self.balance(), Decimal("5000"))
 
     def test_convert_rejects_bad_network(self):

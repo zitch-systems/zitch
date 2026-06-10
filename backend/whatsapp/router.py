@@ -191,6 +191,15 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     )
     if link is None:
         return reply(msisdn, UNLINKED)
+    # Bind only if the code arrives from the number on the user's Zitch account.
+    # The code is the only factor and is shown in plaintext in the app, so without
+    # this a leaked/shoulder-surfed code lets an attacker's WhatsApp claim the
+    # victim's account. Compare on the national significant number (last 10 digits)
+    # so local (080…) and international (23480…) forms match.
+    registered = re.sub(r"\D", "", (link.user.phone or ""))
+    sender = re.sub(r"\D", "", msisdn)
+    if registered and registered[-10:] != sender[-10:]:
+        return reply(msisdn, "For your security, send this code from the phone number on your Zitch account.")
     link.wa_msisdn = msisdn
     link.status = WhatsAppLink.ACTIVE
     link.link_code = ""
@@ -503,6 +512,10 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Enter a valid amount, at least ₦50.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+        limit_msg = send_limit_error(user, amount)
+        if limit_msg:
+            _clear_actions(msisdn)
+            return reply(msisdn, limit_msg)
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
@@ -561,6 +574,10 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if _insufficient(user, price):
             _clear_actions(msisdn)
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+        limit_msg = send_limit_error(user, price)
+        if limit_msg:
+            _clear_actions(msisdn)
+            return reply(msisdn, limit_msg)
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["phone"] = phone
         pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
@@ -623,6 +640,10 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
             return reply(msisdn, "Enter a valid amount, at least ₦100.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+        limit_msg = send_limit_error(user, amount)
+        if limit_msg:
+            _clear_actions(msisdn)
+            return reply(msisdn, limit_msg)
         disco_name = DISCO_NAMES[pa.payload["disco"]]
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"meter": pa.payload["meter"], "disco": pa.payload["disco"],
@@ -696,6 +717,10 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if _insufficient(user, price):
             _clear_actions(msisdn)
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+        limit_msg = send_limit_error(user, price)
+        if limit_msg:
+            _clear_actions(msisdn)
+            return reply(msisdn, limit_msg)
         prov_name = CABLE_NAMES[pa.payload["prov"]]
         cust = res.get("customer_name", "")
         pa.payload.update({"iuc": iuc, "customer": cust})

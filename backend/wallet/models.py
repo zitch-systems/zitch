@@ -71,6 +71,31 @@ class Transaction(models.Model):
             ),
         ]
 
+    def save(self, *args, **kwargs):
+        """Enforce ledger immutability for the money-defining fields.
+
+        A row's ``amount``, ``direction`` and ``currency`` are fixed at creation
+        and must never change — no legitimate flow rewrites them (settlement and
+        reversal only move ``transaction_status`` and annotate ``meta``). Blocking
+        them here turns a bug or a stray ``Transaction.objects.get(...).save()``
+        that would silently corrupt balances-vs-ledger into a loud error.
+
+        (ORM-level guard; a queryset ``.update()`` bypasses ``save()`` — back it
+        with a Postgres BEFORE UPDATE trigger in production for defence in depth.)
+        """
+        if self.pk:
+            prior = type(self).objects.filter(pk=self.pk).values(
+                "amount", "direction", "currency").first()
+            if prior and (
+                self.amount != prior["amount"]
+                or self.direction != prior["direction"]
+                or self.currency != prior["currency"]
+            ):
+                raise ValueError(
+                    "Ledger rows are immutable: amount/direction/currency cannot change once written"
+                )
+        super().save(*args, **kwargs)
+
     def __str__(self):
         sign = "+" if self.direction == self.IN else "-"
         return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"

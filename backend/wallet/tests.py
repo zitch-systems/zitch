@@ -134,6 +134,18 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 403)
         self.assertEqual(self.balance(self.user), Decimal("20000"))
 
+    # --- ledger immutability ---
+    def test_settled_ledger_row_amount_is_immutable(self):
+        txn = credit(self.user, Decimal("100"), "Seed credit")
+        txn.amount = Decimal("999999")
+        with self.assertRaises(ValueError):
+            txn.save()
+        # status/meta updates (settlement, flagging) remain allowed.
+        txn.refresh_from_db()
+        txn.transaction_status = Transaction.FAILED
+        txn.save()  # should not raise
+        self.assertEqual(Transaction.objects.get(pk=txn.pk).amount, Decimal("100"))
+
     def test_transfer_rejects_insufficient_funds(self):
         make_user("08020000002", "bob@zitch.test")
         # 30,000 is within the tier-1 limit (50k) but above the 20k balance,

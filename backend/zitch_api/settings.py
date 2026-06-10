@@ -250,3 +250,49 @@ if _PROD and (WHATSAPP["TOKEN"] or WHATSAPP["PHONE_NUMBER_ID"]):
         raise ImproperlyConfigured("WHATSAPP_APP_SECRET must be set when the WhatsApp channel is live (signature verification).")
     if not WHATSAPP["VERIFY_TOKEN"]:
         raise ImproperlyConfigured("WHATSAPP_VERIFY_TOKEN must be set when the WhatsApp channel is live (webhook handshake).")
+
+# --- Logging --------------------------------------------------------------
+# A fintech must be able to answer "who tried to brute-force this account / which
+# payout failed / why did this 500" after the fact. Render (and most PaaS)
+# capture stdout, so log there and ship to a retained aggregator via a log drain.
+# The `zitch` logger carries app + security/money-audit events (auth failures,
+# PIN lockouts, settled money movements); tune verbosity with DJANGO_LOG_LEVEL.
+LOG_LEVEL = os.environ.get("DJANGO_LOG_LEVEL", "INFO").upper()
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "standard"},
+    },
+    "root": {"handlers": ["console"], "level": "WARNING"},
+    "loggers": {
+        # 5xx are reported (and, when wired, captured by Sentry below).
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
+        # Application + security/money-audit stream.
+        "zitch": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "whatsapp": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+    },
+}
+
+# --- Error reporting (Sentry) --------------------------------------------
+# Enabled only when SENTRY_DSN is set AND sentry-sdk is installed, so dev/test
+# never phone home. PII is never sent (fintech); add SENTRY_DSN (sync:false) in
+# the Render dashboard to turn it on.
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+if SENTRY_DSN and not TESTING:
+    try:
+        import sentry_sdk
+        from sentry_sdk.integrations.django import DjangoIntegration
+
+        sentry_sdk.init(
+            dsn=SENTRY_DSN,
+            integrations=[DjangoIntegration()],
+            environment=os.environ.get("SENTRY_ENVIRONMENT", "production" if _PROD else "development"),
+            traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE", "0")),
+            send_default_pii=False,
+        )
+    except Exception:  # noqa: BLE001 — observability must never break boot
+        pass
