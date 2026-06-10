@@ -92,10 +92,8 @@ class WaMessageLog(models.Model):
     class Meta:
         ordering = ["-created"]
         indexes = [
-            # The webhook + agent monitor read the latest messages for a number
-            # (filter(msisdn=...).order_by("-created")); a composite index avoids a
-            # filesort on this inline, per-message hot path.
-            models.Index(fields=["msisdn", "-created"], name="wamsg_msisdn_created_idx"),
+            # The operator inbox replays a conversation oldest-first per number.
+            models.Index(fields=["msisdn", "created"], name="wamsg_msisdn_created_idx"),
         ]
         constraints = [
             models.UniqueConstraint(
@@ -176,8 +174,9 @@ class AuditLog(models.Model):
     class Meta:
         ordering = ["-created"]
         indexes = [
-            # Append-heavy compliance log, always read newest-first (admin audit view).
-            models.Index(fields=["-created"], name="auditlog_created_idx"),
+            # The audit screen pages newest-first; recon filters by action prefix.
+            models.Index(fields=["-created"], name="audit_created_idx"),
+            models.Index(fields=["action"], name="audit_action_idx"),
         ]
 
     def __str__(self):

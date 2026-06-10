@@ -54,9 +54,8 @@ class Transaction(models.Model):
     class Meta:
         ordering = ["-created"]
         indexes = [
-            # Transaction history is `user.transactions` ordered by -created; a
-            # composite index turns that hot per-user scan into an index range
-            # instead of a filesort as the ledger grows.
+            # The history screens and the operator portal both page a user's
+            # ledger newest-first; without this every view walks the table.
             models.Index(fields=["user", "-created"], name="txn_user_created_idx"),
         ]
         constraints = [

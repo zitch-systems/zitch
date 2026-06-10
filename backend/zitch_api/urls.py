@@ -3,6 +3,7 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
 
+from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import webhook as whatsapp_webhook
 
 
@@ -43,6 +44,13 @@ def readyz(_request):
 
 
 urlpatterns = [
+    # Canonical web surfaces: the marketing landing + operator portal (portal app).
+    # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
+    # the DB. The parallel console/admin_api build coexists under /console/* and
+    # /api/admin/ (mounted below) so both portals run side by side.
+    path("", landing),
+    path("prototype/", prototype),
+    path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
     path("admin/", admin.site.urls),
@@ -50,6 +58,7 @@ urlpatterns = [
     path("webhooks/whatsapp", whatsapp_webhook),
     path("api/admin/", include("admin_api.urls")),
     path("api/whatsapp/", include("whatsapp.urls")),
+    path("api/ops/", include("portal.urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("wallet.urls")),
     path("api/utility/", include("utility.urls")),
@@ -60,8 +69,10 @@ urlpatterns = [
     path("api/transfers/", include("transfers.urls")),
     path("api/cards/", include("cards.urls")),
     path("api/convert/", include("convert.urls")),
-    # Web surfaces (landing "/", app prototype "/app/", operator portal "/portal/").
-    path("", include("console.urls")),
+    # Parallel "console" build (kept alongside main's portal): landing "/console/",
+    # app prototype "/console/app/", operator portal "/console/portal/" — distinct
+    # paths so it never shadows the canonical surfaces above.
+    path("console/", include("console.urls")),
 ]
 
 # Serve user-uploaded media (avatars) in development. In production this is

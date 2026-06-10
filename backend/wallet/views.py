@@ -140,6 +140,10 @@ def fund_webhook(request):
         amount = data.get("amountPaid")  # Monnify reports naira
         if reference:
             settle_funding(reference, amount)
+    from whatsapp.ops import record_audit
+    record_audit("webhook.monnify", actor_type="system",
+                 target=(event.get("eventData") or {}).get("paymentReference", ""),
+                 after={"event": event.get("eventType", ""), "signature": "verified"})
     return ok(status=True)
 
 

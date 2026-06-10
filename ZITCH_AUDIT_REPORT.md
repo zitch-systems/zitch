@@ -17,13 +17,20 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 
 ## §A. What was built & wired this session
 
-| Surface | URL | Status |
+> **Reconciliation note (post-merge with `main`#39):** `main` independently shipped a parallel implementation of
+> this feature as a single `portal/` Django app (canonical landing `/`, operator portal `/portal/`, staff API
+> `/api/ops/`). Per the maintainer's decision, **both implementations are kept and run side-by-side**: `main`'s
+> `portal/` owns the canonical paths, and this session's `console/` + `admin_api/` build coexists at **`/console/*`**
+> and **`/api/admin/*`** (distinct routes, no shadowing; redundant `wallet`/`whatsapp` index migrations were dropped
+> in favour of `main`'s). The audit fixes in §B are the durable, unique value either way.
+
+| Surface (this session's `console` build) | URL | Status |
 |---|---|---|
-| Marketing landing page | `/` | Served from Django (`console` app). Self-contained, responsive (≤1020/≤760/≤480/≤340), light/dark, live WhatsApp demo, embeds the app prototype. |
-| App prototype | `/app/` | Served from Django; embedded by the landing hero iframe (`?embed=1`). |
-| Operator / admin portal | `/portal/` | React-in-browser SPA, now backed by a **real Django staff API** with login, RBAC, and audited actions. |
-| Staff API | `/api/admin/*` | New `admin_api` Django app — see below. |
-| Liveness probe | `/healthz` | Moved off `/` (which now serves the landing); `render.yaml` health-check path updated. |
+| Marketing landing page | `/console/` | Served from Django (`console` app). Responsive (≤1020/≤760/≤480/≤340), light/dark, live WhatsApp demo, embeds the app prototype. |
+| App prototype | `/console/app/` | Embedded by the landing hero iframe (`?embed=1`). |
+| Operator / admin portal | `/console/portal/` | React-in-browser SPA, backed by a **real Django staff API** with login, RBAC, audited actions. |
+| Staff API | `/api/admin/*` | `admin_api` Django app — see below. (`main`'s portal API is at `/api/ops/*`.) |
+| Liveness / readiness | `/healthz` · `/readyz` | `/healthz` liveness (render health-check path); `/readyz` added this session round-trips the DB (503 when down). |
 
 **New backend app `admin_api`** (additive — nothing existing was changed):
 - `POST /api/admin/login` — staff sign-in (requires `is_staff`); reuses the app's `AccessToken`.
@@ -39,7 +46,7 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 idempotency fallback for spends, rate limiting on money/enumeration endpoints, WhatsApp signature prod-guard,
 PIN-shape log redaction, and DB index/constraint additions.
 
-> **Operator setup:** create a staff user (`python manage.py createsuperuser` → `super_admin`), then sign in at `/portal/`.
+> **Operator setup:** create a staff user (`python manage.py createsuperuser` → `super_admin`), then sign in at `/console/portal/` (this build) or `/portal/` (main's portal).
 > Non-superuser staff get a role from their Django Group (`finance` / `support` / `read_only`), else least-privilege `read_only`.
 
 ---

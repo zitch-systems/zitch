@@ -146,10 +146,26 @@ from chat. Built deterministic-first so money never depends on the AI being up.
     roll-up counts. A provider block (e.g. Meta 131049) is recorded, not retried.
   - **Audit (§hard-rule #10):** `AuditLog` records handovers, agent replies, and
     broadcasts (actor + before/after).
-  - **RBAC (§11):** staff-gated endpoints today (`require_staff`); the
-    super_admin/finance/support/read_only roles map to Django groups/permissions
-    as the dedicated web dashboard is built (a follow-up — the money-correctness
-    surface lives in these services + Django admin).
+  - **RBAC (§11):** every `/api/ops/*` endpoint is staff-gated and role-checked
+    server-side (`portal/roles.py`): superuser ⇒ `super_admin`; otherwise the
+    `super_admin` / `finance` / `support` Django **group** sets the role, and a
+    staff user in none of them is `read_only`. Caps are returned at login and
+    mirrored in the portal UI, but the server check is the gate.
+
+## Web surfaces (landing + operator portal)
+- **Landing page** at `/` and the **interactive prototype** at `/prototype/` —
+  the design-handoff references served as templates + static (responsive,
+  theme-aware). The health probe moved to `/healthz` (render.yaml points there).
+- **Operator portal** at `/portal/`: the admin design wired to live data via 25
+  staff endpoints under `/api/ops/` (login, overview KPIs, users + freeze/PIN
+  unlock, KYC queue + approve/reject, transactions + requery, FX margin +
+  corridor pauses, products incl. card freeze + maturity sweep, WhatsApp inbox
+  riding the ops handover/reply endpoints, broadcasts, AI kill switch, webhook/
+  recon log, audit, settings + team). Every mutation is audit-logged with
+  before/after. Sign in with a **staff** account (`createsuperuser`, or staff +
+  one of the role groups).
+- Corridor pauses are enforced in `wallet/forex.py` (`fx_corridor_<ccy>_enabled`,
+  default on; CNY stays settlement-blocked in code regardless).
 
 Set the webhook URL + `WHATSAPP_VERIFY_TOKEN` in the Meta app dashboard and fill
 the `WHATSAPP_*` env vars (see `.env.example`).

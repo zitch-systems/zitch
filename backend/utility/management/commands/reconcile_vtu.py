@@ -40,4 +40,7 @@ class Command(BaseCommand):
         for txn in pending:
             if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
                 settled += 1
+        from whatsapp.ops import record_audit
+        record_audit("recon.vtu_run", actor_type="system",
+                     after={"checked": total, "settled": settled})
         self.stdout.write(f"Reconciled {settled} of {total} pending VTU transaction(s)")
