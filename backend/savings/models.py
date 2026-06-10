@@ -35,6 +35,12 @@ class FixedSave(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        indexes = [
+            # The daily maturity sweep + every savings_list filter
+            # (status=active, paid_out=False, matures_at<=now); without this the
+            # cron and the read path full-scan the plans table as it grows.
+            models.Index(fields=["status", "paid_out", "matures_at"], name="fixedsave_sweep_idx"),
+        ]
 
     @property
     def maturity_value(self) -> Decimal:

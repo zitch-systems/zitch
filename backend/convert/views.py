@@ -16,7 +16,9 @@ import requests
 from django.core.cache import cache
 from django.db import transaction as db_transaction
 
-from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
+from common.http import (
+    api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
+)
 from wallet.services import DuplicateTransaction, credit, existing_for_key, make_reference
 
 from .models import ConversionRequest
@@ -93,10 +95,8 @@ MAX_AIRTIME = Decimal("50000")
 
 
 def _amount(value):
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
+    # Finite, positive, 2dp (rejects Infinity/1e500/junk; quantizes sub-kobo).
+    return parse_amount(value)
 
 
 def collect_airtime(network: str, phone: str, amount: Decimal, reference: str) -> dict:
@@ -147,7 +147,9 @@ def convert_airtime(request):
     if airtime > MAX_AIRTIME:
         return fail(f"Maximum airtime is ₦{MAX_AIRTIME:,.0f}")
 
-    key = data.get("idempotency_key", "")
+    # Fall back to a deterministic server key when the client omits one, so a
+    # retried convert can't credit free cash twice for one airtime transfer.
+    key = spend_key(data.get("idempotency_key"), user, "convert", net, phone, airtime)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay

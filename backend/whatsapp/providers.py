@@ -30,7 +30,14 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
     """
     secret = _cfg().get("APP_SECRET", "")
     if not secret:
-        return True
+        # Accept unsigned ONLY when the channel is in mock mode (no live creds) —
+        # then Meta isn't actually wired and there's no real callback to forge.
+        # Once the channel is LIVE we fail closed (reject) on a missing secret, and
+        # settings.py raises at boot if APP_SECRET is unset while live, so a
+        # production WhatsApp channel can never silently accept a forged callback
+        # that would impersonate a linked user's number. (Independent of DEBUG, so
+        # the test runner — which forces DEBUG=False — still exercises mock mode.)
+        return not wa_live()
     if not header or not header.startswith("sha256="):
         return False
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()

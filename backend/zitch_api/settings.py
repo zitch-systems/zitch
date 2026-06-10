@@ -53,6 +53,8 @@ INSTALLED_APPS = [
     "convert",
     "whatsapp",
     "portal",
+    "console",
+    "admin_api",
 ]
 
 MIDDLEWARE = [
@@ -212,9 +214,10 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # it. Each stays env-overridable for unusual setups (e.g. a non-TLS network).
 _PROD = not DEBUG
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SSL_REDIRECT", _PROD)
-# Keep the "/" liveness probe answering 200 over plain HTTP so a platform health
-# check never trips on the HTTPS redirect (it returns booleans only, no secrets).
-SECURE_REDIRECT_EXEMPT = [r"^$"]
+# Keep the "/healthz" liveness probe answering 200 over plain HTTP so a platform
+# health check never trips on the HTTPS redirect (it returns booleans only, no
+# secrets). The marketing landing at "/" redirects to HTTPS like everything else.
+SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
 SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", _PROD)
 CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE", _PROD)
 # HSTS — tell browsers to use HTTPS only. One year, including subdomains; preload
@@ -234,3 +237,16 @@ if _PROD and SECRET_KEY == "dev-insecure-change-me":
     from django.core.exceptions import ImproperlyConfigured
 
     raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set to a strong value when DJANGO_DEBUG is off.")
+
+# Fail fast: the public WhatsApp webhook verifies Meta's HMAC signature only when
+# APP_SECRET is set. In mock/dev (no secret) unsigned callbacks are accepted for
+# testability — that must NEVER happen in production, where a forged callback can
+# impersonate any linked user's number. Require the secret (and verify token)
+# whenever the channel is live or DEBUG is off.
+if _PROD and (WHATSAPP["TOKEN"] or WHATSAPP["PHONE_NUMBER_ID"]):
+    from django.core.exceptions import ImproperlyConfigured
+
+    if not WHATSAPP["APP_SECRET"]:
+        raise ImproperlyConfigured("WHATSAPP_APP_SECRET must be set when the WhatsApp channel is live (signature verification).")
+    if not WHATSAPP["VERIFY_TOKEN"]:
+        raise ImproperlyConfigured("WHATSAPP_VERIFY_TOKEN must be set when the WhatsApp channel is live (webhook handshake).")

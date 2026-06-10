@@ -1,8 +1,8 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiJson } from '@/lib/api';
+import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
@@ -29,6 +29,9 @@ const Loans = () => {
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
+  // Stable per-repayment key so a retry / double-tap is deduped server-side and
+  // never debits the wallet twice. Reset after a successful repayment.
+  const idemKey = useRef<string>('');
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -51,11 +54,15 @@ const Loans = () => {
   const repay = async (pin: string) => {
     if (!active) return;
     setBusy(true);
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     try {
-      const res = await apiJson('/api/loans/repay/', { amount: active.outstanding, transaction_pin: pin });
+      const res = await apiJson('/api/loans/repay/', {
+        amount: active.outstanding, transaction_pin: pin, idempotency_key: idemKey.current,
+      });
       if (res.success) {
         setPinOpen(false);
         setPinError('');
+        idemKey.current = '';
         Alert.alert('Success', 'Loan repaid');
         reloadWallet();
         load();

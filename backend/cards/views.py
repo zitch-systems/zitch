@@ -3,11 +3,20 @@
 Issuance / freeze / detail-reveal go through the card-issuer provider layer
 (mock when no key). Funding moves money from the wallet ledger onto the card.
 """
-from decimal import Decimal, InvalidOperation
-
 from django.db.models import F
 
-from common.http import api, fail, idempotent_replay, ok, require_user, verify_transaction_pin
+from common.http import (
+    api,
+    check_send_limits,
+    fail,
+    idempotent_replay,
+    ok,
+    parse_amount,
+    require_user,
+    spend_key,
+    verify_transaction_pin,
+)
+from common.ratelimit import ratelimit
 from utility.providers import (
     card_secure_details,
     fund_card as issuer_fund_card,
@@ -89,6 +98,7 @@ def toggle_freeze(request):
 
 
 @api
+@ratelimit("card_details", limit=10, window=60)
 @require_user
 def card_details(request):
     """POST /api/cards/details/ {access_token, card_id?, transaction_pin}
@@ -114,6 +124,7 @@ def card_details(request):
 
 
 @api
+@ratelimit("fund_card", limit=15, window=60)
 @require_user
 def fund_card(request):
     """POST /api/cards/fund/ {access_token, card_id?, amount, transaction_pin}
@@ -133,14 +144,20 @@ def fund_card(request):
     if card.frozen:
         return fail("Card is frozen", status=400)
 
-    try:
-        amount = Decimal(str(request.data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    amount = parse_amount(request.data.get("amount"))
+    if amount is None:
         return fail("Enter a valid amount")
     if amount < 100:
         return fail("Minimum card funding is ₦100")
 
-    key = (request.data.get("idempotency_key") or "").strip()
+    # Loading the wallet onto a card moves spendable funds out of the regulated
+    # ledger, so it must respect the same KYC tier ceiling + large-transfer face
+    # check the transfer endpoints enforce — otherwise it's a tier/AML bypass.
+    limit_err = check_send_limits(user, amount)
+    if limit_err:
+        return limit_err
+
+    key = spend_key(request.data.get("idempotency_key"), user, "card-fund", card.id, amount)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay

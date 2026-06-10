@@ -1,11 +1,12 @@
 import json
-from decimal import Decimal, InvalidOperation
 
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
-    api, check_send_limits, fail, idempotent_replay, ok, require_user, verify_transaction_pin,
+    api, check_send_limits, fail, idempotent_replay, ok, parse_amount, require_user,
+    spend_key, verify_transaction_pin,
 )
+from common.ratelimit import ratelimit
 from utility.providers import payment_initialize, payment_verify, payment_verify_signature
 
 from .models import FundingIntent
@@ -67,6 +68,7 @@ def transaction_history(request):
 
 # --------------------------- WALLET FUNDING (Monnify) ---------------------------
 @api
+@ratelimit("fund_initialize", limit=20, window=60)
 @require_user
 def fund_initialize(request):
     """POST /api/fund/initialize/ {access_token, amount}
@@ -76,9 +78,8 @@ def fund_initialize(request):
     after Monnify confirms payment (verify endpoint and/or webhook).
     """
     user = request.user_obj
-    try:
-        amount = Decimal(str(request.data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    amount = parse_amount(request.data.get("amount"))
+    if amount is None:
         return fail("Enter a valid amount")
     if amount < 100:
         return fail("Minimum funding amount is ₦100")
@@ -161,10 +162,15 @@ def _find_recipient(identifier: str):
 
 
 @api
+@ratelimit("resolve_recipient", limit=20, window=60)
 @require_user
 def resolve_recipient(request):
     """POST /api/transfer/resolve/ {access_token, identifier}
     -> {success, name, phone} — name confirmation before sending.
+
+    Rate-limited: without a throttle this is an unauthenticated-cost enumeration
+    oracle that confirms whether any phone/@tag/email maps to a Zitch user and
+    discloses the holder's name.
     """
     recipient = _find_recipient(request.data.get("identifier", ""))
     if recipient is None:
@@ -176,6 +182,7 @@ def resolve_recipient(request):
 
 
 @api
+@ratelimit("transfer_send", limit=12, window=60)
 @require_user
 def transfer_send(request):
     """POST /api/transfer/send/ {access_token, identifier, amount, transaction_pin, note?}
@@ -188,9 +195,8 @@ def transfer_send(request):
     if pin_err:
         return pin_err
 
-    try:
-        amount = Decimal(str(data.get("amount")))
-    except (InvalidOperation, TypeError, ValueError):
+    amount = parse_amount(data.get("amount"))
+    if amount is None:
         return fail("Enter a valid amount")
     if amount < 10:
         return fail("Minimum transfer is ₦10")
@@ -205,7 +211,7 @@ def transfer_send(request):
     if recipient.id == sender.id:
         return fail("You can't send money to yourself", status=400)
 
-    key = (data.get("idempotency_key") or "").strip()
+    key = spend_key(data.get("idempotency_key"), sender, "p2p", recipient.id, amount)
     replay = idempotent_replay(existing_for_key(sender, key))
     if replay:
         return replay

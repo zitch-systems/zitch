@@ -68,13 +68,20 @@ def disburse(user, principal, tenure_days: int) -> Loan:
 
 
 @db_transaction.atomic
-def repay(user, loan: Loan, amount) -> Loan:
+def repay(user, loan: Loan, amount, idempotency_key: str = "") -> Loan:
     """Debit the wallet toward a loan; mark repaid when fully settled.
 
     Locks the loan and wallet rows; raises InsufficientFunds if the balance is
-    short. Over-payment is capped at the outstanding amount.
+    short. Over-payment is capped at the outstanding amount. With an
+    `idempotency_key`, a retried repay (same user + key) raises
+    DuplicateTransaction with nothing debited — without it, a lost-response
+    retry would debit the wallet a second time (the reference is random per
+    call, so it can't dedupe on its own).
     """
+    from django.db import IntegrityError
+
     from wallet.models import Transaction
+    from wallet.services import DuplicateTransaction
 
     amount = Decimal(str(amount))
     loan = Loan.objects.select_for_update().get(pk=loan.pk)
@@ -88,15 +95,22 @@ def repay(user, loan: Loan, amount) -> Loan:
 
     wallet.balance -= pay
     wallet.save(update_fields=["balance", "updated"])
-    Transaction.objects.create(
-        user=user,
-        service="Loan repayment",
-        amount=pay,
-        direction=Transaction.OUT,
-        transaction_status=Transaction.SUCCESS,
-        reference=make_reference(f"{loan.reference}-R"),
-        meta={"loan": loan.reference},
-    )
+    try:
+        with db_transaction.atomic():  # savepoint: contain the unique violation
+            Transaction.objects.create(
+                user=user,
+                service="Loan repayment",
+                amount=pay,
+                direction=Transaction.OUT,
+                transaction_status=Transaction.SUCCESS,
+                reference=make_reference(f"{loan.reference}-R"),
+                meta={"loan": loan.reference},
+                idempotency_key=idempotency_key,
+            )
+    except IntegrityError:
+        if idempotency_key:
+            raise DuplicateTransaction(idempotency_key)
+        raise
 
     loan.amount_repaid += pay
     if loan.outstanding <= Decimal("0.00"):

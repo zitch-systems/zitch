@@ -6,7 +6,8 @@ aggregator -> mark the row Successful, or refund on failure.
 from decimal import Decimal, InvalidOperation
 
 from common.http import (
-    api, fail, idempotent_replay, ok, provider_purchase_response, require_user, verify_transaction_pin,
+    api, fail, idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
+    spend_key, verify_transaction_pin,
 )
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
@@ -22,10 +23,8 @@ DISCO_NAMES = {
 
 
 def _amount(value):
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
+    # Finite, positive, 2dp (rejects Infinity/1e500/junk; quantizes sub-kobo).
+    return parse_amount(value)
 
 
 def _check_pin(user, data):
@@ -70,7 +69,7 @@ def buyairtime(request):
         {"phone": phone, "network": net},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
                                  {"amount": str(amount), "phone": phone}, reference=ref),
-        idempotency_key=data.get("idempotency_key", ""),
+        idempotency_key=spend_key(data.get("idempotency_key"), user, "airtime", net, phone, amount),
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -114,7 +113,7 @@ def buydata(request):
         {"phone": phone, "network": net, "plan_code": plan.plan_code},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-data",
                                  {"billersCode": phone, "variation_code": plan.plan_code, "phone": phone}, reference=ref),
-        idempotency_key=data.get("idempotency_key", ""),
+        idempotency_key=spend_key(data.get("idempotency_key"), user, "data", net, phone, plan.plan_code),
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -168,7 +167,7 @@ def buycable(request):
         {"iuc": iuc, "provider": prov, "plan_code": plan.cable_plan_code},
         lambda ref: vtu_purchase(CABLE_NAMES.get(prov, "dstv").lower(),
                                  {"billersCode": iuc, "variation_code": plan.cable_plan_code}, reference=ref),
-        idempotency_key=data.get("idempotency_key", ""),
+        idempotency_key=spend_key(data.get("idempotency_key"), user, "cable", prov, iuc, plan.cable_plan_code),
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -206,7 +205,7 @@ def buyelectricity(request):
         {"meter": meter, "disco": disco, "meter_type": meter_type},
         lambda ref: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
                                  {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
-        idempotency_key=data.get("idempotency_key", ""),
+        idempotency_key=spend_key(data.get("idempotency_key"), user, "electricity", disco, meter, amount),
     )
     if not isinstance(outcome, tuple):
         return outcome
