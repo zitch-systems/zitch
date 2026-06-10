@@ -91,6 +91,12 @@ class WaMessageLog(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        indexes = [
+            # The webhook + agent monitor read the latest messages for a number
+            # (filter(msisdn=...).order_by("-created")); a composite index avoids a
+            # filesort on this inline, per-message hot path.
+            models.Index(fields=["msisdn", "-created"], name="wamsg_msisdn_created_idx"),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["wa_message_id"],
@@ -169,6 +175,10 @@ class AuditLog(models.Model):
 
     class Meta:
         ordering = ["-created"]
+        indexes = [
+            # Append-heavy compliance log, always read newest-first (admin audit view).
+            models.Index(fields=["-created"], name="auditlog_created_idx"),
+        ]
 
     def __str__(self):
         return f"{self.actor_type}:{self.actor_id} {self.action} {self.target}"

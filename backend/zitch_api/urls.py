@@ -25,8 +25,26 @@ def health(_request):
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
 
 
+def readyz(_request):
+    """Readiness probe: 200 only if the database is reachable, else 503.
+
+    Unlike /healthz (pure liveness, always 200 over plain HTTP for the platform
+    probe), this round-trips the DB so orchestration/monitoring can tell a live
+    process apart from one that can't serve traffic (DB down)."""
+    from django.db import connection
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+    except Exception:  # noqa: BLE001 — any DB error means not ready
+        return JsonResponse({"status": False, "db": False}, status=503)
+    return JsonResponse({"status": True, "db": True})
+
+
 urlpatterns = [
     path("healthz", health),
+    path("readyz", readyz),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
     path("webhooks/whatsapp", whatsapp_webhook),

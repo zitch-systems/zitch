@@ -3,7 +3,10 @@
 Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
-from common.http import api, fail, idempotent_replay, ok, provider_purchase_response, require_user, verify_transaction_pin
+from common.http import (
+    api, fail, idempotent_replay, ok, provider_purchase_response, require_user, spend_key,
+    verify_transaction_pin,
+)
 from utility.providers import vtu_purchase
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
@@ -44,8 +47,9 @@ def buy_exam(request):
     phone = data.get("phone", "")
     amount = product.price * quantity
 
-    # Idempotency: a retried / double-tapped request must not debit twice.
-    key = (data.get("idempotency_key") or "").strip()
+    # Idempotency: a retried / double-tapped request must not debit twice — fall
+    # back to a deterministic server key when the client omits one.
+    key = spend_key(data.get("idempotency_key"), user, "exam", product.code, phone, quantity)
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay

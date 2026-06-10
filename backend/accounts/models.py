@@ -6,6 +6,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 
@@ -69,6 +70,15 @@ class User(AbstractUser):
             self.tier = 2
         else:
             self.tier = 1
+
+    class Meta(AbstractUser.Meta):
+        indexes = [
+            # sign-in matches email case-insensitively (Q(email__iexact=...)); a
+            # functional LOWER(email) index turns that branch from a full user-table
+            # scan into an index lookup — sign-in is both hot and a brute-force
+            # target, so the scan is a DoS amplifier as the user table grows.
+            models.Index(Lower("email"), name="user_email_lower_idx"),
+        ]
 
     def __str__(self):
         return self.phone or self.email or self.username

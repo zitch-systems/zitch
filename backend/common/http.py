@@ -76,11 +76,14 @@ def parse_amount(value):
 
     try:
         d = Decimal(str(value))
+        if not d.is_finite() or d <= 0:
+            return None
+        # quantize can still raise InvalidOperation for a finite-but-absurd value
+        # (e.g. "1e500" exceeds the default context precision), so keep it inside
+        # the guard — a clean None (-> 400) beats a 500.
+        return d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     except (InvalidOperation, TypeError, ValueError):
         return None
-    if not d.is_finite() or d <= 0:
-        return None
-    return d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
 
 def spend_key(client_key, user, *parts, window_seconds: int = 30):
