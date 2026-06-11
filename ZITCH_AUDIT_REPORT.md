@@ -15,7 +15,30 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 
 ---
 
-## Update — end-to-end wiring audit & live E2E harness (this PR)
+## Update — operator-portal feature pass (this PR)
+
+Back-office features added to the console portal (`/console/portal/` + `/api/admin/`), each
+server-enforced (RBAC + audit) and covered by unit tests (**224 backend tests**) and the live
+harness (**129 E2E checks**):
+
+- **Customer 360** — the user drawer now loads `/users/detail`: recent ledger rows, loans/savings/
+  cards, WhatsApp link, PIN-lock state, and the audit entries that touched that user.
+- **Manual wallet credit** (`/wallet/credit`, `money` cap) — goodwill/refund credits ride the same
+  atomic, row-locked, idempotent `wallet.services.credit` path as funding; a reason (min 5 chars) is
+  mandatory and lands in the ledger row's meta + the audit log; operator double-clicks replay
+  idempotently (proven E2E: app balance credited once, never twice).
+- **Server-side search** — `/txn/search` (q/type/status over the full ledger), `/users/search`, and
+  `/audit/search` (full append-only log), surfaced as "Search all" alongside the local snapshot
+  filters; transactions also gained **CSV export**.
+- **Broadcast delivery drill-down** — `/wa/broadcast_detail` opens a per-recipient outcome drawer
+  (status, error code) for any campaign.
+- **Live webhook + recon history** — the Providers & Recon page now renders real `webhook.*` /
+  `recon.*` audit entries from bootstrap instead of empty tables.
+- **Data refresh** — topbar button re-bootstraps and remounts the active view without a reload.
+
+---
+
+## Update — end-to-end wiring audit & live E2E harness (PR #42, merged)
 
 A full wiring pass across **app ↔ backend ↔ both admin portals**, verified three ways: the unit
 suites (**215 backend + 11 app tests passing**) and a new **live E2E harness** (`backend/e2e_smoke.py`,

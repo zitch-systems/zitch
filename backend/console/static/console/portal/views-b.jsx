@@ -129,6 +129,8 @@ function Broadcasts({ toast }) {
   const [cat, setCat] = useState('utility');
   const [tpl, setTpl] = useState(BROADCAST_TEMPLATES[0]);
   const [busy, setBusy] = useState(false);
+  const [sel, setSel] = useState(null);          // selected broadcast (drawer)
+  const [recipients, setRecipients] = useState(null);
   const k = DB.KPIS || {};
   const optedIn = k.wa_optin || 0, linked = k.wa_links || 0;
 
@@ -143,17 +145,24 @@ function Broadcasts({ toast }) {
     }
   };
 
+  // Per-recipient delivery outcomes for one campaign.
+  const open = async (b) => {
+    setSel(b); setRecipients(null);
+    const r = await doAct(toast, '/wa/broadcast_detail', { id: b.id });
+    if (r) { setSel(r.broadcast); setRecipients(r.recipients || []); }
+  };
+
   return (
     <div>
       <PageHead title="Broadcasts" sub="Template campaigns over WhatsApp. STOP / UNSUBSCRIBE flips marketing opt-in off automatically." />
       <div className="grid-2-1">
-        <Card title="Campaigns" pad={false}>
+        <Card title="Campaigns" sub="Click a campaign for per-recipient outcomes" pad={false}>
           {rows.length ? (
             <table className="tbl">
               <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th></tr></thead>
               <tbody>
                 {rows.map((b) => (
-                  <tr key={b.id}>
+                  <tr key={b.id} className="click" onClick={() => open(b)}>
                     <td><b className="mono">{b.template}</b><div className="sm dim">{b.created} · {b.by}</div></td>
                     <td><Badge v={b.category === 'marketing' ? 'human' : 'bot'}>{b.category}</Badge></td>
                     <td><Badge v={b.status} /></td>
@@ -187,6 +196,31 @@ function Broadcasts({ toast }) {
           {!can.broadcast && <p className="rbac-note"><Icon name="lock" size={13} /> Support or super admin only.</p>}
         </Card>
       </div>
+      <Drawer open={!!sel} onClose={() => setSel(null)} title={sel ? sel.template : ''} width={520}>
+        {sel && (
+          <div>
+            <div className="kv"><span>Category</span><Badge v={sel.category === 'marketing' ? 'human' : 'bot'}>{sel.category}</Badge></div>
+            <div className="kv"><span>Sent by</span><b>{sel.by}</b></div>
+            <div className="kv"><span>Counts</span><b className="num">{sel.queued} queued · {sel.delivered} delivered · {sel.read} read · {sel.failed} failed</b></div>
+            <h4 className="drawer-sec">Recipients</h4>
+            {recipients === null ? <p className="dim sm">Loading recipients…</p> : recipients.length ? (
+              <table className="tbl">
+                <thead><tr><th>User</th><th>Number</th><th>Status</th><th>Error</th></tr></thead>
+                <tbody>
+                  {recipients.map((r, i) => (
+                    <tr key={i}>
+                      <td><b>{r.user}</b></td>
+                      <td className="mono sm dim">{r.msisdn}</td>
+                      <td><Badge v={r.status} /></td>
+                      <td className="dim sm">{r.error || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <Empty text="No recipients matched this campaign's segment." />}
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }
@@ -259,12 +293,36 @@ function AiControls({ toast }) {
 }
 
 // ================= AUDIT LOG =================
-function Audit() {
+function Audit({ toast }) {
   const [q, setQ] = useState('');
-  const rows = DB.AUDIT.filter((a) => q === '' || (a.actor + a.action + a.target).toLowerCase().includes(q.toLowerCase()));
+  const [serverRows, setServerRows] = useState(null);  // null = local snapshot
+  const [searching, setSearching] = useState(false);
+  const base = serverRows || DB.AUDIT;
+  const rows = serverRows ? base : base.filter((a) => q === '' || (a.actor + a.action + a.target).toLowerCase().includes(q.toLowerCase()));
+
+  // The bootstrap snapshot carries the newest 100 entries; this searches the
+  // whole append-only log server-side.
+  const searchAll = async () => {
+    setSearching(true);
+    const r = await doAct(toast, '/audit/search', { q });
+    setSearching(false);
+    if (r) {
+      setServerRows((r.rows || []).map((a) => ({ ...a, t: new Date(a.t) })));
+      toast((r.rows || []).length + ' audit entries matched server-side');
+    }
+  };
   return (
     <div>
-      <PageHead title="Audit log" sub="Append-only. Every admin action and sensitive event, with before/after." right={<SearchBox value={q} onChange={setQ} placeholder="Search actor, action…" />} />
+      <PageHead title="Audit log" sub="Append-only. Every admin action and sensitive event, with before/after."
+        right={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <SearchBox value={q} onChange={setQ} placeholder="Search actor, action…" />
+            <button className="btn ghost sm-btn" disabled={searching} onClick={searchAll}>
+              <Icon name="search" size={13} /> {searching ? 'Searching…' : 'Search full log'}
+            </button>
+            {serverRows && <button className="btn ghost sm-btn" onClick={() => setServerRows(null)}>Reset</button>}
+          </div>
+        } />
       <Card pad={false}>
         {rows.length ? (
           <table className="tbl">

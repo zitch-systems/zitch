@@ -378,6 +378,56 @@ def main():
     r = post("/api/admin/settings/update", {"key": "ai_enabled_global", "value": "true"}, token=adm)
     check("admin settings/update (super_admin)", j(r).get("success") is True, str(j(r)))
 
+    # --- feature endpoints: customer 360, server search, broadcast detail,
+    # webhook/recon history, manual credit ---
+    uid_a = User.objects.get(phone=phone_a).id
+    r = post("/api/admin/users/detail", {"uid": uid_a}, token=aro)
+    d = j(r)
+    check("admin users/detail 360", d.get("user", {}).get("uid") == uid_a and len(d.get("txns", [])) > 0
+          and "loans" in d and "cards" in d and "pin_locked" in d, f"{r.status_code} {str(d)[:160]}")
+    r = post("/api/admin/users/search", {"q": phone_b}, token=aro)
+    check("admin users/search by phone", any(u["uid"] == uid_b for u in j(r).get("rows", [])), str(j(r))[:160])
+    r = post("/api/admin/txn/search", {"type": "airtime"}, token=aro)
+    check("admin txn/search type filter", len(j(r).get("rows", [])) >= 1
+          and all(t["type"] == "airtime" for t in j(r)["rows"]), str(j(r))[:160])
+    r = post("/api/admin/txn/search", {"q": phone_a}, token=aro)
+    check("admin txn/search by user", len(j(r).get("rows", [])) >= 3, str(j(r))[:120])
+    r = post("/api/admin/audit/search", {"q": "wallet.manual_credit"}, token=aro)
+    audit_before = len(j(r).get("rows", []))
+    check("admin audit/search reachable", r.status_code == 200, f"{r.status_code}")
+
+    bid = j(post("/api/admin/wa/broadcast", {"template_name": "e2e_detail", "category": "utility"}, token=asup))["broadcast"]["id"]
+    r = post("/api/admin/wa/broadcast_detail", {"id": bid}, token=aro)
+    det = j(r)
+    check("admin wa/broadcast_detail", det.get("broadcast", {}).get("template") == "e2e_detail"
+          and isinstance(det.get("recipients"), list), f"{r.status_code} {str(det)[:160]}")
+
+    boot3 = j(get("/api/admin/bootstrap", token=aro))
+    check("admin bootstrap recons populated after runs",
+          any(rr["run"] in ("zitch-reconcile-vtu", "zitch-maturities") for rr in boot3.get("recons", [])),
+          str(boot3.get("recons"))[:160])
+
+    bal_before = float(j(post("/api/wallet_balance/", token=tok_b))["wallet"])
+    mc_key = f"e2e-mc-{uuid.uuid4().hex[:10]}"
+    r = post("/api/admin/wallet/credit", {"uid": uid_b, "amount": "750",
+                                          "reason": "E2E goodwill credit", "idempotency_key": mc_key}, token=afin)
+    check("admin wallet/credit", j(r).get("success") is True and j(r).get("reference"), f"{r.status_code} {j(r)}")
+    bal_after = float(j(post("/api/wallet_balance/", token=tok_b))["wallet"])
+    check("manual credit reflected in user's app balance", bal_after == bal_before + 750,
+          f"{bal_before} -> {bal_after}")
+    r = post("/api/admin/wallet/credit", {"uid": uid_b, "amount": "750",
+                                          "reason": "E2E goodwill credit", "idempotency_key": mc_key}, token=afin)
+    check("manual credit idempotent replay", j(r).get("duplicate") is True, str(j(r)))
+    bal_dup = float(j(post("/api/wallet_balance/", token=tok_b))["wallet"])
+    check("replay did not double-credit", bal_dup == bal_after, f"{bal_after} -> {bal_dup}")
+    r = post("/api/admin/wallet/credit", {"uid": uid_b, "amount": "100", "reason": "ok"}, token=afin)
+    check("manual credit requires a real reason", r.status_code == 400, f"{r.status_code}")
+    r = post("/api/admin/wallet/credit", {"uid": uid_b, "amount": "100",
+                                          "reason": "support cannot do this"}, token=asup)
+    check("admin RBAC: support blocked from wallet/credit", r.status_code == 403, f"{r.status_code}")
+    r = post("/api/admin/audit/search", {"q": "wallet.manual_credit"}, token=aro)
+    check("manual credit audited", len(j(r).get("rows", [])) == audit_before + 1, str(j(r))[:120])
+
     for nm, tk, path, body in (
         ("support blocked from fx/margin", asup, "/api/admin/fx/margin", {"bps": 50}),
         ("finance blocked from wa/reply", afin, "/api/admin/wa/reply", {"msisdn": msisdn, "text": "x"}),

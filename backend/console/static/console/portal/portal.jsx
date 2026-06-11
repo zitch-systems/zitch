@@ -9,11 +9,27 @@ function AdminApp({ me, initialRole, onSignOut }) {
   const [view, setView] = useState('overview');
   const [role, setRole] = useState(initialRole || (me && me.role) || 'read_only');
   const [toasts, setToasts] = useState([]);
+  // Bumping dataV remounts the active view, so it re-reads the freshly
+  // bootstrapped ZADM collections (views capture them in useState on mount).
+  const [dataV, setDataV] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   const toast = (text) => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t, { id, text }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3200);
+  };
+
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      ZADM.applyBootstrap(await ZADM_API.bootstrap());
+      setDataV((v) => v + 1);
+      toast('Data refreshed');
+    } catch (e) {
+      toast('⚠ ' + (e.message || 'Could not refresh'));
+    } finally { setRefreshing(false); }
   };
 
   const NAV = [
@@ -75,11 +91,14 @@ function AdminApp({ me, initialRole, onSignOut }) {
                 <Icon name="shield" size={13} /> {role}
               </span>
             )}
+            <button className="btn ghost sm-btn" disabled={refreshing} onClick={refresh}>
+              <Icon name="refresh" size={14} /> {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
             <div className="me"><span className="avatar">{initials(me && me.name)}</span> {(me && me.name) || 'Operator'}</div>
             <button className="btn ghost sm-btn" onClick={onSignOut}><Icon name="logout" size={14} /> Sign out</button>
           </header>
           <main className="content">
-            <View toast={toast} />
+            <View key={view + ':' + dataV} toast={toast} />
           </main>
         </div>
         <ToastHost toasts={toasts} />

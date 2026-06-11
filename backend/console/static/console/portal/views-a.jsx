@@ -90,13 +90,45 @@ function Transactions({ toast }) {
   const [type, setType] = useState('all');
   const [sel, setSel] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [serverMode, setServerMode] = useState(false);
+  const [searching, setSearching] = useState(false);
   const TYPES = ['all', 'transfer', 'fx', 'fund', 'airtime', 'data', 'electricity', 'cable'];
-  const rows = txns.filter((t) => (type === 'all' || t.type === type) &&
+  const rows = serverMode ? txns : txns.filter((t) => (type === 'all' || t.type === type) &&
     (q === '' || (t.id + t.user + t.desc).toLowerCase().includes(q.toLowerCase())));
 
   const patchTxn = (id, p) => {
     const next = txns.map((t) => (t.id === id ? { ...t, ...p } : t));
-    setTxns(next); D.TXNS = next;
+    setTxns(next);
+    if (!serverMode) D.TXNS = next;
+  };
+
+  // Server-side search across the full ledger (the bootstrap snapshot carries
+  // only the newest 150 rows). Results arrive with epoch-ms times — revive.
+  const searchAll = async () => {
+    setSearching(true);
+    const r = await doAct(toast, '/txn/search', { q, type });
+    setSearching(false);
+    if (r) {
+      setTxns((r.rows || []).map((t) => ({ ...t, time: new Date(t.time) })));
+      setServerMode(true);
+      toast((r.rows || []).length + ' ledger rows matched server-side');
+    }
+  };
+  const resetLocal = () => { setTxns(D.TXNS); setServerMode(false); };
+
+  const exportCsv = () => {
+    const head = ['reference', 'user', 'detail', 'type', 'channel', 'amount', 'currency', 'fee', 'status', 'time'];
+    const cell = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [head.join(',')].concat(rows.map((t) => [
+      t.id, t.user, t.desc, t.type, t.channel, t.amt, t.cur, t.fee, t.status,
+      (t.time instanceof Date ? t.time.toISOString() : t.time),
+    ].map(cell).join(',')));
+    const url = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = 'zitch-transactions-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast(rows.length + ' rows exported to CSV');
   };
   const requery = async () => {
     setBusy(true);
@@ -121,9 +153,22 @@ function Transactions({ toast }) {
 
   return (
     <div>
-      <PageHead title="Transactions" sub={rows.length + ' shown of ' + txns.length + ' loaded'} right={<SearchBox value={q} onChange={setQ} placeholder="Search reference, user…" />} />
+      <PageHead title="Transactions"
+        sub={serverMode ? rows.length + ' server-side matches' : rows.length + ' shown of ' + txns.length + ' loaded'}
+        right={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <SearchBox value={q} onChange={setQ} placeholder="Search reference, user…" />
+            <button className="btn ghost sm-btn" disabled={searching} onClick={searchAll}>
+              <Icon name="search" size={13} /> {searching ? 'Searching…' : 'Search all'}
+            </button>
+            {serverMode && <button className="btn ghost sm-btn" onClick={resetLocal}>Reset</button>}
+            <button className="btn ghost sm-btn" disabled={!rows.length} onClick={exportCsv}>
+              <Icon name="file" size={13} /> CSV
+            </button>
+          </div>
+        } />
       <div className="chips">
-        {TYPES.map((t) => <button key={t} className={'chip' + (type === t ? ' on' : '')} onClick={() => setType(t)}>{t === 'fx' ? 'FX' : t[0].toUpperCase() + t.slice(1)}</button>)}
+        {TYPES.map((t) => <button key={t} className={'chip' + (type === t ? ' on' : '')} onClick={() => { setType(t); if (serverMode) resetLocal(); }}>{t === 'fx' ? 'FX' : t[0].toUpperCase() + t.slice(1)}</button>)}
       </div>
       <Card pad={false}>
         {rows.length ? <TxnTable rows={rows} onRow={setSel} /> : <Empty text="No transactions match." />}
@@ -158,19 +203,114 @@ function Transactions({ toast }) {
 }
 
 // ================= USERS & KYC =================
+// Customer 360 inside the drawer: profile + recent ledger + products + the
+// audit entries that touched this user, fetched on open from /users/detail.
+function UserDetail({ uid, detail }) {
+  if (!detail) return <p className="dim sm" style={{ margin: '14px 0 0' }}>Loading activity…</p>;
+  const prods = [
+    detail.loans.length + ' loan' + (detail.loans.length === 1 ? '' : 's'),
+    detail.savings.length + ' fixed save', detail.cards.length + ' card' + (detail.cards.length === 1 ? '' : 's'),
+  ].join(' · ');
+  return (
+    <div>
+      <h4 className="drawer-sec">Recent activity</h4>
+      {detail.txns.length ? (
+        <table className="tbl">
+          <tbody>
+            {detail.txns.slice(0, 8).map((t) => (
+              <tr key={t.id}>
+                <td><span className="mono sm">{t.id}</span><div className="sm dim">{t.desc}</div></td>
+                <td className={'r num ' + (t.amt > 0 ? 'pos' : '')}>{D.fmtN(t.amt, t.cur)}</td>
+                <td className="r"><Badge v={t.status} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : <p className="dim sm" style={{ margin: 0 }}>No transactions yet.</p>}
+      <h4 className="drawer-sec">Products</h4>
+      <p className="dim sm" style={{ margin: 0 }}>{prods}{detail.pin_locked ? ' · PIN locked' : ''}{detail.wa_msisdn ? ' · WA ' + detail.wa_msisdn : ''}</p>
+      {detail.audit.length > 0 && (
+        <React.Fragment>
+          <h4 className="drawer-sec">Admin actions on this user</h4>
+          {detail.audit.slice(0, 5).map((a, i) => (
+            <div key={i} className="kv tight"><span className="mono sm">{a.action}</span><span className="dim sm num">{D.fmtT(new Date(a.t))}</span></div>
+          ))}
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// Manual goodwill credit — money capability; idempotency key generated per
+// attempt and reused on retries so a double-click can never credit twice.
+function CreditForm({ user, onCredited, toast }) {
+  const [amt, setAmt] = useState('');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const keyRef = React.useRef('');
+  const valid = Number(amt) > 0 && reason.trim().length >= 5;
+  const submit = async () => {
+    if (!valid || busy) return;
+    if (!keyRef.current) keyRef.current = 'mc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+    setBusy(true);
+    const r = await doAct(toast, '/wallet/credit', {
+      uid: user.uid, amount: amt, reason: reason.trim(), idempotency_key: keyRef.current,
+    });
+    setBusy(false);
+    if (r) {
+      keyRef.current = '';
+      setAmt(''); setReason('');
+      onCredited(r);
+      toast(D.fmtN(Number(r.amount), 'NGN') + ' credited to ' + user.name + ' — ref ' + r.reference + ' (audit logged)');
+    }
+  };
+  return (
+    <div>
+      <h4 className="drawer-sec">Manual credit (goodwill / refund)</h4>
+      <label className="f-label">Amount (NGN)</label>
+      <input className="f-input" type="number" min="0" value={amt} onChange={(e) => setAmt(e.target.value)} placeholder="e.g. 500" />
+      <label className="f-label">Reason (required, audited)</label>
+      <input className="f-input" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Goodwill: failed airtime ZTC-…" />
+      <button className="btn primary w100" style={{ marginTop: 10 }} disabled={!valid || busy} onClick={submit}>
+        {busy ? 'Crediting…' : 'Credit wallet'}
+      </button>
+    </div>
+  );
+}
+
 function Users({ toast }) {
   const { can } = useRole();
   const [users, setUsers] = useState(D.USERS);
   const [q, setQ] = useState('');
   const [sel, setSel] = useState(null);
   const [busy, setBusy] = useState(false);
-  const rows = users.filter((u) => q === '' || (u.name + u.phone + u.email).toLowerCase().includes(q.toLowerCase()));
+  const [detail, setDetail] = useState(null);
+  const [serverMode, setServerMode] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const rows = serverMode ? users : users.filter((u) => q === '' || (u.name + u.phone + u.email).toLowerCase().includes(q.toLowerCase()));
   const KYC_LABEL = { face: 'Tier 3 · Face', nin: 'Tier 2 · NIN', bvn: 'Tier 1 · BVN', pending: 'Pending' };
   const total = (D.KPIS && D.KPIS.users) || users.length;
 
+  const open = async (u) => {
+    setSel(u); setDetail(null);
+    const r = await doAct(toast, '/users/detail', { uid: u.uid });
+    if (r) setDetail(r);
+  };
+
+  // Server-side search across every user (bootstrap carries the newest 300).
+  const searchAll = async () => {
+    setSearching(true);
+    const r = await doAct(toast, '/users/search', { q });
+    setSearching(false);
+    if (r) { setUsers(r.rows || []); setServerMode(true); toast((r.rows || []).length + ' user(s) matched server-side'); }
+  };
+  const resetLocal = () => { setUsers(D.USERS); setServerMode(false); };
+
   const patchUser = (uid, p) => {
     const next = users.map((u) => (u.uid === uid ? { ...u, ...p } : u));
-    setUsers(next); D.USERS = next;
+    setUsers(next);
+    if (!serverMode) D.USERS = next;
+    setSel((s) => (s && s.uid === uid ? { ...s, ...p } : s));
   };
   const setStatus = async (status) => {
     setBusy(true);
@@ -191,14 +331,24 @@ function Users({ toast }) {
 
   return (
     <div>
-      <PageHead title="Users & KYC" sub={total.toLocaleString() + ' users · ' + rows.length + ' shown'} right={<SearchBox value={q} onChange={setQ} placeholder="Search name, phone, email…" />} />
+      <PageHead title="Users & KYC"
+        sub={serverMode ? rows.length + ' server-side matches of ' + total.toLocaleString() : total.toLocaleString() + ' users · ' + rows.length + ' shown'}
+        right={
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <SearchBox value={q} onChange={setQ} placeholder="Search name, phone, email…" />
+            <button className="btn ghost sm-btn" disabled={searching} onClick={searchAll}>
+              <Icon name="search" size={13} /> {searching ? 'Searching…' : 'Search all'}
+            </button>
+            {serverMode && <button className="btn ghost sm-btn" onClick={resetLocal}>Reset</button>}
+          </div>
+        } />
       <Card pad={false}>
         {rows.length ? (
           <table className="tbl">
             <thead><tr><th>User</th><th>Contact</th><th>KYC</th><th>WhatsApp</th><th className="r">NGN balance</th><th>Status</th></tr></thead>
             <tbody>
               {rows.map((u) => (
-                <tr key={u.id} className="click" onClick={() => setSel(u)}>
+                <tr key={u.id} className="click" onClick={() => open(u)}>
                   <td><div className="u-cell"><span className="avatar">{u.name.split(' ').map((w) => w[0]).join('')}</span><div><b>{u.name}</b><div className="dim sm">{u.id} · joined {u.joined}</div></div></div></td>
                   <td className="dim">{u.phone}<div className="sm">{u.email}</div></td>
                   <td><Badge v={u.kyc}>{KYC_LABEL[u.kyc]}</Badge></td>
@@ -224,6 +374,11 @@ function Users({ toast }) {
                 <div key={c} className={'wallet' + (v > 0 ? '' : ' zero')}><span>{c}</span><b className="num">{D.fmtN(v, c)}</b></div>
               ))}
             </div>
+            <UserDetail uid={sel.uid} detail={detail} />
+            {can.money && (
+              <CreditForm user={sel} toast={toast}
+                onCredited={(r) => patchUser(sel.uid, { wallets: { ...sel.wallets, NGN: r.balance } })} />
+            )}
             <div className="drawer-actions">
               <button className="btn ghost" disabled={!can.users || busy} onClick={unlockPin}>Unlock PIN</button>
               {sel.status === 'frozen'
