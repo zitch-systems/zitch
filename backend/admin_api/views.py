@@ -13,6 +13,7 @@ from decimal import Decimal
 from django.contrib.auth.hashers import make_password
 from django.db.models import Q, Sum
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 
 from common.http import fail, ok, resolve_token
 from common.ratelimit import ratelimit
@@ -151,12 +152,31 @@ def _txn_row(t, name_by_id) -> dict:
         "fee": _num(meta.get("fee", 0)),
         "status": status,
         "time": _ms(t.created),
+        # Only provider-timeout PENDING purchases can be requeried (same rule
+        # as the reconcile cron / the ops portal).
+        "canRequery": bool(t.transaction_status == t.PENDING and meta.get("reconcile")),
+        "flagged": bool(meta.get("flagged")),
     }
+
+
+def _corridor_enabled(ccy: str) -> bool:
+    """Live corridor state: the same SystemSetting the FX settlement path
+    checks (wallet.forex). CNY is settlement-blocked in code regardless."""
+    from whatsapp.models import SystemSetting
+
+    if ccy == "CNY":
+        return False
+    return SystemSetting.get(f"fx_corridor_{ccy.lower()}_enabled", "true") != "false"
 
 
 # --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
+# csrf_exempt is required here as on every other portal endpoint (the portal is
+# a bearer-token API with no session cookie — CSRF doesn't apply, and without
+# the exemption Django's middleware 403s the login POST itself). The other
+# endpoints inherit it from @staff_endpoint; login authenticates, so it can't.
+@csrf_exempt
 @ratelimit("admin_login", limit=10, window=300)
 def login(request):
     """POST /api/admin/login {username|email, password} -> {token, role, name, email}
@@ -270,8 +290,9 @@ def bootstrap(request):
     } for a in AuditLog.objects.all()[:100]]
 
     loans = [{
-        "id": f"ln_{l.id}", "user": name_by_id.get(l.user_id, "—"), "amt": _num(l.principal),
-        "tenor": f"{l.tenure_days} days", "rate": "4.5%/mo", "status": l.status,
+        "id": f"ln_{l.id}", "ref": l.reference, "user": name_by_id.get(l.user_id, "—"),
+        "amt": _num(l.principal), "tenor": f"{l.tenure_days} days", "rate": "4.5%/mo",
+        "status": ("overdue" if (l.status == Loan.ACTIVE and l.due_date and l.due_date < timezone.now()) else l.status),
         "due": l.due_date.strftime("%b %d, %Y") if l.due_date else "—", "outstanding": _num(l.outstanding),
     } for l in Loan.objects.all()[:80]]
 
@@ -282,9 +303,10 @@ def bootstrap(request):
         "status": ("paid" if s.paid_out else s.status), "payout": _num(s.maturity_value),
     } for s in FixedSave.objects.all()[:80]]
 
+    # Cards are funded from the NGN wallet (see cards.models.VirtualCard).
     cards = [{
-        "id": f"cd_{c.id}", "user": name_by_id.get(c.user_id, "—"), "last4": c.last4, "cur": "USD",
-        "bal": _num(c.balance), "status": c.status, "spend30": 0,
+        "id": f"cd_{c.id}", "cid": c.id, "user": name_by_id.get(c.user_id, "—"), "last4": c.last4,
+        "cur": "NGN", "bal": _num(c.balance), "status": c.status, "spend30": 0,
     } for c in VirtualCard.objects.all()[:80]]
 
     # --- Overview KPIs (real aggregates) ---
@@ -309,15 +331,29 @@ def bootstrap(request):
         "flagged": Transaction.objects.filter(meta__flagged=True).count(),
         "active_loans": Loan.objects.filter(status=Loan.ACTIVE).count(),
         "wa_links": WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).count(),
+        "wa_optin": WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE, marketing_opt_in=True).count(),
+        "matured_due": FixedSave.objects.filter(paid_out=False, status=FixedSave.ACTIVE,
+                                                matures_at__lte=now).count(),
     }
 
-    # --- FX corridors (real config: settle flags + live margin) ---
+    # --- FX corridors: live provider rate + margin-derived customer rate, and
+    # the corridor state from the same SystemSetting the settlement path reads
+    # (the static SETTLEABLE set says what *can* settle; the setting says what
+    # is currently *enabled*) ---
+    from utility.providers import fx_quote
+
     margin_bps = int(SystemSetting.get("fx_margin_bps", "60") or "60")
     flags = {"USD": "🇺🇸", "GBP": "🇬🇧", "CAD": "🇨🇦", "CNY": "🇨🇳"}
-    rates = [{
-        "pair": f"NGN/{c}", "flag": flags.get(c, "🏳️"), "margin": margin_bps,
-        "settle": c in SETTLEABLE, "vol24": 0,
-    } for c in ["USD", "GBP", "CAD", "CNY"]]
+    rates = []
+    for c in ["USD", "GBP", "CAD", "CNY"]:
+        q = fx_quote(c, "NGN", Decimal("1"))
+        provider = _num(q.get("rate", 0)) if q.get("success") else 0.0
+        customer = provider * (1 + margin_bps / 10000.0)
+        rates.append({
+            "pair": f"NGN/{c}", "flag": flags.get(c, "🏳️"), "margin": margin_bps,
+            "provider": provider, "customer": customer,
+            "settle": (c in SETTLEABLE) and _corridor_enabled(c), "vol24": 0,
+        })
 
     # Float = platform liability we actually hold per currency (real).
     from wallet.models import CurrencyWallet
@@ -458,16 +494,22 @@ def txn_flag(request):
     t.save(update_fields=["meta"])
     audit(request, "txn.flag" if flagged else "txn.unflag", target=ref,
           before={"flagged": before}, after={"flagged": flagged})
-    return ok(success=True, ref=ref, flagged=flagged)
+    # status = what the row should now display (the underlying ledger status
+    # when released — flagging never rewrites the settled status).
+    display = "flagged" if flagged else _STATUS_MAP.get(t.transaction_status, "pending")
+    return ok(success=True, ref=ref, flagged=flagged, status=display)
 
 
 @staff_endpoint(methods=("POST",), perm="money")
 def card_freeze(request):
-    """POST {card_id, status: active|frozen} — freeze/unfreeze a virtual card."""
+    """POST {card_id, status: active|frozen} — freeze/unfreeze a virtual card.
+
+    Accepts the bare pk or the portal's serialized form (``cd_<pk>``)."""
     from cards.models import VirtualCard
 
+    raw = str(request.data.get("card_id") or "")
     try:
-        card = VirtualCard.objects.get(pk=int(request.data.get("card_id")))
+        card = VirtualCard.objects.get(pk=int(raw.removeprefix("cd_")))
     except (VirtualCard.DoesNotExist, TypeError, ValueError):
         return fail("Card not found", status=404)
     status = (request.data.get("status") or "").strip()
@@ -499,3 +541,189 @@ def wa_handover(request):
     audit(request, "wa.handover" if mode == "human" else "wa.return_to_bot", target=msisdn,
           before=before, after={"status": cs.status, "ai": cs.ai_enabled})
     return ok(success=True, msisdn=msisdn, status=cs.status)
+
+
+@staff_endpoint(methods=("POST",), perm="users")
+def user_pin_unlock(request):
+    """POST {uid} — clear a user's transaction-PIN lockout (the PIN itself is
+    untouched; the user keeps having to know it). Fail-closed: nothing here can
+    move money."""
+    u = _get_user(request.data.get("uid"))
+    if u is None:
+        return fail("User not found", status=404)
+    before = {"locked_until": str(u.pin_locked_until or ""), "failed_attempts": u.pin_failed_attempts}
+    u.pin_failed_attempts = 0
+    u.pin_locked_until = None
+    u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+    audit(request, "user.pin_unlock", target=f"u_{u.id}", before=before, after={"locked_until": ""})
+    return ok(success=True, uid=u.id)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def txn_requery(request):
+    """POST {ref} — requery a provider-timeout PENDING purchase and settle it.
+
+    Identical to the reconcile cron / ops portal path: provider truth decides
+    settle vs refund, idempotently. Anything not provider-pending is a 409."""
+    from utility.providers import vtu_requery
+    from wallet.models import Transaction
+    from wallet.services import settle_or_refund
+
+    ref = (request.data.get("ref") or "").strip()
+    txn = Transaction.objects.filter(reference=ref).first()
+    if txn is None:
+        return fail("Transaction not found", status=404)
+    if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
+        return fail("Only provider-pending purchases can be requeried", status=409)
+    status = settle_or_refund(txn, vtu_requery(txn.reference))
+    audit(request, "txn.requery", target=ref, before={"status": "pending"}, after={"status": status})
+    return ok(success=True, ref=ref, status=status)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def fx_margin(request):
+    """POST {bps} — set the FX margin (0–1000 bps) applied to every quote."""
+    from whatsapp.models import SystemSetting
+
+    try:
+        bps = int(request.data.get("bps"))
+    except (TypeError, ValueError):
+        return fail("bps must be an integer")
+    if not 0 <= bps <= 1000:
+        return fail("bps must be between 0 and 1000")
+    before = SystemSetting.get("fx_margin_bps", "60")
+    SystemSetting.set("fx_margin_bps", str(bps))
+    audit(request, "fx.margin_update", target="fx_margin_bps", before={"bps": before}, after={"bps": bps})
+    return ok(success=True, margin=bps)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def fx_corridor(request):
+    """POST {currency, enabled} — pause/resume a settlement corridor. CNY is
+    settlement-blocked in code and can't be enabled from here."""
+    from whatsapp.models import SystemSetting
+
+    ccy = (request.data.get("currency") or "").upper()
+    if ccy not in ("USD", "GBP", "CAD", "CNY") or ccy == "CNY":
+        return fail("Corridor not toggleable" if ccy == "CNY" else "Unknown corridor")
+    enabled = bool(request.data.get("enabled"))
+    before = _corridor_enabled(ccy)
+    SystemSetting.set(f"fx_corridor_{ccy.lower()}_enabled", "true" if enabled else "false")
+    audit(request, "fx.corridor_update", target=f"NGN/{ccy}",
+          before={"enabled": before}, after={"enabled": enabled})
+    return ok(success=True, currency=ccy, enabled=enabled)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def loan_remind(request):
+    """POST {ref} — send the borrower a WhatsApp repayment reminder."""
+    from loans.models import Loan
+    from whatsapp.models import WhatsAppLink
+    from whatsapp.router import reply as wa_send
+
+    ref = (request.data.get("ref") or "").strip()
+    loan = Loan.objects.select_related("user").filter(reference=ref).first()
+    if loan is None:
+        return fail("Loan not found", status=404)
+    link = WhatsAppLink.objects.filter(user=loan.user, status=WhatsAppLink.ACTIVE).first()
+    if link is None:
+        return fail("Borrower has no linked WhatsApp", status=409)
+    wa_send(link.wa_msisdn,
+            f"Hi {loan.user.first_name or 'there'}, a reminder from Zitch: your loan "
+            f"({loan.reference}) has ₦{loan.outstanding:,.2f} outstanding, due {loan.due_date:%b %d}. "
+            "Open the app to repay.")
+    audit(request, "loan.reminder", target=ref)
+    return ok(success=True, ref=ref)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def run_maturities(request):
+    """POST {} — run the Fixed-Save maturity sweep now (idempotent per plan)."""
+    from savings.services import run_maturities as run_maturities_service
+
+    n = run_maturities_service()
+    audit(request, "recon.maturities_run", after={"paid_out": n})
+    return ok(success=True, paid_out=n)
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def run_recon(request):
+    """POST {} — requery + settle every provider-pending purchase (the VTU
+    reconcile cron's loop, on demand)."""
+    from utility.providers import vtu_requery
+    from wallet.models import Transaction
+    from wallet.services import settle_or_refund
+
+    cutoff = timezone.now() - timedelta(minutes=5)
+    pending = list(Transaction.objects.filter(
+        transaction_status=Transaction.PENDING, direction=Transaction.OUT,
+        meta__reconcile=True, created__lte=cutoff,
+    ))
+    settled = 0
+    for txn in pending:
+        if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":
+            settled += 1
+    audit(request, "recon.vtu_run", after={"checked": len(pending), "settled": settled})
+    return ok(success=True, checked=len(pending), settled=settled)
+
+
+@staff_endpoint(methods=("POST",), perm="wa")
+def wa_conv_ai(request):
+    """POST {msisdn, enabled} — toggle the AI layer for one conversation."""
+    from whatsapp.models import ConversationState
+
+    msisdn = (request.data.get("msisdn") or "").strip()
+    if not msisdn:
+        return fail("msisdn required")
+    cs = ConversationState.for_msisdn(msisdn)
+    before = {"ai_enabled": cs.ai_enabled}
+    cs.ai_enabled = bool(request.data.get("enabled"))
+    cs.save(update_fields=["ai_enabled", "updated"])
+    audit(request, "conversation.ai_toggle", target=msisdn, before=before,
+          after={"ai_enabled": cs.ai_enabled})
+    return ok(success=True, msisdn=msisdn, enabled=cs.ai_enabled)
+
+
+@staff_endpoint(methods=("POST",), perm="wa")
+def wa_reply(request):
+    """POST {msisdn, text} — send an agent reply into a WhatsApp conversation."""
+    from whatsapp.router import reply as wa_send
+
+    msisdn = (request.data.get("msisdn") or "").strip()
+    text = (request.data.get("text") or "").strip()
+    if not msisdn or not text:
+        return fail("msisdn and text required")
+    wa_send(msisdn, text)
+    audit(request, "conversation.agent_reply", target=msisdn, after={"chars": len(text)})
+    return ok(success=True, msisdn=msisdn)
+
+
+@staff_endpoint(methods=("POST",), perm="broadcast")
+def wa_broadcast(request):
+    """POST {template_name, category?} — create + send a template broadcast.
+
+    Reuses whatsapp.ops.send_broadcast (segmenting, marketing opt-in rule,
+    per-recipient outcomes) and returns the row in the bootstrap shape so the
+    portal can prepend it without refetching."""
+    from whatsapp.models import Broadcast
+    from whatsapp.ops import send_broadcast
+
+    template = (request.data.get("template_name") or "").strip()
+    if not template:
+        return fail("template_name required")
+    category = request.data.get("category") or Broadcast.UTILITY
+    if category not in (Broadcast.UTILITY, Broadcast.MARKETING):
+        return fail("category must be utility or marketing")
+    b = Broadcast.objects.create(
+        template_name=template, category=category,
+        body_params=request.data.get("body_params", []),
+        segment=request.data.get("segment", {}), created_by=request.staff,
+    )
+    send_broadcast(b, actor=request.staff)
+    return ok(success=True, broadcast={
+        "id": f"bc_{b.id}", "template": b.template_name, "category": b.category,
+        "status": b.status, "created": b.created.strftime("%b %d, %Y"),
+        "by": (request.staff.email or request.staff.username),
+        "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
+        "read": b.count_read, "failed": b.count_failed,
+    })

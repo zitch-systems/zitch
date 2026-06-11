@@ -15,6 +15,51 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 
 ---
 
+## Update — end-to-end wiring audit & live E2E harness (this PR)
+
+A full wiring pass across **app ↔ backend ↔ both admin portals**, verified three ways: the unit
+suites (**215 backend + 11 app tests passing**) and a new **live E2E harness** (`backend/e2e_smoke.py`,
+**115 checks** against a running server: full app journey, both staff APIs incl. RBAC denials, WhatsApp
+ops + webhook, and every web surface).
+
+**Found & fixed (console portal `/console/portal/` + `/api/admin/`):**
+- **Critical — login dead in production:** `admin_api.login` lacked `@csrf_exempt`, so Django's CSRF
+  middleware 403'd every real sign-in (unit tests masked it — the test client skips CSRF enforcement;
+  the live harness caught it). Regression test added with `enforce_csrf_checks=True`.
+- **Write actions were toast-only stubs:** freeze/unfreeze user, KYC approve/reject, card freeze,
+  WhatsApp handover/return/agent-reply/conversation-AI, broadcast send, flag/release txn, FX margin,
+  corridor toggles, maturity sweep, VTU recon and PIN unlock now POST to audited, role-gated
+  `/api/admin/*` endpoints **before** updating UI state (10 new endpoints, each reusing the same
+  service the cron/ops portal uses — no new money paths).
+- **FX tab crashed at runtime:** the UI rendered `r.provider.toLocaleString()` but bootstrap sent no
+  provider rate — bootstrap now returns provider+customer rates per corridor.
+- **Corridor state lied:** bootstrap reported the static `SETTLEABLE` set; it now reads the same
+  `fx_corridor_*_enabled` SystemSetting the settlement path enforces.
+- **`card_freeze` could never match:** bootstrap serialized ids as `cd_<pk>` while the endpoint did
+  `int(card_id)` — endpoint now accepts both; bootstrap also carries the numeric `cid`.
+- Overview KPIs / counts / dates were hardcoded mock strings — now driven by bootstrap `kpis`
+  (incl. new `wa_optin`, `matured_due`); loans gained `ref` + computed `overdue`; cards corrected
+  to NGN; dead "Approve & disburse / Mark repaid" loan buttons removed (loans auto-disburse and the
+  model has no `requested` state — and "mark repaid" would have falsified loan state with no ledger
+  movement); "Send reminder" wired instead. Empty-state guards added (the WhatsApp inbox crashed on
+  zero conversations).
+- **`admin_api` had zero tests** — added 17 (auth, CSRF, bootstrap shape, every write action, RBAC).
+
+**Found & fixed (WhatsApp ops, used by the canonical portal):**
+- `/api/whatsapp/ops/{handover,return-to-bot,reply,broadcast}` gated only on `is_staff` — any
+  read-only/finance staffer could reply to customer chats or send broadcasts, contradicting the role
+  matrix both portals enforce elsewhere. Now cap-gated (`wa` / `broadcast` via `portal.roles`), with
+  role-denial tests.
+
+**Verified clean (no changes needed):** all 37 mobile-app endpoint contracts (paths, payload keys,
+response fields, idempotency keys on every spend, PIN/limit error handling) — re-proven live by the
+harness; the canonical ops portal (`/portal/` + `/api/ops/`) wiring incl. its broadcast flow; the FX
+corridor toggle is honoured by settlement (`wallet/forex.py` reads the same setting). One note: the
+app's currency converter (`/api/convert/fx/`) rides a keyless third-party API and degrades to a clean
+error offline — fine for launch, worth a keyed provider later.
+
+---
+
 ## Update — pre-launch hardening (follow-up PR)
 
 A follow-up branch closed the highest-value items that were previously **OPEN**, with regression tests

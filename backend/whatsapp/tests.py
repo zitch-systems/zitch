@@ -450,7 +450,13 @@ class OperatorTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user(balance="10000")
+        # Operator with the `support` role (wa + broadcast caps) — ops endpoints
+        # are role-gated, not merely is_staff-gated.
+        from django.contrib.auth.models import Group
+
         self.staff = User.objects.create(username="adm", phone="08099999999", email="adm@zitch.test", is_staff=True)
+        group, _ = Group.objects.get_or_create(name="support")
+        self.staff.groups.add(group)
         self.staff_token = AccessToken.issue(self.staff).key
 
     def inbound(self, text, mid):
@@ -494,6 +500,27 @@ class OperatorTests(TestCase):
 
     def test_ops_requires_staff(self):
         res, _ = self.post_as("/api/whatsapp/ops/handover/", self.token, {"msisdn": MSISDN})  # normal user
+        self.assertEqual(res.status_code, 403)
+
+    def test_ops_requires_role_capability(self):
+        """A staff account with no role group is read_only: no wa/broadcast caps."""
+        bare = User.objects.create(username="ro", phone="08098888888", email="ro@zitch.test", is_staff=True)
+        bare_token = AccessToken.issue(bare).key
+        res, _ = self.post_as("/api/whatsapp/ops/handover/", bare_token, {"msisdn": MSISDN})
+        self.assertEqual(res.status_code, 403)
+        res, _ = self.post_as("/api/whatsapp/ops/broadcast/", bare_token, {"template_name": "promo"})
+        self.assertEqual(res.status_code, 403)
+
+    def test_finance_role_cannot_broadcast(self):
+        """The finance role has money/users caps but not wa/broadcast."""
+        from django.contrib.auth.models import Group
+
+        fin = User.objects.create(username="fin", phone="08097777777", email="fin@zitch.test", is_staff=True)
+        fin.groups.add(Group.objects.get_or_create(name="finance")[0])
+        fin_token = AccessToken.issue(fin).key
+        res, _ = self.post_as("/api/whatsapp/ops/broadcast/", fin_token, {"template_name": "promo"})
+        self.assertEqual(res.status_code, 403)
+        res, _ = self.post_as("/api/whatsapp/ops/reply/", fin_token, {"msisdn": MSISDN, "text": "hi"})
         self.assertEqual(res.status_code, 403)
 
     def test_broadcast_only_opted_in(self):
