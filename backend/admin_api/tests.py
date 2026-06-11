@@ -270,3 +270,145 @@ class AdminApiTests(TestCase):
         res, _ = self.post("settings/update", self.admin_token,
                            {"key": "not_a_setting", "value": "x"})
         self.assertEqual(res.status_code, 400)
+
+
+class AdminApiFeatureTests(TestCase):
+    """The deeper-read + manual-credit endpoints: customer 360, server-side
+    search, broadcast delivery detail, webhook/recon history, wallet credit."""
+
+    def setUp(self):
+        self.client = Client()
+        self.finance = make_staff("dapo2", role="finance")
+        self.finance_token = AccessToken.issue(self.finance).key
+        self.support = make_staff("funmi2", role="support")
+        self.support_token = AccessToken.issue(self.support).key
+        self.readonly = make_staff("ro2")
+        self.readonly_token = AccessToken.issue(self.readonly).key
+        self.customer = make_customer("zara", phone="08055556666", balance="1000")
+
+    def post(self, path, token, body=None):
+        res = self.client.post(f"/api/admin/{path}", data=json.dumps(body or {}),
+                               content_type="application/json",
+                               HTTP_AUTHORIZATION=f"Bearer {token}")
+        return res, res.json()
+
+    def get(self, path, token):
+        res = self.client.get(f"/api/admin/{path}", HTTP_AUTHORIZATION=f"Bearer {token}")
+        return res, res.json()
+
+    def test_user_detail_360(self):
+        Transaction.objects.create(user=self.customer, amount=Decimal("250"),
+                                   direction=Transaction.OUT, service="Airtime — MTN",
+                                   transaction_status=Transaction.SUCCESS, reference="ZTC-D1")
+        Loan.objects.create(user=self.customer, principal=Decimal("20000"), interest=Decimal("900"),
+                            tenure_days=30, reference="LN-D1",
+                            due_date=timezone.now() + timedelta(days=30))
+        VirtualCard.objects.create(user=self.customer, last4="1177", expiry="01/28")
+        res, body = self.post("users/detail", self.readonly_token, {"uid": self.customer.id})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["user"]["uid"], self.customer.id)
+        self.assertEqual(len(body["txns"]), 1)
+        self.assertEqual(body["loans"][0]["ref"], "LN-D1")
+        self.assertEqual(len(body["cards"]), 1)
+        self.assertIn("pin_locked", body)
+        res, _ = self.post("users/detail", self.readonly_token, {"uid": 999999})
+        self.assertEqual(res.status_code, 404)
+
+    def test_user_search(self):
+        res, body = self.post("users/search", self.readonly_token, {"q": "zara"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(body["rows"]), 1)
+        self.assertEqual(body["rows"][0]["uid"], self.customer.id)
+        res, body = self.post("users/search", self.readonly_token, {"q": "no-such-user-xyz"})
+        self.assertEqual(body["rows"], [])
+
+    def test_txn_search_filters(self):
+        Transaction.objects.create(user=self.customer, amount=Decimal("250"),
+                                   direction=Transaction.OUT, service="Airtime — MTN",
+                                   transaction_status=Transaction.SUCCESS, reference="ZTC-S1")
+        Transaction.objects.create(user=self.customer, amount=Decimal("900"),
+                                   direction=Transaction.OUT, service="Transfer — GTB",
+                                   transaction_status=Transaction.FAILED, reference="ZTC-S2")
+        res, body = self.post("txn/search", self.readonly_token, {"type": "airtime"})
+        self.assertEqual([r["id"] for r in body["rows"]], ["ZTC-S1"])
+        res, body = self.post("txn/search", self.readonly_token, {"status": "failed"})
+        self.assertEqual([r["id"] for r in body["rows"]], ["ZTC-S2"])
+        res, body = self.post("txn/search", self.readonly_token, {"q": "zara"})
+        self.assertEqual(len(body["rows"]), 2)
+
+    def test_audit_search(self):
+        from .auth import audit as audit_helper
+
+        class Req:  # minimal shim for the audit() helper signature
+            staff = self.finance
+        audit_helper(Req, "test.alpha_action", target="u_777")
+        audit_helper(Req, "test.beta_action", target="u_888")
+        res, body = self.post("audit/search", self.readonly_token, {"q": "alpha"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(all("alpha" in r["action"] for r in body["rows"]))
+        self.assertGreaterEqual(len(body["rows"]), 1)
+
+    def test_broadcast_detail(self):
+        WhatsAppLink.objects.create(user=self.customer, wa_msisdn="2348055556666",
+                                    status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
+        _, sent = self.post("wa/broadcast", self.support_token,
+                            {"template_name": "detail_test", "category": "utility"})
+        bid = sent["broadcast"]["id"]  # bc_<pk> form on purpose
+        res, body = self.post("wa/broadcast_detail", self.readonly_token, {"id": bid})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["broadcast"]["template"], "detail_test")
+        self.assertEqual(len(body["recipients"]), 1)
+        self.assertEqual(body["recipients"][0]["msisdn"], "2348055556666")
+        res, _ = self.post("wa/broadcast_detail", self.readonly_token, {"id": "bc_999999"})
+        self.assertEqual(res.status_code, 404)
+
+    def test_bootstrap_webhooks_and_recons_live(self):
+        from whatsapp.models import AuditLog
+        from whatsapp.ops import record_audit
+
+        record_audit("webhook.monnify", actor_type="system", target="MNFY|X1",
+                     after={"event": "fund.success"})
+        self.post("ops/recon", self.finance_token, {})
+        res, body = self.get("bootstrap", self.readonly_token)
+        self.assertTrue(any(w["ref"] == "MNFY|X1" and w["src"] == "Monnify" for w in body["webhooks"]))
+        self.assertTrue(any(r["run"] == "zitch-reconcile-vtu" for r in body["recons"]))
+
+    def test_wallet_credit_happy_path_and_audit(self):
+        res, body = self.post("wallet/credit", self.finance_token,
+                              {"uid": self.customer.id, "amount": "500",
+                               "reason": "Goodwill: failed airtime ZTC-S1",
+                               "idempotency_key": "mc-1"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["balance"], 1500.0)
+        w = Wallet.objects.get(user=self.customer)
+        self.assertEqual(w.balance, Decimal("1500"))
+        t = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(t.direction, Transaction.IN)
+        self.assertEqual(t.meta["reason"], "Goodwill: failed airtime ZTC-S1")
+        self.assertTrue(AuditLog.objects.filter(action="wallet.manual_credit").exists())
+
+    def test_wallet_credit_idempotent_replay(self):
+        body1 = self.post("wallet/credit", self.finance_token,
+                          {"uid": self.customer.id, "amount": "500",
+                           "reason": "Goodwill credit", "idempotency_key": "mc-dup"})[1]
+        res, body2 = self.post("wallet/credit", self.finance_token,
+                               {"uid": self.customer.id, "amount": "500",
+                                "reason": "Goodwill credit", "idempotency_key": "mc-dup"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body2.get("duplicate"))
+        self.assertEqual(body2["reference"], body1["reference"])
+        self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))  # once
+
+    def test_wallet_credit_validation_and_rbac(self):
+        res, _ = self.post("wallet/credit", self.finance_token,
+                           {"uid": self.customer.id, "amount": "-5", "reason": "valid reason"})
+        self.assertEqual(res.status_code, 400)
+        res, _ = self.post("wallet/credit", self.finance_token,
+                           {"uid": self.customer.id, "amount": "100", "reason": "x"})
+        self.assertEqual(res.status_code, 400)  # reason too short
+        res, _ = self.post("wallet/credit", self.support_token,
+                           {"uid": self.customer.id, "amount": "100", "reason": "valid reason"})
+        self.assertEqual(res.status_code, 403)  # support lacks money cap
+        res, _ = self.post("wallet/credit", self.readonly_token,
+                           {"uid": self.customer.id, "amount": "100", "reason": "valid reason"})
+        self.assertEqual(res.status_code, 403)

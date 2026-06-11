@@ -247,7 +247,7 @@ window.ZADM.applyBootstrap = function (d) {
   if (d.savings) ZADM.SAVINGS = d.savings;
   if (d.cards) ZADM.CARDS = d.cards;
   if (d.kycq) ZADM.KYCQ = d.kycq.map((k) => ({ ...k, submitted: D(k.submitted) }));
-  if (d.webhooks) ZADM.WEBHOOKS = d.webhooks;
+  if (d.webhooks) ZADM.WEBHOOKS = d.webhooks.map((w) => ({ ...w, time: D(w.time) }));
   if (d.recons) ZADM.RECONS = d.recons;
   if (d.team) ZADM.TEAM = d.team;
   if (d.perms) ZADM.PERMS = d.perms;

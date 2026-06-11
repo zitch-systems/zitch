@@ -26,7 +26,7 @@ PERMS_MATRIX = [
     {"perm": "View dashboards & logs", "super_admin": True, "finance": True, "support": True, "read_only": True},
     {"perm": "Reply / handover WhatsApp chats", "super_admin": True, "finance": False, "support": True, "read_only": False},
     {"perm": "Send broadcasts", "super_admin": True, "finance": False, "support": True, "read_only": False},
-    {"perm": "Refund / requery / flag transactions", "super_admin": True, "finance": True, "support": False, "read_only": False},
+    {"perm": "Refund / credit / requery / flag transactions", "super_admin": True, "finance": True, "support": False, "read_only": False},
     {"perm": "Edit FX margin & corridors", "super_admin": True, "finance": True, "support": False, "read_only": False},
     {"perm": "Freeze users / review KYC", "super_admin": True, "finance": True, "support": False, "read_only": False},
     {"perm": "AI kill switch & system settings", "super_admin": True, "finance": False, "support": False, "read_only": False},
@@ -169,6 +169,86 @@ def _corridor_enabled(ccy: str) -> bool:
     return SystemSetting.get(f"fx_corridor_{ccy.lower()}_enabled", "true") != "false"
 
 
+def _loan_row(l, name) -> dict:
+    from loans.models import Loan
+
+    overdue = l.status == Loan.ACTIVE and l.due_date and l.due_date < timezone.now()
+    return {
+        "id": f"ln_{l.id}", "ref": l.reference, "user": name, "amt": _num(l.principal),
+        "tenor": f"{l.tenure_days} days", "rate": "4.5%/mo",
+        "status": ("overdue" if overdue else l.status),
+        "due": l.due_date.strftime("%b %d, %Y") if l.due_date else "—",
+        "outstanding": _num(l.outstanding),
+    }
+
+
+def _saving_row(s, name) -> dict:
+    return {
+        "id": f"sv_{s.id}", "user": name, "principal": _num(s.principal),
+        "rate": f"{_num(s.rate) * 100:.0f}% p.a.", "start": s.created.strftime("%b %d, %Y"),
+        "maturity": s.matures_at.strftime("%b %d, %Y") if s.matures_at else "—",
+        "status": ("paid" if s.paid_out else s.status), "payout": _num(s.maturity_value),
+    }
+
+
+def _card_row(c, name) -> dict:
+    return {
+        "id": f"cd_{c.id}", "cid": c.id, "user": name, "last4": c.last4,
+        "cur": "NGN", "bal": _num(c.balance), "status": c.status, "spend30": 0,
+    }
+
+
+def _audit_row(a) -> dict:
+    return {
+        "actor": a.actor_id or a.actor_type, "role": a.actor_type, "action": a.action,
+        "target": a.target, "before": a.before, "after": a.after, "t": _ms(a.created),
+    }
+
+
+_WEBHOOK_SOURCES = {"monnify": "Monnify", "monnify_disbursement": "Monnify",
+                    "whatsapp": "Meta WA", "baxi": "Baxi"}
+
+
+def _webhook_rows(limit=40) -> list:
+    """Inbound-callback history from the audit trail (webhook.* entries are
+    only written after signature verification, hence sig=verified)."""
+    from whatsapp.models import AuditLog
+
+    rows = []
+    for a in AuditLog.objects.filter(action__startswith="webhook.")[:limit]:
+        src_key = a.action.split(".", 1)[1] if "." in a.action else a.action
+        note = ""
+        if isinstance(a.after, dict) and a.after:
+            note = " · ".join(f"{k}: {v}" for k, v in list(a.after.items())[:3])
+        rows.append({
+            "src": _WEBHOOK_SOURCES.get(src_key, src_key.replace("_", " ").title()),
+            "event": a.action, "ref": a.target, "sig": "verified",
+            "code": 200, "time": _ms(a.created), "note": note,
+        })
+    return rows
+
+
+_RECON_RUNS = {"recon.vtu_run": "zitch-reconcile-vtu", "recon.maturities_run": "zitch-maturities"}
+
+
+def _recon_rows(limit=20) -> list:
+    """Reconciliation history from the audit trail (recon.* entries)."""
+    from whatsapp.models import AuditLog
+
+    rows = []
+    for a in AuditLog.objects.filter(action__startswith="recon.")[:limit]:
+        after = a.after if isinstance(a.after, dict) else {}
+        fixed = int(after.get("settled") or after.get("paid_out") or 0)
+        rows.append({
+            "run": _RECON_RUNS.get(a.action, a.action),
+            "time": a.created.strftime("%b %d, %H:%M"),
+            "checked": int(after.get("checked", fixed)), "mismatches": fixed,
+            "fixed": fixed, "status": "done",
+            "note": f"by {a.actor_id}" if a.actor_type == "admin" and a.actor_id else "",
+        })
+    return rows
+
+
 # --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
@@ -284,30 +364,12 @@ def bootstrap(request):
         "read": b.count_read, "failed": b.count_failed,
     } for b in Broadcast.objects.all()[:50]]
 
-    audit_rows = [{
-        "actor": a.actor_id or a.actor_type, "role": a.actor_type, "action": a.action, "target": a.target,
-        "before": a.before, "after": a.after, "t": _ms(a.created),
-    } for a in AuditLog.objects.all()[:100]]
+    audit_rows = [_audit_row(a) for a in AuditLog.objects.all()[:100]]
 
-    loans = [{
-        "id": f"ln_{l.id}", "ref": l.reference, "user": name_by_id.get(l.user_id, "—"),
-        "amt": _num(l.principal), "tenor": f"{l.tenure_days} days", "rate": "4.5%/mo",
-        "status": ("overdue" if (l.status == Loan.ACTIVE and l.due_date and l.due_date < timezone.now()) else l.status),
-        "due": l.due_date.strftime("%b %d, %Y") if l.due_date else "—", "outstanding": _num(l.outstanding),
-    } for l in Loan.objects.all()[:80]]
-
-    savings = [{
-        "id": f"sv_{s.id}", "user": name_by_id.get(s.user_id, "—"), "principal": _num(s.principal),
-        "rate": f"{_num(s.rate) * 100:.0f}% p.a.", "start": s.created.strftime("%b %d, %Y"),
-        "maturity": s.matures_at.strftime("%b %d, %Y") if s.matures_at else "—",
-        "status": ("paid" if s.paid_out else s.status), "payout": _num(s.maturity_value),
-    } for s in FixedSave.objects.all()[:80]]
-
+    loans = [_loan_row(l, name_by_id.get(l.user_id, "—")) for l in Loan.objects.all()[:80]]
+    savings = [_saving_row(s, name_by_id.get(s.user_id, "—")) for s in FixedSave.objects.all()[:80]]
     # Cards are funded from the NGN wallet (see cards.models.VirtualCard).
-    cards = [{
-        "id": f"cd_{c.id}", "cid": c.id, "user": name_by_id.get(c.user_id, "—"), "last4": c.last4,
-        "cur": "NGN", "bal": _num(c.balance), "status": c.status, "spend30": 0,
-    } for c in VirtualCard.objects.all()[:80]]
+    cards = [_card_row(c, name_by_id.get(c.user_id, "—")) for c in VirtualCard.objects.all()[:80]]
 
     # --- Overview KPIs (real aggregates) ---
     now = timezone.now()
@@ -390,7 +452,8 @@ def bootstrap(request):
     return ok(
         users=users, txns=txns, convos=convos, broadcasts=broadcasts, audit=audit_rows,
         rates=rates, float=float_rows, providers=providers, volume_14d=volume_14d,
-        loans=loans, savings=savings, cards=cards, kycq=kycq, webhooks=[], recons=[],
+        loans=loans, savings=savings, cards=cards, kycq=kycq,
+        webhooks=_webhook_rows(), recons=_recon_rows(),
         team=team, perms=PERMS_MATRIX, settings=settings_rows, kpis=kpis,
         meta={"role": request.role, "name": (request.staff.get_full_name() or request.staff.username)},
     )
@@ -727,3 +790,168 @@ def wa_broadcast(request):
         "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
         "read": b.count_read, "failed": b.count_failed,
     })
+
+
+# --------------------------------------------------------------------------- #
+# Read endpoints beyond bootstrap — customer 360, server-side search,
+# broadcast delivery detail. Open to any staff role (read_only included),
+# like bootstrap.
+# --------------------------------------------------------------------------- #
+@staff_endpoint(methods=("POST",))
+def user_detail(request):
+    """POST {uid} — one customer's full picture: profile, recent ledger rows,
+    products, WhatsApp link state, and the audit entries that touched them."""
+    from cards.models import VirtualCard
+    from loans.models import Loan
+    from savings.models import FixedSave
+    from wallet.models import Transaction
+    from whatsapp.models import AuditLog, WhatsAppLink
+
+    u = _get_user(request.data.get("uid"))
+    if u is None:
+        return fail("User not found", status=404)
+    name = (u.get_full_name() or u.username or u.phone or "—").strip()
+    wallets = _wallets_by_user()
+    wa = _wa_by_user()
+    link = WhatsAppLink.objects.filter(user=u, status=WhatsAppLink.ACTIVE).first()
+    txns = [_txn_row(t, {u.id: name}) for t in Transaction.objects.filter(user=u)[:25]]
+    return ok(
+        user=_user_row(u, wallets, wa),
+        txns=txns,
+        loans=[_loan_row(l, name) for l in Loan.objects.filter(user=u)[:20]],
+        savings=[_saving_row(s, name) for s in FixedSave.objects.filter(user=u)[:20]],
+        cards=[_card_row(c, name) for c in VirtualCard.objects.filter(user=u)[:20]],
+        wa_msisdn=(link.wa_msisdn if link else ""),
+        pin_locked=bool(u.pin_locked_until and u.pin_locked_until > timezone.now()),
+        audit=[_audit_row(a) for a in AuditLog.objects.filter(target__contains=f"u_{u.id}")[:20]],
+    )
+
+
+@staff_endpoint(methods=("POST",))
+def user_search(request):
+    """POST {q} — server-side user search across name/username/email/phone
+    (bootstrap carries only the newest 300)."""
+    q = (request.data.get("q") or "").strip()
+    User = request.staff.__class__
+    qs = User.objects.all().order_by("-date_joined")
+    if q:
+        qs = qs.filter(
+            Q(first_name__icontains=q) | Q(last_name__icontains=q)
+            | Q(username__icontains=q) | Q(email__icontains=q) | Q(phone__icontains=q)
+        )
+    wallets = _wallets_by_user()
+    wa = _wa_by_user()
+    return ok(rows=[_user_row(u, wallets, wa) for u in qs[:100]],
+              total=User.objects.count())
+
+
+@staff_endpoint(methods=("POST",))
+def txn_search(request):
+    """POST {q?, type?, status?} — server-side ledger search (bootstrap carries
+    only the newest 150). Filters mirror the portal's chips."""
+    from wallet.models import Transaction
+
+    q = (request.data.get("q") or "").strip()
+    typ = (request.data.get("type") or "all").lower()
+    status = (request.data.get("status") or "all").lower()
+    qs = Transaction.objects.all().order_by("-created")
+    if typ != "all":
+        if typ == "fx":
+            qs = qs.filter(Q(service__icontains="fx") | Q(service__icontains="convert"))
+        else:
+            qs = qs.filter(service__icontains=typ)
+    if status == "flagged":
+        qs = qs.filter(meta__flagged=True)
+    elif status in _STATUS_MAP.values():
+        rev = {v: k for k, v in _STATUS_MAP.items()}
+        qs = qs.filter(transaction_status=rev[status])
+    if q:
+        qs = qs.filter(
+            Q(reference__icontains=q) | Q(service__icontains=q)
+            | Q(user__first_name__icontains=q) | Q(user__last_name__icontains=q)
+            | Q(user__username__icontains=q) | Q(user__phone__icontains=q)
+        )
+    rows = list(qs.select_related("user")[:200])
+    name_by_id = {t.user_id: (t.user.get_full_name() or t.user.username or t.user.phone or "—").strip()
+                  for t in rows}
+    return ok(rows=[_txn_row(t, name_by_id) for t in rows])
+
+
+@staff_endpoint(methods=("POST",))
+def audit_search(request):
+    """POST {q} — search the full append-only audit log (bootstrap carries 100)."""
+    from whatsapp.models import AuditLog
+
+    q = (request.data.get("q") or "").strip()
+    qs = AuditLog.objects.all()
+    if q:
+        qs = qs.filter(Q(action__icontains=q) | Q(target__icontains=q) | Q(actor_id__icontains=q))
+    return ok(rows=[_audit_row(a) for a in qs[:200]])
+
+
+@staff_endpoint(methods=("POST",))
+def wa_broadcast_detail(request):
+    """POST {id} — per-recipient delivery outcomes for one broadcast.
+    Accepts the bare pk or the portal's serialized form (``bc_<pk>``)."""
+    from whatsapp.models import Broadcast
+
+    raw = str(request.data.get("id") or "")
+    try:
+        b = Broadcast.objects.get(pk=int(raw.removeprefix("bc_")))
+    except (Broadcast.DoesNotExist, TypeError, ValueError):
+        return fail("Broadcast not found", status=404)
+    recipients = [{
+        "user": (r.user.get_full_name() or r.user.username) if r.user else "—",
+        "msisdn": r.wa_msisdn, "status": r.status, "error": r.error, "t": _ms(r.created),
+    } for r in b.recipients.select_related("user").order_by("-created")[:300]]
+    return ok(broadcast={
+        "id": f"bc_{b.id}", "template": b.template_name, "category": b.category,
+        "status": b.status, "created": b.created.strftime("%b %d, %Y"),
+        "by": (b.created_by.email if b.created_by else "system"),
+        "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
+        "read": b.count_read, "failed": b.count_failed,
+    }, recipients=recipients)
+
+
+# --------------------------------------------------------------------------- #
+# Manual wallet credit (goodwill / manual refund) — money capability.
+# --------------------------------------------------------------------------- #
+@staff_endpoint(methods=("POST",), perm="money")
+def wallet_credit(request):
+    """POST {uid, amount, reason, idempotency_key?} — credit a user's NGN wallet.
+
+    Back-office goodwill/refund credits ride the SAME ledger service as funding
+    (wallet.services.credit): atomic, row-locked, and idempotent under the
+    client key, so an operator double-click can never credit twice. A reason is
+    mandatory and lands in both the ledger row's meta and the audit log."""
+    from common.http import idempotent_replay, parse_amount
+    from wallet.services import DuplicateTransaction, credit, existing_for_key, get_or_create_wallet
+
+    u = _get_user(request.data.get("uid"))
+    if u is None:
+        return fail("User not found", status=404)
+    amount = parse_amount(request.data.get("amount"))
+    if amount is None:
+        return fail("Enter a valid amount")
+    reason = (request.data.get("reason") or "").strip()
+    if len(reason) < 5:
+        return fail("A reason (min 5 characters) is required for manual credits")
+    key = (request.data.get("idempotency_key") or "").strip()
+    replay = idempotent_replay(existing_for_key(u, key))
+    if replay is not None:
+        return replay
+    before = get_or_create_wallet(u).balance
+    try:
+        txn = credit(
+            u, amount, "Manual credit — operations",
+            meta={"channel": "admin", "reason": reason,
+                  "actor": (request.staff.email or request.staff.username)},
+            idempotency_key=key,
+        )
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(u, key))
+    audit(request, "wallet.manual_credit", target=f"u_{u.id}",
+          before={"balance": str(before)},
+          after={"balance": str(before + amount), "amount": str(amount), "reason": reason})
+    return ok(success=True, uid=u.id, reference=txn.reference,
+              amount=str(amount), balance=_num(before + amount))
