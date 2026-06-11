@@ -188,20 +188,16 @@ def link_unlink(request):
 # --------------------------------------------------------------------------- #
 # operator endpoints (staff only) — handover, agent reply, broadcast (§9-§11)
 # --------------------------------------------------------------------------- #
-def require_staff(view):
-    """Gate an endpoint to Django staff users (RBAC; super_admin/finance/support
-    map to staff + groups as the dashboard grows)."""
-    @functools.wraps(view)
-    @require_user
-    def wrapped(request, *args, **kwargs):
-        if not getattr(request.user_obj, "is_staff", False):
-            return fail("Staff access required", status=403)
-        return view(request, *args, **kwargs)
-    return wrapped
+# Role-gated like the rest of the operator surface: conversation actions need
+# the `wa` capability, broadcasts the `broadcast` capability (portal.roles is
+# the single role matrix both portals enforce server-side). A bare `is_staff`
+# account without a role group resolves to read_only and is rejected here —
+# previously any staff user could reply to chats or send broadcasts.
+from portal.roles import require_cap
 
 
 @api
-@require_staff
+@require_cap("wa")
 def ops_handover(request):
     """POST /api/whatsapp/ops/handover/ {msisdn} — pause the bot, assign to agent."""
     msisdn = (request.data.get("msisdn") or "").strip()
@@ -219,7 +215,7 @@ def ops_handover(request):
 
 
 @api
-@require_staff
+@require_cap("wa")
 def ops_return_to_bot(request):
     """POST /api/whatsapp/ops/return-to-bot/ {msisdn} — re-enable the bot + AI."""
     msisdn = (request.data.get("msisdn") or "").strip()
@@ -235,7 +231,7 @@ def ops_return_to_bot(request):
 
 
 @api
-@require_staff
+@require_cap("wa")
 def ops_reply(request):
     """POST /api/whatsapp/ops/reply/ {msisdn, text} — agent message to the user."""
     msisdn = (request.data.get("msisdn") or "").strip()
@@ -248,7 +244,7 @@ def ops_reply(request):
 
 
 @api
-@require_staff
+@require_cap("broadcast")
 def ops_broadcast(request):
     """POST /api/whatsapp/ops/broadcast/ {template_name, category?, segment?, body_params?}
     -> creates + sends a broadcast, returns the delivery counts."""

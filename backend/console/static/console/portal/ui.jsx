@@ -117,6 +117,29 @@ const CAN = {
   read_only: { wa: false, broadcast: false, money: false, users: false, ai: false, settings: false },
 };
 
+// ---- Action helper: POST to the staff API, toast a friendly error ----
+// Returns the response object on success, null on failure (so callers only
+// patch local state after the server accepted the mutation).
+async function doAct(toast, path, payload, okText) {
+  try {
+    const r = await ZADM_API.act(path, payload);
+    if (okText) toast(okText);
+    return r;
+  } catch (e) {
+    toast('⚠ ' + (e.message || 'Action failed'));
+    return null;
+  }
+}
+
+// Compact naira for KPI headlines (₦1.02bn / ₦74m / ₦12k).
+function fmtBig(n) {
+  const v = Number(n || 0);
+  if (v >= 1e9) return '₦' + (v / 1e9).toFixed(2) + 'bn';
+  if (v >= 1e6) return '₦' + (v / 1e6).toFixed(1) + 'm';
+  if (v >= 1e3) return '₦' + (v / 1e3).toFixed(0) + 'k';
+  return '₦' + v.toLocaleString('en-NG');
+}
+
 // ---- Toast bus ----
 function ToastHost({ toasts }) {
   return (
@@ -139,4 +162,4 @@ function Empty({ text }) {
   return <div className="empty">{text}</div>;
 }
 
-Object.assign(window, { Icon, Badge, Card, Kpi, Toggle, Drawer, RoleCtx, useRole, ROLES, CAN, ToastHost, SearchBox, Empty });
+Object.assign(window, { Icon, Badge, Card, Kpi, Toggle, Drawer, RoleCtx, useRole, ROLES, CAN, ToastHost, SearchBox, Empty, doAct, fmtBig });

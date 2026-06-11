@@ -1,4 +1,6 @@
 // Zitch Admin — views B: WhatsApp inbox, Broadcasts, AI controls, Audit log, Settings
+// Conversation + broadcast actions POST to the audited /api/admin/wa/* endpoints
+// (server-side RBAC: wa / broadcast capabilities) before patching local state.
 const { useState } = React;
 const DB = window.ZADM;
 
@@ -8,16 +10,49 @@ function WaInbox({ toast }) {
   const [convos, setConvos] = useState(DB.CONVOS);
   const [selIdx, setSelIdx] = useState(0);
   const [reply, setReply] = useState('');
+  const [busy, setBusy] = useState(false);
   const c = convos[selIdx];
 
-  const patch = (idx, p) => setConvos(convos.map((x, i) => (i === idx ? { ...x, ...p } : x)));
+  if (!c) {
+    return (
+      <div>
+        <PageHead title="WhatsApp" sub="Conversation monitor — while a chat is with a human, the bot stays silent." />
+        <Card><Empty text="No conversations yet — they appear as soon as users message the business number." /></Card>
+      </div>
+    );
+  }
 
-  const handover = () => { patch(selIdx, { status: 'human', aiEnabled: false, agent: 'You' }); toast('Bot paused — conversation handed to you (audit logged)'); };
-  const returnBot = () => { patch(selIdx, { status: 'bot', aiEnabled: true, agent: null }); toast('Returned to bot (audit logged)'); };
-  const sendReply = () => {
-    if (!reply.trim()) return;
-    patch(selIdx, { msgs: [...c.msgs, { dir: 'out', text: '[Agent · You] ' + reply, t: new Date(), agent: true }] });
-    setReply(''); toast('Agent reply sent (audit logged)');
+  const patch = (idx, p) => {
+    const next = convos.map((x, i) => (i === idx ? { ...x, ...p } : x));
+    setConvos(next); DB.CONVOS = next;
+  };
+
+  const handover = async () => {
+    setBusy(true);
+    const r = await doAct(toast, '/wa/handover', { msisdn: c.msisdn, mode: 'human' });
+    setBusy(false);
+    if (r) { patch(selIdx, { status: 'human', aiEnabled: false, agent: 'You' }); toast('Bot paused — conversation handed to you (audit logged)'); }
+  };
+  const returnBot = async () => {
+    setBusy(true);
+    const r = await doAct(toast, '/wa/handover', { msisdn: c.msisdn, mode: 'bot' });
+    setBusy(false);
+    if (r) { patch(selIdx, { status: 'bot', aiEnabled: true, agent: null }); toast('Returned to bot (audit logged)'); }
+  };
+  const toggleAi = async (v) => {
+    const r = await doAct(toast, '/wa/conv_ai', { msisdn: c.msisdn, enabled: v });
+    if (r) { patch(selIdx, { aiEnabled: v }); toast('Conversation AI ' + (v ? 'enabled' : 'disabled') + ' (audit logged)'); }
+  };
+  const sendReply = async () => {
+    if (!reply.trim() || busy) return;
+    setBusy(true);
+    const text = reply.trim();
+    const r = await doAct(toast, '/wa/reply', { msisdn: c.msisdn, text });
+    setBusy(false);
+    if (r) {
+      patch(selIdx, { msgs: [...c.msgs, { dir: 'out', text: '[Agent · You] ' + text, t: new Date(), agent: true }] });
+      setReply(''); toast('Agent reply sent (audit logged)');
+    }
   };
 
   return (
@@ -34,7 +69,7 @@ function WaInbox({ toast }) {
               </span>
               <span className="convo-end">
                 <Badge v={cv.status} />
-                <span className="dim sm num">{DB.fmtT(cv.last)}</span>
+                <span className="dim sm num">{cv.last ? DB.fmtT(cv.last) : '—'}</span>
               </span>
             </button>
           ))}
@@ -48,10 +83,10 @@ function WaInbox({ toast }) {
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <span className="sm dim">AI</span>
               <Toggle on={c.aiEnabled} disabled={!can.wa || c.status === 'human'} label="conversation AI"
-                onChange={(v) => { patch(selIdx, { aiEnabled: v }); toast('Conversation AI ' + (v ? 'enabled' : 'disabled')); }} />
+                onChange={toggleAi} />
               {c.status === 'human'
-                ? <button className="btn ghost sm-btn" disabled={!can.wa} onClick={returnBot}><Icon name="bot" size={14} /> Return to bot</button>
-                : <button className="btn primary sm-btn" disabled={!can.wa} onClick={handover}><Icon name="user" size={14} /> Take over</button>}
+                ? <button className="btn ghost sm-btn" disabled={!can.wa || busy} onClick={returnBot}><Icon name="bot" size={14} /> Return to bot</button>
+                : <button className="btn primary sm-btn" disabled={!can.wa || busy} onClick={handover}><Icon name="user" size={14} /> Take over</button>}
             </div>
           </div>
           <div className="chat-scroll">
@@ -70,9 +105,9 @@ function WaInbox({ toast }) {
           <div className="chat-input">
             {c.status === 'human' ? (
               <React.Fragment>
-                <input value={reply} disabled={!can.wa} onChange={(e) => setReply(e.target.value)}
+                <input value={reply} disabled={!can.wa || busy} onChange={(e) => setReply(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && sendReply()} placeholder="Reply as agent…" />
-                <button className="btn primary sm-btn" disabled={!can.wa} onClick={sendReply}><Icon name="send" size={14} /> Send</button>
+                <button className="btn primary sm-btn" disabled={!can.wa || busy} onClick={sendReply}><Icon name="send" size={14} /> {busy ? 'Sending…' : 'Send'}</button>
               </React.Fragment>
             ) : (
               <div className="dim sm" style={{ padding: '4px 2px' }}><Icon name="bot" size={13} /> Bot is handling this conversation. Take over to reply as an agent.</div>
@@ -86,39 +121,56 @@ function WaInbox({ toast }) {
 }
 
 // ================= BROADCASTS =================
+const BROADCAST_TEMPLATES = ['fx_rate_drop_alert', 'june_cashback_promo', 'maintenance_window', 'savings_rate_update'];
+
 function Broadcasts({ toast }) {
   const { can } = useRole();
+  const [rows, setRows] = useState(DB.BROADCASTS);
   const [cat, setCat] = useState('utility');
-  const optedIn = 1874, linked = 3098;
+  const [tpl, setTpl] = useState(BROADCAST_TEMPLATES[0]);
+  const [busy, setBusy] = useState(false);
+  const k = DB.KPIS || {};
+  const optedIn = k.wa_optin || 0, linked = k.wa_links || 0;
+
+  const queue = async () => {
+    setBusy(true);
+    const r = await doAct(toast, '/wa/broadcast', { template_name: tpl, category: cat });
+    setBusy(false);
+    if (r && r.broadcast) {
+      const next = [r.broadcast, ...rows];
+      setRows(next); DB.BROADCASTS = next;
+      toast('Broadcast sent — ' + r.broadcast.queued + ' queued, ' + r.broadcast.sent + ' delivered to provider (audit logged)');
+    }
+  };
+
   return (
     <div>
       <PageHead title="Broadcasts" sub="Template campaigns over WhatsApp. STOP / UNSUBSCRIBE flips marketing opt-in off automatically." />
       <div className="grid-2-1">
         <Card title="Campaigns" pad={false}>
-          <table className="tbl">
-            <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th></tr></thead>
-            <tbody>
-              {DB.BROADCASTS.map((b) => (
-                <tr key={b.id}>
-                  <td><b className="mono">{b.template}</b><div className="sm dim">{b.created} · {b.by}</div></td>
-                  <td><Badge v={b.category === 'marketing' ? 'human' : 'bot'}>{b.category}</Badge></td>
-                  <td><Badge v={b.status} /></td>
-                  <td className="r num">{b.queued.toLocaleString()}</td>
-                  <td className="r num">{b.delivered.toLocaleString()}</td>
-                  <td className="r num">{b.read.toLocaleString()}</td>
-                  <td className="r num">{b.failed.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {rows.length ? (
+            <table className="tbl">
+              <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th></tr></thead>
+              <tbody>
+                {rows.map((b) => (
+                  <tr key={b.id}>
+                    <td><b className="mono">{b.template}</b><div className="sm dim">{b.created} · {b.by}</div></td>
+                    <td><Badge v={b.category === 'marketing' ? 'human' : 'bot'}>{b.category}</Badge></td>
+                    <td><Badge v={b.status} /></td>
+                    <td className="r num">{(b.queued || 0).toLocaleString()}</td>
+                    <td className="r num">{(b.delivered || 0).toLocaleString()}</td>
+                    <td className="r num">{(b.read || 0).toLocaleString()}</td>
+                    <td className="r num">{(b.failed || 0).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <Empty text="No campaigns yet." />}
         </Card>
         <Card title="New broadcast" sub="Meta-approved templates only">
           <label className="f-label">Template</label>
-          <select className="f-input">
-            <option>fx_rate_drop_alert</option>
-            <option>june_cashback_promo</option>
-            <option>maintenance_window</option>
-            <option>savings_rate_update</option>
+          <select className="f-input" value={tpl} onChange={(e) => setTpl(e.target.value)}>
+            {BROADCAST_TEMPLATES.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
           <label className="f-label">Category</label>
           <div className="chips" style={{ marginBottom: 4 }}>
@@ -129,9 +181,8 @@ function Broadcasts({ toast }) {
               ? <React.Fragment><Icon name="alert" size={14} /> Marketing reaches only the <b>{optedIn.toLocaleString()}</b> opted-in users.</React.Fragment>
               : <React.Fragment><Icon name="check" size={14} /> Utility reaches all <b>{linked.toLocaleString()}</b> linked numbers.</React.Fragment>}
           </div>
-          <button className="btn primary w100" style={{ marginTop: 14 }} disabled={!can.broadcast}
-            onClick={() => toast('Broadcast queued to ' + (cat === 'marketing' ? optedIn : linked).toLocaleString() + ' recipients (audit logged)')}>
-            <Icon name="megaphone" size={15} /> Queue broadcast
+          <button className="btn primary w100" style={{ marginTop: 14 }} disabled={!can.broadcast || busy} onClick={queue}>
+            <Icon name="megaphone" size={15} /> {busy ? 'Sending…' : 'Queue broadcast'}
           </button>
           {!can.broadcast && <p className="rbac-note"><Icon name="lock" size={13} /> Support or super admin only.</p>}
         </Card>
@@ -166,19 +217,21 @@ function AiControls({ toast }) {
       <PageHead title="AI controls" sub="The model only proposes — validation, confirm and PIN still gate every movement." />
       <div className="grid-2-1">
         <Card title="Recent parsed intents" sub="Stored on each inbound message" pad={false}>
-          <table className="tbl">
-            <thead><tr><th>User</th><th>Message</th><th>Parsed intent</th><th className="r">Confidence</th></tr></thead>
-            <tbody>
-              {intents.map((m, i) => (
-                <tr key={i}>
-                  <td><b>{m.user}</b><div className="sm dim">{m.msisdn}</div></td>
-                  <td className="dim">“{m.text}”</td>
-                  <td><span className="mono sm">{m.intent.intent}</span></td>
-                  <td className="r num">{m.intent.confidence ? Math.round(m.intent.confidence * 100) + '%' : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {intents.length ? (
+            <table className="tbl">
+              <thead><tr><th>User</th><th>Message</th><th>Parsed intent</th><th className="r">Confidence</th></tr></thead>
+              <tbody>
+                {intents.map((m, i) => (
+                  <tr key={i}>
+                    <td><b>{m.user}</b><div className="sm dim">{m.msisdn}</div></td>
+                    <td className="dim">“{m.text}”</td>
+                    <td><span className="mono sm">{m.intent.intent}</span></td>
+                    <td className="r num">{m.intent.confidence ? Math.round(m.intent.confidence * 100) + '%' : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : <Empty text="No parsed intents yet — they appear when the AI layer handles free-form messages." />}
         </Card>
         <div style={{ display: 'grid', gap: 16, alignContent: 'start' }}>
           <Card title="Global kill switch" sub="SystemSetting · ai_enabled_global">
@@ -213,20 +266,22 @@ function Audit() {
     <div>
       <PageHead title="Audit log" sub="Append-only. Every admin action and sensitive event, with before/after." right={<SearchBox value={q} onChange={setQ} placeholder="Search actor, action…" />} />
       <Card pad={false}>
-        <table className="tbl">
-          <thead><tr><th>Actor</th><th>Action</th><th>Target</th><th>Before → After</th><th className="r">When</th></tr></thead>
-          <tbody>
-            {rows.map((a, i) => (
-              <tr key={i}>
-                <td><b>{a.actor}</b><div className="sm dim">{a.role}</div></td>
-                <td><span className="mono sm">{a.action}</span></td>
-                <td className="dim">{a.target}</td>
-                <td><span className="mono sm dim">{JSON.stringify(a.before)} → {JSON.stringify(a.after)}</span></td>
-                <td className="r dim num">{DB.fmtT(a.t)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {rows.length ? (
+          <table className="tbl">
+            <thead><tr><th>Actor</th><th>Action</th><th>Target</th><th>Before → After</th><th className="r">When</th></tr></thead>
+            <tbody>
+              {rows.map((a, i) => (
+                <tr key={i}>
+                  <td><b>{a.actor}</b><div className="sm dim">{a.role}</div></td>
+                  <td><span className="mono sm">{a.action}</span></td>
+                  <td className="dim">{a.target}</td>
+                  <td><span className="mono sm dim">{JSON.stringify(a.before)} → {JSON.stringify(a.after)}</span></td>
+                  <td className="r dim num">{DB.fmtT(a.t)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <Empty text="No audit entries match." />}
       </Card>
     </div>
   );
@@ -239,7 +294,7 @@ function Settings({ toast }) {
     <div>
       <PageHead title="Settings & team" sub="Runtime configuration and role-based access." />
       <div className="grid-2-1">
-        <Card title="System settings" sub="SystemSetting key/value — flippable at runtime" pad={false}>
+        <Card title="System settings" sub="SystemSetting key/value — money-sensitive keys change via their own audited endpoints" pad={false}>
           <table className="tbl">
             <thead><tr><th>Key</th><th>Value</th><th>Description</th></tr></thead>
             <tbody>
@@ -253,17 +308,19 @@ function Settings({ toast }) {
             </tbody>
           </table>
         </Card>
-        <Card title="Team" sub="4 members">
+        <Card title="Team" sub={DB.TEAM.length + ' member' + (DB.TEAM.length === 1 ? '' : 's')}>
           {DB.TEAM.map((m) => (
             <div key={m.email} className="kv tight">
               <span><b>{m.name}</b> <em className="dim sm">{m.email}</em></span>
               <Badge v={m.role === 'super_admin' ? 'success' : m.role === 'finance' ? 'human' : m.role === 'support' ? 'bot' : 'draft'}>{m.role}</Badge>
             </div>
           ))}
-          <button className="btn ghost w100" style={{ marginTop: 12 }} disabled={!can.settings} onClick={() => toast('Invite sent (audit logged)')}>Invite member</button>
+          <p className="dim sm" style={{ marginTop: 12 }}>
+            <Icon name="lock" size={13} /> Staff accounts and role groups (finance / support / read_only) are managed in Django admin.
+          </p>
         </Card>
       </div>
-      <Card title="Role permissions" sub="What each role can do" pad={false}>
+      <Card title="Role permissions" sub="What each role can do — enforced server-side on every endpoint" pad={false}>
         <table className="tbl">
           <thead><tr><th>Permission</th>{ROLES.map((r) => <th key={r} className="r">{r}</th>)}</tr></thead>
           <tbody>
