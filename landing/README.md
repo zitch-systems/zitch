@@ -38,3 +38,4 @@ commercial product you need Pro ($20/seat/mo).
 - The footer's "Admin portal" link was deliberately removed from this public copy — the staff
   console stays on Render at `/portal/`. Restore the `<li>` in `index.html` if you want it back.
 - External CDNs used: Google Fonts (landing + prototype) and unpkg React/Babel (prototype only).
+- `_headers` sets security headers on Cloudflare Pages; other hosts (Vercel etc.) ignore the file.
