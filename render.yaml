@@ -1,0 +1,110 @@
+# Render blueprint. In Render: New + > Blueprint > point at this repo (root
+# dir = backend). Creates the web service + a managed Postgres and wires them.
+services:
+  - type: web
+    name: zitch-api
+    runtime: python
+    rootDir: backend
+    plan: free   # upgrade to "starter" before handling real money (no sleep)
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn zitch_api.wsgi:application"
+    healthCheckPath: /healthz
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com,api.zitch.ng"
+      - key: CSRF_TRUSTED_ORIGINS
+        value: "https://api.zitch.ng"
+      - key: TOKEN_TTL_HOURS
+        value: "24"
+      # Origins allowed to call the API cross-origin (Expo web build /
+      # browser-based dashboards). Native React Native does not enforce CORS,
+      # so the mobile app is unaffected. Add new origins here as needed.
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://zitch.ng,https://www.zitch.ng,http://localhost:8081,http://localhost:19006,http://localhost:19000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      # Fill these in the Render dashboard (kept out of source):
+      # Payments — Monnify.
+      - key: MONNIFY_API_KEY
+        sync: false
+      - key: MONNIFY_SECRET_KEY
+        sync: false
+      - key: MONNIFY_CONTRACT_CODE
+        sync: false
+      - key: MONNIFY_SOURCE_ACCOUNT
+        sync: false
+      # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
+      # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
+      # (auto-refreshed JWT).
+      - key: VTUNG_API_KEY
+        sync: false
+      - key: VTUNG_USERNAME
+        sync: false
+      - key: VTUNG_PASSWORD
+        sync: false
+      # SMS / OTP — Sendchamp.
+      - key: SENDCHAMP_API_KEY
+        sync: false
+      # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
+      - key: PREMBLY_API_KEY
+        sync: false
+      - key: PREMBLY_APP_ID
+        sync: false
+      # Virtual card issuer (provider TBD).
+      - key: CARD_ISSUER_API_KEY
+        sync: false
+
+  # Daily Fixed Save maturity sweep — pays out matured plans, including for
+  # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
+  # type has no free tier, so on a free plan this block fails the Blueprint sync.
+  # (Maturities also settle on access via /api/savings/list/, so the app stays
+  # correct even without this cron.)
+  - type: cron
+    name: zitch-maturities
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "0 1 * * *"   # 01:00 UTC daily
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py run_maturities"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+
+  # VTU reconciliation — settle purchases left PENDING by a provider timeout:
+  # requery the aggregator by reference, then mark Successful (delivered) or
+  # refund (definitively failed). Also requires a paid plan (cron has no free
+  # tier). Runs every 10 minutes so stuck purchases clear quickly.
+  - type: cron
+    name: zitch-reconcile-vtu
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "*/10 * * * *"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py reconcile_vtu"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+
+databases:
+  - name: zitch-db
+    plan: free   # upgrade before go-live; free Postgres expires

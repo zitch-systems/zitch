@@ -1,0 +1,401 @@
+import logging
+import random
+from datetime import timedelta
+
+from django.db.models import Q
+from django.utils import timezone
+
+from common.http import api, fail, ok, require_user, resolve_token
+from common.ratelimit import client_ip, ratelimit
+
+log = logging.getLogger("zitch.security")
+from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_sms
+from wallet.services import get_or_create_wallet
+
+from .models import OTP, AccessToken, User
+
+
+def _otp_on_cooldown(phone: str) -> bool:
+    """True if a code was issued for this phone within the resend cooldown,
+    to stop OTP-flooding / rapid brute-force of a victim's number."""
+    cutoff = timezone.now() - timedelta(seconds=OTP.RESEND_COOLDOWN_SECONDS)
+    return OTP.objects.filter(phone=phone, created__gte=cutoff).exists()
+
+
+@ratelimit("signin", limit=10, window=300)
+@api
+def signin(request):
+    """POST /api/sigin/  {email_or_phone, password} -> {access_token}"""
+    ident = (request.data.get("email_or_phone") or "").strip()
+    password = request.data.get("password") or ""
+    if not ident or not password:
+        return fail("Email/phone and password are required")
+
+    user = User.objects.filter(Q(email__iexact=ident) | Q(phone=ident) | Q(username=ident)).first()
+    if user is None or not user.check_password(password):
+        # Security event: surfaces credential-stuffing / targeted brute force in
+        # the logs (the per-IP rate limiter caps it; this makes it observable).
+        log.warning("signin_failed ident=%r ip=%s", ident, client_ip(request))
+        return fail("Incorrect details", status=401)
+
+    get_or_create_wallet(user)
+    token = AccessToken.issue(user)
+    return ok(access_token=token.key, message="Signed in")
+
+
+@ratelimit("otp_send", limit=5, window=60)
+@api
+def phone_verification(request):
+    """POST /api/phone_verification/ {email, phone} -> sends OTP"""
+    phone = (request.data.get("phone") or "").strip()
+    email = (request.data.get("email") or "").strip()
+    if not phone:
+        return fail("Phone is required")
+    if User.objects.filter(phone=phone).exists():
+        return fail("An account with this phone already exists")
+    if _otp_on_cooldown(phone):
+        return fail("Please wait a moment before requesting another code", status=429)
+
+    code = f"{random.randint(0, 999999):06d}"
+    OTP.objects.create(phone=phone, email=email, code=code)
+    send_sms(phone, f"Your Zitch verification code is {code}")
+    return ok(message="OTP sent")
+
+
+@ratelimit("otp_verify", limit=20, window=60)
+@api
+def verify_otp(request):
+    """POST /api/verify_otp/ {otp, phone} -> creates user + {access_token}"""
+    phone = (request.data.get("phone") or "").strip()
+    code = (request.data.get("otp") or "").strip()
+    if not phone or not code:
+        return fail("Phone and OTP are required")
+
+    otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.SIGNUP).order_by("-created").first()
+    if otp is None:
+        return fail("Invalid OTP", status=400)
+    if otp.is_expired:
+        return fail("OTP has expired", status=400)
+    if otp.too_many_attempts:
+        # Cap reached: refuse further guesses on this code until a new one is
+        # requested, bounding an attacker to MAX_ATTEMPTS tries per code.
+        return fail("Too many incorrect attempts. Request a new code.", status=429)
+    if otp.code != code:
+        otp.attempts += 1
+        otp.save(update_fields=["attempts"])
+        return fail("Invalid OTP", status=400)
+
+    otp.used = True
+    otp.save(update_fields=["used"])
+
+    user, _ = User.objects.get_or_create(
+        phone=phone,
+        defaults={"username": phone, "email": otp.email or ""},
+    )
+    get_or_create_wallet(user)
+    token = AccessToken.issue(user)
+    return ok(access_token=token.key, message="Verified")
+
+
+@ratelimit("otp_send", limit=5, window=60)
+@api
+def resend_verify_otp(request):
+    """POST /api/resend_verify_otp/ {phone, email?}
+
+    Carries the email from the original phone_verification forward so the
+    verified user is created with the right email and set-password works.
+    The client may also pass `email` explicitly to override.
+    """
+    phone = (request.data.get("phone") or "").strip()
+    if not phone:
+        return fail("Phone is required")
+    if _otp_on_cooldown(phone):
+        return fail("Please wait a moment before requesting another code", status=429)
+    email = (request.data.get("email") or "").strip()
+    if not email:
+        prior = OTP.objects.filter(phone=phone).order_by("-created").first()
+        email = prior.email if prior else ""
+    code = f"{random.randint(0, 999999):06d}"
+    OTP.objects.create(phone=phone, email=email, code=code)
+    send_sms(phone, f"Your Zitch verification code is {code}")
+    return ok(message="OTP resent")
+
+
+# ------------------------------ ACCOUNT RECOVERY ------------------------------
+@ratelimit("otp_send", limit=5, window=60)
+@api
+def password_forgot(request):
+    """POST /api/password/forgot/ {phone} — send a reset code to a registered
+    phone.
+
+    Always returns the same success message whether or not the phone is
+    registered, so the endpoint can't be used to enumerate accounts.
+    """
+    phone = (request.data.get("phone") or "").strip()
+    if not phone:
+        return fail("Phone is required")
+    user = User.objects.filter(phone=phone).first()
+    if user is not None and not _otp_on_cooldown(phone):
+        code = f"{random.randint(0, 999999):06d}"
+        OTP.objects.create(phone=phone, email=user.email or "", code=code, purpose=OTP.RESET)
+        send_sms(phone, f"Your Zitch password reset code is {code}")
+    return ok(message="If that number has a Zitch account, a reset code has been sent.")
+
+
+@ratelimit("otp_verify", limit=20, window=60)
+@api
+def password_reset(request):
+    """POST /api/password/reset/ {phone, otp, password} -> {access_token}
+
+    Verifies a RESET code and sets a new password. Revokes every existing
+    session (a reset means the old credential is gone) and returns a fresh token
+    so the resetting device is signed in.
+    """
+    phone = (request.data.get("phone") or "").strip()
+    code = (request.data.get("otp") or "").strip()
+    password = request.data.get("password") or ""
+    if not phone or not code:
+        return fail("Phone and reset code are required")
+    if len(password) < 8:
+        return fail("Password must be at least 8 characters")
+
+    otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.RESET).order_by("-created").first()
+    if otp is None:
+        return fail("Invalid reset code", status=400)
+    if otp.is_expired:
+        return fail("Reset code has expired", status=400)
+    if otp.too_many_attempts:
+        return fail("Too many incorrect attempts. Request a new code.", status=429)
+    if otp.code != code:
+        otp.attempts += 1
+        otp.save(update_fields=["attempts"])
+        return fail("Invalid reset code", status=400)
+
+    user = User.objects.filter(phone=phone).first()
+    if user is None:
+        return fail("Account not found", status=404)
+
+    otp.used = True
+    otp.save(update_fields=["used"])
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    user.tokens.all().delete()  # a password reset invalidates every prior session
+    token = AccessToken.issue(user)
+    return ok(access_token=token.key, message="Password reset")
+
+
+@api
+@require_user
+def logout(request):
+    """POST /api/logout/ {access_token} — revokes the presented token.
+
+    Server-side revocation so a signed-out (or otherwise leaked-then-cleared)
+    token can't be replayed for the remainder of its TTL.
+    """
+    AccessToken.objects.filter(key=resolve_token(request)).delete()
+    return ok(message="Logged out")
+
+
+@api
+@require_user
+def set_password(request):
+    """POST /api/set-password/ {access_token, password}
+
+    Authenticated: acts on the token's user. Previously this looked the user up
+    by an email in the body with no auth, letting anyone overwrite any account's
+    password (and an empty email matched an arbitrary blank-email account).
+    """
+    user = request.user_obj
+    password = request.data.get("password") or ""
+    if len(password) < 8:
+        return fail("Password must be at least 8 characters")
+    user.set_password(password)
+    user.save(update_fields=["password"])
+    # Revoke other sessions on a credential change: any token issued before this
+    # change is now invalid. Keep the caller's current token so the onboarding
+    # flow (set-password -> set-pin) and a change-password screen don't 401.
+    user.tokens.exclude(key=resolve_token(request)).delete()
+    return ok(message="Password set")
+
+
+@api
+@require_user
+def set_transaction_pin(request):
+    """POST /api/set-transaction-pin/ {access_token, pin, password?}
+
+    First-time set (onboarding) needs only the session token. CHANGING an
+    already-set PIN additionally requires the account password, so a stolen
+    session token alone can't overwrite the PIN that gates money movement.
+    """
+    user = request.user_obj
+    pin = (request.data.get("pin") or "").strip()
+    if len(pin) < 4:
+        return fail("PIN must be at least 4 digits")
+    if user.transaction_pin and not user.check_password(request.data.get("password") or ""):
+        return fail("Enter your account password to change your PIN",
+                    status=403, code="password_required")
+    user.set_transaction_pin(pin)
+    # Clear any brute-force lockout so a legitimate (password-authenticated) PIN
+    # change isn't blocked by a stale lock against the old PIN.
+    user.pin_failed_attempts = 0
+    user.pin_locked_until = None
+    user.save(update_fields=["transaction_pin", "pin_failed_attempts", "pin_locked_until"])
+    return ok(message="Transaction PIN set")
+
+
+@api
+@require_user
+def update_info(request):
+    """POST /api/update_info/ {first_name, last_name, email, phone, access_token}"""
+    user = request.user_obj
+    data = request.data
+    new_email = (data.get("email") or "").strip()
+    new_phone = (data.get("phone") or "").strip()
+    # Only validate uniqueness when the value is actually changing, so a plain
+    # name update never trips on the user's own (or a legacy duplicate) value.
+    # phone is unique in the DB — the pre-check turns a clash into a clean error
+    # instead of a 500; email isn't unique but a clash would make sign-in (which
+    # matches by email) ambiguous, so we guard it too.
+    changing_phone = new_phone and new_phone != (user.phone or "")
+    changing_email = new_email and new_email.lower() != (user.email or "").lower()
+    if changing_phone and User.objects.filter(phone=new_phone).exclude(pk=user.pk).exists():
+        return fail("That phone number is already in use")
+    if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+        return fail("That email is already in use")
+    if data.get("first_name"):
+        user.first_name = data["first_name"]
+    if data.get("last_name"):
+        user.last_name = data["last_name"]
+    if new_email:
+        user.email = new_email
+    if new_phone:
+        user.phone = new_phone
+    user.save()
+    return ok(message="Account updated")
+
+
+def avatar_url(request, user) -> str:
+    """Absolute URL for a user's profile photo, or '' if none set."""
+    from django.conf import settings
+
+    return request.build_absolute_uri(settings.MEDIA_URL + user.avatar) if user.avatar else ""
+
+
+@api
+@require_user
+def avatar_upload(request):
+    """POST /api/profile/avatar/ {access_token, image}
+    `image` is a base64 data URL (or bare base64). Stores the photo and returns
+    its absolute URL. -> {success, message, avatar}
+    """
+    import base64
+    import binascii
+    import secrets
+
+    from django.conf import settings
+    from django.core.files.base import ContentFile
+    from django.core.files.storage import default_storage
+
+    user = request.user_obj
+    raw = (request.data.get("image") or request.data.get("avatar") or "").strip()
+    if not raw:
+        return fail("No image provided")
+
+    ext = "png"
+    if raw.startswith("data:"):
+        header, _, b64 = raw.partition(",")
+        if "jpeg" in header or "jpg" in header:
+            ext = "jpg"
+        elif "webp" in header:
+            ext = "webp"
+    else:
+        b64 = raw
+
+    try:
+        blob = base64.b64decode(b64, validate=True)
+    except (binascii.Error, ValueError):
+        return fail("Invalid image data")
+    if not blob:
+        return fail("Empty image")
+    if len(blob) > 3 * 1024 * 1024:
+        return fail("Image too large (max 3MB)")
+
+    # Drop the previous photo so we don't orphan files on re-upload.
+    if user.avatar and default_storage.exists(user.avatar):
+        default_storage.delete(user.avatar)
+
+    path = default_storage.save(f"avatars/{user.id}-{secrets.token_hex(4)}.{ext}", ContentFile(blob))
+    user.avatar = path
+    user.save(update_fields=["avatar"])
+    return ok(success=True, message="Photo updated",
+              avatar=request.build_absolute_uri(settings.MEDIA_URL + path))
+
+
+# --------------------------------- KYC ---------------------------------
+def _kyc_state(user) -> dict:
+    return {
+        "tier": user.tier,
+        "transaction_limit": str(user.transaction_limit),
+        "bvn_verified": user.bvn_verified,
+        "nin_verified": user.nin_verified,
+        "face_verified": user.face_verified,
+        "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
+    }
+
+
+@api
+@require_user
+def kyc_status(request):
+    """POST /api/kyc/status/ {access_token} -> tier + verification flags"""
+    return ok(success=True, **_kyc_state(request.user_obj))
+
+
+@api
+@require_user
+def kyc_bvn(request):
+    """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
+    user = request.user_obj
+    bvn = (request.data.get("bvn") or "").strip()
+    result = kyc_verify_bvn(bvn)
+    if not result.get("success"):
+        return fail(result.get("message", "BVN verification failed"), status=400)
+    user.bvn = bvn
+    user.bvn_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["bvn", "bvn_verified", "tier"])
+    return ok(success=True, message="BVN verified", **_kyc_state(user))
+
+
+@api
+@require_user
+def kyc_nin(request):
+    """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
+    user = request.user_obj
+    nin = (request.data.get("nin") or "").strip()
+    result = kyc_verify_nin(nin)
+    if not result.get("success"):
+        return fail(result.get("message", "NIN verification failed"), status=400)
+    user.nin = nin
+    user.nin_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["nin", "nin_verified", "tier"])
+    return ok(success=True, message="NIN verified", **_kyc_state(user))
+
+
+@api
+@require_user
+def kyc_face(request):
+    """POST /api/kyc/face/ {access_token, selfie?}
+
+    Verifies liveness via the KYC provider (mock-accepts offline) and, only on
+    success, marks the user face-verified. Large transfers gate on this
+    server-side flag, so it must never be a bare client claim.
+    """
+    user = request.user_obj
+    selfie = request.data.get("selfie") or request.data.get("image") or ""
+    result = kyc_verify_face(selfie)
+    if not result.get("success"):
+        return fail(result.get("message", "Face verification failed"), status=400)
+    user.face_verified = True
+    user.save(update_fields=["face_verified"])
+    return ok(success=True, message="Face verification recorded", **_kyc_state(user))
