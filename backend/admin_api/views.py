@@ -206,7 +206,7 @@ def _audit_row(a) -> dict:
 
 
 _WEBHOOK_SOURCES = {"monnify": "Monnify", "monnify_disbursement": "Monnify",
-                    "whatsapp": "Meta WA", "baxi": "Baxi"}
+                    "whatsapp": "Meta WA", "vtung": "VTU.ng"}
 
 
 def _webhook_rows(limit=40) -> list:
@@ -426,7 +426,7 @@ def bootstrap(request):
 
     # Providers: live vs mock from the same source the /healthz probe uses.
     from django.conf import settings as dj_settings
-    from utility.providers import _baxi_live, _prembly_live, payments_live
+    from utility.providers import _prembly_live, payments_live, vtu_live
     from whatsapp.providers import wa_live
 
     def _st(live):
@@ -435,7 +435,7 @@ def bootstrap(request):
     fincra_live = bool(dj_settings.FINCRA.get("SECRET_KEY"))
     providers = [
         {"name": "Monnify", "role": "Funding & payouts", "status": _st(payments_live()), "uptime": "—"},
-        {"name": "Baxi", "role": "Airtime · data · bills", "status": _st(_baxi_live()), "uptime": "—"},
+        {"name": "VTU.ng", "role": "Airtime · data · bills", "status": _st(vtu_live()), "uptime": "—"},
         {"name": "Fincra", "role": "FX rates & settlement", "status": _st(fincra_live), "uptime": "—"},
         {"name": "Meta WhatsApp", "role": "Chat channel", "status": _st(wa_live()), "uptime": "—"},
         {"name": "Prembly", "role": "KYC (BVN · NIN · face)", "status": _st(_prembly_live()), "uptime": "—"},

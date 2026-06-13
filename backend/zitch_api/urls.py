@@ -14,11 +14,11 @@ def health(_request):
     wired without exposing them. Served at /healthz so the marketing landing
     page can own "/". (The platform health check points at /healthz.)
     """
-    from utility.providers import _baxi_live, _prembly_live, payments_live
+    from utility.providers import _prembly_live, payments_live, vtu_live
 
     integrations = {
         "payments_monnify": payments_live(),
-        "vtu_baxi": _baxi_live(),
+        "vtu_vtung": vtu_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "kyc_prembly": _prembly_live(),
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),

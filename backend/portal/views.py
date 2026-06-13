@@ -184,11 +184,11 @@ def _success_rate() -> float:
 
 def _providers() -> list:
     from django.conf import settings as st
-    from utility.providers import _baxi_live, _prembly_live, payments_live
+    from utility.providers import _prembly_live, payments_live, vtu_live
 
     rows = [
         ("Monnify", "Funding & payouts", payments_live()),
-        ("Baxi", "Airtime · data · bills", _baxi_live()),
+        ("VTU.ng", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
         ("Sendchamp", "SMS / OTP", bool(st.SENDCHAMP["API_KEY"])),

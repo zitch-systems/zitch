@@ -43,7 +43,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (Monnify / Baxi / Sendchamp / Prembly keys).
+3. After first deploy, set the service env vars (Monnify / VTU.ng / Sendchamp / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 
@@ -115,7 +115,7 @@ from chat. Built deterministic-first so money never depends on the AI being up.
   - **Airtime / data** (network → plan → phone → confirm → PIN) and **bills —
     electricity / cable** (meter/smartcard **validation** → confirm with the
     validated customer name → PIN), all via the shared `run_provider_purchase`
-    (Baxi). Prepaid electricity returns the token in the receipt.
+    (VTU.ng). Prepaid electricity returns the token in the receipt.
   - PINs are masked in the message log; every flow cancels after one wrong PIN.
 - **AI intent layer (`whatsapp/ai.py`):** when `LLM_API_KEY` is set and the AI
   is enabled (global `SystemSetting.ai_enabled_global` AND per-user
@@ -181,11 +181,11 @@ the `WHATSAPP_*` env vars (see `.env.example`).
   `render.yaml` from `plan: free` to a paid plan before real money: free web
   sleeps (webhooks need always-on) and free Postgres expires. The two crons
   (`zitch-maturities`, `zitch-reconcile-vtu`) already require a paid plan.
-- Baxi per-service routing is wired (airtime/databundle/electricity/multichoice
-  endpoints) in `utility/providers.py`. Confirm the `service_type` code maps
-  (`_BAXI_AIRTIME` / `_BAXI_DISCO` / `_BAXI_CABLE`), body field names, and the
-  prepaid-meter token location against your Baxi dashboard — these couldn't be
-  fetched from CI.
+- VTU.ng (v2) is the VTU provider, in `utility/vtung.py` (called via the
+  `utility/providers.py` `vtu_*` wrappers). Confirm the tv/electricity/betting
+  request field names, the customer-verify endpoint, the 9mobile `service_id`,
+  and that the seeded data/cable `variation_id` codes match VTU.ng's catalogue —
+  these couldn't be fetched from CI.
 - Monnify webhook + verify shapes are confirmed against Monnify's docs (no
   change needed). Just set `MONNIFY_API_KEY` / `MONNIFY_SECRET_KEY` /
   `MONNIFY_CONTRACT_CODE` and configure the webhook URL above.

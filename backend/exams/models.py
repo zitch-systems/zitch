@@ -8,7 +8,7 @@ class ExamProduct(models.Model):
     name = models.CharField(max_length=40)                # e.g. "WAEC"
     description = models.CharField(max_length=80)         # e.g. "Result Checker PIN"
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    # Baxi service code for this exam, used when live.
+    # VTU provider service code for this exam, used when live.
     service_id = models.CharField(max_length=40, blank=True, default="")
     active = models.BooleanField(default=True)
 

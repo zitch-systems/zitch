@@ -111,7 +111,7 @@ window.ZADM = (function () {
 
   const PROVIDERS = [
     { name: 'Monnify', role: 'Funding & payouts', status: 'operational', uptime: '99.98%' },
-    { name: 'Baxi', role: 'Airtime · data · bills', status: 'operational', uptime: '99.91%' },
+    { name: 'VTU.ng', role: 'Airtime · data · bills', status: 'operational', uptime: '99.91%' },
     { name: 'Fincra', role: 'FX rates & settlement', status: 'operational', uptime: '99.95%' },
     { name: 'Meta WhatsApp', role: 'Chat channel', status: 'degraded', uptime: '98.72%' },
     { name: 'Sendchamp', role: 'SMS / OTP', status: 'operational', uptime: '99.99%' },
@@ -147,7 +147,7 @@ window.ZADM = (function () {
     { src: 'Meta WA', event: 'message.delivered', ref: 'wamid.HBg…98', sig: 'verified', code: 200, time: ago(61) },
     { src: 'Meta WA', event: 'message.failed · 131049', ref: 'wamid.HBg…41', sig: 'verified', code: 200, time: ago(190), note: 'marketing limit — recorded, not retried' },
     { src: 'Monnify', event: 'disbursement.reversed', ref: 'MNFY|82|405', sig: 'verified', code: 200, time: ago(300), note: 'wallet refunded' },
-    { src: 'Baxi', event: 'vtu.callback', ref: 'BAXI-77231', sig: 'n/a', code: 200, time: ago(410) },
+    { src: 'VTU.ng', event: 'vtu.callback', ref: 'VTNG-77231', sig: 'n/a', code: 200, time: ago(410) },
   ];
   const RECONS = [
     { run: 'zitch-reconcile-vtu', time: 'Today 02:00', checked: 1840, mismatches: 3, fixed: 3, status: 'done' },
