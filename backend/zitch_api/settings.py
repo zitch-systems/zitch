@@ -143,34 +143,15 @@ RATELIMIT_ENABLE = False if TESTING else env_bool("RATELIMIT_ENABLE", True)
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.
-# VTU / bills aggregator — Baxi.
-# VTU / bills aggregator. Providers are wired behind one contract
-# (utility.providers.vtu_purchase / vtu_requery / vtu_verify_customer); pick one
-# with VTU_PROVIDER ("vtung" default, or "clubconnect" / "baxi"). Each runs in
-# MOCK mode when its credentials are blank, so the whole flow stays testable.
-VTU_PROVIDER = os.environ.get("VTU_PROVIDER", "vtung").lower()
-# VTU.ng — modern v2 REST/JSON API, JWT Bearer auth (no IP whitelisting).
-# Either set a long-lived API token (VTUNG_API_KEY) or username+password (a JWT
-# is fetched and refreshed automatically). Blank => MOCK mode.
+# VTU / bills — VTU.ng (the sole VTU provider). Modern v2 REST/JSON API, JWT
+# Bearer auth (no IP whitelisting). Either set a long-lived API token
+# (VTUNG_API_KEY) or username+password (a JWT is fetched and refreshed
+# automatically). Blank => MOCK mode, so the whole flow stays testable.
 VTUNG = {
     "BASE_URL": os.environ.get("VTUNG_BASE_URL", "https://vtu.ng"),
     "API_KEY": os.environ.get("VTUNG_API_KEY", ""),
     "USERNAME": os.environ.get("VTUNG_USERNAME", ""),
     "PASSWORD": os.environ.get("VTUNG_PASSWORD", ""),
-}
-BAXI = {
-    "BASE_URL": os.environ.get("BAXI_BASE_URL", "https://payments.baxipay.com.ng/api/baxipay"),
-    "API_KEY": os.environ.get("BAXI_API_KEY", ""),
-}
-# ClubConnect / ClubKonnect (Nellobytes) — VTU for airtime, data, cable,
-# electricity, betting and exam e-PINs. HTTPS GET API authed with UserID+APIKey;
-# blank creds => MOCK mode. Endpoint paths and service codes live in
-# utility/clubconnect.py (all marked VERIFY-BEFORE-LIVE — confirm against the
-# ClubConnect dashboard's API docs before flipping VTU_PROVIDER to clubconnect).
-CLUBCONNECT = {
-    "BASE_URL": os.environ.get("CLUBCONNECT_BASE_URL", "https://www.clubkonnect.com"),
-    "USER_ID": os.environ.get("CLUBCONNECT_USER_ID", ""),
-    "API_KEY": os.environ.get("CLUBCONNECT_API_KEY", ""),
 }
 # Payments (wallet funding) — Monnify.
 MONNIFY = {

@@ -1,10 +1,9 @@
 """VTU.ng (v2) VTU client.
 
-A VTU provider behind the same contract as the Baxi/ClubConnect clients —
-``vt_purchase`` / ``vt_requery`` / ``vt_verify_customer`` return the exact
-``{"success", "pending"?, "provider_reference", "token", ...}`` shapes that
-``settle_or_refund`` and the reconcile job expect, so nothing downstream changes
-when ``settings.VTU_PROVIDER == "vtung"``.
+The sole VTU provider. ``vt_purchase`` / ``vt_requery`` / ``vt_verify_customer``
+return the ``{"success", "pending"?, "provider_reference", "token", ...}`` shapes
+that ``settle_or_refund`` and the reconcile job expect; the thin
+``utility.providers.vtu_*`` wrappers delegate straight to them.
 
 VTU.ng v2 is a modern REST/JSON API:
   * Auth: JWT Bearer. Either a long-lived token (VTUNG_API_KEY) or a username +
@@ -22,7 +21,7 @@ Blank creds => MOCK mode (simulated success) so the flow is testable offline.
 
 VTU.ng does NOT sell exam e-PINs, so ``*-pin`` services are unsupported here
 (they resolve to a clean failure -> refund; deactivate exam products in the
-admin, or keep ClubConnect for exam e-PIN via per-service routing).
+admin until an e-PIN provider is wired).
 
 VERIFY-BEFORE-LIVE: the airtime/data endpoints, the JWT auth, the requery
 endpoint and the status strings are confirmed against the v2 docs. Still confirm

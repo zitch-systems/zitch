@@ -1,8 +1,7 @@
 """Third-party integration layer.
 
 Providers: Monnify (payments; also optional KYC/VAS + bills via monnify_*),
-VTU.ng / ClubConnect / Baxi (VTU — airtime, data, cable, electricity, betting,
-exam e-PIN; selected by settings.VTU_PROVIDER and dispatched via vtu_purchase /
+VTU.ng (VTU — airtime, data, cable, electricity, betting; via vtu_purchase /
 vtu_requery / vtu_verify_customer), Sendchamp (SMS/OTP), Prembly/IdentityPass
 (KYC: BVN/NIN/face). Each function returns {"success": bool, ...}. When the
 relevant key is blank it runs in MOCK mode and simulates success so the whole app
@@ -309,7 +308,7 @@ def monnify_verify_nin(nin: str) -> dict:
 # ---------------------------------------------------------------------------
 # Bills payment — Monnify Biller Service (airtime / data / electricity / cable)
 #
-# An ALTERNATE to the Baxi/VTU.ng VTU block: Monnify's unified Biller Service.
+# An ALTERNATE to the VTU.ng VTU block: Monnify's unified Biller Service.
 # Flow is Discovery (categories -> billers -> products) -> Validate (customer)
 # -> Vend (pay) -> requery. Same Monnify OAuth token + payments_live() gate.
 # Blank Monnify keys => MOCK mode.
@@ -470,35 +469,13 @@ def monnify_bill_status(reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# VTU aggregator (airtime / data / cable / electricity) — Baxi
+# VTU (airtime / data / cable / electricity / betting) — VTU.ng
 #
-# Baxi exposes a distinct endpoint per service (not one generic path), so we
-# route on the service_id the views pass ("mtn-airtime", "mtn-data", "dstv",
-# "ikeja-electric", ...) and translate to Baxi's request body.
-#
-# VERIFY-BEFORE-LIVE: the endpoint *paths* below are stable, but the exact
-# service_type codes, body field names, and the prepaid meter token's location
-# in the response must be confirmed against your Baxi dashboard/docs (they
-# couldn't be fetched from CI). The maps below are the single place to adjust.
+# VTU.ng is the sole VTU provider; its client lives in utility/vtung.py. The
+# vtu_purchase / vtu_requery / vtu_verify_customer wrappers below are the stable
+# contract the views and the reconcile job call, so callers never import the
+# provider module directly.
 # ---------------------------------------------------------------------------
-_BAXI_AIRTIME = {  # network slug -> Baxi service_type
-    "mtn": "mtn", "glo": "glo", "airtel": "airtel",
-    "9mobile": "etisalat", "etisalat": "etisalat",
-}
-_BAXI_CABLE = {"dstv": "dstv", "gotv": "gotv", "startimes": "startimes"}
-_BAXI_DISCO = {  # disco slug -> Baxi service_type
-    "ikeja": "ikeja_electric", "eko": "eko_electric", "abuja": "abuja_electric",
-    "kano": "kano_electric", "port harcourt": "portharcourt_electric",
-    "jos": "jos_electric", "kaduna": "kaduna_electric", "enugu": "enugu_electric",
-    "ibadan": "ibadan_electric", "benin": "benin_electric",
-}
-
-
-def _vtu_provider() -> str:
-    """Which VTU backend is active: "vtung" (default), "clubconnect" or "baxi"."""
-    return getattr(settings, "VTU_PROVIDER", "vtung") or "vtung"
-
-
 def mock_disabled_in_prod() -> bool:
     """True when a provider's MOCK responses must be suppressed.
 
@@ -511,190 +488,40 @@ def mock_disabled_in_prod() -> bool:
     return not settings.DEBUG and not getattr(settings, "TESTING", False)
 
 
-def _baxi_live() -> bool:
-    return bool(settings.BAXI["API_KEY"])
-
-
-def _baxi_headers() -> dict:
-    return {"x-api-key": settings.BAXI["API_KEY"], "Content-Type": "application/json"}
-
-
-def _baxi_amount(value) -> int:
-    try:
-        return int(round(float(value)))  # VTU amounts are whole naira
-    except (TypeError, ValueError):
-        return 0
-
-
-def _disco_service_type(slug: str) -> str:
-    return _BAXI_DISCO.get(slug, slug.replace(" ", "") + "_electric")
-
-
-def _baxi_build_request(service_id: str, payload: dict, reference: str | None = None):
-    """Map (service_id, view payload) -> (endpoint_path, Baxi request body).
-
-    Returns (None, {}) for an unrecognised service. The wallet ledger reference
-    is threaded through as Baxi's agentReference (its idempotency key), so a
-    retry or requery of the same purchase reconciles to one provider
-    transaction rather than charging twice.
-    """
-    sid = service_id.lower()
-    ref = reference or ("ZB-" + secrets.token_hex(6).upper())
-    if sid.endswith("-airtime"):
-        net = sid[: -len("-airtime")]
-        return "services/airtime/request", {
-            "service_type": _BAXI_AIRTIME.get(net, net),
-            "phone": payload.get("phone", ""),
-            "amount": _baxi_amount(payload.get("amount")),
-            "agentReference": ref,
-        }
-    if sid.endswith("-data"):
-        net = sid[: -len("-data")]
-        return "services/databundle/request", {
-            "service_type": f"{_BAXI_AIRTIME.get(net, net)}-data",
-            "phone": payload.get("phone") or payload.get("billersCode", ""),
-            "datacode": payload.get("variation_code", ""),
-            "agentReference": ref,
-        }
-    if sid.endswith("-electric"):
-        return "services/electricity/request", {
-            "service_type": _disco_service_type(sid[: -len("-electric")]),
-            "account_number": payload.get("billersCode", ""),
-            "amount": _baxi_amount(payload.get("amount")),
-            "MeterType": payload.get("variation_code") or "prepaid",
-            "phone": payload.get("phone", ""),
-            "agentReference": ref,
-        }
-    if sid in _BAXI_CABLE:
-        return "services/multichoice/request", {
-            "service_type": _BAXI_CABLE[sid],
-            "account_number": payload.get("billersCode", ""),
-            "product_code": payload.get("variation_code", ""),
-            "agentReference": ref,
-        }
-    return None, {}
-
-
-def _baxi_parse(data: dict) -> dict:
-    d = data.get("data", {}) or {}
-    success = (
-        str(data.get("code")) == "200"
-        or str(data.get("status")).lower() == "success"
-        or str(d.get("statusCode")) == "0"
-    )
-    return {
-        "success": success,
-        "message": data.get("message") or d.get("transactionMessage", "Transaction processed"),
-        "provider_reference": str(d.get("transactionReference") or d.get("baxiReference", "")),
-        "token": d.get("token") or (d.get("rawOutput", {}) or {}).get("standardTokenValue", ""),
-        "raw": data,
-    }
+def vtu_live() -> bool:
+    """Whether the VTU provider (VTU.ng) has credentials configured."""
+    from .vtung import _live
+    return _live()
 
 
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
-    """Submit a VTU purchase, routing to Baxi's per-service endpoint.
+    """Submit a VTU purchase via VTU.ng.
 
-    Pass the wallet ledger `reference` so it becomes Baxi's agentReference
-    (idempotency key). MOCK-succeeds when no key is configured so the flow is
-    testable offline. On a network error returns ``pending=True``: the purchase
-    may actually have landed, so the caller must NOT refund — reconciliation
-    requeries it by reference instead.
+    Pass the wallet ledger `reference` so it becomes VTU.ng's request_id
+    (idempotency key + requery handle). On a network error returns
+    ``pending=True``: the purchase may have landed, so the caller must NOT refund
+    — reconciliation requeries it by reference instead.
     """
-    provider = _vtu_provider()
-    if provider == "vtung":
-        from .vtung import vt_purchase
-        return vt_purchase(service_id, payload, reference)
-    if provider == "clubconnect":
-        from .clubconnect import cc_purchase
-        return cc_purchase(service_id, payload, reference)
-    if not _baxi_live():
-        if mock_disabled_in_prod():
-            return {"success": False, "message": "VTU aggregator is not configured"}
-        return {
-            "success": True, "mock": True,
-            "message": "Transaction Successful (mock mode — no aggregator keys set)",
-            "provider_reference": "MOCK-" + secrets.token_hex(6).upper(),
-        }
-    endpoint, body = _baxi_build_request(service_id, payload, reference)
-    if endpoint is None:
-        return {"success": False, "message": f"Unsupported service: {service_id}"}
-    try:
-        resp = requests.post(
-            f"{settings.BAXI['BASE_URL']}/{endpoint}",
-            json=body, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        return _baxi_parse(resp.json())
-    except requests.RequestException as exc:
-        return {"success": False, "pending": True, "message": f"Aggregator unreachable: {exc}"}
+    from .vtung import vt_purchase
+    return vt_purchase(service_id, payload, reference)
 
 
 def vtu_requery(reference: str) -> dict:
-    """Requery a submitted purchase by our agentReference to settle a PENDING
+    """Requery a submitted purchase by our request_id to settle a PENDING
     transaction (e.g. one whose original send timed out).
 
     Returns the {"success", "pending", ...} shape settle_or_refund expects:
     success => delivered; pending => still unknown (retry later); neither =>
-    a definitive failure the caller refunds. MOCK treats it as delivered.
-
-    VERIFY-BEFORE-LIVE: confirm Baxi's requery path and response shape; an
-    unrecognised/empty result is kept PENDING so a delivered purchase is never
-    refunded by mistake.
+    a definitive failure the caller refunds.
     """
-    provider = _vtu_provider()
-    if provider == "vtung":
-        from .vtung import vt_requery
-        return vt_requery(reference)
-    if provider == "clubconnect":
-        from .clubconnect import cc_requery
-        return cc_requery(reference)
-    if not _baxi_live():
-        if mock_disabled_in_prod():
-            return {"success": False, "pending": True, "message": "VTU aggregator is not configured"}
-        return {"success": True, "mock": True, "message": "Delivered (mock requery)"}
-    try:
-        resp = requests.post(
-            f"{settings.BAXI['BASE_URL']}/services/transaction/requery",
-            json={"agentReference": reference}, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        parsed = _baxi_parse(resp.json())
-        if not parsed.get("success") and not parsed.get("provider_reference"):
-            parsed["pending"] = True  # no confirmed status yet — don't refund
-        return parsed
-    except requests.RequestException:
-        return {"success": False, "pending": True, "message": "Requery failed; will retry"}
+    from .vtung import vt_requery
+    return vt_requery(reference)
 
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
     """Validate a meter / smartcard number, returning the customer name."""
-    provider = _vtu_provider()
-    if provider == "vtung":
-        from .vtung import vt_verify_customer
-        return vt_verify_customer(service_id, billers_code, variation)
-    if provider == "clubconnect":
-        from .clubconnect import cc_verify_customer
-        return cc_verify_customer(service_id, billers_code, variation)
-    if not _baxi_live():
-        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM"}
-    sid = service_id.lower()
-    if sid.endswith("-electric"):
-        service_type = _disco_service_type(sid[: -len("-electric")])
-    else:
-        service_type = _BAXI_CABLE.get(sid, sid)
-    body = {"service_type": service_type, "account_number": billers_code}
-    if variation:
-        body["type"] = variation  # prepaid / postpaid for electricity
-    try:
-        resp = requests.post(
-            f"{settings.BAXI['BASE_URL']}/services/verify",
-            json=body, headers=_baxi_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        d = data.get("data", {}) or {}
-        name = (d.get("name") or d.get("customer_name") or d.get("customerName")
-                or (d.get("customer", {}) or {}).get("name", ""))
-        return {"success": bool(name), "customer_name": name, "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Aggregator unreachable: {exc}"}
+    from .vtung import vt_verify_customer
+    return vt_verify_customer(service_id, billers_code, variation)
 
 
 # ---------------------------------------------------------------------------

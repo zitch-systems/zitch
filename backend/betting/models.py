@@ -7,7 +7,7 @@ class BettingPlatform(models.Model):
     code = models.CharField(max_length=20, unique=True)   # e.g. "bet9ja"
     name = models.CharField(max_length=40)
     color = models.CharField(max_length=9, blank=True, default="")
-    # Baxi service code for this platform, used when live.
+    # VTU provider service code for this platform, used when live.
     service_id = models.CharField(max_length=40, blank=True, default="")
     active = models.BooleanField(default=True)
 

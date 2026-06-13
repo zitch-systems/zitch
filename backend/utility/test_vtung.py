@@ -108,7 +108,7 @@ class VtuNgParseTests(TestCase):
         self.assertFalse(r.get("pending"))
 
 
-@override_settings(VTU_PROVIDER="vtung", VTUNG=VT_CREDS)
+@override_settings(VTUNG=VT_CREDS)
 class VtuNgDispatchTests(TestCase):
     """With VTU.ng selected, the shared contract routes to it and the async
     pending -> reconcile path settles correctly."""
@@ -167,7 +167,7 @@ class VtuNgDispatchTests(TestCase):
         self.assertEqual(self.balance(), Decimal("20000"))           # refunded
 
 
-@override_settings(DEBUG=False, TESTING=False, VTU_PROVIDER="vtung",
+@override_settings(DEBUG=False, TESTING=False,
                    VTUNG={"BASE_URL": "https://vtu.ng", "API_KEY": "", "USERNAME": "", "PASSWORD": ""})
 class VtuProdMockGuardTests(TestCase):
     """In production a provider with no credentials must FAIL CLOSED, never

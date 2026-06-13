@@ -12,7 +12,6 @@ from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
 from .models import DataPlan
-from .providers import _baxi_build_request
 
 
 class UtilityTests(TestCase):
@@ -97,62 +96,6 @@ class UtilityTests(TestCase):
                              {"access_token": self.token, "cablenetwork": "2", "iuc": "1234567890"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["customer_name"])
-
-
-class BaxiRoutingTests(TestCase):
-    """Pin the Baxi per-service request routing (endpoint paths + field mapping).
-
-    Live calls can't run in CI, so these lock the translation from the views'
-    service_id/payload to Baxi's per-service endpoint and body. The service_type
-    codes themselves still need confirming against the Baxi dashboard.
-    """
-    def test_airtime_routes_to_airtime_endpoint(self):
-        ep, body = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "08010000001"})
-        self.assertEqual(ep, "services/airtime/request")
-        self.assertEqual(body["service_type"], "mtn")
-        self.assertEqual(body["amount"], 50)  # coerced to whole-naira int
-        self.assertEqual(body["phone"], "08010000001")
-        self.assertIn("agentReference", body)
-
-    def test_9mobile_maps_to_etisalat(self):
-        _, body = _baxi_build_request("9mobile-airtime", {"amount": "100", "phone": "0809"})
-        self.assertEqual(body["service_type"], "etisalat")
-
-    def test_data_routes_to_databundle(self):
-        ep, body = _baxi_build_request("glo-data", {"billersCode": "0805", "variation_code": "GLO5GB", "phone": "0805"})
-        self.assertEqual(ep, "services/databundle/request")
-        self.assertEqual(body["service_type"], "glo-data")
-        self.assertEqual(body["datacode"], "GLO5GB")
-
-    def test_electricity_routes_with_disco_code(self):
-        ep, body = _baxi_build_request("port harcourt-electric",
-                                       {"billersCode": "62100", "variation_code": "prepaid", "amount": "2000"})
-        self.assertEqual(ep, "services/electricity/request")
-        self.assertEqual(body["service_type"], "portharcourt_electric")
-        self.assertEqual(body["account_number"], "62100")
-        self.assertEqual(body["MeterType"], "prepaid")
-        self.assertEqual(body["amount"], 2000)
-
-    def test_cable_routes_to_multichoice(self):
-        ep, body = _baxi_build_request("dstv", {"billersCode": "7032000", "variation_code": "COMPE36"})
-        self.assertEqual(ep, "services/multichoice/request")
-        self.assertEqual(body["service_type"], "dstv")
-        self.assertEqual(body["product_code"], "COMPE36")
-
-    def test_unknown_service_is_rejected(self):
-        ep, _ = _baxi_build_request("crypto", {})
-        self.assertIsNone(ep)
-
-    def test_agent_reference_is_unique_per_call(self):
-        _, b1 = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "0805"})
-        _, b2 = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "0805"})
-        self.assertNotEqual(b1["agentReference"], b2["agentReference"])
-
-    def test_ledger_reference_is_used_as_agent_reference(self):
-        # Threading the wallet reference through makes it Baxi's idempotency key,
-        # so a retry/requery reconciles to one provider transaction.
-        _, body = _baxi_build_request("mtn-airtime", {"amount": "50", "phone": "0805"}, "ZTCHABC12345")
-        self.assertEqual(body["agentReference"], "ZTCHABC12345")
 
 
 class VtuReconciliationTests(TestCase):
