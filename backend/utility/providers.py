@@ -1,7 +1,8 @@
 """Third-party integration layer.
 
-Providers: Monnify (payments), Baxi (airtime/data/cable/electricity),
-Sendchamp (SMS/OTP), Prembly/IdentityPass (KYC: BVN/NIN/face). Each function
+Providers: Monnify (payments; also optional KYC/VAS + bills via monnify_*),
+Baxi (airtime/data/cable/electricity), Sendchamp (SMS/OTP),
+Prembly/IdentityPass (KYC: BVN/NIN/face). Each function
 returns {"success": bool, ...}. When the relevant key is blank (dev) it runs in
 MOCK mode and simulates success, so the whole app flow is testable without any
 external account.
@@ -196,6 +197,273 @@ def disbursement_send(amount_naira, reference: str, narration: str,
         }
     except requests.RequestException as exc:
         return {"success": False, "message": f"Payout provider unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# KYC / identity — Monnify Verification (VAS)
+#
+# An ALTERNATE to the Prembly KYC block below: same BVN/NIN intent, but vended
+# through Monnify's VAS endpoints and authed with the same Monnify OAuth token
+# (payments_live() gate + _monnify_token()). Exposed as standalone monnify_*
+# functions so the app's KYC provider can be switched without disturbing
+# Prembly. Blank Monnify keys => MOCK mode, matching the rest of this file.
+#
+# VERIFY-BEFORE-LIVE: the /api/v1/vas/* paths and field names follow Monnify's
+# published VAS docs but can't be exercised from CI — confirm against the
+# dashboard before go-live. Each VAS call is metered/billed by Monnify.
+# ---------------------------------------------------------------------------
+def monnify_verify_bvn(bvn: str, name: str = "", date_of_birth: str = "",
+                       mobile: str = "") -> dict:
+    """BVN information match: confirm the BVN exists and (optionally) that the
+    supplied name / DOB / mobile match what's linked to it.
+
+    POST /api/v1/vas/bvn-details-match. MOCK accepts any 11-digit BVN. ``match``
+    carries Monnify's per-field result (``bvnInformationMatch``) when live.
+    """
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if not payments_live():
+        return {"success": True, "mock": True, "match": {}}
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v1/vas/bvn-details-match",
+            json={"bvn": bvn, "name": name, "dateOfBirth": date_of_birth, "mobileNo": mobile},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        return {
+            "success": bool(data.get("requestSuccessful")) and bool(rb),
+            "match": rb.get("bvnInformationMatch", {}),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def monnify_match_bvn_account(bvn: str, bank_code: str, account_number: str) -> dict:
+    """Confirm a BVN is linked to a given bank account.
+
+    POST /api/v1/vas/bvn-account-match. MOCK accepts any 11-digit BVN.
+    """
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if not payments_live():
+        return {"success": True, "mock": True, "matched": True}
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v1/vas/bvn-account-match",
+            json={"bankCode": bank_code, "accountNumber": account_number, "bvn": bvn},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        matched = str(rb.get("matchStatus") or rb.get("accountNameMatch") or "").upper().startswith(
+            ("FULL", "MATCH", "TRUE"))
+        return {"success": bool(data.get("requestSuccessful")), "matched": matched, "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def monnify_verify_nin(nin: str) -> dict:
+    """Verify a NIN against NIMC via Monnify VAS.
+
+    POST /api/v1/vas/nin-details. MOCK accepts any 11-digit NIN.
+    VERIFY-BEFORE-LIVE: confirm the exact path/field ('nin') on the dashboard.
+    """
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    if not payments_live():
+        return {"success": True, "mock": True}
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v1/vas/nin-details",
+            json={"nin": nin},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        return {"success": bool(data.get("requestSuccessful")) and bool(rb), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Bills payment — Monnify Biller Service (airtime / data / electricity / cable)
+#
+# An ALTERNATE to the Baxi/VTU.ng VTU block: Monnify's unified Biller Service.
+# Flow is Discovery (categories -> billers -> products) -> Validate (customer)
+# -> Vend (pay) -> requery. Same Monnify OAuth token + payments_live() gate.
+# Blank Monnify keys => MOCK mode.
+#
+# VERIFY-BEFORE-LIVE: the bills endpoint paths are centralised in _MONNIFY_BILLS
+# below and follow Monnify's bills docs, but couldn't be exercised from CI —
+# confirm each path/field against the dashboard before go-live.
+# ---------------------------------------------------------------------------
+_MONNIFY_BILLS = "/api/v1/bill-payment"  # VERIFY-BEFORE-LIVE: Biller Service base path
+
+
+def _monnify_bills_get(path: str, params: dict | None = None) -> dict:
+    """Shared GET for the bills discovery / requery endpoints."""
+    token = _monnify_token()
+    if not token:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    resp = requests.get(
+        f"{m['BASE_URL']}{path}", params=params or {},
+        headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
+    )
+    data = resp.json()
+    return {"success": bool(data.get("requestSuccessful")),
+            "responseBody": data.get("responseBody"), "raw": data}
+
+
+def monnify_bill_categories() -> dict:
+    """List biller categories (AIRTIME, DATA, ELECTRICITY, CABLE_TV, ...)."""
+    if not payments_live():
+        return {"success": True, "mock": True,
+                "responseBody": ["AIRTIME", "DATA", "ELECTRICITY", "CABLE_TV"]}
+    try:
+        return _monnify_bills_get(f"{_MONNIFY_BILLS}/biller-categories")
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
+
+
+def monnify_billers(category_code: str) -> dict:
+    """List active billers for a category (filtered by categoryCode)."""
+    if not payments_live():
+        return {"success": True, "mock": True,
+                "responseBody": [{"billerCode": "MOCK-BILLER", "name": f"Mock {category_code} biller"}]}
+    try:
+        return _monnify_bills_get(f"{_MONNIFY_BILLS}/billers", {"categoryCode": category_code})
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
+
+
+def monnify_biller_products(biller_code: str) -> dict:
+    """List products offered by a biller (filtered by billerCode)."""
+    if not payments_live():
+        return {"success": True, "mock": True,
+                "responseBody": [{"productCode": "MOCK-PROD", "name": "Mock product", "amount": 1000}]}
+    try:
+        return _monnify_bills_get(f"{_MONNIFY_BILLS}/billers/products", {"billerCode": biller_code})
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
+
+
+def monnify_validate_customer(product_code: str, customer_id: str) -> dict:
+    """Validate a customer (meter / smartcard / phone) for a product.
+
+    Surfaces the resolved customer name and whether a validationReference must
+    be threaded into the vend (Monnify's vendInstruction.requireValidationRef).
+    """
+    if not payments_live():
+        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM",
+                "requires_validation_ref": False, "validation_reference": ""}
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        resp = requests.post(
+            f"{m['BASE_URL']}{_MONNIFY_BILLS}/validate-customer",
+            json={"productCode": product_code, "customerId": customer_id},
+            headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        vi = rb.get("vendInstruction", {}) or {}
+        return {
+            "success": bool(data.get("requestSuccessful")),
+            "customer_name": rb.get("customerName") or rb.get("name", ""),
+            "requires_validation_ref": bool(vi.get("requireValidationRef")),
+            "validation_reference": vi.get("validationReference", ""),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
+
+
+def monnify_pay_bill(product_code: str, customer_id: str, amount_naira,
+                     reference: str, validation_reference: str = "") -> dict:
+    """Vend a bill (airtime / data / electricity / cable / ...).
+
+    Pass ``reference`` as the idempotency key (the wallet ledger reference) and
+    the ``validation_reference`` from monnify_validate_customer when the product
+    requires one. On a network error returns ``pending=True`` so the caller does
+    NOT refund — reconcile via monnify_bill_status instead. ``token`` carries a
+    prepaid-meter token where the biller returns one.
+    """
+    if not payments_live():
+        return {"success": True, "mock": True, "status": "SUCCESS",
+                "provider_reference": "MOCK-" + secrets.token_hex(6).upper(), "token": ""}
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        body = {
+            "productCode": product_code,
+            "customerId": customer_id,
+            "amount": float(amount_naira),
+            "reference": reference,
+        }
+        if validation_reference:
+            body["validationReference"] = validation_reference
+        resp = requests.post(
+            f"{m['BASE_URL']}{_MONNIFY_BILLS}/process-bill",
+            json=body, headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        status = str(rb.get("status") or rb.get("transactionStatus", "")).upper()
+        return {
+            "success": bool(data.get("requestSuccessful")) and status in (
+                "SUCCESS", "SUCCESSFUL", "PENDING", "DELIVERED"),
+            "status": status,
+            "provider_reference": str(rb.get("transactionReference") or rb.get("reference", "")),
+            "token": rb.get("token", ""),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bills provider unreachable: {exc}"}
+
+
+def monnify_bill_status(reference: str) -> dict:
+    """Requery a vend by our reference to settle a PENDING bill.
+
+    Returns the {"success", "pending", ...} shape settle_or_refund expects:
+    success => delivered; pending => still unknown (retry later); neither =>
+    a definitive failure the caller refunds.
+    """
+    if not payments_live():
+        return {"success": True, "mock": True, "status": "SUCCESS"}
+    try:
+        out = _monnify_bills_get(f"{_MONNIFY_BILLS}/transaction-status", {"reference": reference})
+        rb = out.get("responseBody", {}) or {}
+        status = str(rb.get("status") or rb.get("transactionStatus", "")).upper()
+        if status in ("SUCCESS", "SUCCESSFUL", "DELIVERED"):
+            return {"success": True, "status": status, "raw": out.get("raw")}
+        if status in ("PENDING", "PROCESSING", ""):
+            return {"success": False, "pending": True, "status": status or "PENDING", "raw": out.get("raw")}
+        return {"success": False, "status": status, "raw": out.get("raw")}
+    except requests.RequestException:
+        return {"success": False, "pending": True, "message": "Requery failed; will retry"}
 
 
 # ---------------------------------------------------------------------------
