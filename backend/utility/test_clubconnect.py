@@ -182,6 +182,6 @@ class ClubConnectDispatchTests(TestCase):
 
 
 class VtuProviderDefaultTests(TestCase):
-    def test_default_provider_is_baxi(self):
+    def test_default_provider_is_vtung(self):
         from utility.providers import _vtu_provider
-        self.assertEqual(_vtu_provider(), "baxi")
+        self.assertEqual(_vtu_provider(), "vtung")
