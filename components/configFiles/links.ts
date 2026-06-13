@@ -7,5 +7,5 @@ export const PRIVACY_URL = 'https://zitch.ng/privacy.html';
 export const SUPPORT_EMAIL = 'support@zitch.ng';
 export const SUPPORT_PHONE = '+2348166938327';
 export const SUPPORT_WHATSAPP = '2348166938327'; // digits only, for wa.me
-// No standalone help/FAQ page yet — send users to the marketing site.
-export const FAQ_URL = 'https://zitch.ng';
+// FAQ section on the marketing site.
+export const FAQ_URL = 'https://zitch.ng/#faq';

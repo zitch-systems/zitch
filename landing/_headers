@@ -2,3 +2,7 @@
   X-Frame-Options: SAMEORIGIN
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+
+# Fingerprinted, rarely-changing static assets — cache hard for fast repeat views.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
