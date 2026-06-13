@@ -218,3 +218,33 @@ class VtuReconciliationTests(TestCase):
             call_command("reconcile_vtu", older_than_minutes=0)
             call_command("reconcile_vtu", older_than_minutes=0)  # second run must not double-refund
         self.assertEqual(self.balance(), Decimal("20000"))
+
+    def test_crash_after_debit_leaves_a_reconcilable_row(self):
+        """Worker dies mid-provider-call: the debit has committed but settle never
+        runs. The committed PENDING row must still carry meta.reconcile so the
+        sweep can recover it — otherwise the debit is orphaned forever (money gone,
+        nothing ever settles or refunds it). Regression for the reconcile-flag gap:
+        the flag is now written atomically with the debit, before the network call.
+        """
+        # vtu_purchase raising simulates the worker being killed during the
+        # provider HTTP call — after run_provider_purchase's debit() has committed,
+        # before settle_or_refund() can run.
+        with patch("utility.views.vtu_purchase", side_effect=RuntimeError("worker killed mid-call")):
+            with self.assertRaises(RuntimeError):
+                self.post("/api/utility/buyairtime/", {
+                    "access_token": self.token, "amount": "1000", "network": "1",
+                    "phone": "08010000001", "transaction_pin": "1234",
+                })
+
+        txn = Transaction.objects.get(user=self.user, direction=Transaction.OUT)
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertTrue(txn.meta.get("reconcile"))          # discoverable by the sweep
+        self.assertEqual(self.balance(), Decimal("19000"))  # debited, awaiting recovery
+
+        # The sweep now finds the orphan and refunds the definitively-failed purchase.
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "provider_reference": "BX1", "message": "not found"}):
+            call_command("reconcile_vtu", older_than_minutes=0)
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.FAILED)
+        self.assertEqual(self.balance(), Decimal("20000"))  # money returned

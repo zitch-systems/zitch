@@ -170,8 +170,19 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     With an `idempotency_key`, a duplicate request raises DuplicateTransaction
     before any debit or provider call. Returns ``(status, txn, result)`` where
     status is the settle_or_refund code. Raises InsufficientFunds (-> 402).
+
+    The debit is flagged ``meta.reconcile`` up front — committed atomically with
+    the wallet deduction, BEFORE the provider call. The debit commits on its own
+    (this function isn't wrapped in an outer transaction, by design, so no lock is
+    held across I/O), so if the worker dies during the provider call or the
+    settle write (a window up to the provider timeout), the committed PENDING row
+    would otherwise carry no reconcile flag and the sweep — which filters on
+    ``meta__reconcile=True`` — would never find it: money debited, never settled
+    or refunded, stuck forever. Pre-flagging makes every orphan discoverable; the
+    happy path clears the flag in ``settle_or_refund`` on a definite outcome.
     """
-    txn = debit(user, amount, service, meta=meta, idempotency_key=idempotency_key)
+    reconcile_meta = {**(meta or {}), "reconcile": True}
+    txn = debit(user, amount, service, meta=reconcile_meta, idempotency_key=idempotency_key)
     result = provider_call(txn.reference)
     status = settle_or_refund(txn, result)
     return status, txn, result
