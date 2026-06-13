@@ -46,7 +46,7 @@ const Register = () => {
       <Header onBack={() => router.replace('/signin')} />
       <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Create your account</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 26, fontFamily: font.regular }}>
-        Join 5,000,000+ Nigerians on Zitch
+        Open your free account in minutes
       </Text>
 
       <View style={{ gap: 16 }}>
