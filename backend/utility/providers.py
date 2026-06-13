@@ -223,6 +223,11 @@ _BAXI_DISCO = {  # disco slug -> Baxi service_type
 }
 
 
+def _vtu_provider() -> str:
+    """Which VTU backend is active: "baxi" (default) or "clubconnect"."""
+    return getattr(settings, "VTU_PROVIDER", "baxi") or "baxi"
+
+
 def _baxi_live() -> bool:
     return bool(settings.BAXI["API_KEY"])
 
@@ -312,6 +317,13 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
     may actually have landed, so the caller must NOT refund — reconciliation
     requeries it by reference instead.
     """
+    provider = _vtu_provider()
+    if provider == "vtung":
+        from .vtung import vt_purchase
+        return vt_purchase(service_id, payload, reference)
+    if provider == "clubconnect":
+        from .clubconnect import cc_purchase
+        return cc_purchase(service_id, payload, reference)
     if not _baxi_live():
         return {
             "success": True, "mock": True,
@@ -343,6 +355,13 @@ def vtu_requery(reference: str) -> dict:
     unrecognised/empty result is kept PENDING so a delivered purchase is never
     refunded by mistake.
     """
+    provider = _vtu_provider()
+    if provider == "vtung":
+        from .vtung import vt_requery
+        return vt_requery(reference)
+    if provider == "clubconnect":
+        from .clubconnect import cc_requery
+        return cc_requery(reference)
     if not _baxi_live():
         return {"success": True, "mock": True, "message": "Delivered (mock requery)"}
     try:
@@ -360,6 +379,13 @@ def vtu_requery(reference: str) -> dict:
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
     """Validate a meter / smartcard number, returning the customer name."""
+    provider = _vtu_provider()
+    if provider == "vtung":
+        from .vtung import vt_verify_customer
+        return vt_verify_customer(service_id, billers_code, variation)
+    if provider == "clubconnect":
+        from .clubconnect import cc_verify_customer
+        return cc_verify_customer(service_id, billers_code, variation)
     if not _baxi_live():
         return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM"}
     sid = service_id.lower()
