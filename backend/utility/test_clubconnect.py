@@ -48,10 +48,18 @@ class ClubConnectRoutingTests(TestCase):
         ep, p = _build("port harcourt-electric",
                        {"billersCode": "62100", "variation_code": "prepaid", "amount": "2000"}, "R")
         self.assertEqual(ep, "APIElectricityV1.asp")
-        self.assertEqual(p["ElectricCompany"], "portharcourt-electric")
-        self.assertEqual(p["MeterType"], "01")       # prepaid
+        self.assertEqual(p["ElectricCompany"], "05")  # PHED numeric code
+        self.assertEqual(p["MeterType"], "01")        # prepaid
         self.assertEqual(p["MeterNo"], "62100")
         self.assertEqual(p["Amount"], 2000)
+
+    def test_electricity_disco_codes(self):
+        # Each app disco slug maps to ClubConnect's numeric ElectricCompany code.
+        cases = {"eko": "01", "ikeja": "02", "abuja": "03", "kano": "04",
+                 "jos": "06", "ibadan": "07", "kaduna": "08", "enugu": "09"}
+        for slug, code in cases.items():
+            _, p = _build(f"{slug}-electric", {"billersCode": "1", "amount": "1000"}, "R")
+            self.assertEqual(p["ElectricCompany"], code, slug)
 
     def test_cable(self):
         ep, p = _build("dstv", {"billersCode": "7032000", "variation_code": "COMPE36"}, "R")
@@ -67,11 +75,15 @@ class ClubConnectRoutingTests(TestCase):
         self.assertEqual(p["CustomerID"], "USER123")
         self.assertEqual(p["Amount"], 500)
 
-    def test_exam_epin(self):
+    def test_waec_epin(self):
         ep, p = _build("waec-pin", {"phone": "0805", "quantity": 2}, "R")
         self.assertEqual(ep, "APIWAECV1.asp")
-        self.assertEqual(p["ExamType"], "waec")
         self.assertEqual(p["Quantity"], 2)
+        self.assertEqual(p["PhoneNo"], "0805")
+
+    def test_jamb_routes_to_its_own_endpoint(self):
+        ep, _ = _build("jamb-pin", {"phone": "0805", "quantity": 1}, "R")
+        self.assertEqual(ep, "APIJAMBV1.asp")
 
     def test_unknown_service_is_rejected(self):
         ep, _ = _build("crypto", {}, "R")

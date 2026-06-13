@@ -15,13 +15,18 @@ Baxi path uses.
 
 Blank creds => MOCK mode (simulated success) so the flow is testable offline.
 
-VERIFY-BEFORE-LIVE: the endpoint paths, the service/network/company codes, the
-response field names and the status strings below are implemented to ClubConnect's
-documented GET API but could not be confirmed against the live dashboard from CI.
-Every provider-specific value is isolated in the maps/constants at the top of this
-file — confirm them against your ClubConnect API docs before setting
-VTU_PROVIDER=clubconnect in production. Until then the default provider (Baxi) and
-MOCK mode keep every flow working and tested.
+Endpoint paths, parameter names, and the network/disco/meter/cable codes and
+status strings below were confirmed against the maintained `henryejemuta/
+laravel-clubkonnect` wrapper source (its enum classes). Still UNCONFIRMED and
+marked VERIFY-BEFORE-LIVE: the exam e-PIN endpoints/params (WAEC/JAMB — the
+wrapper has no e-PIN), the prepaid-electricity token field name, and whether
+ORDER_PROCESSED is terminal. All are isolated in the constants above and behind
+MOCK mode + the VTU_PROVIDER switch, so the default (Baxi) is unaffected.
+
+OPERATIONAL: ClubConnect enforces server-IP whitelisting. The backend's Render
+outbound IP(s) must be whitelisted on the ClubConnect dashboard (requires a
+Render plan with a static egress IP), or every live call is rejected. The
+APIServerIPV1.asp endpoint reports the IP ClubConnect sees, for confirmation.
 """
 import secrets
 
@@ -30,38 +35,49 @@ from django.conf import settings
 
 CC_TIMEOUT = 30
 
-# --- Endpoint paths (relative to CLUBCONNECT BASE_URL) — VERIFY-BEFORE-LIVE ---
+# --- Endpoint paths (relative to CLUBCONNECT BASE_URL) ---
+# Confirmed against the maintained laravel-clubkonnect wrapper source, EXCEPT the
+# exam e-PIN endpoints (the wrapper doesn't implement e-PIN) — those are flagged.
 _EP_AIRTIME = "APIAirtimeV1.asp"
 _EP_DATA = "APIDatabundleV1.asp"
 _EP_CABLE = "APICableTVV1.asp"
 _EP_ELECTRIC = "APIElectricityV1.asp"
 _EP_BETTING = "APIBettingV1.asp"
-_EP_EXAM = "APIWAECV1.asp"
+_EP_WAEC = "APIWAECV1.asp"            # VERIFY-BEFORE-LIVE (not in the wrapper)
+_EP_JAMB = "APIJAMBV1.asp"            # VERIFY-BEFORE-LIVE (not in the wrapper)
 _EP_QUERY = "APIQueryV1.asp"
-_EP_VERIFY_CABLE = "APIVerifyCableTVV1.asp"
+_EP_VERIFY_CABLE = "APIVerifyCableTVV1.0.asp"
 _EP_VERIFY_ELECTRIC = "APIVerifyElectricityV1.asp"
+_EP_SERVER_IP = "APIServerIPV1.asp"  # returns the IP ClubConnect sees — whitelist check
 
-# --- Service code maps — VERIFY-BEFORE-LIVE (confirm every code on the dashboard) ---
+# --- Service code maps — confirmed against the wrapper's enum classes ---
 # Network slug (as the views build it) -> ClubConnect MobileNetwork code.
 _CC_NETWORK = {"mtn": "01", "glo": "02", "9mobile": "03", "etisalat": "03", "airtel": "04"}
-# Cable slug -> ClubConnect CableTV code.
+# Cable slug -> ClubConnect CableTV code (lowercase provider name).
 _CC_CABLE = {"dstv": "dstv", "gotv": "gotv", "startimes": "startimes"}
-# Disco slug -> ClubConnect ElectricCompany code.
+# Disco slug (lowercased DISCO_NAMES from utility.views) -> ClubConnect
+# ElectricCompany numeric code.
 _CC_DISCO = {
-    "ikeja": "ikeja-electric", "eko": "eko-electric", "abuja": "abuja-electric",
-    "kano": "kano-electric", "port harcourt": "portharcourt-electric",
-    "jos": "jos-electric", "kaduna": "kaduna-electric", "enugu": "enugu-electric",
-    "ibadan": "ibadan-electric", "benin": "benin-electric",
+    "eko": "01", "ikeja": "02", "abuja": "03", "kano": "04", "port harcourt": "05",
+    "jos": "06", "ibadan": "07", "kaduna": "08", "enugu": "09",
 }
 # Prepaid/postpaid -> ClubConnect MeterType code.
 _CC_METER_TYPE = {"prepaid": "01", "postpaid": "02"}
-# Exam product code -> ClubConnect ExamType.
-_CC_EXAM = {"waec": "waec", "neco": "neco", "nabteb": "nabteb", "jamb": "jamb"}
+# Exam code -> dedicated ClubConnect e-PIN endpoint. VERIFY-BEFORE-LIVE: the
+# wrapper doesn't cover e-PIN, so these paths/params need dashboard confirmation.
+_CC_EXAM_ENDPOINT = {"waec": _EP_WAEC, "jamb": _EP_JAMB}
 
-# Status strings that mean the order is still in flight (hold PENDING, requery
-# later — never refund). Anything not here and not a completion is a hard failure.
-_CC_PENDING_STATES = {"ORDER_RECEIVED", "ORDER_ONHOLD", "ORDER_PROCESSING", "PROCESSING"}
-_CC_SUCCESS_STATES = {"ORDER_COMPLETED", "ORDER_COMPLETE", "COMPLETED", "SUCCESSFUL", "SUCCESS"}
+# Transaction status strings (from the wrapper's ClubKonnectStatusCodeEnum).
+# Terminal success:
+_CC_SUCCESS_STATES = {"ORDER_COMPLETED", "ORDER_ALREADY_COMPLETED", "SUCCESS"}
+# Still in flight — hold PENDING and requery, never refund (a delivered order
+# would leak money). ORDER_PROCESSED is treated as in-flight, not a terminal
+# success, so we never report a false success; the reconcile requery resolves it
+# to ORDER_COMPLETED. Anything not success/pending is a definitive failure
+# (refund) — ORDER_CANCELLED, INSUFFICIENT_BALANCE, INVALID_*, etc.
+# VERIFY: confirm ORDER_PROCESSED is non-terminal on the Status Codes page.
+_CC_PENDING_STATES = {"ORDER_RECEIVED", "ORDER_PROCESSED", "ORDER_ONHOLD",
+                      "AWAITING_PROCESSING", "AWAITING_NETWORK_RESPONSE"}
 
 
 def _cc_live() -> bool:
@@ -121,9 +137,9 @@ def _build(service_id: str, payload: dict, reference: str):
                              "Amount": _amount(payload.get("amount"))}
     if sid.endswith("-pin"):
         exam = sid[: -len("-pin")]
-        return _EP_EXAM, {**base, "ExamType": _CC_EXAM.get(exam, exam),
-                          "PhoneNo": payload.get("phone", ""),
-                          "Quantity": _amount(payload.get("quantity")) or 1}
+        return _CC_EXAM_ENDPOINT.get(exam, _EP_WAEC), {
+            **base, "PhoneNo": payload.get("phone", ""),
+            "Quantity": _amount(payload.get("quantity")) or 1}
     return None, {}
 
 
