@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, NText } from '@/components/design/ui';
 import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
@@ -130,10 +130,10 @@ const FixedSave = () => {
 
       <Hero style={{ marginBottom: 18 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You could earn</Text>
-        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(interest)}</Text>
-        <Text style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>
+        <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(interest)}</NText>
+        <NText style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>
           on {amount > 0 ? money(amount) : '₦0'} in {days} days · {(rate * 100).toFixed(0)}% p.a
-        </Text>
+        </NText>
       </Hero>
 
       <Label>How much to lock?</Label>
@@ -143,7 +143,7 @@ const FixedSave = () => {
         onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
         keyboardType="number-pad"
         placeholder={`Enter amount (min ${money(minAmt)})`}
-        prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>}
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />

@@ -3,7 +3,7 @@ import { View, Text, Pressable, Alert } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
-import { Screen, Header, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
 import Receipt from '@/components/design/Receipt';
@@ -115,7 +115,7 @@ const GetLoan = () => {
                 onPress={() => !disabled && setAmount(p)}
                 style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line, opacity: disabled ? 0.4 : 1 }}
               >
-                <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}>₦{(p / 1000)}k</Text>
+                <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{(p / 1000)}k</Text>
               </Pressable>
             </View>
           );

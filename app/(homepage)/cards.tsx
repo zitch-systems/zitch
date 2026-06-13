@@ -5,7 +5,7 @@ import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Btn, Field, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Btn, Field, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { QuickAmounts } from '@/components/design/flowkit';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -158,7 +158,7 @@ const Cards = () => {
       {/* Fund: amount sheet -> PIN */}
       <Sheet open={fundOpen} onClose={() => setFundOpen(false)} title="Fund card">
         <QuickAmounts amounts={FUND_AMOUNTS} value={fundAmt} onPick={setFundAmt} />
-        <Field value={fundAmt} onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>} />
+        <Field value={fundAmt} onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
         <View style={{ height: 16 }} />
         <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setPinError(''); setTimeout(() => setFundPin(true), 320); }} />
       </Sheet>

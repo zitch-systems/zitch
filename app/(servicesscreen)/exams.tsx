@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
@@ -100,7 +100,7 @@ const Exams = () => {
                 <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{e.name}</Text>
                 <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{e.description}</Text>
               </View>
-              <Text style={{ fontFamily: font.bold, color: on ? c.brand : c.ink1, fontVariant: ['tabular-nums'] }}>₦{Number(e.price).toLocaleString()}</Text>
+              <Text style={{ fontFamily: font.bold, color: on ? c.brand : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{Number(e.price).toLocaleString()}</Text>
             </Pressable>
           );
         })}
