@@ -184,6 +184,9 @@ def cc_purchase(service_id: str, payload: dict, reference: str | None = None) ->
     """
     ref = reference or ("ZCC-" + secrets.token_hex(6).upper())
     if not _cc_live():
+        from .providers import mock_disabled_in_prod
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "ClubConnect is not configured"}
         return {"success": True, "mock": True,
                 "message": "Transaction Successful (mock mode — no ClubConnect keys set)",
                 "provider_reference": "MOCK-" + secrets.token_hex(6).upper()}
@@ -209,6 +212,9 @@ def cc_requery(reference: str) -> dict:
     refunded by mistake. MOCK treats it as delivered.
     """
     if not _cc_live():
+        from .providers import mock_disabled_in_prod
+        if mock_disabled_in_prod():
+            return {"success": False, "pending": True, "message": "ClubConnect is not configured"}
         return {"success": True, "mock": True, "message": "Delivered (mock requery)"}
     try:
         parsed = _parse(_get(_EP_QUERY, {**_auth(), "RequestID": reference}))
