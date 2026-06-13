@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,8 @@ import ZIcon from '@/components/design/ZIcon';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
+import { isBiometricEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
+import { getTransactionPin } from '@/lib/secureStore';
 
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
@@ -373,6 +375,20 @@ export const Sheet = ({
 export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComplete?: (pin: string) => void; length?: number; busy?: boolean; error?: string }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
+  // Biometric "pay" shortcut: shown only when the user enabled biometrics, the
+  // device has them, and a PIN is cached in the keychain to submit on success.
+  const [bioKind, setBioKind] = useState<'face' | 'fingerprint' | 'biometrics' | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [enabled, available, storedPin] = await Promise.all([
+        isBiometricEnabled(), isBiometricAvailable(), getTransactionPin(),
+      ]);
+      const kind = enabled && available && storedPin ? await biometricLabel() : null;
+      if (alive) setBioKind(kind);
+    })();
+    return () => { alive = false; };
+  }, []);
   const press = (d: string) => {
     if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
@@ -382,6 +398,13 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
     }
   };
   const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
+  const useBiometric = async () => {
+    if (busy) return;
+    const ok = await authenticate('Approve payment');
+    if (!ok) return;
+    const storedPin = await getTransactionPin();
+    if (storedPin) onComplete && onComplete(storedPin);
+  };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
   return (
     <View>
@@ -408,7 +431,27 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', maxWidth: 280, alignSelf: 'center' }}>
         {keys.map((k, i) =>
           k === '' ? (
-            <View key={i} style={{ width: '33.33%', height: 64 }} />
+            bioKind ? (
+              <View key={i} style={{ width: '33.33%', padding: 7 }}>
+                <Pressable
+                  onPress={useBiometric}
+                  disabled={busy}
+                  style={{
+                    height: 64,
+                    borderRadius: 18,
+                    backgroundColor: c.surface,
+                    borderWidth: 1,
+                    borderColor: c.line,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={26} color={c.brand} />
+                </Pressable>
+              </View>
+            ) : (
+              <View key={i} style={{ width: '33.33%', height: 64 }} />
+            )
           ) : (
             <View key={i} style={{ width: '33.33%', padding: 7 }}>
               <Pressable

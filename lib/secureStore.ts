@@ -37,7 +37,33 @@ export async function clearToken(): Promise<void> {
 }
 
 /** Clears the token plus the non-sensitive profile keys kept in AsyncStorage. */
+// ---------------------------------------------------------------------------
+// Transaction PIN (for biometric "pay with Face ID / fingerprint")
+//
+// The money-authorising PIN is kept in the OS keychain/keystore (same place as
+// the session token), so a successful biometric scan can retrieve and submit it
+// instead of the user retyping. Retrieval is always gated by the OS biometric
+// prompt; the value is cleared on sign-out. Not stored on web (preview only).
+// ---------------------------------------------------------------------------
+const TXN_PIN_KEY = 'txn_pin';
+
+export async function saveTransactionPin(pin: string): Promise<void> {
+  if (isWeb) return; // don't persist the money PIN in unencrypted web storage
+  await SecureStore.setItemAsync(TXN_PIN_KEY, pin);
+}
+
+export async function getTransactionPin(): Promise<string | null> {
+  if (isWeb) return null;
+  return SecureStore.getItemAsync(TXN_PIN_KEY);
+}
+
+export async function clearTransactionPin(): Promise<void> {
+  if (isWeb) return;
+  await SecureStore.deleteItemAsync(TXN_PIN_KEY);
+}
+
 export async function clearSession(): Promise<void> {
   await clearToken();
+  await clearTransactionPin();
   await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked']);
 }

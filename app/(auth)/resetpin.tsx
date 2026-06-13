@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
+import { saveTransactionPin } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -28,6 +29,7 @@ const ResetPin = () => {
       const response = await apiPost('/api/set-transaction-pin/', { pin, password });
       const result = await response.json();
       if (response.ok) {
+        await saveTransactionPin(pin); // keep the keychain copy (biometric pay) in sync
         Alert.alert('Done', 'Your transaction PIN has been changed.');
         router.back();
       } else {

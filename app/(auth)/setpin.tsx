@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
+import { getToken, saveTransactionPin } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
@@ -30,6 +30,7 @@ const SetPin = () => {
       const response = await apiPost('/api/set-transaction-pin/', { pin: finalPin });
       const result = await response.json().catch(() => ({}));
       if (response.ok) {
+        await saveTransactionPin(finalPin); // cached (keychain) for biometric pay
         router.replace('/completed');
       } else if (response.status === 403 || result.code === 'password_required') {
         // This account already has a PIN (e.g. re-onboarding the same number);
