@@ -207,6 +207,9 @@ def vt_purchase(service_id: str, payload: dict, reference: str | None = None) ->
     """
     ref = reference or ("ZVT-" + secrets.token_hex(6).upper())
     if not _live():
+        from .providers import mock_disabled_in_prod
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "VTU.ng is not configured"}
         return {"success": True, "mock": True,
                 "message": "Transaction Successful (mock mode — no VTU.ng keys set)",
                 "provider_reference": "MOCK-" + secrets.token_hex(6).upper()}
@@ -229,6 +232,9 @@ def vt_requery(reference: str) -> dict:
     a delivered order is never refunded by mistake. MOCK treats it as delivered.
     """
     if not _live():
+        from .providers import mock_disabled_in_prod
+        if mock_disabled_in_prod():
+            return {"success": False, "pending": True, "message": "VTU.ng is not configured"}
         return {"success": True, "mock": True, "message": "Delivered (mock requery)"}
     try:
         parsed = _parse(_request("GET", _EP_REQUERY, params={"request_id": reference}))
