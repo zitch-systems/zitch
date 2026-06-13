@@ -38,7 +38,7 @@ const OTPVerification = () => {
       const result = await response.json();
       if (response.ok) {
         await saveToken(result.access_token);
-        router.push('/setup');
+        router.push('/setpassword');
       } else {
         Alert.alert('Error', result.message || 'Failed to verify OTP');
         setOtp('');

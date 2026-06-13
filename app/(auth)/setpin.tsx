@@ -15,6 +15,7 @@ const SetPin = () => {
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState<string | null>(null);
   const [err, setErr] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [token, setToken] = useState('');
 
   const active = confirm === null ? pin : confirm;
@@ -24,18 +25,26 @@ const SetPin = () => {
   }, []);
 
   const submit = async (finalPin: string) => {
+    setSubmitting(true);
     try {
       const response = await apiPost('/api/set-transaction-pin/', { pin: finalPin });
-      const result = await response.json();
+      const result = await response.json().catch(() => ({}));
       if (response.ok) {
+        router.replace('/completed');
+      } else if (response.status === 403 || result.code === 'password_required') {
+        // This account already has a PIN (e.g. re-onboarding the same number);
+        // changing it needs the password, which isn't part of first-time setup.
+        // The account is already secured, so move on instead of getting stuck.
         router.replace('/completed');
       } else {
         Alert.alert('Error', result.message || 'Could not set your PIN');
         setConfirm('');
+        setSubmitting(false);
       }
     } catch (error) {
       Alert.alert('Error', 'Something went wrong. Please try again later.');
       setConfirm('');
+      setSubmitting(false);
     }
   };
 
@@ -57,6 +66,7 @@ const SetPin = () => {
   }, [pin, confirm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onKey = (k: string) => {
+    if (submitting) return;
     if (confirm === null) {
       setPin((p) => (k === 'del' ? p.slice(0, -1) : p.length < PIN_LEN ? p + k : p));
     } else {
@@ -74,7 +84,7 @@ const SetPin = () => {
           {confirm === null ? 'Create a 4-digit PIN' : 'Confirm your PIN'}
         </Text>
         <Text style={{ fontSize: 14, color: err ? c.red : c.ink3, marginTop: 6, textAlign: 'center', fontFamily: err ? font.bold : font.regular }}>
-          {err ? "PINs don't match, try again" : "You'll use this to authorize payments"}
+          {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
         </Text>
 
         <View style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>
