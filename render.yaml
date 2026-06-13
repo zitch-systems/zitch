@@ -37,8 +37,15 @@ services:
         sync: false
       - key: MONNIFY_SOURCE_ACCOUNT
         sync: false
-      # VTU / bills — Baxi.
+      # VTU / bills aggregator. Choose Baxi (default) or ClubConnect.
+      - key: VTU_PROVIDER
+        value: "baxi"   # set to "clubconnect" to use ClubConnect instead
       - key: BAXI_API_KEY
+        sync: false
+      # ClubConnect / ClubKonnect (airtime, data, cable, electricity, betting, exam e-PIN).
+      - key: CLUBCONNECT_USER_ID
+        sync: false
+      - key: CLUBCONNECT_API_KEY
         sync: false
       # SMS / OTP — Sendchamp.
       - key: SENDCHAMP_API_KEY
