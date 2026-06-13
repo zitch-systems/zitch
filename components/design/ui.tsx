@@ -13,11 +13,13 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
+import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
+export { Naira, NText };
 
 const cardShadow = {
   shadowColor: '#063731',
@@ -94,8 +96,8 @@ export const Header = ({
       )}
       {title && (
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, letterSpacing: -0.2 }}>{title}</Text>
-          {sub && <Text style={{ fontSize: 13, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</Text>}
+          <NText style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, letterSpacing: -0.2 }}>{title}</NText>
+          {sub && <NText style={{ fontSize: 13, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
         </View>
       )}
       {right}
@@ -189,7 +191,7 @@ export const Btn = ({
       ]}
     >
       {icon && <ZIcon name={icon} size={size === 'lg' ? 20 : 18} color={v.fg} stroke={2.2} />}
-      <Text style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</Text>
+      <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</NText>
     </Pressable>
   );
 };
@@ -208,7 +210,7 @@ export const Money = ({
 }) => {
   const { c } = useTheme();
   return (
-    <Text
+    <NText
       style={{
         fontSize: size,
         fontFamily: font.extrabold,
@@ -218,7 +220,7 @@ export const Money = ({
       }}
     >
       {showk ? moneyk(amount) : money(amount)}
-    </Text>
+    </NText>
   );
 };
 
@@ -262,8 +264,8 @@ export const ZItem = ({
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text numberOfLines={1} style={{ fontSize: 15, fontFamily: font.semibold, color: c.ink1 }}>{title}</Text>
-        {sub && <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</Text>}
+        <NText numberOfLines={1} style={{ fontSize: 15, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
+        {sub && <NText style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
       </View>
       {right}
     </Wrap>
@@ -499,9 +501,9 @@ export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPre
         <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.detail}</Text>
       </View>
       <View style={{ alignItems: 'flex-end' }}>
-        <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
+        <NText style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
           {(inflow ? '+' : '-') + money(Math.abs(txn.amount))}
-        </Text>
+        </NText>
         <Text style={{ fontSize: 11.5, color: txn.status === 'Pending' ? c.amber : c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.status}</Text>
       </View>
     </Wrap>

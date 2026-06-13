@@ -4,7 +4,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiJson } from '@/lib/api';
-import { Screen, Header, Field, Btn, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, money, Naira } from '@/components/design/ui';
 import { Label, QuickAmounts } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
@@ -87,7 +87,7 @@ const AddMoney = () => {
         onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
         keyboardType="number-pad"
         placeholder="0.00"
-        prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>}
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 24 }} />
       <Btn label={amount > 0 ? `Fund ${money(amount)}` : 'Fund wallet'} icon="plus" disabled={busy || amount < 100} onPress={fund} />

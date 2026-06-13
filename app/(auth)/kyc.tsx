@@ -5,7 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { getToken } from '@/lib/secureStore';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, money, NText } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
 type Status = {
@@ -112,9 +112,9 @@ const Kyc = () => {
         <Btn label="Verify with Face ID" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifyFace} />
       </KycRow>
 
-      <Text style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
+      <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
         Tier 1: ₦50,000 · Tier 2 (BVN or NIN): ₦200,000 · Tier 3 (BVN + NIN): ₦5,000,000 per transaction.
-      </Text>
+      </NText>
     </Screen>
   );
 };

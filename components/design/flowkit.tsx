@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money } from '@/components/design/ui';
+import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius } from '@/lib/theme';
 
 // Network/provider id → brand color, for monograms & accents.
@@ -59,7 +60,7 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
               onPress={() => onPick(String(a))}
               style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
             >
-              <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}>₦{a.toLocaleString()}</Text>
+              <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{a.toLocaleString()}</Text>
             </Pressable>
           </View>
         );
@@ -141,7 +142,7 @@ export const PlanList = ({
               <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{p.label}</Text>
               {p.sub ? <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{p.sub}</Text> : null}
             </View>
-            <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? c.brand : c.ink1, fontVariant: ['tabular-nums'] }}>₦{p.price.toLocaleString()}</Text>
+            <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? c.brand : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{p.price.toLocaleString()}</Text>
           </Pressable>
         );
       })}
@@ -163,7 +164,7 @@ export const BalanceHint = ({ amount, balance }: { amount: number; balance: numb
   }
   return (
     <Text style={{ textAlign: 'right', fontSize: 12, color: c.ink3, marginTop: 2, marginBottom: 14, fontFamily: font.regular }}>
-      Balance: <Text style={{ fontFamily: font.bold, color: c.ink2 }}>{money(balance)}</Text>
+      Balance: <NText style={{ fontFamily: font.bold, color: c.ink2 }}>{money(balance)}</NText>
     </Text>
   );
 };
@@ -173,7 +174,7 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
   return (
     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
       <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <Text style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</Text>
+      <NText style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
     </View>
   );
 };
@@ -215,7 +216,7 @@ export const ConfirmSheet = ({
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Zitch Wallet</Text>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Available {money(balance)}</Text>
+            <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Available {money(balance)}</NText>
           </View>
           <ZIcon name="check" size={18} color={c.brand} />
         </View>

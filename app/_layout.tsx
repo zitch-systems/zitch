@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { AppState, Text as RNText, TextInput as RNTextInput } from "react-native";
+import { AppState, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -12,13 +12,17 @@ import { enforceIdleTimeout } from "@/lib/session";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
-// component's own style is merged after this default.
+// component's own style is merged after this default. On Android we also drop
+// the extra font padding the OS adds above/below glyphs — gives noticeably
+// crisper baseline alignment matching iOS.
+const textBase: { fontFamily: string; includeFontPadding?: boolean } = { fontFamily: font.regular };
+if (Platform.OS === 'android') textBase.includeFontPadding = false;
 const TextAny = RNText as any;
 const InputAny = RNTextInput as any;
 TextAny.defaultProps = TextAny.defaultProps || {};
-TextAny.defaultProps.style = [{ fontFamily: font.regular }, TextAny.defaultProps.style];
+TextAny.defaultProps.style = [textBase, TextAny.defaultProps.style];
 InputAny.defaultProps = InputAny.defaultProps || {};
-InputAny.defaultProps.style = [{ fontFamily: font.regular }, InputAny.defaultProps.style];
+InputAny.defaultProps.style = [textBase, InputAny.defaultProps.style];
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();

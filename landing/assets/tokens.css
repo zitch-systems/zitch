@@ -6,6 +6,17 @@
    ============================================================ */
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
+/* Render the Naira sign (U+20A6) in the platform system font — it has a
+   better-designed glyph than Manrope on most devices. The unicode-range
+   limits this override to the ₦ codepoint; everything else stays Manrope. */
+@font-face {
+  font-family: 'ZNairaSys';
+  src: local('-apple-system'), local('BlinkMacSystemFont'),
+       local('Segoe UI Variable'), local('Segoe UI'),
+       local('Roboto'), local('Helvetica Neue'), local('Arial');
+  unicode-range: U+20A6;
+}
+
 :root {
   /* ---- Brand ramp (teal "Zitch green") ---- */
   --z-teal-50:  #E6F7F4;
@@ -37,8 +48,9 @@
   --net-9mobile:#0A8A3D;
 
   /* ---- Type ---- */
-  /* OPay-style: clean rounded grotesk */
-  --font: 'Manrope', system-ui, -apple-system, sans-serif;
+  /* OPay-style: clean rounded grotesk. ZNairaSys is first so the ₦ glyph
+     falls to the system font via unicode-range above. */
+  --font: 'ZNairaSys', 'Manrope', system-ui, -apple-system, sans-serif;
 
   /* ---- Radius ---- */
   --r-sm: 12px;
@@ -60,7 +72,7 @@
   --surface-2: #F4F9F8;
   --surface-3: #EAF3F1;
   --line: #E2EEEB;
-  --ink-1: #06231F;
+  --ink-1: #000000;
   --ink-2: #3D5B56;
   --ink-3: #6E8B86;
   --ink-on-brand: #FFFFFF;
@@ -97,6 +109,8 @@
   color: var(--ink-1);
   background: var(--bg-grad);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1;
 }
 .z-num { font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
