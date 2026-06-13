@@ -22,9 +22,12 @@
         "backgroundColor": "#ffffff"
       },
       "permissions": [
-        "INTERNET",
-        "CAMERA",
-        "ACCESS_FINE_LOCATION"
+        "android.permission.INTERNET",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.RECORD_AUDIO"
       ],
       "package": "com.zitch.app"
     },
@@ -61,7 +64,11 @@
     "extra": {
       "router": {
         "origin": false
+      },
+      "eas": {
+        "projectId": "a2e8a1ed-506f-4fc8-9783-210c8aab1060"
       }
-    }
+    },
+    "owner": "zitch"
   }
 }

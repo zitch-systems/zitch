@@ -3,7 +3,7 @@ import { View, Text, Alert } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
@@ -108,7 +108,7 @@ const BuyAirtime = () => {
         onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
         keyboardType="number-pad"
         placeholder="0.00"
-        prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>}
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />

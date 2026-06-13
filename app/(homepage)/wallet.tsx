@@ -1,7 +1,7 @@
 import React, { useCallback } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
-import { Screen, TxnRow, money } from '@/components/design/ui';
+import { Screen, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -22,9 +22,9 @@ const Wallet = () => {
 
       <Hero style={{ margin: 16 }} watermark={140}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Total balance</Text>
-        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>
+        <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>
           {showBal ? money(balance) : '₦ ••••••'}
-        </Text>
+        </NText>
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
           <Pressable onPress={() => router.push('/addmoney')} style={{ flex: 1, paddingVertical: 12, borderRadius: 13, backgroundColor: '#fff', alignItems: 'center' }}>
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 14 }}>+ Add money</Text>

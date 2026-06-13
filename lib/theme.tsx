@@ -83,7 +83,7 @@ export const light: ThemeTokens = {
   surface2: '#F4F9F8',
   surface3: '#EAF3F1',
   line: '#E2EEEB',
-  ink1: '#06231F',
+  ink1: '#000000',
   ink2: '#3D5B56',
   ink3: '#6E8B86',
   inkOnBrand: '#FFFFFF',

@@ -4,7 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { apiJson, apiPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, ZItem, money } from '@/components/design/ui';
+import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -24,7 +24,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
   const { c } = useTheme();
   return (
     <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: hot ? c.red : c.amber }}>
-      <Text style={{ fontSize: 10, fontFamily: font.bold, color: '#fff' }}>{label}</Text>
+      <NText style={{ fontSize: 10, fontFamily: font.bold, color: '#fff' }}>{label}</NText>
     </View>
   );
 };
@@ -147,9 +147,9 @@ const Me = () => {
           <Text style={{ color: c.ink3, fontSize: 13, fontFamily: font.regular }}>Total balance</Text>
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
         </View>
-        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
+        <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
           {showBal ? money(balance) : '₦ ••••••'}
-        </Text>
+        </NText>
       </View>
 
       {/* safety tips */}

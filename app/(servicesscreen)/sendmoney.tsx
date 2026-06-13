@@ -6,7 +6,7 @@ import { getToken } from '@/lib/secureStore';
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
@@ -237,7 +237,7 @@ const SendMoney = () => {
 
       <Label>Amount</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
-      <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>} />
+      <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 

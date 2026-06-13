@@ -3,7 +3,7 @@ import { View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { apiJson } from '@/lib/api';
-import { Screen, Card, Field } from '@/components/design/ui';
+import { Screen, Card, Field, Naira, NText } from '@/components/design/ui';
 import { Label, QuickAmounts } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
@@ -80,7 +80,7 @@ const Convert = () => {
           onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
           keyboardType="number-pad"
           placeholder="0"
-          prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>}
+          prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
         />
 
         {/* converted values */}
@@ -134,9 +134,9 @@ const Convert = () => {
                       </View>
                       <View>
                         <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>{cur.code} · {cur.name}</Text>
-                        <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular, marginTop: 1 }}>
+                        <NText style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular, marginTop: 1 }}>
                           {cur.rate > 0 ? `${cur.symbol}1 ≈ ₦${(1 / cur.rate).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : cur.name}
-                        </Text>
+                        </NText>
                       </View>
                     </View>
                     {isCopied ? (

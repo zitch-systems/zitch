@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { Screen, Header, Card, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, Btn, NText } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
@@ -45,8 +45,8 @@ const FeatureScreen = ({
           <View style={{ width: 54, height: 54, borderRadius: 17, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name={icon} size={28} color="#fff" />
           </View>
-          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: '#fff', marginTop: 14 }}>{title}</Text>
-          <Text style={{ fontSize: 13.5, color: 'rgba(255,255,255,.88)', marginTop: 6, lineHeight: 20, fontFamily: font.regular }}>{tagline}</Text>
+          <NText style={{ fontSize: 19, fontFamily: font.extrabold, color: '#fff', marginTop: 14 }}>{title}</NText>
+          <NText style={{ fontSize: 13.5, color: 'rgba(255,255,255,.88)', marginTop: 6, lineHeight: 20, fontFamily: font.regular }}>{tagline}</NText>
         </Hero>
 
         <Card style={{ marginTop: 14 }} pad={0}>
@@ -57,8 +57,8 @@ const FeatureScreen = ({
                   <ZIcon name={p.icon} size={20} color={c.brand} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>{p.title}</Text>
-                  {p.sub ? <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{p.sub}</Text> : null}
+                  <NText style={{ fontFamily: font.semibold, color: c.ink1 }}>{p.title}</NText>
+                  {p.sub ? <NText style={{ fontSize: 12.5, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{p.sub}</NText> : null}
                 </View>
               </View>
             ))}
@@ -70,7 +70,7 @@ const FeatureScreen = ({
         </View>
 
         {note ? (
-          <Text style={{ fontSize: 12, color: c.ink3, textAlign: 'center', marginTop: 14, paddingHorizontal: 16, fontFamily: font.regular }}>{note}</Text>
+          <NText style={{ fontSize: 12, color: c.ink3, textAlign: 'center', marginTop: 14, paddingHorizontal: 16, fontFamily: font.regular }}>{note}</NText>
         ) : null}
       </View>
     </Screen>

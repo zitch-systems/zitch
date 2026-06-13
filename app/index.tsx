@@ -5,6 +5,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Link } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
+import { NText } from '@/components/design/Naira';
 import { font } from '@/lib/theme';
 
 const SLIDES = [
@@ -38,8 +39,8 @@ const Index = () => {
           >
             <ZIcon name={s.icon} size={64} color="#fff" />
           </LinearGradient>
-          <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: '#06231F', marginTop: 38, textAlign: 'center' }}>{s.t}</Text>
-          <Text style={{ fontSize: 14.5, color: '#6E8B86', marginTop: 12, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>{s.d}</Text>
+          <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: '#000000', marginTop: 38, textAlign: 'center' }}>{s.t}</Text>
+          <NText style={{ fontSize: 14.5, color: '#6E8B86', marginTop: 12, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>{s.d}</NText>
         </View>
 
         {/* dots */}

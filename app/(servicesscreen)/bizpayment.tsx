@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, Share, Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Screen, Header, Card, Field, Btn, money } from '@/components/design/ui';
+import { Screen, Header, Card, Field, Btn, money, Naira } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -66,7 +66,7 @@ const BizPayment = () => {
         onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
         keyboardType="number-pad"
         placeholder="0.00"
-        prefix={<Text style={{ fontFamily: font.extrabold, color: c.ink2, fontSize: 16 }}>₦</Text>}
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       <View style={{ height: 14 }} />
       <Field

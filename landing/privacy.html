@@ -7,10 +7,12 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
-  :root{--teal:#23B1A8;--teal-deep:#00847B;--navy:#02344A;--ink:#141414;--t2:#46535B;--line:#E3EAED;--paper:#F7FAFB;
-        --disp:'Space Grotesk',sans-serif;--body:'Inter',system-ui,sans-serif;}
+  /* System-font fallback only for the Naira sign (U+20A6). */
+  @font-face{font-family:'ZNairaSys';src:local('-apple-system'),local('BlinkMacSystemFont'),local('Segoe UI Variable'),local('Segoe UI'),local('Roboto'),local('Helvetica Neue'),local('Arial');unicode-range:U+20A6;}
+  :root{--teal:#23B1A8;--teal-deep:#00847B;--navy:#02344A;--ink:#000000;--t2:#46535B;--line:#E3EAED;--paper:#F7FAFB;
+        --disp:'ZNairaSys','Space Grotesk',sans-serif;--body:'ZNairaSys','Inter',system-ui,sans-serif;}
   *{box-sizing:border-box;}
-  body{margin:0;font-family:var(--body);color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased;}
+  body{margin:0;font-family:var(--body);color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;font-feature-settings:"kern" 1,"liga" 1;}
   a{color:var(--teal-deep);}
   .topbar{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);z-index:5;}
   .topbar .in{max-width:880px;margin:0 auto;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;}

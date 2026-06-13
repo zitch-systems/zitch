@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, Sheet, TxnRow, money } from '@/components/design/ui';
+import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import { useTheme, font } from '@/lib/theme';
@@ -84,9 +84,9 @@ const Home = () => {
           </Pressable>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 }}>
-          <Text style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+          <NText style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
             {showBal ? money(balance) : '₦ ••••••'}
-          </Text>
+          </NText>
           <Pressable onPress={() => setShowBal(!showBal)}>
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
