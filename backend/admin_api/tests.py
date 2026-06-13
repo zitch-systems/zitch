@@ -412,3 +412,30 @@ class AdminApiFeatureTests(TestCase):
         res, _ = self.post("wallet/credit", self.readonly_token,
                            {"uid": self.customer.id, "amount": "100", "reason": "valid reason"})
         self.assertEqual(res.status_code, 403)
+
+
+class SeedOpsCommandTests(TestCase):
+    """seed_ops provisions login-capable operators and refuses default-credential
+    demo seeding in production."""
+
+    def test_named_operator_can_log_in_with_role(self):
+        from django.core.management import call_command
+        call_command("seed_ops", username="zoe", role="finance", password="S3cret#pass")
+        u = User.objects.get(username="zoe")
+        self.assertTrue(u.is_staff and u.check_password("S3cret#pass"))
+        self.assertTrue(u.groups.filter(name="finance").exists())
+        # The operator can actually authenticate at the ops login endpoint.
+        res = Client().post("/api/ops/login/",
+                            data=json.dumps({"identifier": "zoe", "password": "S3cret#pass"}),
+                            content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json().get("role"), "finance")
+
+    def test_demo_seed_blocked_in_production_without_force(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+        from django.test import override_settings
+        with override_settings(DEBUG=False):
+            with self.assertRaises(CommandError):
+                call_command("seed_ops")
+        self.assertFalse(User.objects.filter(username="amara").exists())

@@ -1,11 +1,14 @@
 """Third-party integration layer.
 
 Providers: Monnify (payments; also optional KYC/VAS + bills via monnify_*),
-Baxi (airtime/data/cable/electricity), Sendchamp (SMS/OTP),
-Prembly/IdentityPass (KYC: BVN/NIN/face). Each function
-returns {"success": bool, ...}. When the relevant key is blank (dev) it runs in
-MOCK mode and simulates success, so the whole app flow is testable without any
-external account.
+VTU.ng / ClubConnect / Baxi (VTU — airtime, data, cable, electricity, betting,
+exam e-PIN; selected by settings.VTU_PROVIDER and dispatched via vtu_purchase /
+vtu_requery / vtu_verify_customer), Sendchamp (SMS/OTP), Prembly/IdentityPass
+(KYC: BVN/NIN/face). Each function returns {"success": bool, ...}. When the
+relevant key is blank it runs in MOCK mode and simulates success so the whole app
+flow is testable without an external account — EXCEPT in production (DEBUG off),
+where the VTU mock fails closed (see mock_disabled_in_prod) so a misconfigured
+deploy never fakes a money movement.
 
 TODO before go-live: verify each provider's exact request/response field names,
 endpoints and auth against their dashboards/docs. Live calls can't be exercised
@@ -492,8 +495,20 @@ _BAXI_DISCO = {  # disco slug -> Baxi service_type
 
 
 def _vtu_provider() -> str:
-    """Which VTU backend is active: "baxi" (default) or "clubconnect"."""
-    return getattr(settings, "VTU_PROVIDER", "baxi") or "baxi"
+    """Which VTU backend is active: "vtung" (default), "clubconnect" or "baxi"."""
+    return getattr(settings, "VTU_PROVIDER", "vtung") or "vtung"
+
+
+def mock_disabled_in_prod() -> bool:
+    """True when a provider's MOCK responses must be suppressed.
+
+    A money provider with no credentials falls back to MOCK mode, which *fakes
+    success*. That's fine in dev/tests, but in production it would tell a customer
+    their airtime/data purchase succeeded while nothing was delivered (and the
+    wallet was debited). When this returns True, the provider must fail closed
+    instead — the debit is then refunded by the normal failure path.
+    """
+    return not settings.DEBUG and not getattr(settings, "TESTING", False)
 
 
 def _baxi_live() -> bool:
@@ -593,6 +608,8 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
         from .clubconnect import cc_purchase
         return cc_purchase(service_id, payload, reference)
     if not _baxi_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "VTU aggregator is not configured"}
         return {
             "success": True, "mock": True,
             "message": "Transaction Successful (mock mode — no aggregator keys set)",
@@ -631,6 +648,8 @@ def vtu_requery(reference: str) -> dict:
         from .clubconnect import cc_requery
         return cc_requery(reference)
     if not _baxi_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "pending": True, "message": "VTU aggregator is not configured"}
         return {"success": True, "mock": True, "message": "Delivered (mock requery)"}
     try:
         resp = requests.post(

@@ -167,6 +167,26 @@ class VtuNgDispatchTests(TestCase):
         self.assertEqual(self.balance(), Decimal("20000"))           # refunded
 
 
+@override_settings(DEBUG=False, TESTING=False, VTU_PROVIDER="vtung",
+                   VTUNG={"BASE_URL": "https://vtu.ng", "API_KEY": "", "USERNAME": "", "PASSWORD": ""})
+class VtuProdMockGuardTests(TestCase):
+    """In production a provider with no credentials must FAIL CLOSED, never
+    fake-success — otherwise a misconfigured deploy would charge customers for
+    undelivered airtime/data. (Dev/tests still get the mock.)"""
+
+    def test_purchase_fails_closed_not_mock_success(self):
+        from utility.providers import vtu_purchase
+        r = vtu_purchase("mtn-airtime", {"amount": "100", "phone": "0805"}, "REF")
+        self.assertFalse(r["success"])
+        self.assertNotIn("mock", r)               # not a faked success
+
+    def test_requery_holds_pending_not_mock_delivered(self):
+        from utility.providers import vtu_requery
+        r = vtu_requery("REF")
+        self.assertFalse(r["success"])
+        self.assertTrue(r.get("pending"))         # leaves the row for a real check
+
+
 @override_settings(VTUNG={"BASE_URL": "https://vtu.ng", "API_KEY": "", "USERNAME": "u", "PASSWORD": "p"})
 class VtuNgTokenTests(TestCase):
     """JWT acquisition + caching."""
