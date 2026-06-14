@@ -839,7 +839,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
             return True
         net = NETWORK_NAMES[netid]
         _new_flow(user, msisdn, "airtime", "pin",
-                  {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(int(amt)),
+                  {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
                    "meta": {"phone": ph, "network": netid}})
         reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}\n"
                       "Reply with your PIN to confirm, or \"cancel\".")

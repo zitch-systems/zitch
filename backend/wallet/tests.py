@@ -12,6 +12,7 @@ from django.test import Client, TestCase
 
 from accounts.models import AccessToken
 
+from .forex import FxError, create_fx_quote
 from .models import FundingIntent, Transaction
 from .services import credit, get_or_create_wallet
 
@@ -27,6 +28,27 @@ def make_user(phone, email, pin="1234", balance="0", tier=1):
     if Decimal(balance) > 0:
         credit(u, Decimal(balance), "Seed")
     return u, AccessToken.issue(u).key
+
+
+class FxLimitTests(TestCase):
+    """Currency conversion must enforce the same KYC tier / large-transfer face
+    gate as every other money-out flow (regression for the FX limit bypass)."""
+
+    def test_tier1_over_cap_blocked(self):
+        user, _ = make_user("08055500001", "fxa@zitch.test", balance="200000", tier=1)
+        with self.assertRaises(FxError):  # ₦60k > ₦50k tier-1 cap
+            create_fx_quote(user, "NGN", "USD", Decimal("60000"))
+
+    def test_large_transfer_needs_face(self):
+        # Tier-3 cap is ₦5M, but >= ₦100k requires face verification (not set here).
+        user, _ = make_user("08055500002", "fxb@zitch.test", balance="500000", tier=3)
+        with self.assertRaises(FxError):
+            create_fx_quote(user, "NGN", "USD", Decimal("150000"))
+
+    def test_within_limit_allowed(self):
+        user, _ = make_user("08055500003", "fxc@zitch.test", balance="200000", tier=1)
+        q = create_fx_quote(user, "NGN", "USD", Decimal("10000"))
+        self.assertEqual(q.to_currency, "USD")
 
 
 class WalletTests(TestCase):
