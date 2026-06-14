@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en-NG">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -26,6 +26,7 @@
 <meta property="og:description" content="Send money, pay every bill and top up in seconds — all in one app. And when you can't open it, just text Zitch on WhatsApp." />
 <meta property="og:url" content="https://zitch.ng/" />
 <meta property="og:image" content="https://zitch.ng/assets/brand/zitch-badge.png" />
+<meta property="og:image:type" content="image/png" />
 <meta property="og:image:alt" content="Zitch — money that speaks your language" />
 <meta property="og:locale" content="en_NG" />
 
@@ -34,6 +35,7 @@
 <meta name="twitter:title" content="Zitch — Money that speaks your language" />
 <meta name="twitter:description" content="Send money, pay bills, top up and bank on WhatsApp — all in one Nigerian money app." />
 <meta name="twitter:image" content="https://zitch.ng/assets/brand/zitch-badge.png" />
+<meta name="twitter:image:alt" content="Zitch — money that speaks your language" />
 
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -293,7 +295,7 @@
 
   /* compact FX band */
   .fx-band{display:grid;grid-template-columns:1fr 1.15fr;gap:48px;align-items:center;background:radial-gradient(ellipse 55% 90% at 100% 0%,rgba(35,177,168,.09),transparent 60%),radial-gradient(ellipse 40% 70% at 0% 100%,rgba(92,245,235,.1),transparent 65%),var(--paper);border:1px solid var(--line);border-radius:var(--rl);padding:48px 52px;position:relative;overflow:hidden;}
-  .fx-band h3{font-family:var(--disp);font-size:28px;font-weight:700;color:var(--head);margin-top:13px;letter-spacing:-.015em;}
+  .fx-band h2{font-family:var(--disp);font-size:28px;font-weight:700;color:var(--head);margin-top:13px;letter-spacing:-.015em;line-height:1.12;}
   .fx-band p{font-size:15.5px;line-height:1.66;color:var(--t2);margin-top:13px;}
   .rate-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px;}
   .rate-cell{display:flex;align-items:center;gap:11px;background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px 17px;font-size:13.5px;transition:border-color .15s,box-shadow .15s;}
@@ -446,14 +448,12 @@
     .msg{max-width:92%;}
   }
 </style>
-<link id="gfont-Noto-Sans" rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@300;400;500;600;700&amp;display=swap">
-<link id="gfont-Ubuntu" rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;600;700&amp;display=swap">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@graph": [
     {
-      "@type": "Organization",
+      "@type": ["Organization", "FinancialService"],
       "@id": "https://zitch.ng/#organization",
       "name": "Zitch",
       "legalName": "Zitch Technologies Limited",
@@ -480,7 +480,21 @@
       "sameAs": [
         "https://instagram.com/zitchng",
         "https://facebook.com/zitchng"
-      ]
+      ],
+      "hasOfferCatalog": {
+        "@type": "OfferCatalog",
+        "name": "Zitch services",
+        "itemListElement": [
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Bank transfers", "description": "Instant transfers to any Nigerian bank; free Zitch-to-Zitch." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Airtime & data", "description": "Top up MTN, Airtel, Glo and 9mobile with up to 3% back." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Bill payments", "description": "Electricity for all discos plus DStv, GOtv and StarTimes." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Virtual dollar cards", "description": "Spend a USD wallet anywhere online." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Fixed savings", "description": "Lock funds and earn up to 18% per annum." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Loans", "description": "Quick credit with clear terms, repaid in-app." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Multi-currency wallet & FX", "description": "Hold and convert NGN, USD, GBP, CAD and CNY." } },
+          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "WhatsApp banking", "description": "Bank by chat; money moves only after PIN or biometric approval." } }
+        ]
+      }
     },
     {
       "@type": "WebSite",
@@ -489,6 +503,28 @@
       "name": "Zitch",
       "publisher": { "@id": "https://zitch.ng/#organization" },
       "inLanguage": "en-NG"
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://zitch.ng/#app",
+      "name": "Zitch",
+      "applicationCategory": "FinanceApplication",
+      "operatingSystem": "Android, iOS",
+      "url": "https://zitch.ng/",
+      "image": "https://zitch.ng/assets/brand/zitch-badge.png",
+      "description": "Nigerian money app for instant transfers, airtime, data, bills, virtual dollar cards, savings, loans and multi-currency wallets — plus banking on WhatsApp.",
+      "publisher": { "@id": "https://zitch.ng/#organization" },
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "NGN" },
+      "featureList": [
+        "Send money to any Nigerian bank",
+        "Buy airtime and data",
+        "Pay electricity and cable bills",
+        "Virtual dollar cards",
+        "Fixed savings up to 18% per annum",
+        "Loans",
+        "Multi-currency wallet and FX (NGN, USD, GBP, CAD, CNY)",
+        "WhatsApp banking"
+      ]
     },
     {
       "@type": "FAQPage",
@@ -739,7 +775,7 @@
     <div class="fx-band rev">
       <div>
         <span class="eyebrow">Also in your wallet</span>
-        <h3>Multi-currency, when you need it.</h3>
+        <h2>Multi-currency, when you need it.</h2>
         <p>Hold dollars, pounds and Canadian dollars beside your naira, and convert at honest, time-boxed rates — in the app or by chat.</p>
       </div>
       <div class="rate-grid">
