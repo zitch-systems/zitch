@@ -95,6 +95,14 @@ class CredentialSecurityTests(TestCase):
         res, _ = self.post("/api/set-password/", {"access_token": token, "password": "short"})
         self.assertEqual(res.status_code, 400)
 
+    def test_set_password_rejects_weak(self):
+        # Server-side strength rules: an all-numeric or top-common password must
+        # be refused even via a direct API call (the client hints are bypassable).
+        _, token = make_user("08030000009", "weak@zitch.test")
+        for pw in ("12345678", "password"):
+            res, _ = self.post("/api/set-password/", {"access_token": token, "password": pw})
+            self.assertEqual(res.status_code, 400)
+
     def test_set_pin_requires_auth_and_sets_owner(self):
         res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "1357"})
         self.assertEqual(res.status_code, 401)
@@ -172,6 +180,19 @@ class KycTierTests(TestCase):
         res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["tier"], 3)
+
+    def test_bvn_nin_stored_hashed_not_raw(self):
+        # Defence in depth: the raw government IDs must not be recoverable at rest —
+        # only a keyed hash (for audit) + last 4 (for support) are kept.
+        from accounts.models import User, hash_identifier
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        u = User.objects.get(pk=self.user.pk)
+        self.assertEqual(u.bvn_last4, "8901")
+        self.assertEqual(u.nin_last4, "4321")
+        self.assertEqual(u.bvn_hash, hash_identifier("12345678901"))
+        self.assertNotIn("12345678901", u.bvn_hash)   # the plaintext isn't in the hash
+        self.assertFalse(hasattr(u, "bvn"))            # the raw column no longer exists
 
     def test_bvn_rejects_bad_format(self):
         res, _ = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "123"})

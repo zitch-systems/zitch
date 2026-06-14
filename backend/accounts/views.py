@@ -30,6 +30,22 @@ def _otp_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
+def _weak_password(password: str, user=None) -> str | None:
+    """Run Django's configured password validators server-side; returns a
+    user-facing error string if the password is too weak (too short / too common
+    / all-numeric / too similar to the user's own details), else None. Enforced
+    here because the client strength hints are advisory — a direct API call could
+    otherwise set a trivially guessable password on a money account."""
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
+
+    try:
+        validate_password(password, user)
+        return None
+    except ValidationError as e:
+        return " ".join(e.messages)
+
+
 @ratelimit("signin", limit=10, window=300)
 @api
 def signin(request):
@@ -171,8 +187,9 @@ def password_reset(request):
     password = request.data.get("password") or ""
     if not phone or not code:
         return fail("Phone and reset code are required")
-    if len(password) < 8:
-        return fail("Password must be at least 8 characters")
+    weak = _weak_password(password)
+    if weak:
+        return fail(weak)
 
     otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.RESET).order_by("-created").first()
     if otp is None:
@@ -222,8 +239,9 @@ def set_password(request):
     """
     user = request.user_obj
     password = request.data.get("password") or ""
-    if len(password) < 8:
-        return fail("Password must be at least 8 characters")
+    weak = _weak_password(password, user)
+    if weak:
+        return fail(weak)
     user.set_password(password)
     user.save(update_fields=["password"])
     # Revoke other sessions on a credential change: any token issued before this
@@ -374,10 +392,10 @@ def kyc_bvn(request):
     result = kyc_verify_bvn(bvn)
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
-    user.bvn = bvn
+    user.set_bvn(bvn)
     user.bvn_verified = True
     user.recompute_tier()
-    user.save(update_fields=["bvn", "bvn_verified", "tier"])
+    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
 
@@ -390,10 +408,10 @@ def kyc_nin(request):
     result = kyc_verify_nin(nin)
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
-    user.nin = nin
+    user.set_nin(nin)
     user.nin_verified = True
     user.recompute_tier()
-    user.save(update_fields=["nin", "nin_verified", "tier"])
+    user.save(update_fields=["nin_hash", "nin_last4", "nin_verified", "tier"])
     return ok(success=True, message="NIN verified", **_kyc_state(user))
 
 

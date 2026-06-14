@@ -110,8 +110,15 @@ DATABASES = {
 
 AUTH_USER_MODEL = "accounts.User"
 
+# Server-side strength rules, enforced via validate_password() in the password
+# endpoints (the client's "letter + number" hints are advisory and bypassable by
+# a direct API call). Blocks too-short, top-20k-common, all-numeric, and
+# user-detail-similar passwords on a money account.
 AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
     {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
 LANGUAGE_CODE = "en-us"

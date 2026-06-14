@@ -329,7 +329,7 @@ def bootstrap(request):
 
     # --- KYC queue: users mid-verification (a started-but-incomplete tier path) ---
     kycq = []
-    for u in User.objects.filter(Q(bvn_verified=True) | Q(nin_verified=True) | Q(bvn__gt="") | Q(nin__gt="")).order_by("-date_joined")[:50]:
+    for u in User.objects.filter(Q(bvn_verified=True) | Q(nin_verified=True) | Q(bvn_hash__gt="") | Q(nin_hash__gt="")).order_by("-date_joined")[:50]:
         if u.face_verified and u.nin_verified and u.bvn_verified:
             continue  # fully verified, nothing to review
         nxt = min(u.tier + 1, 3)
