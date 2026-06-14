@@ -22,7 +22,7 @@ const Invite = () => {
   const code = codeFor(firstName);
   const message =
     `Join me on Zitch — buy airtime, data, pay bills and convert airtime to cash. ` +
-    `Use my invite code ${code} when you sign up. Download: https://zitch.example/app`;
+    `Use my invite code ${code} when you sign up. Download: https://zitch.ng`;
 
   const copy = async () => {
     await Clipboard.setStringAsync(code);

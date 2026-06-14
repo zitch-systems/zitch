@@ -15,7 +15,7 @@ const buildLink = (name: string, amount: number, note: string) => {
   if (name) parts.push(`to=${encodeURIComponent(name)}`);
   if (amount > 0) parts.push(`amount=${amount}`);
   if (note) parts.push(`note=${encodeURIComponent(note)}`);
-  return `https://zitch.example/pay${parts.length ? `?${parts.join('&')}` : ''}`;
+  return `https://zitch.ng/pay${parts.length ? `?${parts.join('&')}` : ''}`;
 };
 
 const BizPayment = () => {
