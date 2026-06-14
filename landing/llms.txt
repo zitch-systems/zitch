@@ -1,0 +1,34 @@
+# Zitch
+
+> Zitch is a Nigerian fintech app for instant money transfers, airtime, data, bill payments, virtual dollar cards, savings, loans and multi-currency wallets — plus full banking inside WhatsApp.
+
+Zitch is operated by Zitch Technologies Limited in partnership with CBN-licensed financial institutions. Every transaction is authorised by the user's PIN, fingerprint or Face ID, protected by BVN/NIN and face-verification KYC, and recorded in an append-only audit trail. Zitch is available on Android and iOS, and customers can also bank by chatting with Zitch on WhatsApp in plain language.
+
+## What you can do with Zitch
+- Send money: instant transfers to any Nigerian bank; free Zitch-to-Zitch transfers.
+- Airtime & data: top up MTN, Airtel, Glo and 9mobile, with up to 3% back.
+- Bills: electricity for all discos (prepaid and postpaid) and cable TV (DStv, GOtv, StarTimes).
+- Virtual dollar cards: spend a USD wallet anywhere online.
+- Fixed savings: lock funds and earn up to 18% per annum.
+- Loans: quick credit with clear terms, repaid in-app.
+- Multi-currency: hold and convert NGN, USD, GBP, CAD and CNY at honest, time-boxed rates.
+- WhatsApp banking: check balances, send money and pay bills by chat — money only moves after PIN or biometric approval.
+
+## Key facts
+- Company: Zitch Technologies Limited
+- Country: Nigeria (based in Ketu, Lagos)
+- Platforms: Android and iOS, plus WhatsApp banking
+- Pricing: free to download and open an account; free Zitch-to-Zitch transfers
+- Support hours: 8am–8pm daily
+
+## Contact
+- Email: support@zitch.ng
+- Phone: +234 816 693 8327
+- Instagram: https://instagram.com/zitchng
+- Facebook: https://facebook.com/zitchng
+
+## Links
+- Home: https://zitch.ng/
+- Frequently asked questions: https://zitch.ng/#faq
+- Privacy and data protection policy: https://zitch.ng/privacy.html
+- Terms of use: https://zitch.ng/terms.html
