@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, Linking, Alert, Platform } from 'react-native';
+import { View, Text, Linking, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { Screen, Header, Card } from '@/components/design/ui';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 
@@ -20,7 +21,7 @@ const dial = (code: string) => {
   // USSD strings contain * and #; # must be encoded for the tel: URI.
   const uri = `tel:${code.replace(/#/g, Platform.OS === 'android' ? encodeURIComponent('#') : '%23')}`;
   Linking.openURL(uri).catch(() =>
-    Alert.alert('Can’t dial here', `Dial ${code} from your phone's keypad to use Zitch USSD.`)
+    notify('Can’t dial here', `Dial ${code} from your phone's keypad to use Zitch USSD.`)
   );
 };
 

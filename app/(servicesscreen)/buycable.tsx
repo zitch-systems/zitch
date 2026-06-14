@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
@@ -7,6 +7,7 @@ import { apiPost, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -83,7 +84,7 @@ const BuyCable = () => {
   const valid = iuc.length >= 8 && !!plan && amount > 0;
 
   const validateIuc = async () => {
-    if (iuc.trim().length < 8) { Alert.alert('Error', 'Enter a valid IUC / smartcard number.'); return; }
+    if (iuc.trim().length < 8) { notify('Error', 'Enter a valid IUC / smartcard number.'); return; }
     setValidating(true);
     try {
       const response = await apiPost('/api/utility/validate_iuc/', { iuc, cablenetwork: prov });
@@ -91,10 +92,10 @@ const BuyCable = () => {
       if (response.ok) {
         setValidatedName(result.customer_name || result.name || 'Verified');
       } else {
-        Alert.alert('Error', result.message || 'Could not verify this IUC number.');
+        notify('Error', result.message || 'Could not verify this IUC number.');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setValidating(false);
     }
@@ -123,11 +124,11 @@ const BuyCable = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         idemKey.current = '';  // definitive server failure — retry is a fresh attempt
-        Alert.alert('Error', result.message || 'Transaction failed');
+        notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
       setStep(null);
     } finally {
       setBusy(false);

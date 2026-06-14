@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -57,11 +58,11 @@ const Exams = () => {
         setPinError(res.message || 'Incorrect PIN');
       } else {
         idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
-        Alert.alert('Error', res.message || 'Transaction failed');
+        notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
       setStep(null);
     } finally {
       setBusy(false);

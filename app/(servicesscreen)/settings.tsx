@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Pressable, Alert, Linking } from 'react-native';
+import { View, Text, Pressable, Linking } from 'react-native';
 import { router } from 'expo-router';
 import Constants from 'expo-constants';
 import { Screen, Header, Card, ZItem } from '@/components/design/ui';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { clearSession } from '@/lib/secureStore';
@@ -35,7 +36,7 @@ const Settings = () => {
       return;
     }
     if (!(await isBiometricAvailable())) {
-      Alert.alert('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+      notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
       return;
     }
     if (await authenticate('Enable biometric sign-in')) {
@@ -44,7 +45,7 @@ const Settings = () => {
     }
   };
 
-  const openUrl = (url: string) => Linking.openURL(url).catch(() => Alert.alert('Error', 'Could not open this link.'));
+  const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
 
   const handleLogout = async () => {
     try { await apiPost('/api/logout/'); } catch { /* fall through */ }

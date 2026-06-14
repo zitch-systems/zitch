@@ -1,9 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, Pressable, Platform, Alert } from 'react-native';
+import { View, Text, Pressable, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Screen, Header, Card, Field, Btn } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 
 // Pull a payable destination (10-digit account or 11-digit phone) out of a
@@ -29,7 +30,7 @@ const Scan = () => {
       router.replace({ pathname: '/sendmoney', params: { identifier: id } });
     } else {
       handled.current = false; // let them try again
-      Alert.alert('Unrecognised code', "That QR doesn't contain a Zitch account or phone number.");
+      notify('Unrecognised code', "That QR doesn't contain a Zitch account or phone number.");
     }
   };
 

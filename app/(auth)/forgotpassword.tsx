@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import ZIcon from '@/components/design/ZIcon';
+import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -19,7 +20,7 @@ const ForgotPassword = () => {
 
   const requestCode = async () => {
     if (!valid) {
-      Alert.alert('Error', 'Enter the phone number on your account');
+      notify('Error', 'Enter the phone number on your account');
       return;
     }
     setBusy(true);
@@ -33,10 +34,10 @@ const ForgotPassword = () => {
         router.push({ pathname: '/resetpassword', params: { phone: phone.trim() } });
       } else {
         const result = await response.json().catch(() => ({} as any));
-        Alert.alert('Error', result.message || 'Could not send a reset code. Please try again.');
+        notify('Error', result.message || 'Could not send a reset code. Please try again.');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setBusy(false);
     }

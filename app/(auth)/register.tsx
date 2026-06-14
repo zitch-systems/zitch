@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -16,7 +17,7 @@ const Register = () => {
 
   const handleSignup = async () => {
     if (form.phone.trim() === '') {
-      Alert.alert('Error', 'Phone cannot be empty');
+      notify('Error', 'Phone cannot be empty');
       return;
     }
     setIsRegistering(true);
@@ -32,10 +33,10 @@ const Register = () => {
         await AsyncStorage.setItem('UserPhone', form.phone);
         router.push('/otp');
       } else {
-        Alert.alert('Error', result.message || 'Failed to register an account');
+        notify('Error', result.message || 'Failed to register an account');
       }
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsRegistering(false);
     }

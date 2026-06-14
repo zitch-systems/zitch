@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, Share, Alert } from 'react-native';
+import { View, Text, Share } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Screen, Header, Card, Field, Btn, money, Naira } from '@/components/design/ui';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -41,7 +42,7 @@ const BizPayment = () => {
     try {
       await Share.share({ message });
     } catch {
-      Alert.alert('Error', 'Could not open the share sheet.');
+      notify('Error', 'Could not open the share sheet.');
     }
   };
 

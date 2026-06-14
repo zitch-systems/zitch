@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
+import { notify } from '@/components/design/Notify';
 import { Screen, Header, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { isBiometricAvailable, biometricLabel, authenticate, setBiometricEnabled } from '@/lib/biometrics';
@@ -20,7 +21,7 @@ const SetThumbprint = () => {
 
   const enable = async () => {
     if (!available) {
-      Alert.alert('Unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+      notify('Unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
       return;
     }
     const ok = await authenticate(`Enable ${label}`);

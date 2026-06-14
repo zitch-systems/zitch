@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { apiJson, apiPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { clearSession, getToken } from '@/lib/secureStore';
@@ -66,7 +67,7 @@ const Me = () => {
     }
     const available = await isBiometricAvailable();
     if (!available) {
-      Alert.alert('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+      notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
       return;
     }
     const ok = await authenticate('Enable biometric sign-in');
