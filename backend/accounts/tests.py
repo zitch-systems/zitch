@@ -95,6 +95,14 @@ class CredentialSecurityTests(TestCase):
         res, _ = self.post("/api/set-password/", {"access_token": token, "password": "short"})
         self.assertEqual(res.status_code, 400)
 
+    def test_set_password_rejects_weak(self):
+        # Server-side strength rules: an all-numeric or top-common password must
+        # be refused even via a direct API call (the client hints are bypassable).
+        _, token = make_user("08030000009", "weak@zitch.test")
+        for pw in ("12345678", "password"):
+            res, _ = self.post("/api/set-password/", {"access_token": token, "password": pw})
+            self.assertEqual(res.status_code, 400)
+
     def test_set_pin_requires_auth_and_sets_owner(self):
         res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "1357"})
         self.assertEqual(res.status_code, 401)
