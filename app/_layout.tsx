@@ -8,7 +8,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
-import { enforceIdleTimeout } from "@/lib/session";
+import { enforceIdleTimeout, isSessionLocked, lockSession } from "@/lib/session";
+import { getToken } from "@/lib/secureStore";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
@@ -59,13 +60,21 @@ const _layout = () => {
   // stays open and idle. Active use keeps the stamp fresh via authenticated API
   // calls, so the timer only trips after a real stretch of inactivity.
   useEffect(() => {
-    const check = () =>
-      enforceIdleTimeout().then((locked) => {
-        if (locked) router.replace("/signin");
-      });
+    // App lock: re-opening the app (or returning from background) requires a
+    // biometric/password unlock — not just after the idle timeout. The token
+    // survives the lock so unlock is instant; a full sign-out clears it.
+    const check = async () => {
+      await enforceIdleTimeout();
+      if (await isSessionLocked()) router.replace("/signin");
+    };
     check();
     const sub = AppState.addEventListener("change", (s) => {
-      if (s === "active") check();
+      if (s === "background") {
+        // Leaving the app locks the session so the next open re-authenticates.
+        getToken().then((t) => { if (t) lockSession(); });
+      } else if (s === "active") {
+        check();
+      }
     });
     const timer = setInterval(check, 30 * 1000);
     return () => {
