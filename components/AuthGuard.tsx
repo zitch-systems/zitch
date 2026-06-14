@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, ActivityIndicator, AppState } from 'react-native';
+import { View, AppState } from 'react-native';
 import { Redirect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { isSessionLocked } from '@/lib/session';
+import { Loading } from '@/components/design/Loading';
 
 type AuthState = 'loading' | 'authed' | 'unauthed';
 
@@ -44,8 +45,8 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => {
 
   if (state === 'loading') {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#EFF7F5' }}>
-        <ActivityIndicator size="large" color="#0FA295" />
+      <View style={{ flex: 1, backgroundColor: '#EFF7F5' }}>
+        <Loading />
       </View>
     );
   }
