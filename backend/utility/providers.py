@@ -654,6 +654,27 @@ def kyc_verify_nin(nin: str) -> dict:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
 
 
+def kyc_verify_nin_document(image: str) -> dict:
+    """Verify an uploaded NIN slip / ID image (OCR + match). MOCK accepts
+    offline; LIVE must call Prembly's document endpoint and fail closed without
+    a real pass. VERIFY-BEFORE-LIVE: confirm the exact endpoint/field names on
+    the Prembly dashboard before relying on this."""
+    if not _prembly_live():
+        return {"success": True, "mock": True}
+    if not image:
+        return {"success": False, "message": "Upload your NIN slip to continue"}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/document/analysis",
+            json={"doc_type": "nin", "image": image},
+            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("status")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
 def kyc_verify_face(selfie: str = "") -> dict:
     """Liveness / selfie-match — the gate for large transfers.
 
