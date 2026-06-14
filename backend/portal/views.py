@@ -264,7 +264,7 @@ def kyc_queue(request):
     """Users whose submitted identity (BVN/NIN) hasn't verified, or who are
     still below the tier their verified checks support — the manual-review pile."""
     qs = User.objects.filter(is_staff=False, is_active=True).filter(
-        Q(bvn__gt="", bvn_verified=False) | Q(nin__gt="", nin_verified=False) | Q(tier=0)
+        Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False) | Q(tier=0)
     ).order_by("-date_joined")
     rows = [
         {

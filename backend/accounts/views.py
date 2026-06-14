@@ -392,10 +392,10 @@ def kyc_bvn(request):
     result = kyc_verify_bvn(bvn)
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
-    user.bvn = bvn
+    user.set_bvn(bvn)
     user.bvn_verified = True
     user.recompute_tier()
-    user.save(update_fields=["bvn", "bvn_verified", "tier"])
+    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
 
@@ -408,10 +408,10 @@ def kyc_nin(request):
     result = kyc_verify_nin(nin)
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
-    user.nin = nin
+    user.set_nin(nin)
     user.nin_verified = True
     user.recompute_tier()
-    user.save(update_fields=["nin", "nin_verified", "tier"])
+    user.save(update_fields=["nin_hash", "nin_last4", "nin_verified", "tier"])
     return ok(success=True, message="NIN verified", **_kyc_state(user))
 
 

@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import secrets
 from datetime import timedelta
 from decimal import Decimal
@@ -9,6 +10,16 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
+
+
+def hash_identifier(value: str) -> str:
+    """Keyed HMAC-SHA256 of a sensitive government ID (BVN/NIN). Keyed with
+    SECRET_KEY (which is not in the database) so the small 11-digit space can't be
+    brute-forced from a DB leak the way a plain SHA-256 could. Deterministic, so
+    it still supports audit / duplicate-detection."""
+    if not value:
+        return ""
+    return hmac.new(settings.SECRET_KEY.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
 class User(AbstractUser):
@@ -35,9 +46,15 @@ class User(AbstractUser):
 
     # --- KYC ---
     tier = models.PositiveSmallIntegerField(default=1)
-    bvn = models.CharField(max_length=11, blank=True, default="")
+    # BVN/NIN are never read back by the app (the provider re-checks the value at
+    # submit time; only the *_verified flags are ever returned), so the raw number
+    # is NOT kept at rest — a DB leak then can't expose it. Instead store a keyed
+    # HMAC (for audit / duplicate-detection) plus the last 4 digits for support.
+    bvn_hash = models.CharField(max_length=64, blank=True, default="")
+    bvn_last4 = models.CharField(max_length=4, blank=True, default="")
     bvn_verified = models.BooleanField(default=False)
-    nin = models.CharField(max_length=11, blank=True, default="")
+    nin_hash = models.CharField(max_length=64, blank=True, default="")
+    nin_last4 = models.CharField(max_length=4, blank=True, default="")
     nin_verified = models.BooleanField(default=False)
     face_verified = models.BooleanField(default=False)
 
@@ -52,6 +69,16 @@ class User(AbstractUser):
         if not self.transaction_pin:
             return False
         return check_password(raw_pin, self.transaction_pin)
+
+    def set_bvn(self, raw: str) -> None:
+        """Store only a keyed hash + the last 4 of the BVN — never the raw number."""
+        self.bvn_hash = hash_identifier(raw)
+        self.bvn_last4 = (raw or "")[-4:]
+
+    def set_nin(self, raw: str) -> None:
+        """Store only a keyed hash + the last 4 of the NIN — never the raw number."""
+        self.nin_hash = hash_identifier(raw)
+        self.nin_last4 = (raw or "")[-4:]
 
     @property
     def pin_locked(self) -> bool:
