@@ -12,7 +12,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens } from '@/lib/theme';
@@ -48,6 +48,7 @@ export const Screen = ({
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const bottomPad = tab ? 96 : 28;
   // Fold/tablet: cap the content to a comfortable reading width and centre it so
   // screens never stretch edge-to-edge on wide displays. No-op on phones
@@ -60,12 +61,15 @@ export const Screen = ({
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: bottomPad, alignItems: 'center' }}
+            // Add the device's bottom safe-area inset so the last content (buttons,
+            // PIN pad, list rows) clears the home indicator / gesture bar instead of
+            // being cut off — fixes the "cut at the bottom" on installed builds.
+            contentContainerStyle={{ paddingBottom: bottomPad + insets.bottom, alignItems: 'center' }}
           >
             <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </ScrollView>
         ) : (
-          <View style={{ flex: 1, alignItems: 'center' }}>
+          <View style={{ flex: 1, alignItems: 'center', paddingBottom: insets.bottom }}>
             <View style={{ flex: 1, width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </View>
         )}
