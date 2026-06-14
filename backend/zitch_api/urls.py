@@ -1,6 +1,6 @@
 from django.conf import settings
 from django.contrib import admin
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.urls import include, path
 
 from portal.pages import admin_portal, landing, prototype
@@ -43,6 +43,18 @@ def readyz(_request):
     return JsonResponse({"status": True, "db": True})
 
 
+def robots_txt(_request):
+    """Keep the API / operator host out of search engines.
+
+    The public, indexable site is the marketing landing at https://zitch.ng
+    (Cloudflare Pages). This host only serves the JSON API, Django admin and the
+    operator/console portals — none of which should be crawled or surface in
+    search results, and indexing this host's own "/" page would duplicate the
+    marketing site. So disallow everything here; SEO lives on zitch.ng.
+    """
+    return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
+
+
 urlpatterns = [
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
@@ -53,6 +65,7 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
+    path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
     path("webhooks/whatsapp", whatsapp_webhook),
