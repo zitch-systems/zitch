@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, Alert, TextInput, Pressable } from 'react-native';
+import { View, Text, TextInput, Pressable } from 'react-native';
+import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
@@ -40,11 +41,11 @@ const OTPVerification = () => {
         await saveToken(result.access_token);
         router.push('/setpassword');
       } else {
-        Alert.alert('Error', result.message || 'Failed to verify OTP');
+        notify('Error', result.message || 'Failed to verify OTP');
         setOtp('');
       }
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsCheckingOtp(false);
     }
@@ -66,12 +67,12 @@ const OTPVerification = () => {
       const result = await response.json();
       if (response.ok) {
         setSeconds(24);
-        Alert.alert('Success', 'OTP has been resent');
+        notify('Success', 'OTP has been resent');
       } else {
-        Alert.alert('Error', result.message || 'Failed to resend OTP');
+        notify('Error', result.message || 'Failed to resend OTP');
       }
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     }
   };
 
