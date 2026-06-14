@@ -17,12 +17,14 @@ paths are the source of truth until real keys are configured.
 import base64
 import hashlib
 import hmac
+import logging
 import secrets
 
 import requests
 from django.conf import settings
 
 REQUEST_TIMEOUT = 30
+log = logging.getLogger("zitch")
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +61,12 @@ def payment_initialize(email: str, amount_naira, reference: str) -> dict:
     try:
         token = _monnify_token()
         if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
+            log.warning("monnify_auth_failed base=%s", settings.MONNIFY["BASE_URL"])
+            return {"success": False, "message": (
+                "Payment gateway authentication failed — verify MONNIFY_API_KEY/SECRET_KEY and "
+                "that MONNIFY_BASE_URL matches them (live: https://api.monnify.com, "
+                "test: https://sandbox.monnify.com)."
+            )}
         m = settings.MONNIFY
         resp = requests.post(
             f"{m['BASE_URL']}/api/v1/merchant/transactions/init-transaction",
@@ -78,10 +85,18 @@ def payment_initialize(email: str, amount_naira, reference: str) -> dict:
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
+        success = bool(data.get("requestSuccessful")) and bool(rb.get("checkoutUrl"))
+        if not success:
+            # Surface Monnify's actual reason (bad contract code, inactive merchant,
+            # live/sandbox mismatch) instead of a generic failure, and log it so ops
+            # can see why funding is failing.
+            log.warning("monnify_init_failed ref=%s code=%s msg=%s",
+                        reference, data.get("responseCode"), data.get("responseMessage"))
         return {
-            "success": bool(data.get("requestSuccessful")) and bool(rb.get("checkoutUrl")),
+            "success": success,
             "reference": rb.get("paymentReference", reference),
             "authorization_url": rb.get("checkoutUrl", ""),
+            "message": data.get("responseMessage") or "Could not start payment",
             "raw": data,
         }
     except requests.RequestException as exc:
