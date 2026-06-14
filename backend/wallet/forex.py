@@ -74,6 +74,18 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     if currency_balance(user, frm) < sell:
         raise FxError(f"Insufficient {frm} balance.")
 
+    # Tier / large-transfer (AML face) ceiling — converting NGN out of the
+    # regulated ledger must respect the same limit as a transfer or bill spend.
+    # Every other money-out flow calls this; FX must too. Scoped to NGN-source:
+    # the tier limit is denominated in NGN and the control concern is value
+    # leaving naira (NGN -> foreign currency).
+    if frm == "NGN":
+        from common.http import send_limit_error
+
+        reason = send_limit_error(user, sell)
+        if reason:
+            raise FxError(reason)
+
     q = fx_quote(frm, to, sell)
     if not q.get("success"):
         raise FxError(q.get("message", "Couldn't get a rate right now. Try again shortly."))

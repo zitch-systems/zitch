@@ -46,11 +46,23 @@ class BettingTests(TestCase):
         self.assertEqual(self.balance(), Decimal("10000"))
 
     def test_fund_rejects_insufficient(self):
+        # Within the tier-1 cap (₦50k) but above the ₦10k balance -> insufficient.
         res, _ = self.post("/api/betting/fund/", {
             "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
-            "amount": "999999", "transaction_pin": "1234",
+            "amount": "20000", "transaction_pin": "1234",
         })
         self.assertEqual(res.status_code, 402)
+        self.assertEqual(self.balance(), Decimal("10000"))
+
+    def test_fund_rejects_over_tier_limit(self):
+        # Funding above the KYC tier cap (₦50k for tier 1) is refused by the
+        # tier/AML gate before any debit — the same control as the transfer flow.
+        res, body = self.post("/api/betting/fund/", {
+            "access_token": self.token, "platform": "bet9ja", "user_id": "ZB12345",
+            "amount": "60000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "limit_exceeded")
         self.assertEqual(self.balance(), Decimal("10000"))
 
     def test_fund_rejects_short_user_id(self):

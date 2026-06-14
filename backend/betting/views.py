@@ -4,8 +4,8 @@ Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
 from common.http import (
-    api, fail, idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
-    spend_key, verify_transaction_pin,
+    api, check_send_limits, fail, idempotent_replay, ok, parse_amount, provider_purchase_response,
+    require_user, spend_key, verify_transaction_pin,
 )
 from utility.providers import vtu_purchase
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
@@ -48,6 +48,13 @@ def fund_betting(request):
         return fail("Enter a valid amount")
     if amount < 100:
         return fail("Minimum funding is ₦100")
+
+    # Funding an external betting account moves spendable cash out of the wallet,
+    # so it must respect the same KYC tier ceiling + large-transfer face check the
+    # transfer/bill flows enforce — otherwise it's a tier/AML bypass by category.
+    limit_err = check_send_limits(user, amount)
+    if limit_err:
+        return limit_err
 
     # Idempotency: a retried / double-tapped request must not debit twice — fall
     # back to a deterministic server key when the client omits one.
