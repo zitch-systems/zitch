@@ -179,6 +179,14 @@ SENDCHAMP = {
     "API_KEY": os.environ.get("SENDCHAMP_API_KEY", ""),
     "SENDER_NAME": os.environ.get("SENDCHAMP_SENDER_NAME", "Sendchamp"),
 }
+# Email / OTP fallback — Resend. Sends the same OTP code in parallel with
+# Sendchamp so SMS delivery issues (DND, sender ID approval, carrier blocks)
+# don't strand a user. Blank API_KEY => mock mode (silent success).
+RESEND = {
+    "BASE_URL": os.environ.get("RESEND_BASE_URL", "https://api.resend.com"),
+    "API_KEY": os.environ.get("RESEND_API_KEY", ""),
+    "FROM_EMAIL": os.environ.get("RESEND_FROM_EMAIL", "no-reply@zitch.ng"),
+}
 # KYC (BVN/NIN/liveness) — Prembly (IdentityPass). Blank => mock mode.
 PREMBLY = {
     "BASE_URL": os.environ.get("PREMBLY_BASE_URL", "https://api.prembly.com"),

@@ -558,6 +558,36 @@ def send_sms(phone: str, message: str) -> dict:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
 
 
+def send_email(to: str, subject: str, message: str) -> dict:
+    """Send a transactional email via Resend. Mirrors send_sms's mock-mode
+    contract: blank API_KEY or empty `to` returns a silent-success dict so
+    callers can fire-and-forget without branching on configuration. Used as a
+    parallel OTP channel alongside Sendchamp so SMS routing issues never strand
+    a user mid-signup."""
+    cfg = settings.RESEND
+    if not cfg["API_KEY"] or not to:
+        return {"success": True, "mock": True, "message": "Email sent (mock mode)"}
+    try:
+        resp = requests.post(
+            f"{cfg['BASE_URL']}/emails",
+            json={
+                "from": cfg["FROM_EMAIL"],
+                "to": [to],
+                "subject": subject,
+                "text": message,
+            },
+            headers={
+                "Authorization": f"Bearer {cfg['API_KEY']}",
+                "Content-Type": "application/json",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json() if resp.content else {}
+        return {"success": resp.ok and "id" in data, "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Email provider unreachable: {exc}"}
+
+
 # ---------------------------------------------------------------------------
 # KYC — BVN / NIN / liveness — Prembly (IdentityPass)
 # ---------------------------------------------------------------------------

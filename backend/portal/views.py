@@ -192,6 +192,7 @@ def _providers() -> list:
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
         ("Sendchamp", "SMS / OTP", bool(st.SENDCHAMP["API_KEY"])),
+        ("Resend", "Email / OTP fallback", bool(st.RESEND["API_KEY"])),
         ("Prembly", "KYC (BVN · NIN · face)", _prembly_live()),
     ]
     return [

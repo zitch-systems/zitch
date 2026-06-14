@@ -28,7 +28,7 @@ In the mobile app, `components/configFiles/apiConfig.tsx`:
 ```ts
 const baseUrl = "http://10.0.2.2:8000";   // Android emulator -> host machine
 // device on same wifi: "http://<your-LAN-ip>:8000"
-// production:          "https://zitch-api.onrender.com"
+// production:          "https://api.zitch.ng"
 ```
 
 ## Smoke test (mock mode)

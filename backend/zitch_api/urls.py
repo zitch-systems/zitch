@@ -20,6 +20,7 @@ def health(_request):
         "payments_monnify": payments_live(),
         "vtu_vtung": vtu_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
+        "email_resend": bool(settings.RESEND["API_KEY"]),
         "kyc_prembly": _prembly_live(),
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
     }

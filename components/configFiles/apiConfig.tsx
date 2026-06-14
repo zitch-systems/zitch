@@ -3,8 +3,9 @@
 //   PowerShell:  $env:EXPO_PUBLIC_API_URL = "http://10.0.2.2:8000"   (Android emulator)
 //                $env:EXPO_PUBLIC_API_URL = "http://localhost:8000"   (web / iOS sim)
 //                $env:EXPO_PUBLIC_API_URL = "http://<LAN-IP>:8000"    (physical device on Wi-Fi)
-// Note: api.zitch.ng must be live (Render custom domain + DNS + TLS cert) before
-// shipping a build on this default; https://zitch-api.onrender.com also still works.
+// api.zitch.ng is live (Render custom domain + DNS + TLS); the Render-assigned
+// host (https://zitch-api.onrender.com) is still in DJANGO_ALLOWED_HOSTS as a
+// fallback if you ever need it.
 const configured = process.env.EXPO_PUBLIC_API_URL ?? "https://api.zitch.ng";
 
 // Defence in depth: a release build must never talk to the API over plaintext

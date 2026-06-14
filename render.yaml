@@ -51,6 +51,12 @@ services:
       # SMS / OTP — Sendchamp.
       - key: SENDCHAMP_API_KEY
         sync: false
+      # Email / OTP fallback — Resend. Sends the same OTP alongside SMS so an
+      # SMS routing issue (DND / sender ID block) never strands signup.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        value: "no-reply@zitch.ng"
       # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
       - key: PREMBLY_API_KEY
         sync: false

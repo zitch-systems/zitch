@@ -1,6 +1,7 @@
 {
   "cli": {
-    "version": ">= 10.2.0"
+    "version": ">= 10.2.0",
+    "appVersionSource": "local"
   },
   "build": {
     "preview": {
@@ -8,7 +9,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://zitch-api.onrender.com"
+        "EXPO_PUBLIC_API_URL": "https://api.zitch.ng"
       }
     },
     "preview2": {

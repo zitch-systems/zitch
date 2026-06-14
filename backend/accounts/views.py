@@ -9,7 +9,7 @@ from common.http import api, fail, ok, require_user, resolve_token
 from common.ratelimit import client_ip, ratelimit
 
 log = logging.getLogger("zitch.security")
-from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_sms
+from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_email, send_sms
 from wallet.services import get_or_create_wallet
 
 from .models import OTP, AccessToken, User
@@ -83,13 +83,19 @@ def phone_verification(request):
     if not phone:
         return fail("Phone is required")
     if not _otp_on_cooldown(phone):
-        if User.objects.filter(phone=phone).exists():
-            # Owner-only channel: tell the real number, never the API caller.
-            send_sms(phone, "You already have a Zitch account. Open the app to sign in, or use 'Forgot password' to reset.")
+        existing = User.objects.filter(phone=phone).first()
+        if existing is not None:
+            # Owner-only channels: tell the real number / their email on file,
+            # never the API caller.
+            reminder = "You already have a Zitch account. Open the app to sign in, or use 'Forgot password' to reset."
+            send_sms(phone, reminder)
+            send_email(existing.email or "", "Zitch sign-in reminder", reminder)
         else:
             code = _otp_code()
             OTP.objects.create(phone=phone, email=email, code=code)
-            send_sms(phone, f"Your Zitch verification code is {code}")
+            message = f"Your Zitch verification code is {code}"
+            send_sms(phone, message)
+            send_email(email, "Your Zitch verification code", message)
     return ok(message="If this number can be registered, a verification code has been sent.")
 
 
@@ -148,7 +154,9 @@ def resend_verify_otp(request):
         email = prior.email if prior else ""
     code = _otp_code()
     OTP.objects.create(phone=phone, email=email, code=code)
-    send_sms(phone, f"Your Zitch verification code is {code}")
+    message = f"Your Zitch verification code is {code}"
+    send_sms(phone, message)
+    send_email(email, "Your Zitch verification code", message)
     return ok(message="OTP resent")
 
 
@@ -169,7 +177,9 @@ def password_forgot(request):
     if user is not None and not _otp_on_cooldown(phone):
         code = _otp_code()
         OTP.objects.create(phone=phone, email=user.email or "", code=code, purpose=OTP.RESET)
-        send_sms(phone, f"Your Zitch password reset code is {code}")
+        message = f"Your Zitch password reset code is {code}"
+        send_sms(phone, message)
+        send_email(user.email or "", "Your Zitch password reset code", message)
     return ok(message="If that number has a Zitch account, a reset code has been sent.")
 
 
