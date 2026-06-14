@@ -8,6 +8,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
+import { NotifyHost } from "@/components/design/Notify";
 import { enforceIdleTimeout, isSessionLocked, lockSession } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
 
@@ -98,6 +99,8 @@ const _layout = () => {
               a no-op default context and the balance never refreshed. */}
           <WalletProvider>
             <RootStack />
+            {/* Branded success/error popups, overlaid above all routes. */}
+            <NotifyHost />
           </WalletProvider>
         </ThemeProvider>
       </SafeAreaProvider>

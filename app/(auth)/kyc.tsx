@@ -1,7 +1,8 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
@@ -54,9 +55,9 @@ const Kyc = () => {
     setBusy(true);
     try {
       const res = await apiJson(path, body);
-      if (res.success) { setStatus(res); Alert.alert('Success', `${label} verified`); }
-      else Alert.alert('Error', res.message || `${label} verification failed`);
-    } catch { Alert.alert('Error', 'Something went wrong.'); }
+      if (res.success) { setStatus(res); notify('Success', `${label} verified`); }
+      else notify('Error', res.message || `${label} verification failed`);
+    } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
 
@@ -66,7 +67,7 @@ const Kyc = () => {
   const verifyFace = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Camera needed', 'Allow camera access so we can verify your identity.');
+      notify('Camera needed', 'Allow camera access so we can verify your identity.');
       return;
     }
     const shot = await ImagePicker.launchCameraAsync({
