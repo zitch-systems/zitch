@@ -32,9 +32,27 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
                 const event = navigation.emit({ type: 'tabPress', target: it.name, canPreventDefault: true });
                 if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
               }}
-              style={{ alignItems: 'center', gap: 5, paddingHorizontal: 14, paddingVertical: 2 }}
+              // Tactile 3D press: the tab scales down + dims on touch.
+              style={({ pressed }) => ({
+                alignItems: 'center',
+                gap: 5,
+                paddingHorizontal: 8,
+                paddingVertical: 2,
+                transform: [{ scale: pressed ? 0.88 : 1 }],
+                opacity: pressed ? 0.85 : 1,
+              })}
             >
-              <ZIcon name={it.icon} size={22} color={on ? c.brand : c.ink3} stroke={on ? 2.1 : 1.7} />
+              {/* Active tab "lights up" with a highlighted pill behind the icon. */}
+              <View
+                style={{
+                  paddingHorizontal: 14,
+                  paddingVertical: 5,
+                  borderRadius: 14,
+                  backgroundColor: on ? 'rgba(15,162,149,.14)' : 'transparent',
+                }}
+              >
+                <ZIcon name={it.icon} size={22} color={on ? c.brand : c.ink3} stroke={on ? 2.1 : 1.7} />
+              </View>
               <Text style={{ fontSize: 11, fontFamily: on ? font.semibold : font.medium, color: on ? c.brand : c.ink3 }}>
                 {it.label}
               </Text>
