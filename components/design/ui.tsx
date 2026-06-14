@@ -9,6 +9,7 @@ import {
   StyleSheet,
   ViewStyle,
   TextStyle,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -46,19 +47,27 @@ export const Screen = ({
   tab?: boolean;
 }) => {
   const { c } = useTheme();
+  const { width } = useWindowDimensions();
   const bottomPad = tab ? 96 : 28;
+  // Fold/tablet: cap the content to a comfortable reading width and centre it so
+  // screens never stretch edge-to-edge on wide displays. No-op on phones
+  // (maxW undefined → the inner view is simply full width, as before).
+  const maxW = width >= 600 ? 720 : undefined;
+  const px = pad ? 20 : 0;
   return (
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: pad ? 20 : 0, paddingBottom: bottomPad }}
+            contentContainerStyle={{ paddingBottom: bottomPad, alignItems: 'center' }}
           >
-            {children}
+            <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </ScrollView>
         ) : (
-          <View style={{ flex: 1, paddingHorizontal: pad ? 20 : 0 }}>{children}</View>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <View style={{ flex: 1, width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
+          </View>
         )}
       </SafeAreaView>
     </LinearGradient>
@@ -349,11 +358,18 @@ export const Sheet = ({
   title?: string;
 }) => {
   const { c } = useTheme();
+  const { width } = useWindowDimensions();
+  // On fold/tablet, cap the sheet width and centre it so it reads as a card
+  // rather than stretching across the whole display. Full-width on phones.
+  const maxW = width >= 600 ? 560 : undefined;
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)' }} />
       <View
         style={{
+          width: '100%',
+          maxWidth: maxW,
+          alignSelf: 'center',
           backgroundColor: c.surface,
           borderTopLeftRadius: 28,
           borderTopRightRadius: 28,
