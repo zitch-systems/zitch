@@ -75,7 +75,7 @@ const Signin = () => {
         body: JSON.stringify({ email_or_phone: form.email, password: form.password }),
       });
       const result = await response.json();
-      if (response.ok) {
+      if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
         await saveToken(result.access_token);
         await AsyncStorage.setItem('userID', form.email);

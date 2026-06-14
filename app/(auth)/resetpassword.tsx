@@ -36,7 +36,7 @@ const ResetPassword = () => {
         body: JSON.stringify({ phone, otp, password: p1 }),
       });
       const result = await response.json();
-      if (response.ok) {
+      if (response.ok && result.access_token) {
         await saveToken(result.access_token);
         router.replace('/home');
       } else {

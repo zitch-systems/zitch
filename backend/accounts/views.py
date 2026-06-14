@@ -1,5 +1,5 @@
 import logging
-import random
+import secrets
 from datetime import timedelta
 
 from django.db.models import Q
@@ -20,6 +20,14 @@ def _otp_on_cooldown(phone: str) -> bool:
     to stop OTP-flooding / rapid brute-force of a victim's number."""
     cutoff = timezone.now() - timedelta(seconds=OTP.RESEND_COOLDOWN_SECONDS)
     return OTP.objects.filter(phone=phone, created__gte=cutoff).exists()
+
+
+def _otp_code() -> str:
+    """A 6-digit one-time code from a CSPRNG. Must never use the `random` module:
+    its Mersenne-Twister stream is predictable from observed outputs, and a
+    guessable code here would let an attacker verify a number they don't own or
+    reset another user's password."""
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
 @ratelimit("signin", limit=10, window=300)
@@ -46,20 +54,27 @@ def signin(request):
 @ratelimit("otp_send", limit=5, window=60)
 @api
 def phone_verification(request):
-    """POST /api/phone_verification/ {email, phone} -> sends OTP"""
+    """POST /api/phone_verification/ {email, phone} -> sends a signup OTP.
+
+    Does NOT disclose whether the number already has an account — that would let
+    anyone enumerate Zitch customers (for targeted phishing / SIM-swap). The
+    reply is identical whether the number is new, already registered, or on
+    cooldown; an already-registered owner is told to sign in via SMS to the
+    number they control, not in the API response. Mirrors password_forgot below.
+    """
     phone = (request.data.get("phone") or "").strip()
     email = (request.data.get("email") or "").strip()
     if not phone:
         return fail("Phone is required")
-    if User.objects.filter(phone=phone).exists():
-        return fail("An account with this phone already exists")
-    if _otp_on_cooldown(phone):
-        return fail("Please wait a moment before requesting another code", status=429)
-
-    code = f"{random.randint(0, 999999):06d}"
-    OTP.objects.create(phone=phone, email=email, code=code)
-    send_sms(phone, f"Your Zitch verification code is {code}")
-    return ok(message="OTP sent")
+    if not _otp_on_cooldown(phone):
+        if User.objects.filter(phone=phone).exists():
+            # Owner-only channel: tell the real number, never the API caller.
+            send_sms(phone, "You already have a Zitch account. Open the app to sign in, or use 'Forgot password' to reset.")
+        else:
+            code = _otp_code()
+            OTP.objects.create(phone=phone, email=email, code=code)
+            send_sms(phone, f"Your Zitch verification code is {code}")
+    return ok(message="If this number can be registered, a verification code has been sent.")
 
 
 @ratelimit("otp_verify", limit=20, window=60)
@@ -115,7 +130,7 @@ def resend_verify_otp(request):
     if not email:
         prior = OTP.objects.filter(phone=phone).order_by("-created").first()
         email = prior.email if prior else ""
-    code = f"{random.randint(0, 999999):06d}"
+    code = _otp_code()
     OTP.objects.create(phone=phone, email=email, code=code)
     send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP resent")
@@ -136,7 +151,7 @@ def password_forgot(request):
         return fail("Phone is required")
     user = User.objects.filter(phone=phone).first()
     if user is not None and not _otp_on_cooldown(phone):
-        code = f"{random.randint(0, 999999):06d}"
+        code = _otp_code()
         OTP.objects.create(phone=phone, email=user.email or "", code=code, purpose=OTP.RESET)
         send_sms(phone, f"Your Zitch password reset code is {code}")
     return ok(message="If that number has a Zitch account, a reset code has been sent.")
@@ -192,7 +207,7 @@ def logout(request):
     Server-side revocation so a signed-out (or otherwise leaked-then-cleared)
     token can't be replayed for the remainder of its TTL.
     """
-    AccessToken.objects.filter(key=resolve_token(request)).delete()
+    AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
     return ok(message="Logged out")
 
 
@@ -214,7 +229,7 @@ def set_password(request):
     # Revoke other sessions on a credential change: any token issued before this
     # change is now invalid. Keep the caller's current token so the onboarding
     # flow (set-password -> set-pin) and a change-password screen don't 401.
-    user.tokens.exclude(key=resolve_token(request)).delete()
+    user.tokens.exclude(key=AccessToken._hash(resolve_token(request))).delete()
     return ok(message="Password set")
 
 

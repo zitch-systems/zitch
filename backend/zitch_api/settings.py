@@ -20,7 +20,10 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
-DEBUG = env_bool("DJANGO_DEBUG", True)
+# Secure by default: a real deploy must never accidentally run in debug (which
+# would disable the HTTPS redirect, secure cookies, and the fail-closed provider
+# mock guards below). Local dev opts in with DJANGO_DEBUG=true (see .env.example).
+DEBUG = env_bool("DJANGO_DEBUG", False)
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 RENDER_HOST = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
@@ -217,7 +220,10 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # X-Forwarded-Proto, which SECURE_PROXY_SSL_HEADER (above) teaches Django to
 # trust — so the HTTPS redirect and secure-cookie flags behave correctly behind
 # it. Each stays env-overridable for unusual setups (e.g. a non-TLS network).
-_PROD = not DEBUG
+# "Production" = a real deploy: debug off AND not the test runner. Folding
+# `not TESTING` in keeps the suite (which Django runs with DEBUG off) from
+# tripping the fail-fast guards while still hardening every real deploy.
+_PROD = not DEBUG and not TESTING
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SSL_REDIRECT", _PROD)
 # Keep the "/healthz" liveness probe answering 200 over plain HTTP so a platform
 # health check never trips on the HTTPS redirect (it returns booleans only, no

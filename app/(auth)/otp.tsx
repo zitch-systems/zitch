@@ -36,7 +36,7 @@ const OTPVerification = () => {
         body: JSON.stringify({ otp, phone: userPhone }),
       });
       const result = await response.json();
-      if (response.ok) {
+      if (response.ok && result.access_token) {
         await saveToken(result.access_token);
         router.push('/setpassword');
       } else {

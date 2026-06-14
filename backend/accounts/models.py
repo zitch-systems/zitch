@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 from datetime import timedelta
 from decimal import Decimal
@@ -85,22 +86,40 @@ class User(AbstractUser):
 
 
 class AccessToken(models.Model):
-    """Opaque bearer token returned to the app as `access_token`."""
+    """Opaque bearer token for the app's `access_token`.
 
-    key = models.CharField(max_length=64, unique=True, db_index=True)
+    Only the SHA-256 hash of the token is stored — never the token itself — so a
+    database leak (backup, SQLi, stray query log) can't be replayed as a live
+    session, the same reason passwords are hashed. The raw token exists only in
+    the issuing response and the client's keychain. SHA-256 (not a slow KDF) is
+    correct here: the token is 256 bits of CSPRNG output, so there is nothing to
+    brute-force.
+    """
+
+    key = models.CharField(max_length=64, unique=True, db_index=True)  # sha256 hex of the token
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="tokens")
     created = models.DateTimeField(auto_now_add=True)
 
+    @staticmethod
+    def _hash(raw: str) -> str:
+        return hashlib.sha256((raw or "").encode()).hexdigest()
+
     @classmethod
     def issue(cls, user) -> "AccessToken":
-        return cls.objects.create(key=secrets.token_hex(32), user=user)
+        """Create a session token. The DB stores only the hash; the returned
+        instance carries the RAW token on `.key` (in memory, unsaved) for the
+        caller to hand to the client — do not re-save the instance afterwards."""
+        raw = secrets.token_hex(32)
+        tok = cls.objects.create(key=cls._hash(raw), user=user)
+        tok.key = raw  # transient: expose the raw token to the caller without persisting it
+        return tok
 
     @classmethod
     def resolve(cls, key: str):
         if not key:
             return None
         try:
-            tok = cls.objects.select_related("user").get(key=key)
+            tok = cls.objects.select_related("user").get(key=cls._hash(key))
         except cls.DoesNotExist:
             return None
         ttl = timedelta(hours=settings.TOKEN_TTL_HOURS)

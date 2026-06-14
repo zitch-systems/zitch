@@ -293,7 +293,7 @@ def logout(request):
     """POST /api/admin/logout — revoke the presented staff token."""
     from accounts.models import AccessToken
 
-    AccessToken.objects.filter(key=resolve_token(request)).delete()
+    AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
     return ok(message="Signed out")
 
 
