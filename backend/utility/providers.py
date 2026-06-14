@@ -121,7 +121,12 @@ def payment_verify_signature(body: bytes, signature: str) -> bool:
     """Validate a Monnify webhook via the `monnify-signature` header
     (SHA-512 HMAC of the raw body with the secret key)."""
     if not payments_live():
-        return True  # mock mode: accept so local webhook testing works
+        # No keys = mock mode. Accept ONLY in dev/test so local webhook testing
+        # works. In production this MUST fail closed: a Monnify webhook moves
+        # money (credits a wallet on funding; refunds a payout on disbursement
+        # failure), so an unsigned/forged callback in a keyless prod deploy would
+        # otherwise mint free credit or reverse a real transfer. (CRITICAL.)
+        return not mock_disabled_in_prod()
     if not signature:
         return False
     digest = hmac.new(settings.MONNIFY["SECRET_KEY"].encode(), body, hashlib.sha512).hexdigest()

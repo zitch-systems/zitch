@@ -9,6 +9,12 @@ jobs:
   backend:
     name: Backend (Django)
     runs-on: ubuntu-latest
+    env:
+      # CI runs with the production-secure default (DEBUG off). Provide a
+      # throwaway secret so the management commands below clear the "no dev
+      # SECRET_KEY when DEBUG is off" boot guard. Not a real secret; the test
+      # step is unaffected (Django forces DEBUG off under tests anyway).
+      DJANGO_SECRET_KEY: "ci-only-throwaway-secret-not-used-in-production-000"
     defaults:
       run:
         working-directory: backend

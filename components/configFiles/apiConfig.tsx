@@ -5,6 +5,13 @@
 //                $env:EXPO_PUBLIC_API_URL = "http://<LAN-IP>:8000"    (physical device on Wi-Fi)
 // Note: api.zitch.ng must be live (Render custom domain + DNS + TLS cert) before
 // shipping a build on this default; https://zitch-api.onrender.com also still works.
-const baseUrl = process.env.EXPO_PUBLIC_API_URL ?? "https://api.zitch.ng";
+const configured = process.env.EXPO_PUBLIC_API_URL ?? "https://api.zitch.ng";
+
+// Defence in depth: a release build must never talk to the API over plaintext
+// HTTP — that would expose the bearer token, transaction PIN and BVN/NIN in
+// transit. In dev (__DEV__) http://localhost / LAN IPs stay allowed for the
+// emulator and on-device testing.
+const baseUrl =
+  !__DEV__ && configured.startsWith("http://") ? "https://api.zitch.ng" : configured;
 
 export default baseUrl;
