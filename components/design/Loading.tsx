@@ -4,43 +4,65 @@ import { ZMark } from '@/components/design/Brand';
 import { useTheme, font } from '@/lib/theme';
 
 /**
- * Branded loading indicator — a gently pulsing Zitch mark with an optional
- * label. Use instead of a bare ActivityIndicator (or a blank screen) so every
- * loading state feels intentional and on-brand.
+ * Branded loading indicator — the Zitch logo pulsing inside a rotating brand
+ * ring, so a loading state is unmistakably *active* (never a blank screen) and
+ * on-brand.
  *
  *   <Loading />                       // full-screen, centered
  *   <Loading full={false} label="…"/> // inline block
  */
 export const Loading = ({ label, full = true }: { label?: string; full?: boolean }) => {
   const { c } = useTheme();
-  const a = useRef(new Animated.Value(0)).current;
+  const pulse = useRef(new Animated.Value(0)).current;
+  const spin = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const loop = Animated.loop(
+    const p = Animated.loop(
       Animated.sequence([
-        Animated.timing(a, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(a, { toValue: 0, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 700, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ]),
     );
-    loop.start();
-    return () => loop.stop();
-  }, [a]);
+    const s = Animated.loop(
+      Animated.timing(spin, { toValue: 1, duration: 1100, easing: Easing.linear, useNativeDriver: true }),
+    );
+    p.start();
+    s.start();
+    return () => { p.stop(); s.stop(); };
+  }, [pulse, spin]);
 
-  const scale = a.interpolate({ inputRange: [0, 1], outputRange: [0.85, 1.12] });
-  const opacity = a.interpolate({ inputRange: [0, 1], outputRange: [0.55, 1] });
+  const scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1.08] });
+  const opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] });
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
   return (
     <View
       style={
         full
-          ? { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14 }
-          : { alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 26 }
+          ? { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }
+          : { alignItems: 'center', justifyContent: 'center', gap: 14, paddingVertical: 30 }
       }
     >
-      <Animated.View style={{ transform: [{ scale }], opacity }}>
-        <ZMark size={44} />
-      </Animated.View>
-      {label ? <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.medium }}>{label}</Text> : null}
+      <View style={{ width: 86, height: 86, alignItems: 'center', justifyContent: 'center' }}>
+        {/* rotating brand ring — makes the loader obviously animating */}
+        <Animated.View
+          style={{
+            position: 'absolute',
+            width: 86,
+            height: 86,
+            borderRadius: 43,
+            borderWidth: 3,
+            borderColor: c.line,
+            borderTopColor: c.brand,
+            transform: [{ rotate }],
+          }}
+        />
+        {/* pulsing Zitch logo */}
+        <Animated.View style={{ transform: [{ scale }], opacity }}>
+          <ZMark size={52} />
+        </Animated.View>
+      </View>
+      {label ? <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.medium }}>{label}</Text> : null}
     </View>
   );
 };

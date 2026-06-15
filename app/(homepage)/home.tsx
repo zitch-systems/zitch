@@ -56,11 +56,11 @@ const Home = () => {
           Hi, {firstName || 'there'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={22} color={c.ink1} /></Pressable>
-          <Pressable onPress={() => router.push('/scan')}><ZIcon name="scan" size={22} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/scan')}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
           <Pressable onPress={() => router.push('/notifications')}>
             <View>
-              <ZIcon name="bell" size={22} color={c.ink1} />
+              <ZIcon name="bell" size={24} color={c.ink1} />
               <View style={{ position: 'absolute', top: -6, right: -7, minWidth: 16, height: 16, paddingHorizontal: 4, borderRadius: 9, backgroundColor: c.red, alignItems: 'center', justifyContent: 'center' }}>
                 <Text style={{ color: '#fff', fontSize: 10, fontFamily: font.bold }}>24</Text>
               </View>

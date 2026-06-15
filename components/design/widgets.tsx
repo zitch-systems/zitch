@@ -91,19 +91,19 @@ export const ServiceTile = ({
       <View>
         <View
           style={{
-            width: 48,
-            height: 48,
-            borderRadius: round ? 24 : 16,
+            width: 54,
+            height: 54,
+            borderRadius: round ? 27 : 18,
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: theme === 'dark' ? 'rgba(15,162,149,.18)' : '#E6F7F4',
           }}
         >
-          <ZIcon name={icon} size={23} color={round ? c.brandDeep : c.brand} stroke={1.9} />
+          <ZIcon name={icon} size={27} color={round ? c.brandDeep : c.brand} stroke={2} />
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>
-      <Text style={{ fontSize: 11.5, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
+      <Text style={{ fontSize: 12, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
     </Pressable>
   );
 };
