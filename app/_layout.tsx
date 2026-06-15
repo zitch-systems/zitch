@@ -6,13 +6,13 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { router, SplashScreen, Stack } from "expo-router";
-import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
+import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
-import { enforceIdleTimeout, isSessionLocked, lockSession } from "@/lib/session";
+import { enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
 
-// Default every Text/TextInput to Manrope so nothing can fall back to the
+// Default every Text/TextInput to Inter so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
 // component's own style is merged after this default. On Android we also drop
 // the extra font padding the OS adds above/below glyphs — gives noticeably
@@ -45,8 +45,8 @@ const RootStack = () => {
 };
 
 const _layout = () => {
-  // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
-  const [fontsLoaded, error] = useFonts(manropeFonts);
+  // The whole app uses Inter (see lib/theme `font`). Only these are loaded.
+  const [fontsLoaded, error] = useFonts(appFonts);
 
   useEffect(() => {
     if (error) throw error;
@@ -65,14 +65,18 @@ const _layout = () => {
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
+      await lockIfAwayTooLong(); // re-lock only if backgrounded >= 1 min
       await enforceIdleTimeout();
       if (await isSessionLocked()) router.replace("/signin");
     };
     check();
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "background") {
-        // Leaving the app locks the session so the next open re-authenticates.
-        getToken().then((t) => { if (t) lockSession(); });
+        // Stamp the time we left so we can re-lock on return ONLY if the user
+        // was away at least a minute. Skip while an in-app picker/camera is up,
+        // so uploading a photo never bounces to the unlock screen.
+        if (isExternalActivityActive()) return;
+        getToken().then((t) => { if (t) markBackgrounded(); });
       } else if (s === "active") {
         check();
       }

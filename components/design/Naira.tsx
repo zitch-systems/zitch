@@ -1,9 +1,9 @@
 import React from 'react';
 import { Platform, Text, TextProps, TextStyle, StyleProp } from 'react-native';
 
-// The platform system font has a better-designed ₦ glyph than Manrope on most
+// The platform system font has a better-designed ₦ glyph than Inter on most
 // devices (Apple SF on iOS, Roboto on Android). These helpers render the ₦
-// symbol in the system font without disturbing the surrounding Manrope text.
+// symbol in the system font without disturbing the surrounding Inter text.
 const SYS_FONT = Platform.select({ ios: 'System', android: 'sans-serif', default: undefined });
 
 const nairaStyle: TextStyle = { fontFamily: SYS_FONT as any };

@@ -65,3 +65,44 @@ export async function enforceIdleTimeout(): Promise<boolean> {
   }
   return false;
 }
+
+/**
+ * Re-lock grace period for *leaving* the app. Opening the image picker, camera,
+ * or the biometric prompt briefly backgrounds the app; locking the instant we
+ * background meant "upload a photo" bounced the user to the unlock screen. So
+ * instead of locking on background, we stamp the time and only re-lock on
+ * return if the app was actually away at least this long.
+ */
+export const LOCK_AFTER_BACKGROUND_MS = 60 * 1000; // 1 minute
+const BACKGROUND_AT_KEY = 'z-bg-at';
+
+// In-app excursions that legitimately background the app (image picker, camera)
+// must never trigger the lock, however long they take. Call begin() before
+// launching and end() in a finally afterwards. A counter handles overlap.
+let externalActivityCount = 0;
+export function beginExternalActivity(): void { externalActivityCount += 1; }
+export function endExternalActivity(): void {
+  externalActivityCount = Math.max(0, externalActivityCount - 1);
+}
+export function isExternalActivityActive(): boolean { return externalActivityCount > 0; }
+
+/** Stamp the moment the app was backgrounded (drives the re-lock decision). */
+export async function markBackgrounded(): Promise<void> {
+  await AsyncStorage.setItem(BACKGROUND_AT_KEY, Date.now().toString());
+}
+
+/**
+ * On returning to the foreground, lock the session only if the app was away at
+ * least LOCK_AFTER_BACKGROUND_MS and a session exists. Always clears the stamp.
+ * Returns true if it just locked.
+ */
+export async function lockIfAwayTooLong(): Promise<boolean> {
+  const raw = await AsyncStorage.getItem(BACKGROUND_AT_KEY);
+  await AsyncStorage.removeItem(BACKGROUND_AT_KEY);
+  if (!raw || isExternalActivityActive()) return false;
+  const at = Number(raw);
+  if (!Number.isFinite(at) || Date.now() - at < LOCK_AFTER_BACKGROUND_MS) return false;
+  if (!(await getToken())) return false;
+  await lockSession();
+  return true;
+}

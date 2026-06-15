@@ -5,6 +5,7 @@ import { notify } from '@/components/design/Notify';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { getToken } from '@/lib/secureStore';
+import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiPost } from '@/lib/api';
 import { useWallet } from '@/lib/wallet';
 import ZIcon from '@/components/design/ZIcon';
@@ -50,13 +51,17 @@ const AccountDetails = () => {
       notify('Permission needed', 'Allow photo access to update your picture.');
       return;
     }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.6,
-      base64: true,
-    });
+    beginExternalActivity(); // keep the app-lock from firing while the picker is up
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.6,
+        base64: true,
+      });
+    } finally { endExternalActivity(); }
     if (res.canceled || !res.assets?.[0]?.base64) return;
     const asset = res.assets[0];
     setAvatar(asset.uri); // optimistic local preview
