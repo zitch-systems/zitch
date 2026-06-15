@@ -3,8 +3,8 @@ import json
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
-    api, check_send_limits, fail, idempotent_replay, ok, parse_amount, require_user,
-    spend_key, verify_transaction_pin,
+    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
+    require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
 from utility.providers import payment_initialize, payment_verify, payment_verify_signature
@@ -215,6 +215,11 @@ def transfer_send(request):
     replay = idempotent_replay(existing_for_key(sender, key))
     if replay:
         return replay
+
+    # Daily transfer cap (after replay so a retried transfer replays cleanly).
+    daily_err = check_daily_limit(sender, amount, "transfer")
+    if daily_err:
+        return daily_err
 
     try:
         debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""), idempotency_key=key)

@@ -10,6 +10,7 @@ import functools
 import json
 import logging
 from datetime import timedelta
+from decimal import Decimal
 
 from django.http import JsonResponse
 from django.utils import timezone
@@ -62,6 +63,60 @@ def check_send_limits(user, amount):
             status=403, code="face_required",
             large_txn_threshold=str(User.LARGE_TXN_THRESHOLD),
         )
+    return None
+
+
+# --- Daily aggregate limits (per KYC tier) -----------------------------------
+# Caps the *total* a user can move per category per day, on top of the
+# per-transaction `check_send_limits`. WhatsApp onboarding (BVN -> Tier 2) caps
+# at ₦1,000,000 transfers / ₦100,000 bills a day; full app KYC (Tier 3) raises
+# them. The caps live on the user (per tier), so they apply identically whether
+# the user transacts in the app or on WhatsApp.
+_TRANSFER_PREFIXES = ("Transfer to",)
+_BILL_PREFIXES = ("Airtime", "Data", "Cable", "Electricity")
+
+
+def _daily_spent(user, prefixes) -> Decimal:
+    """Sum of today's non-failed outbound NGN spend whose service label starts
+    with any of `prefixes`, within the user's local day."""
+    from django.db.models import Q, Sum
+    from wallet.models import Transaction
+    start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    label_q = Q()
+    for p in prefixes:
+        label_q |= Q(service__startswith=p)
+    agg = (Transaction.objects
+           .filter(label_q, user=user, direction=Transaction.OUT,
+                   currency="NGN", created__gte=start)
+           .exclude(transaction_status=Transaction.FAILED)
+           .aggregate(s=Sum("amount")))
+    return agg["s"] or Decimal("0")
+
+
+def daily_limit_error(user, amount, kind) -> "str | None":
+    """User-facing reason `amount` breaks the per-day cap for `kind`
+    ('transfer' or 'bill'), or None. Non-HTTP, so the WhatsApp router shares it."""
+    if kind == "transfer":
+        prefixes, cap, label = _TRANSFER_PREFIXES, user.daily_transfer_limit, "transfer"
+    else:
+        prefixes, cap, label = _BILL_PREFIXES, user.daily_bill_limit, "bill payment"
+    spent = _daily_spent(user, prefixes)
+    if spent + amount > cap:
+        remaining = cap - spent
+        if remaining < 0:
+            remaining = Decimal("0")
+        return (f"This would pass your daily {label} limit of ₦{cap:,.0f} "
+                f"(₦{remaining:,.0f} left today). Upgrade your KYC in the app to raise it.")
+    return None
+
+
+def check_daily_limit(user, amount, kind):
+    """HTTP wrapper around `daily_limit_error`: a 403 JsonResponse if the daily
+    cap would be exceeded, else None."""
+    msg = daily_limit_error(user, amount, kind)
+    if msg:
+        cap = user.daily_transfer_limit if kind == "transfer" else user.daily_bill_limit
+        return fail(msg, status=403, code="daily_limit_exceeded", daily_limit=str(cap))
     return None
 
 

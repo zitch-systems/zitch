@@ -30,6 +30,12 @@ class User(AbstractUser):
 
     # KYC tier -> per-transaction limit (CBN-style; adjust to your licence).
     TIER_LIMITS = {1: Decimal("50000"), 2: Decimal("200000"), 3: Decimal("5000000")}
+    # Per-day aggregate caps by tier, on top of the per-transaction limit.
+    # WhatsApp onboarding (BVN -> Tier 2) caps at ₦1,000,000 transfers /
+    # ₦100,000 bills a day; full app KYC (Tier 3) raises them. The caps live on
+    # the user, so they apply identically in the app and on WhatsApp.
+    DAILY_TRANSFER_LIMITS = {1: Decimal("50000"), 2: Decimal("1000000"), 3: Decimal("5000000")}
+    DAILY_BILL_LIMITS = {1: Decimal("20000"), 2: Decimal("100000"), 3: Decimal("500000")}
     # Single transfers at/above this require step-up (face) verification.
     LARGE_TXN_THRESHOLD = Decimal("100000")
 
@@ -89,6 +95,14 @@ class User(AbstractUser):
     @property
     def transaction_limit(self) -> Decimal:
         return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[1])
+
+    @property
+    def daily_transfer_limit(self) -> Decimal:
+        return self.DAILY_TRANSFER_LIMITS.get(self.tier, self.DAILY_TRANSFER_LIMITS[1])
+
+    @property
+    def daily_bill_limit(self) -> Decimal:
+        return self.DAILY_BILL_LIMITS.get(self.tier, self.DAILY_BILL_LIMITS[1])
 
     def recompute_tier(self) -> None:
         """Tier 3 needs BVN + NIN; Tier 2 needs one of them; else Tier 1."""

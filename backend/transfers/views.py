@@ -9,8 +9,8 @@ import json
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
-    api, check_send_limits, fail, idempotent_replay, ok, parse_amount, require_user,
-    spend_key, verify_transaction_pin,
+    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
+    require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
 from utility.providers import disbursement_resolve_account, payment_verify_signature
@@ -101,6 +101,11 @@ def bank_transfer(request):
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
+
+    # Daily transfer cap (after replay so a retried transfer replays cleanly).
+    daily_err = check_daily_limit(user, amount, "transfer")
+    if daily_err:
+        return daily_err
 
     note = data.get("note", "")
     # Resolve server-side for the authoritative account name — Monnify rejects a
