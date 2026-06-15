@@ -3,7 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['landing/**', 'docs/**', '**/*.md']
   pull_request:
+    paths-ignore: ['landing/**', 'docs/**', '**/*.md']
+
+# Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend:
