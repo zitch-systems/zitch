@@ -1,0 +1,24 @@
+# EAS Workflow: build an installable Android preview APK on every push to main.
+#
+# Triggers a build on EAS infrastructure using the `preview` profile from
+# eas.json (buildType: apk, EXPO_PUBLIC_API_URL=https://api.zitch.ng). The
+# finished APK appears under Builds in the Expo dashboard (expo.dev) — download
+# and install it on a device to test.
+#
+# Note: this runs a full Android build on each push to main and counts against
+# the EAS build quota. To build less often, change the trigger to tags
+# (on: push: tags: ['v*']) or run it manually from the Expo dashboard.
+name: Android preview APK
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_android_preview:
+    name: Build Android preview APK
+    type: build
+    params:
+      platform: android
+      profile: preview
