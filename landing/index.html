@@ -72,7 +72,7 @@
   *{box-sizing:border-box;} html{scroll-behavior:smooth;}
   /* Offset anchored sections so the sticky header never hides their headings
      when navigating via the in-page menu (most noticeable on mobile). */
-  #whatsapp,#services,#fx,#security,#faq,#cta{scroll-margin-top:92px;}
+  #ways,#whatsapp,#services,#fx,#pricing,#security,#faq,#cta{scroll-margin-top:92px;}
   body{margin:0;font-family:var(--body);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;font-feature-settings:"kern" 1,"liga" 1;}
   a{color:inherit;text-decoration:none;} img{display:block;max-width:100%;}
   h1,h2,h3,h4,p{margin:0;}
@@ -451,6 +451,77 @@
     .chat-zone .chat-body{height:108vw;}
     .msg{max-width:92%;}
   }
+
+  /* ===== big WhatsApp portal button + floating FAB ===== */
+  .btn-wa-xl{height:62px;padding:0 32px;font-size:16.5px;border-radius:16px;box-shadow:0 18px 42px -14px rgba(37,211,102,.62);}
+  .btn-wa-xl svg{width:24px;height:24px;}
+  .wa-fab{position:fixed;right:22px;bottom:22px;z-index:80;width:62px;height:62px;border-radius:50%;background:var(--wa);display:grid;place-items:center;color:#fff;box-shadow:0 14px 34px -8px rgba(37,211,102,.7);transition:transform .15s,box-shadow .15s;}
+  .wa-fab:hover{transform:translateY(-3px) scale(1.04);box-shadow:0 20px 46px -10px rgba(37,211,102,.82);}
+  .wa-fab svg{width:33px;height:33px;}
+  .wa-fab .fab-pulse{position:absolute;inset:0;border-radius:50%;pointer-events:none;}
+  @media (prefers-reduced-motion:no-preference){
+    .wa-fab .fab-pulse{animation:fabp 2.6s ease-out infinite;}
+    @keyframes fabp{0%{box-shadow:0 0 0 0 rgba(37,211,102,.5);}70%{box-shadow:0 0 0 17px rgba(37,211,102,0);}100%{box-shadow:0 0 0 0 rgba(37,211,102,0);}}
+  }
+
+  /* ===== Two ways to bank (WhatsApp vs App) ===== */
+  .ways{background:var(--paper);border-top:1px solid var(--line);border-bottom:1px solid var(--line);position:relative;overflow:hidden;}
+  .ways::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(2,52,74,.06) 1.2px,transparent 1.3px);background-size:24px 24px;-webkit-mask-image:linear-gradient(160deg,#000,transparent 62%);mask-image:linear-gradient(160deg,#000,transparent 62%);pointer-events:none;}
+  .ways .wrap{position:relative;z-index:1;}
+  .ways .sec-head{margin-left:auto;margin-right:auto;text-align:center;}
+  .ways-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
+  .way{position:relative;border-radius:var(--rl);padding:34px 32px;border:1px solid var(--line);background:var(--card);box-shadow:var(--shadow);display:flex;flex-direction:column;}
+  .way.wa{background:linear-gradient(162deg,#0B141A 0%,#0E2A20 100%);border-color:rgba(37,211,102,.32);color:#fff;}
+  .way-top{display:flex;align-items:center;gap:14px;margin-bottom:16px;}
+  .way-ic{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;flex-shrink:0;}
+  .way.wa .way-ic{background:var(--wa);color:#fff;}
+  .way.app .way-ic{background:var(--mint);color:var(--teal-deep);}
+  .way .tag{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;}
+  .way.wa .tag{color:#7BE3A6;} .way.app .tag{color:var(--teal-deep);}
+  .way h3{font-family:var(--disp);font-size:23px;font-weight:700;letter-spacing:-.01em;margin-top:3px;}
+  .way.app h3{color:var(--head);}
+  .way .way-sub{font-size:14.5px;line-height:1.62;}
+  .way.wa .way-sub{color:#A9C6CF;} .way.app .way-sub{color:var(--t2);}
+  .way .feat-chips{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 4px;}
+  .way .feat-chips span{font-size:12px;font-weight:600;padding:6px 12px;border-radius:999px;}
+  .way.wa .feat-chips span{background:rgba(92,245,235,.1);color:var(--cyan);border:1px solid rgba(92,245,235,.22);}
+  .way.app .feat-chips span{background:var(--mint);color:var(--teal-deep);border:1px solid var(--line);}
+  .way .limits{margin:20px 0;border-radius:16px;overflow:hidden;border:1px solid;}
+  .way.wa .limits{border-color:rgba(255,255,255,.12);background:rgba(255,255,255,.04);}
+  .way.app .limits{border-color:var(--line);background:var(--paper);}
+  .way .limit{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:13px 16px;font-size:13.5px;}
+  .way .limit + .limit{border-top:1px solid;}
+  .way.wa .limit + .limit{border-color:rgba(255,255,255,.08);}
+  .way.app .limit + .limit{border-color:var(--line);}
+  .way .limit .lk{display:flex;align-items:center;gap:9px;}
+  .way.wa .limit .lk{color:#C8DEE4;} .way.app .limit .lk{color:var(--t2);}
+  .way .limit .lk svg{flex-shrink:0;opacity:.85;}
+  .way .limit .lv{font-family:var(--disp);font-weight:700;text-align:right;}
+  .way.wa .limit .lv{color:#fff;} .way.app .limit .lv{color:var(--head);}
+  .way .limit .lv.up{color:var(--teal);}
+  .way .way-cta{margin-top:auto;}
+  .way .way-cta .btn{width:100%;}
+  .way .way-foot{font-size:12.5px;margin-top:14px;text-align:center;}
+  .way.wa .way-foot{color:#8FB2BC;} .way.app .way-foot{color:var(--t3);}
+  .ways-note{display:flex;align-items:center;justify-content:center;gap:11px;margin-top:26px;font-size:14.5px;color:var(--t2);text-align:center;text-wrap:pretty;}
+  .ways-note b{color:var(--head);} .ways-note svg{color:var(--teal-deep);flex-shrink:0;}
+
+  /* ===== Pricing ===== */
+  .price-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
+  .price{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:26px 24px;transition:border-color .18s,box-shadow .18s,transform .18s;}
+  .price:hover{border-color:var(--teal);box-shadow:var(--shadow);transform:translateY(-3px);}
+  .price .ph{display:flex;align-items:center;gap:11px;margin-bottom:15px;}
+  .price .ph .ic{width:40px;height:40px;border-radius:12px;background:var(--mint);display:grid;place-items:center;color:var(--teal-deep);flex-shrink:0;}
+  .price .ph .pt{font-family:var(--disp);font-weight:700;font-size:16px;color:var(--head);}
+  .price .big{font-family:var(--disp);font-size:25px;font-weight:700;color:var(--head);letter-spacing:-.01em;}
+  .price .small{font-size:13px;color:var(--t3);margin-top:4px;}
+  .price .plabel{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--t3);margin:17px 0 9px;}
+  .price .pchips{display:flex;flex-wrap:wrap;gap:7px;}
+  .price .pchips span{font-size:11.5px;font-weight:600;color:var(--t2);background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:5px 11px;}
+  .price-foot{display:flex;align-items:center;justify-content:center;gap:9px;flex-wrap:wrap;margin-top:26px;font-size:14px;color:var(--t3);text-align:center;}
+  .price-foot b{color:var(--teal-deep);}
+
+  @media (max-width:760px){ .ways-grid,.price-grid{grid-template-columns:1fr;} }
 </style>
 <script type="application/ld+json">
 {
@@ -598,7 +669,7 @@
 </head>
 <body>
 
-<div class="announce">🎉 <b>Zitch is now on WhatsApp.</b> Check balance, buy airtime &amp; send money — right from your chats. <a href="#whatsapp">See how →</a></div>
+<div class="announce">🎉 <b>Now bank on WhatsApp — no download.</b> Onboard with your BVN, then send money &amp; pay bills right from your chats. <a href="#ways">See how →</a></div>
 
 <header class="nav">
   <div class="wrap nav-in">
@@ -607,6 +678,7 @@
       <a href="#whatsapp">WhatsApp banking</a>
       <a href="#services">The app</a>
       <a href="#fx">Currencies</a>
+      <a href="#pricing">Pricing</a>
       <a href="#security">Security</a>
       <a href="#faq">FAQ</a>
     </nav>
@@ -628,6 +700,7 @@
     <a href="#whatsapp">WhatsApp banking</a>
     <a href="#services">The app</a>
     <a href="#fx">Currencies</a>
+    <a href="#pricing">Pricing</a>
     <a href="#security">Security</a>
     <a href="#faq">FAQ</a>
   </nav>
@@ -641,10 +714,14 @@
   <img class="hero-rib" src="assets/brand/zitch-ribbon2.png" alt="" />
   <div class="wrap hero-in">
     <div class="hero-copy">
-      <span class="eyebrow">Pay · Send · Top up · Chat</span>
+      <span class="eyebrow">Bank on WhatsApp · or get the app</span>
       <h1 style="margin-top: 18px;">Money that speaks <span class="tl">your language.</span></h1>
-      <p class="lead">Send money, pay every bill and top up in seconds — all in one beautifully simple app. And when you can't open it, just text Zitch on WhatsApp.</p>
+      <p class="lead">Onboard in seconds and send money, pay bills and buy airtime — all inside WhatsApp, no download. Want higher limits, dollar cards and savings? Get the app — and your bigger limits follow you back to chat.</p>
       <div class="hero-ctas">
+        <a class="btn btn-wa btn-wa-xl" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" aria-label="Bank on WhatsApp">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg>
+          Open on WhatsApp
+        </a>
         <a class="store" href="https://apps.apple.com" aria-label="Download on the App Store">
           <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 1.43c.09 1.16-.34 2.3-1.07 3.17-.76.9-2 1.57-3.04 1.49-.11-1.1.41-2.28 1.13-3.04.79-.86 2.12-1.52 2.98-1.62zM20.9 17.07c-.55 1.27-.82 1.84-1.53 2.96-1 1.56-2.4 3.51-4.15 3.52-1.55.02-1.95-.97-4.06-.95-2.1.01-2.55.97-4.1.96-1.75-.02-3.08-1.77-4.08-3.34-2.8-4.38-3.1-9.52-1.37-12.25 1.22-1.94 3.15-3.07 4.96-3.07 1.84 0 3 .98 4.52.98 1.48 0 2.38-.98 4.5-.98 1.62 0 3.33.86 4.55 2.36-4 2.18-3.35 7.85.76 9.81z"/></svg>
           <span class="txt"><span class="sub">Download on the</span><span class="main">App Store</span></span>
@@ -652,10 +729,6 @@
         <a class="store" href="https://play.google.com" aria-label="Get it on Google Play">
           <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg>
           <span class="txt"><span class="sub">Get it on</span><span class="main">Google Play</span></span>
-        </a>
-        <a class="btn btn-wa" style="height:56px;" href="#whatsapp">
-          <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg>
-          Chat on WhatsApp
         </a>
       </div>
       <div class="hero-note">
@@ -729,6 +802,49 @@
   </div>
 </div>
 
+<section class="block ways" id="ways" data-screen-label="Two ways to bank">
+  <div class="wrap">
+    <div class="sec-head rev">
+      <span class="eyebrow">Two ways to bank</span>
+      <h2>Start on WhatsApp. Get the app for more.</h2>
+      <p>Onboard and transact in seconds inside WhatsApp — no download. Want higher limits and the full toolkit? Get the app, and your bigger limits follow you right back to WhatsApp.</p>
+    </div>
+    <div class="ways-grid">
+      <div class="way wa rev">
+        <div class="way-top">
+          <div class="way-ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg></div>
+          <div><div class="tag">No download</div><h3>Bank on WhatsApp</h3></div>
+        </div>
+        <p class="way-sub">Chat to onboard with your BVN, get a secure wallet, then send money, buy airtime &amp; data, pay bills and run Ajo group savings — all without leaving WhatsApp.</p>
+        <div class="feat-chips"><span>Transfers</span><span>Airtime &amp; Data</span><span>Bills</span><span>Ajo savings</span><span>Voice notes</span></div>
+        <div class="limits">
+          <div class="limit"><span class="lk"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg>Transfers</span><span class="lv num">₦1,000,000 / day</span></div>
+          <div class="limit"><span class="lk"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Bill payments</span><span class="lv num">₦100,000 / day</span></div>
+          <div class="limit"><span class="lk"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>Get set up</span><span class="lv">Under 2 min</span></div>
+        </div>
+        <div class="way-cta"><a class="btn btn-wa" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started">Open on WhatsApp</a></div>
+        <div class="way-foot">Every payment is sealed with your transaction PIN.</div>
+      </div>
+      <div class="way app rev" style="--d:.08s;">
+        <div class="way-top">
+          <div class="way-ic"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><line x1="10" y1="18" x2="14" y2="18"/></svg></div>
+          <div><div class="tag">Unlock more</div><h3>Get the Zitch app</h3></div>
+        </div>
+        <p class="way-sub">Raise your limits and unlock the full toolkit — virtual dollar cards, savings up to 18%, multi-currency wallets and loans. Best of all, your higher app limits apply on WhatsApp too.</p>
+        <div class="feat-chips"><span>Higher limits</span><span>Dollar cards</span><span>Savings 18%</span><span>Multi-currency</span><span>Loans</span></div>
+        <div class="limits">
+          <div class="limit"><span class="lk"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg>Transfers</span><span class="lv up num">Up to ₦5,000,000 / day</span></div>
+          <div class="limit"><span class="lk"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>Bill payments</span><span class="lv up">Raised by KYC tier</span></div>
+          <div class="limit"><span class="lk"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42z"/></svg>Same limits on WhatsApp</span><span class="lv">Yes ✓</span></div>
+        </div>
+        <div class="way-cta"><a class="btn btn-teal" href="#cta">Get the app</a></div>
+        <div class="way-foot">BVN + NIN + face check raises you to Tier 3.</div>
+      </div>
+    </div>
+    <div class="ways-note rev"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> <span>Onboard once with your BVN. Download the app anytime — <b>your higher limits carry over to WhatsApp automatically.</b></span></div>
+  </div>
+</section>
+
 <section class="wa block" id="whatsapp" data-screen-label="WhatsApp banking">
   <img class="wa-rib" src="assets/brand/zitch-ribbon2.png" alt="" loading="lazy" decoding="async" />
   <div class="wrap">
@@ -746,7 +862,7 @@
           <div class="wa-feat"><div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></div><div><h4>Balance &amp; currency conversion</h4><p>Check every wallet or convert NGN to USD, GBP and CAD with a 60-second locked quote — by text.</p></div></div>
         </div>
         <div class="wa-cta">
-          <a class="btn btn-wa" href="#cta">Link your WhatsApp</a>
+          <a class="btn btn-wa" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" target="_blank" rel="noopener">Open on WhatsApp</a>
           <a class="btn btn-cyan" href="#cta">Get the app</a>
         </div>
       </div>
@@ -770,6 +886,10 @@
       <div class="svc rev" style="--d:.06s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><h4>Fixed savings</h4><p>Lock funds and earn up to 18% per annum.</p></div>
       <div class="svc rev" style="--d:.12s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div><h4>Loans</h4><p>Quick credit, clear terms, repay in-app.</p></div>
       <div class="svc rev" style="--d:.18s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v9a8 8 0 0 1-16 0z"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div><h4>Exams &amp; betting</h4><p>WAEC/JAMB pins and instant betting wallet top-ups.</p></div>
+      <div class="svc rev"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><h4>Ajo group savings</h4><p>Run automated Ajo/Esusu rounds with friends and family.</p></div>
+      <div class="svc rev" style="--d:.06s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg></div><h4>Group &amp; family wallets</h4><p>Shared wallets for runs, contributions and the household.</p></div>
+      <div class="svc rev" style="--d:.12s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="14" y1="14" x2="14" y2="14.01"/><line x1="21" y1="14" x2="21" y2="21"/><line x1="14" y1="21" x2="17.5" y2="21"/><line x1="17" y1="14" x2="17" y2="17.5"/></svg></div><h4>Pay by QR</h4><p>Scan to pay merchants instantly — no account numbers.</p></div>
+      <div class="svc rev" style="--d:.18s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg></div><h4>Voice &amp; your language</h4><p>Send a voice note in Pidgin, Yoruba, Igbo or Hausa — Zitch gets it.</p></div>
     </div>
   </div>
 </section>
@@ -789,6 +909,47 @@
         <div class="rate-cell"><span class="flag">🇨🇳</span><span class="pair">NGN → CNY</span><span class="rt num">₦206.84</span></div>
       </div>
     </div>
+  </div>
+</section>
+
+<section class="block pricing" id="pricing" data-screen-label="Pricing">
+  <div class="wrap">
+    <div class="sec-head rev" style="margin-left:auto;margin-right:auto;text-align:center;">
+      <span class="eyebrow">Transparent pricing</span>
+      <h2>Simple, fair fees.</h2>
+      <p>No hidden charges — pay only what you see, when you see it. Every fee is shown before you confirm, and your first 3 transfers each month are free.</p>
+    </div>
+    <div class="price-grid">
+      <div class="price rev">
+        <div class="ph"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><span class="pt">Transfer</span></div>
+        <div class="big num">₦50 flat up to ₦5,000</div>
+        <div class="small">then 0.5%, capped at ₦500 · free to other Zitch users</div>
+        <div class="plabel">Send money to</div>
+        <div class="pchips"><span>GTBank</span><span>Access</span><span>Zenith</span><span>UBA</span><span>OPay</span><span>Palmpay</span><span>100+ more</span></div>
+      </div>
+      <div class="price rev" style="--d:.06s;">
+        <div class="ph"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14 0"/><path d="M1.5 9a16 16 0 0 1 21 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span><span class="pt">Airtime &amp; Data</span></div>
+        <div class="big">Same face value</div>
+        <div class="small">top up at cost — plus up to 3% back in the app</div>
+        <div class="plabel">All networks</div>
+        <div class="pchips"><span>MTN</span><span>Glo</span><span>Airtel</span><span>9mobile</span></div>
+      </div>
+      <div class="price rev" style="--d:.12s;">
+        <div class="ph"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></span><span class="pt">Bills</span></div>
+        <div class="big num">₦50 – ₦100</div>
+        <div class="small">small convenience fee, depends on biller &amp; amount</div>
+        <div class="plabel">Pay for</div>
+        <div class="pchips"><span>IKEDC</span><span>EKEDC</span><span>DSTV</span><span>GOtv</span><span>StarTimes</span><span>Spectranet</span></div>
+      </div>
+      <div class="price rev" style="--d:.18s;">
+        <div class="ph"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span><span class="pt">Cards, savings &amp; more</span></div>
+        <div class="big">Clear rates, shown upfront</div>
+        <div class="small">no surprises on cards, savings, FX or Ajo</div>
+        <div class="plabel">Explore</div>
+        <div class="pchips"><span>Dollar cards</span><span>Fixed savings</span><span>Convert NGN↔USD</span><span>Ajo group savings</span></div>
+      </div>
+    </div>
+    <div class="price-foot rev">⭐ <b>Your first 3 transfers each month are free.</b> Network &amp; partner fees may apply on certain services.</div>
   </div>
 </section>
 
@@ -825,6 +986,10 @@
         <div class="faq-a"><p>Link your phone number once, then bank by chatting with Zitch on WhatsApp in plain language — for example, “send 5k to my brother John.” Zitch can draft the transaction, but no money ever moves until you approve it with your fingerprint, Face ID or PIN.</p></div>
       </details>
       <details class="faq-item">
+        <summary>What are the limits on WhatsApp vs the app?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
+        <div class="faq-a"><p>Onboarding on WhatsApp lets you transact right away — up to ₦1,000,000 in transfers and ₦100,000 in bill payments per day. To raise your limits, download the Zitch app and complete full KYC (BVN, NIN and face verification). Your higher limits then apply when you bank on WhatsApp too.</p></div>
+      </details>
+      <details class="faq-item">
         <summary>How fast are transfers and bill payments?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
         <div class="faq-a"><p>Zitch-to-Zitch transfers are instant and free, transfers to other Nigerian banks arrive in seconds, and airtime, data and electricity tokens are usually delivered within a few seconds.</p></div>
       </details>
@@ -854,7 +1019,7 @@
         <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg>
         <span class="txt"><span class="sub">Get it on</span><span class="main">Google Play</span></span>
       </a>
-      <a class="btn btn-wa" style="height:56px;" href="#whatsapp">Bank on WhatsApp</a>
+      <a class="btn btn-wa" style="height:56px;" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" target="_blank" rel="noopener">Bank on WhatsApp</a>
     </div>
   </div>
 </section>
@@ -882,6 +1047,9 @@
     </div>
   </div>
 </footer>
+
+<!-- Floating WhatsApp portal button -->
+<a class="wa-fab" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" aria-label="Bank on WhatsApp" target="_blank" rel="noopener"><span class="fab-pulse"></span><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg></a>
 
 <script>
   (function(){
@@ -1017,9 +1185,11 @@
           { l: 'cancel', fn: function(){ handle('cancel'); } }
         ]);
       } else {
-        chipSet(['send 5k to my brother John', 'balance', 'airtime 1k', 'convert 100k to USD', 'help'].map(function(c){
-          return { l: c, fn: function(){ handle(c); } };
-        }));
+        chipSet([{ l: '📋 Choose service', fn: serviceMenu }].concat(
+          ['send 5000 to 7066737466 opay', 'balance', 'airtime 1k', 'convert 100k to USD'].map(function(c){
+            return { l: c, fn: function(){ handle(c); } };
+          })
+        ));
       }
     }
     function authBtns(pid){
@@ -1068,12 +1238,18 @@
       if (p.type === 'transfer'){
         st.bal -= p.amt + 10;
         bot(receipt({ amt: naira(p.amt), sub: 'Bank transfer \u00b7 via WhatsApp', rows: [
-          ['To', p.name], ['Bank', 'GTBank \u00b7\u00b7\u00b7\u00b71234'], ['Fee', '\u20a610.00'],
+          ['To', p.name], ['Bank', p.bank || 'GTBank'], ['Account', p.acct || '\u00b7\u00b7\u00b7\u00b71234'], ['Fee', '\u20a610.00'],
+          ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['New balance', naira(st.bal)]
+        ]}), 1100);
+      } else if (p.type === 'bill'){
+        st.bal -= p.amt;
+        bot(receipt({ amt: naira(p.amt), sub: (p.biller || 'Electricity') + ' \u00b7 via WhatsApp', rows: [
+          ['Biller', p.biller || 'IKEDC Prepaid'], ['Meter token', '3942-1180-5567-2031', 1],
           ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['New balance', naira(st.bal)]
         ]}), 1100);
       } else if (p.type === 'airtime'){
         st.bal -= p.amt;
-        bot(receipt({ amt: naira(p.amt), sub: 'MTN airtime \u00b7 via WhatsApp', rows: [
+        bot(receipt({ amt: naira(p.amt), sub: (p.label || 'MTN airtime') + ' \u00b7 via WhatsApp', rows: [
           ['Phone', '0803 \u00b7\u00b7\u00b7 4421'], ['Network', 'MTN Nigeria'],
           ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['New balance', naira(st.bal)]
         ]}), 1100);
@@ -1090,8 +1266,22 @@
       bot(intro + '<br>How would you like to pay?' + authBtns(st.pid));
     }
     function menu(){
-      bot('I can help with:<br>1\ufe0f\u20e3 Balance<br>2\ufe0f\u20e3 Send money<br>3\ufe0f\u20e3 Airtime &amp; data<br>4\ufe0f\u20e3 Convert currency<br>Reply with a number \u2014 or just type it how you\'d say it.');
+      bot('I can help with:<br>1\ufe0f\u20e3 Balance<br>2\ufe0f\u20e3 Send money<br>3\ufe0f\u20e3 Airtime &amp; data<br>4\ufe0f\u20e3 Convert currency<br>Reply with a number, tap <b>Choose service</b> \u2014 or just type it how you\'d say it.');
     }
+    function serviceMenu(){
+      bot('\ud83d\udca1 <b>Choose a service</b> \u2014 tap one, or just type / paste what you want to do.' +
+        '<div class="wabtns">' +
+        '<button type="button" data-svc="send 5000 to 7066737466 opay">\ud83d\udcb8 Transfer Money</button>' +
+        '<button type="button" data-svc="airtime 1000">\ud83d\udcf1 Airtime</button>' +
+        '<button type="button" data-svc="buy 2gb data">\ud83d\udcca Data</button>' +
+        '<button type="button" data-svc="pay electricity 5000">\ud83e\uddfe Bills Payment</button>' +
+        '<button type="button" data-svc="ajo">\ud83d\udc65 Ajo Group Savings</button>' +
+        '</div>');
+    }
+    body.addEventListener('click', function(e){
+      var s = e.target.closest('[data-svc]');
+      if (s && !st.pending) handle(s.dataset.svc);
+    });
     function handle(raw){
       var text = String(raw).trim(); if (!text) return;
       if (st.pending){
@@ -1103,7 +1293,49 @@
       }
       addMsg('you', text);
       var t = text.toLowerCase();
-      if (/^(hi|hello|hey)\b/.test(t)){ bot('Hi Adaeze \ud83d\udc4b I\'m Zitch on WhatsApp. Try <b>send 5k to my brother John</b>, or reply <b>help</b> for the menu.'); return; }
+      // Continue a transfer that was waiting on an amount
+      if (st.awaitAmt){
+        var aw = st.awaitAmt, awAmt = parseAmt(t, 0);
+        if (awAmt >= 50){ st.awaitAmt = null; askAuth({ type:'transfer', amt:awAmt, name:aw.name, bank:aw.bank, acct:aw.acct }, 'Send <b>' + naira(awAmt) + '</b> to <b>' + aw.name + '</b> \u00b7 ' + aw.bank + '?'); return; }
+      }
+      // AI paste \u2014 a standalone 10-digit number is a bank account: verify & pay
+      var acctM = t.match(/\b(\d{10})\b/);
+      if (acctM){
+        var acct = acctM[1], amtP = parseAmt(t.replace(acct, ''), 0);
+        var BANKS = { opay:'OPay (PAYCOM)', moniepoint:'Moniepoint MFB', monie:'Moniepoint MFB', palmpay:'Palmpay', gtbank:'GTBank', gtb:'GTBank', access:'Access Bank', zenith:'Zenith Bank', uba:'UBA', kuda:'Kuda MFB', first:'First Bank', wema:'Wema Bank', fidelity:'Fidelity Bank', rubies:'Rubies MFB' };
+        var bankName = 'OPay (PAYCOM)';
+        Object.keys(BANKS).forEach(function(k){ if (t.indexOf(k) > -1) bankName = BANKS[k]; });
+        var benName = acct === '7066737466' ? 'Farida Yasmin Abubakar' : 'Verified Account Holder';
+        var dv = addMsg('bot', '<span class="scan busy">' + IC.pin + '</span> Verifying beneficiary account\u2026', true);
+        setTimeout(function(){
+          var tk = dv.querySelector('.tick');
+          dv.innerHTML = '\ud83d\udc64 <b>Beneficiary found</b>' +
+            '<div class="rcpt"><div><span>Name</span><b>' + benName + '</b></div>' +
+            '<div><span>Bank</span><b>' + bankName + '</b></div>' +
+            '<div><span>Account</span><b>' + acct + '</b></div></div>';
+          if (tk) dv.appendChild(tk); scrollDown();
+          if (amtP >= 50){
+            askAuth({ type:'transfer', amt:amtP, name:benName, bank:bankName, acct:acct }, 'Send <b>' + naira(amtP) + '</b> to <b>' + benName + '</b>?');
+          } else {
+            st.awaitAmt = { name:benName, bank:bankName, acct:acct };
+            bot('How much should I send to <b>' + benName + '</b>? Just type the amount \u2014 e.g. <b>5000</b>.');
+          }
+        }, 1500);
+        return;
+      }
+      // Bills
+      if (t.indexOf('electric') > -1 || t.indexOf('bill') > -1 || t.indexOf('ikedc') > -1 || t.indexOf('disco') > -1){
+        var bAmt = parseAmt(t, 5000);
+        askAuth({ type:'bill', amt:bAmt, biller:'IKEDC Prepaid' },
+          '\ud83e\uddfe <b>IKEDC Prepaid</b> \u00b7 Meter 0451 \u00b7\u00b7\u00b7 2290<div class="rcpt"><div><span>Amount</span><b>' + naira(bAmt) + '</b></div><div><span>Token to</span><b>0451 \u00b7\u00b7\u00b7 2290</b></div></div>');
+        return;
+      }
+      // Ajo / group savings
+      if (t.indexOf('ajo') > -1 || t.indexOf('group savings') > -1 || t.indexOf('esusu') > -1){
+        bot('\ud83d\udc65 <b>Ajo group savings</b><br>Create a savings circle, invite members, and Zitch auto-collects each round and pays out on schedule \u2014 every contribution PIN-approved. <i>Reply</i> <b>create ajo</b> <i>to set one up.</i>');
+        return;
+      }
+      if (/^(hi|hello|hey)\b/.test(t)){ bot('Hi Adaeze \ud83d\udc4b I\'m Zitch on WhatsApp. Try <b>send 5k to my brother John</b>, paste <b>send 5000 to 7066737466 opay</b>, or tap <b>Choose service</b>.'); return; }
       if (t.indexOf('balance') > -1 || t === '1'){ bot('\ud83d\udcbc Your wallets:<br>NGN ' + naira(st.bal) + ' \u00b7 USD $' + st.usd.toFixed(2) + ' \u00b7 GBP \u00a3' + st.gbp.toFixed(2)); return; }
       if (t.indexOf('rate') > -1){ bot('\ud83d\udcb1 Today\'s rates:<br>\ud83c\uddfa\ud83c\uddf8 $1 = \u20a61,485.20<br>\ud83c\uddec\ud83c\udde7 \u00a31 = \u20a61,872.45<br>\ud83c\udde8\ud83c\udde6 C$1 = \u20a61,082.10<br>\ud83c\udde8\ud83c\uddf3 \u00a51 = \u20a6206.84 <i>(quotes only)</i>'); return; }
       if (t.indexOf('send') > -1 || t === '2'){
@@ -1120,9 +1352,10 @@
         return;
       }
       if (t.indexOf('airtime') > -1 || t.indexOf('data') > -1 || t === '3'){
-        var a = parseAmt(t, 1000);
-        askAuth({ type: 'airtime', amt: a },
-          'MTN <b>' + naira(a) + '</b> airtime to <b>0803 \u00b7\u00b7\u00b7 4421</b> (your linked number).');
+        var isData = t.indexOf('data') > -1;
+        var a = parseAmt(t, isData ? 1500 : 1000);
+        askAuth({ type: 'airtime', amt: a, label: isData ? 'MTN data bundle' : 'MTN airtime' },
+          'MTN <b>' + naira(a) + (isData ? ' data bundle' : ' airtime') + '</b> to <b>0803 \u00b7\u00b7\u00b7 4421</b> (your linked number).');
         return;
       }
       if (t.indexOf('convert') > -1 || t.indexOf('dollar') > -1 || t.indexOf('usd') > -1 || t === '4'){
@@ -1138,7 +1371,7 @@
     input.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ handle(input.value); input.value = ''; } });
     renderChips();
     setTimeout(function(){
-      bot('Hi Adaeze \ud83d\udc4b This is the <b>real Zitch flow</b> in demo mode \u2014 send money, buy airtime, check balance or convert currency, right from chat. Pay with <b>Fingerprint</b>, <b>Face ID</b> or <b>PIN</b>, and get an instant receipt. Try <b>send 5k to my brother John</b> \u2728', 900);
+      bot('Hi Adaeze \ud83d\udc4b This is the <b>real Zitch flow</b> in demo mode. Type it, <b>paste it</b>, or tap <b>Choose service</b> \u2014 e.g. paste <b>send 5000 to 7066737466 opay</b> and I\'ll find the account; then approve with <b>Fingerprint</b>, <b>Face ID</b> or <b>PIN</b> for an instant receipt. \u2728', 900);
     }, 600);
   })();
 </script>
