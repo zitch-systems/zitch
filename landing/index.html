@@ -280,6 +280,10 @@
   .msg .rcpt div b{color:#02344A;font-weight:600;}
   .msg .tick .ck{color:#53BDEB;font-style:normal;}
   .msg i{color:#667781;font-size:11.5px;}
+  .chat-note{align-self:center;text-align:center;margin:3px auto;max-width:92%;}
+  .chat-note.date{background:#E1F3FB;color:#54656F;font-size:11px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;padding:5px 13px;border-radius:8px;box-shadow:0 1px .5px rgba(11,20,26,.13);}
+  .chat-note.enc{display:inline-flex;align-items:center;gap:6px;justify-content:center;background:#FCF4CB;color:#54656F;font-size:10.5px;line-height:1.5;padding:7px 13px;border-radius:8px;box-shadow:0 1px .5px rgba(11,20,26,.1);}
+  .chat-note.enc svg{flex-shrink:0;opacity:.65;}
   /* live WhatsApp demo */
   .wa-live{display:inline-flex;align-items:center;gap:8px;background:rgba(37,211,102,.12);border:1px solid rgba(37,211,102,.38);color:#9FE8BC;font-size:12.5px;font-weight:600;padding:8px 15px;border-radius:999px;margin-bottom:14px;font-family:var(--disp);}
   .wa-live .live{width:8px;height:8px;border-radius:50%;background:var(--wa);box-shadow:0 0 0 3px rgba(37,211,102,.3);}
@@ -317,8 +321,8 @@
   .chat-input .snd{width:44px;height:44px;border-radius:50%;background:#00A884;border:none;display:grid;place-items:center;color:#fff;cursor:pointer;flex-shrink:0;transition:background .15s;}
   .chat-input .snd:hover{background:#02bd97;}
   .wa-feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:8px;}
-  .wa-feat{display:flex;gap:16px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);border-radius:17px;padding:17px 19px;transition:background .2s,border-color .2s;}
-  .wa-feat:hover{background:rgba(255,255,255,.08);border-color:rgba(92,245,235,.3);}
+  .wa-feat{display:flex;gap:16px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);border-radius:17px;padding:17px 19px;transition:background .2s,border-color .2s,transform .25s;}
+  .wa-feat:hover{background:rgba(255,255,255,.08);border-color:rgba(92,245,235,.3);transform:perspective(900px) translateY(-3px) rotateX(4deg);}
   .wa-feat .ic{width:42px;height:42px;border-radius:12px;background:rgba(92,245,235,.12);display:grid;place-items:center;color:var(--cyan);flex-shrink:0;}
   .wa-feat h4{font-family:var(--disp);font-size:16px;} .wa-feat p{font-size:13.5px;color:#A9C6CF;line-height:1.58;margin-top:4px;}
   .wa-cta{display:flex;gap:14px;margin-top:28px;flex-wrap:wrap;justify-content:center;}
@@ -332,7 +336,7 @@
   #services .wrap{position:relative;z-index:1;}
   .svc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;}
   .svc{position:relative;background:var(--card);border:1px solid var(--line);border-radius:19px;padding:26px 22px;transition:border-color .18s,transform .18s,box-shadow .18s;}
-  .svc:hover{border-color:var(--teal);transform:translateY(-4px);box-shadow:var(--shadow);}
+  .svc:hover{border-color:var(--teal);transform:perspective(800px) translateY(-5px) rotateX(5deg);box-shadow:var(--shadow);}
   .svc .ic{width:44px;height:44px;border-radius:13px;background:var(--mint);display:grid;place-items:center;color:var(--teal-deep);margin-bottom:17px;transition:background .18s,color .18s;}
   .svc:hover .ic{background:var(--teal-deep);color:#fff;}
   .svc h4{font-family:var(--disp);font-size:16.5px;color:var(--head);}
@@ -453,7 +457,9 @@
     .nav-cta .btn-teal{height:42px;padding:0 18px;font-size:14px;}
     .thm{width:42px;height:42px;} .burger{width:42px;height:42px;}
     .hero-in{padding-top:52px;padding-bottom:64px;gap:44px;}
-    .hero p.lead{font-size:16.5px;}
+    .hero h1{font-size:clamp(30px,6.4vw,42px);line-height:1.08;}
+    .hero p.lead{font-size:15.5px;}
+    .sec-head h2{font-size:clamp(26px,4.8vw,34px);}
     .demo-duo{gap:40px;}
     .phone,.chat-zone,.chat-zone .phone{width:min(392px,100%);}
     .chat-zone .chat-body{height:min(537px,118vw);}
@@ -471,8 +477,11 @@
   /* ---- mobile ---- */
   @media (max-width:480px){
     .wrap{padding-left:18px;padding-right:18px;}
-    .hero h1{font-size:clamp(31px,9.4vw,40px);}
-    .hero p.lead{font-size:15.5px;margin-bottom:26px;}
+    .hero h1{font-size:clamp(25px,7vw,31px);line-height:1.12;}
+    .hero p.lead{font-size:14.5px;margin-bottom:24px;}
+    .sec-head h2{font-size:23px;line-height:1.16;}
+    .sec-head p{font-size:14.5px;}
+    .eyebrow{font-size:11.5px;}
     .hero-ctas{flex-direction:column;align-items:stretch;}
     .hero-ctas .store,.hero-ctas .btn-wa{width:100%;justify-content:center;}
     .hero-note{flex-direction:column;gap:8px;}
@@ -490,7 +499,7 @@
   }
   /* ---- fold cover screens ---- */
   @media (max-width:340px){
-    .hero h1{font-size:29px;}
+    .hero h1{font-size:25px;}
     .stat .n{font-size:24px;}
     .chat-zone .chat-body{height:108vw;}
     .msg{max-width:92%;}
@@ -514,7 +523,8 @@
   .ways .wrap{position:relative;z-index:1;}
   .ways .sec-head{margin-left:auto;margin-right:auto;text-align:center;}
   .ways-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
-  .way{position:relative;border-radius:var(--rl);padding:34px 32px;border:1px solid var(--line);background:var(--card);box-shadow:var(--shadow);display:flex;flex-direction:column;}
+  .way{position:relative;border-radius:var(--rl);padding:34px 32px;border:1px solid var(--line);background:var(--card);box-shadow:var(--shadow);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.22,1,.36,1),box-shadow .3s;}
+  .way:hover{transform:perspective(1200px) translateY(-5px) rotateX(2.5deg);box-shadow:var(--shadow-lg);}
   .way.wa{background:linear-gradient(162deg,#0B141A 0%,#0E2A20 100%);border-color:rgba(37,211,102,.32);color:#fff;}
   .way-top{display:flex;align-items:center;gap:14px;margin-bottom:16px;}
   .way-ic{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;flex-shrink:0;}
@@ -1123,6 +1133,7 @@
     function ref(){ return 'ZTC-' + Math.floor(88000 + Math.random() * 9000) + '-' + 'AKXTBQ'.charAt(Math.floor(Math.random() * 6)) + 'KQZRMN'.charAt(Math.floor(Math.random() * 6)); }
     function cap(s){ return s.charAt(0).toUpperCase() + s.slice(1); }
     function scrollDown(){ body.scrollTop = body.scrollHeight; }
+    function note(cls, html){ var d = document.createElement('div'); d.className = 'chat-note ' + cls; d.innerHTML = html; body.appendChild(d); scrollDown(); }
 
     function addMsg(who, content, isHTML){
       var d = document.createElement('div'); d.className = 'msg ' + who;
@@ -1353,6 +1364,8 @@
     send.addEventListener('click', function(){ handle(input.value); input.value = ''; input.focus(); });
     input.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ handle(input.value); input.value = ''; } });
     renderChips();
+    note('date', 'Today');
+    note('enc', '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Messages are end-to-end encrypted. No one outside this chat can read or listen to them.');
     setTimeout(function(){
       bot('Hi Adaeze \ud83d\udc4b This is the <b>real Zitch flow</b> in demo mode. Type it, <b>paste it</b>, or tap <b>Choose service</b> \u2014 e.g. paste <b>send 5000 to 9011223344 opay</b> and I\'ll find the account; then approve with <b>Fingerprint</b>, <b>Face ID</b> or <b>PIN</b> for an instant receipt. \u2728', 900);
     }, 600);
