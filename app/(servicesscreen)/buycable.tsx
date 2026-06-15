@@ -13,9 +13,9 @@ import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
 const PROVIDERS = [
-  { id: '1', name: 'GoTV', color: '#92C020' },
-  { id: '2', name: 'DSTV', color: '#0A66C2' },
-  { id: '3', name: 'StarTimes', color: '#F47B20' },
+  { id: '1', name: 'GoTV', color: '#92C020', logo: require('@/assets/images/providers/gotv.png') },
+  { id: '2', name: 'DSTV', color: '#0A66C2', logo: require('@/assets/images/providers/dstv.png') },
+  { id: '3', name: 'StarTimes', color: '#F47B20', logo: require('@/assets/images/providers/startimes.png') },
 ];
 
 type Step = null | 'confirm' | 'pin';

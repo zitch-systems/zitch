@@ -11,10 +11,10 @@ import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
 const NETWORKS = [
-  { id: '1', name: 'MTN', color: '#FFCC00' },
-  { id: '2', name: 'GLO', color: '#2BB24C' },
-  { id: '3', name: 'Airtel', color: '#E40000' },
-  { id: '4', name: '9mobile', color: '#0A8A3D' },
+  { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
+  { id: '2', name: 'GLO', color: '#2BB24C', logo: require('@/assets/images/providers/glo.png') },
+  { id: '3', name: 'Airtel', color: '#E40000', logo: require('@/assets/images/providers/airtel.png') },
+  { id: '4', name: '9mobile', color: '#0A8A3D', logo: require('@/assets/images/providers/9mobile.png') },
 ];
 
 type Step = null | 'confirm' | 'pin';

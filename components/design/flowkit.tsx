@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Image } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
@@ -83,7 +83,7 @@ export const ProviderGrid = ({
   onPick,
   cols = 4,
 }: {
-  items: { id: string; name: string; color: string }[];
+  items: { id: string; name: string; color: string; logo?: any }[];
   value: string;
   onPick: (id: string) => void;
   cols?: number;
@@ -100,9 +100,15 @@ export const ProviderGrid = ({
               onPress={() => onPick(it.id)}
               style={{ alignItems: 'center', gap: 7, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
             >
-              <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: it.color, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 14 }}>{initials}</Text>
-              </View>
+              {it.logo ? (
+                <View style={{ width: '100%', height: 46, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 }}>
+                  <Image source={it.logo} resizeMode="contain" style={{ width: '100%', height: 32 }} />
+                </View>
+              ) : (
+                <View style={{ width: 42, height: 42, borderRadius: 12, backgroundColor: it.color, alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 14 }}>{initials}</Text>
+                </View>
+              )}
               <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{it.name}</Text>
               {on && (
                 <View style={{ position: 'absolute', top: 6, right: 6, width: 16, height: 16, borderRadius: 9, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
