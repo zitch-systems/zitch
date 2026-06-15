@@ -129,6 +129,29 @@
   .hero::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 56% 64% at 72% 36%,rgba(35,177,168,.16),transparent 70%),radial-gradient(ellipse 42% 48% at 4% 90%,rgba(92,245,235,.2),transparent 70%),radial-gradient(ellipse 30% 36% at 92% 88%,rgba(2,52,74,.08),transparent 70%);pointer-events:none;}
   .hero::after{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(0,132,123,.16) 1.2px,transparent 1.3px);background-size:26px 26px;-webkit-mask-image:radial-gradient(ellipse 55% 65% at 14% 22%,#000 0%,transparent 72%);mask-image:radial-gradient(ellipse 55% 65% at 14% 22%,#000 0%,transparent 72%);pointer-events:none;}
   .hero-rib{position:absolute;right:-150px;top:-100px;width:580px;opacity:.12;transform:rotate(12deg);pointer-events:none;}
+  /* ===== animated 3D background (hero) ===== */
+  .hero-3d{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:0;}
+  .hero-3d span{position:absolute;display:block;}
+  .hero-3d .orb{border-radius:50%;}
+  .hero-3d .orb1{width:140px;height:140px;left:5%;top:24%;background:radial-gradient(circle at 35% 30%,rgba(92,245,235,.45),rgba(35,177,168,.16) 58%,transparent 72%);}
+  .hero-3d .orb2{width:104px;height:104px;right:8%;top:58%;background:radial-gradient(circle at 35% 30%,rgba(35,177,168,.4),rgba(0,132,123,.14) 58%,transparent 72%);}
+  .hero-3d .coin{border-radius:20px;background:linear-gradient(145deg,rgba(92,245,235,.5),rgba(0,132,123,.32));border:1px solid rgba(255,255,255,.45);box-shadow:0 20px 44px -18px rgba(0,132,123,.5);}
+  .hero-3d .coin1{width:78px;height:78px;left:13%;top:60%;}
+  .hero-3d .coin2{width:60px;height:60px;right:15%;top:16%;border-radius:16px;}
+  .hero-3d .coin3{width:48px;height:48px;left:46%;top:7%;border-radius:14px;}
+  .hero-in{z-index:1;}
+  @media (prefers-reduced-motion:no-preference){
+    .hero-3d .orb1{animation:drift1 15s ease-in-out infinite;}
+    .hero-3d .orb2{animation:drift2 19s ease-in-out infinite;}
+    .hero-3d .coin1{animation:spin3d 13s linear infinite,bob 7s ease-in-out infinite;}
+    .hero-3d .coin2{animation:spin3dr 16s linear infinite,bob 9s ease-in-out infinite;}
+    .hero-3d .coin3{animation:spin3d 19s linear infinite,bob 8s ease-in-out infinite;}
+    @keyframes spin3d{from{transform:perspective(700px) rotateY(0deg) rotateX(12deg);}to{transform:perspective(700px) rotateY(360deg) rotateX(12deg);}}
+    @keyframes spin3dr{from{transform:perspective(700px) rotateY(360deg) rotateX(-10deg);}to{transform:perspective(700px) rotateY(0deg) rotateX(-10deg);}}
+    @keyframes bob{0%,100%{margin-top:0;}50%{margin-top:-20px;}}
+    @keyframes drift1{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(32px,-24px) scale(1.06);}}
+    @keyframes drift2{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(-26px,18px) scale(1.05);}}
+  }
   .hero-in{display:flex;flex-direction:column;gap:40px;padding-top:64px;padding-bottom:104px;position:relative;}
   .hero-copy{max-width:820px;margin:0 auto;text-align:center;}
   .hero h1{font-family:var(--disp);font-size:clamp(40px,4.8vw,66px);line-height:1.04;font-weight:700;letter-spacing:-.022em;color:var(--head);text-wrap:balance;}
@@ -717,6 +740,7 @@
 
 <section class="hero" data-screen-label="Hero">
   <img class="hero-rib" src="assets/brand/zitch-ribbon2.png" alt="" />
+  <div class="hero-3d" aria-hidden="true"><span class="orb orb1"></span><span class="orb orb2"></span><span class="coin coin1"></span><span class="coin coin2"></span><span class="coin coin3"></span></div>
   <div class="wrap hero-in">
     <div class="hero-copy">
       <span class="eyebrow">Bank on WhatsApp · or get the app</span>
