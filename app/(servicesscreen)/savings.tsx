@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, ActivityIndicator, Pressable, RefreshControl, ScrollView } from 'react-native';
+import { View, Text, Pressable, RefreshControl, ScrollView } from 'react-native';
+import { Loading } from '@/components/design/Loading';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiJson } from '@/lib/api';
@@ -135,7 +136,7 @@ const MySavings = () => {
       <Screen scroll={false}>
         {header}
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator color={c.brand} />
+          <Loading full={false} />
         </View>
       </Screen>
     );
