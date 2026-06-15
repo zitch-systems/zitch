@@ -6,8 +6,8 @@ aggregator -> mark the row Successful, or refund on failure.
 from decimal import Decimal, InvalidOperation
 
 from common.http import (
-    api, fail, idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
-    spend_key, verify_transaction_pin,
+    api, check_daily_limit, fail, idempotent_replay, ok, parse_amount, provider_purchase_response,
+    require_user, spend_key, verify_transaction_pin,
 )
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
@@ -42,6 +42,10 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
     replay = idempotent_replay(existing_for_key(user, idempotency_key))
     if replay:
         return replay
+    # Daily bill cap (after replay so a retried purchase replays cleanly).
+    daily_err = check_daily_limit(user, amount, "bill")
+    if daily_err:
+        return daily_err
     try:
         return run_provider_purchase(user, amount, service, meta, provider_call,
                                      idempotency_key=idempotency_key)

@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.utils import timezone
 
-from common.http import evaluate_transaction_pin, send_limit_error
+from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_error
 from transfers.models import Bank
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
@@ -254,7 +254,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         amount = parse_amount(text)
         if amount is None or amount < 10:
             return reply(msisdn, "Please enter a valid amount, at least ₦10 (e.g. 5000 or 5k).")
-        limit_msg = send_limit_error(user, amount)
+        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)
@@ -414,7 +414,7 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
     if amount < 10:
         reply(msisdn, "Minimum transfer is ₦10.")
         return True
-    limit_msg = send_limit_error(user, amount)
+    limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
     if limit_msg:
         reply(msisdn, limit_msg)
         return True
@@ -465,6 +465,10 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
              provider_call, success_line) -> None:
     """Debit -> provider -> settle via the shared run_provider_purchase, then
     reply with the receipt / processing / failure line."""
+    bill_limit_msg = daily_limit_error(user, amount, "bill")
+    if bill_limit_msg:
+        _clear_actions(msisdn)
+        return reply(msisdn, bill_limit_msg)
     try:
         status, txn, result = run_provider_purchase(
             user, amount, label, pa.payload.get("meta", {}), provider_call,
@@ -512,7 +516,7 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Enter a valid amount, at least ₦50.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, amount)
+        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)
@@ -640,7 +644,7 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
             return reply(msisdn, "Enter a valid amount, at least ₦100.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, amount)
+        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)
