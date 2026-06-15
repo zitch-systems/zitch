@@ -4,6 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
+import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money, NText } from '@/components/design/ui';
@@ -88,11 +89,14 @@ const Kyc = () => {
   const pickNinSlip = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your NIN slip.'); return; }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
-    });
-    if (res.canceled || !res.assets?.[0]?.base64) return;
-    setNinImage(res.assets[0].base64);
+    beginExternalActivity(); // don't let the app-lock fire while the picker is up
+    try {
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
+      });
+      if (res.canceled || !res.assets?.[0]?.base64) return;
+      setNinImage(res.assets[0].base64);
+    } finally { endExternalActivity(); }
   };
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
@@ -100,9 +104,13 @@ const Kyc = () => {
   const verifySelfie = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
-    const shot = await ImagePicker.launchCameraAsync({
-      cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
-    });
+    beginExternalActivity(); // keep the app-lock from firing while the camera is up
+    let shot;
+    try {
+      shot = await ImagePicker.launchCameraAsync({
+        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
+      });
+    } finally { endExternalActivity(); }
     if (shot.canceled || !shot.assets?.[0]?.base64) return;
     submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Selfie');
   };

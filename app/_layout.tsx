@@ -9,7 +9,7 @@ import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, manropeFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
-import { enforceIdleTimeout, isSessionLocked, lockSession } from "@/lib/session";
+import { enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
 
 // Default every Text/TextInput to Manrope so nothing can fall back to the
@@ -65,14 +65,18 @@ const _layout = () => {
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
+      await lockIfAwayTooLong(); // re-lock only if backgrounded >= 1 min
       await enforceIdleTimeout();
       if (await isSessionLocked()) router.replace("/signin");
     };
     check();
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "background") {
-        // Leaving the app locks the session so the next open re-authenticates.
-        getToken().then((t) => { if (t) lockSession(); });
+        // Stamp the time we left so we can re-lock on return ONLY if the user
+        // was away at least a minute. Skip while an in-app picker/camera is up,
+        // so uploading a photo never bounces to the unlock screen.
+        if (isExternalActivityActive()) return;
+        getToken().then((t) => { if (t) markBackgrounded(); });
       } else if (s === "active") {
         check();
       }
