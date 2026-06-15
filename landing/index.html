@@ -129,7 +129,7 @@
   .hero::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 56% 64% at 72% 36%,rgba(35,177,168,.16),transparent 70%),radial-gradient(ellipse 42% 48% at 4% 90%,rgba(92,245,235,.2),transparent 70%),radial-gradient(ellipse 30% 36% at 92% 88%,rgba(2,52,74,.08),transparent 70%);pointer-events:none;}
   .hero::after{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(0,132,123,.16) 1.2px,transparent 1.3px);background-size:26px 26px;-webkit-mask-image:radial-gradient(ellipse 55% 65% at 14% 22%,#000 0%,transparent 72%);mask-image:radial-gradient(ellipse 55% 65% at 14% 22%,#000 0%,transparent 72%);pointer-events:none;}
   .hero-rib{position:absolute;right:-150px;top:-100px;width:580px;opacity:.12;transform:rotate(12deg);pointer-events:none;}
-  .hero-in{display:flex;flex-direction:column;gap:64px;padding-top:84px;padding-bottom:104px;position:relative;}
+  .hero-in{display:flex;flex-direction:column;gap:40px;padding-top:64px;padding-bottom:104px;position:relative;}
   .hero-copy{max-width:820px;margin:0 auto;text-align:center;}
   .hero h1{font-family:var(--disp);font-size:clamp(40px,4.8vw,66px);line-height:1.04;font-weight:700;letter-spacing:-.022em;color:var(--head);text-wrap:balance;}
   .hero h1 .tl{color:var(--teal);}
@@ -221,38 +221,38 @@
   .wa-grid{position:relative;z-index:1;text-align:center;}
   .wa .sec-head{margin-left:auto;margin-right:auto;}
   .wa-feat{text-align:left;}
-  .chat{background:#0B141A;color:#E9EDEF;border-radius:28px;border:1px solid rgba(255,255,255,.09);overflow:hidden;box-shadow:0 50px 100px -36px rgba(0,0,0,.6);max-width:440px;}
-  .chat-top{display:flex;align-items:center;gap:12px;background:#1F2C33;padding:14px 17px;}
-  .chat-top .av{width:40px;height:40px;border-radius:50%;background:var(--teal);display:grid;place-items:center;}
+  .chat{background:#fff;color:#111B21;border-radius:28px;border:1px solid #E2E5E9;overflow:hidden;box-shadow:0 50px 100px -36px rgba(2,52,74,.32);max-width:440px;}
+  .chat-top{display:flex;align-items:center;gap:12px;background:#008069;padding:14px 17px;}
+  .chat-top .av{width:40px;height:40px;border-radius:50%;background:#fff;display:grid;place-items:center;}
   .chat-top .av img{width:21px;height:auto;}
-  .chat-top .nm{font-weight:600;font-size:15px;font-family:var(--disp);} .chat-top .st{font-size:11.5px;color:#9DB8AF;margin-top:2px;}
-  .chat-body{padding:20px 15px 22px;display:flex;flex-direction:column;gap:10px;background:radial-gradient(circle at 30% 10%,rgba(35,177,168,.07),transparent 60%),#0B141A;}
-  .msg{max-width:84%;padding:10px 14px;border-radius:13px;font-size:13.5px;line-height:1.55;}
-  .msg.you{align-self:flex-end;background:#005C4B;border-bottom-right-radius:4px;}
-  .msg.bot{align-self:flex-start;background:#1F2C33;border-bottom-left-radius:4px;}
-  .msg .tick{display:block;text-align:right;font-size:10px;color:#7FB0BD;margin-top:5px;}
-  .msg b{color:var(--cyan);font-weight:600;}
-  .msg .rcpt{background:rgba(92,245,235,.07);border:1px solid rgba(92,245,235,.22);border-radius:10px;padding:9px 11px;margin-top:8px;font-size:12.5px;}
-  .msg .rcpt div{display:flex;justify-content:space-between;gap:20px;padding:2.5px 0;color:#C8DEE4;}
-  .msg .rcpt div b{color:#fff;font-weight:600;}
+  .chat-top .nm{font-weight:600;font-size:15px;font-family:var(--disp);color:#fff;} .chat-top .st{font-size:11.5px;color:rgba(255,255,255,.85);margin-top:2px;}
+  .chat-body{padding:20px 15px 22px;display:flex;flex-direction:column;gap:10px;background-color:#EFEAE2;background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20width%3D%27150%27%20height%3D%27150%27%20viewBox%3D%270%200%20150%20150%27%3E%3Cg%20fill%3D%27none%27%20stroke%3D%27%231d4d45%27%20stroke-opacity%3D%270.05%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M22%2034c-5-7-16-4-16%203%200%208%2016%2016%2016%2016s16-8%2016-16c0-7-11-10-16-3z%27/%3E%3Ccircle%20cx%3D%27118%27%20cy%3D%2730%27%20r%3D%2710%27/%3E%3Cpath%20d%3D%27M70%2018l3%207%208%201-6%205%201%208-6-4-6%204%201-8-6-5%208-1z%27/%3E%3Crect%20x%3D%2714%27%20y%3D%2796%27%20width%3D%2726%27%20height%3D%2718%27%20rx%3D%274%27/%3E%3Cpath%20d%3D%27M20%20114l-4%207%209-3%27/%3E%3Cpath%20d%3D%27M104%2092h26%27/%3E%3Cpath%20d%3D%27M124%2086l6%206-6%206%27/%3E%3Cpath%20d%3D%27M70%20118a8%208%200%201%200%2016%200%208%208%200%200%200-16%200z%27/%3E%3Cpath%20d%3D%27M74%20116v-9l8%202%27/%3E%3C/g%3E%3C/svg%3E");background-size:150px 150px;}
+  .msg{max-width:84%;padding:10px 14px;border-radius:13px;font-size:13.5px;line-height:1.55;color:#111B21;box-shadow:0 1px 0.5px rgba(11,20,26,.13);}
+  .msg.you{align-self:flex-end;background:#D9FDD3;border-bottom-right-radius:4px;}
+  .msg.bot{align-self:flex-start;background:#fff;border-bottom-left-radius:4px;}
+  .msg .tick{display:block;text-align:right;font-size:10px;color:#667781;margin-top:5px;}
+  .msg b{color:#008069;font-weight:600;}
+  .msg .rcpt{background:#F0F7F6;border:1px solid #D6E6E3;border-radius:10px;padding:9px 11px;margin-top:8px;font-size:12.5px;}
+  .msg .rcpt div{display:flex;justify-content:space-between;gap:20px;padding:2.5px 0;color:#4A5A60;}
+  .msg .rcpt div b{color:#02344A;font-weight:600;}
   .msg .tick .ck{color:#53BDEB;font-style:normal;}
-  .msg i{color:#8696A0;font-size:11.5px;}
+  .msg i{color:#667781;font-size:11.5px;}
   /* live WhatsApp demo */
   .wa-live{display:inline-flex;align-items:center;gap:8px;background:rgba(37,211,102,.12);border:1px solid rgba(37,211,102,.38);color:#9FE8BC;font-size:12.5px;font-weight:600;padding:8px 15px;border-radius:999px;margin-bottom:14px;font-family:var(--disp);}
   .wa-live .live{width:8px;height:8px;border-radius:50%;background:var(--wa);box-shadow:0 0 0 3px rgba(37,211,102,.3);}
-  .chat-top .top-ics{display:flex;gap:18px;color:#AEBAC1;align-items:center;}
-  .chat-body{height:460px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent;}
-  .chat-body::-webkit-scrollbar{width:6px;} .chat-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:99px;}
+  .chat-top .top-ics{display:flex;gap:18px;color:rgba(255,255,255,.92);align-items:center;}
+  .chat-body{height:460px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(2,52,74,.22) transparent;}
+  .chat-body::-webkit-scrollbar{width:6px;} .chat-body::-webkit-scrollbar-thumb{background:rgba(2,52,74,.18);border-radius:99px;}
   .typing{display:flex;gap:5px;align-items:center;padding:14px 15px;}
   .typing .dot{width:7px;height:7px;border-radius:50%;background:#8696A0;}
-  .chat-chips{display:flex;gap:8px;flex-wrap:wrap;padding:11px 13px 3px;background:#0B141A;border-top:1px solid rgba(255,255,255,.06);}
-  .chat-chips button{font-family:var(--body);font-size:12px;font-weight:600;color:var(--cyan);background:rgba(92,245,235,.08);border:1px solid rgba(92,245,235,.26);border-radius:999px;padding:7px 13px;cursor:pointer;transition:background .15s;}
-  .chat-chips button:hover{background:rgba(92,245,235,.18);}
+  .chat-chips{display:flex;gap:8px;flex-wrap:wrap;padding:11px 13px 3px;background:#F0F2F5;border-top:1px solid #E2E5E9;}
+  .chat-chips button{font-family:var(--body);font-size:12px;font-weight:600;color:#008069;background:#fff;border:1px solid #CFE3DF;border-radius:999px;padding:7px 13px;cursor:pointer;transition:background .15s;}
+  .chat-chips button:hover{background:#E7F3F0;}
   /* WA-style reply buttons inside a bubble */
-  .wabtns{margin-top:10px;border-top:1px solid rgba(255,255,255,.12);display:grid;}
-  .wabtns button{font-family:var(--body);font-size:13px;font-weight:600;color:#53BDEB;background:none;border:none;border-bottom:1px solid rgba(255,255,255,.08);padding:11px 6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .15s;}
+  .wabtns{margin-top:10px;border-top:1px solid #E6EBEC;display:grid;}
+  .wabtns button{font-family:var(--body);font-size:13px;font-weight:600;color:#008069;background:none;border:none;border-bottom:1px solid #EAEFF0;padding:11px 6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .15s;}
   .wabtns button:last-child{border-bottom:none;}
-  .wabtns button:hover{background:rgba(83,189,235,.08);}
+  .wabtns button:hover{background:rgba(0,128,105,.07);}
   .scan svg{color:#53BDEB;}
   /* receipt card (rendered like an attachment) */
   .receipt{background:#fff;color:#111B21;border-radius:12px;margin-top:9px;overflow:hidden;font-size:12.5px;min-width:230px;}
@@ -267,9 +267,9 @@
   .rc-rows b{color:#111B21;font-weight:600;text-align:right;}
   .rc-mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;}
   .rc-foot{border-top:1px dashed #D8E0E4;padding:8px 14px;color:#8696A0;font-size:10px;text-align:center;}
-  .chat-input{display:flex;align-items:center;gap:9px;padding:10px 13px 13px;background:#0B141A;}
-  .chat-input .field{flex:1;display:flex;align-items:center;gap:9px;background:#2A3942;border-radius:999px;padding:10px 16px;color:#8696A0;}
-  .chat-input input{flex:1;min-width:0;background:none;border:none;outline:none;color:#E9EDEF;font-family:var(--body);font-size:13.5px;}
+  .chat-input{display:flex;align-items:center;gap:9px;padding:10px 13px 13px;background:#F0F2F5;}
+  .chat-input .field{flex:1;display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #E2E5E9;border-radius:999px;padding:10px 16px;color:#667781;}
+  .chat-input input{flex:1;min-width:0;background:none;border:none;outline:none;color:#111B21;font-family:var(--body);font-size:13.5px;}
   .chat-input input::placeholder{color:#8696A0;}
   .chat-input .snd{width:44px;height:44px;border-radius:50%;background:#00A884;border:none;display:grid;place-items:center;color:#fff;cursor:pointer;flex-shrink:0;transition:background .15s;}
   .chat-input .snd:hover{background:#02bd97;}
@@ -1119,7 +1119,7 @@
         ]);
       } else {
         chipSet([{ l: '📋 Choose service', fn: serviceMenu }].concat(
-          ['send 5000 to 7066737466 opay', 'balance', 'airtime 1k', 'convert 100k to USD'].map(function(c){
+          ['send 5000 to 9011223344 opay', 'balance', 'airtime 1k', 'convert 100k to USD'].map(function(c){
             return { l: c, fn: function(){ handle(c); } };
           })
         ));
@@ -1204,11 +1204,11 @@
     function serviceMenu(){
       bot('\ud83d\udca1 <b>Choose a service</b> \u2014 tap one, or just type / paste what you want to do.' +
         '<div class="wabtns">' +
-        '<button type="button" data-svc="send 5000 to 7066737466 opay">\ud83d\udcb8 Transfer Money</button>' +
-        '<button type="button" data-svc="airtime 1000">\ud83d\udcf1 Airtime</button>' +
-        '<button type="button" data-svc="buy 2gb data">\ud83d\udcca Data</button>' +
-        '<button type="button" data-svc="pay electricity 5000">\ud83e\uddfe Bills Payment</button>' +
-        '<button type="button" data-svc="ajo">\ud83d\udc65 Ajo Group Savings</button>' +
+        '<button type="button" data-svc="send 5000 to 9011223344 opay"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg> Transfer Money</button>' +
+        '<button type="button" data-svc="airtime 1000"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><line x1="10" y1="18" x2="14" y2="18"/></svg> Airtime</button>' +
+        '<button type="button" data-svc="buy 2gb data"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a11 11 0 0 1 14 0"/><path d="M2 9a16 16 0 0 1 20 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg> Data</button>' +
+        '<button type="button" data-svc="pay electricity 5000"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Bills Payment</button>' +
+        '<button type="button" data-svc="ajo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> Ajo Group Savings</button>' +
         '</div>');
     }
     body.addEventListener('click', function(e){
@@ -1238,7 +1238,7 @@
         var BANKS = { opay:'OPay (PAYCOM)', moniepoint:'Moniepoint MFB', monie:'Moniepoint MFB', palmpay:'Palmpay', gtbank:'GTBank', gtb:'GTBank', access:'Access Bank', zenith:'Zenith Bank', uba:'UBA', kuda:'Kuda MFB', first:'First Bank', wema:'Wema Bank', fidelity:'Fidelity Bank', rubies:'Rubies MFB' };
         var bankName = 'OPay (PAYCOM)';
         Object.keys(BANKS).forEach(function(k){ if (t.indexOf(k) > -1) bankName = BANKS[k]; });
-        var benName = acct === '7066737466' ? 'Farida Yasmin Abubakar' : 'Verified Account Holder';
+        var benName = acct === '9011223344' ? 'Ada Okafor' : 'Verified Account Holder';
         var dv = addMsg('bot', '<span class="scan busy">' + IC.pin + '</span> Verifying beneficiary account\u2026', true);
         setTimeout(function(){
           var tk = dv.querySelector('.tick');
@@ -1268,7 +1268,7 @@
         bot('\ud83d\udc65 <b>Ajo group savings</b><br>Create a savings circle, invite members, and Zitch auto-collects each round and pays out on schedule \u2014 every contribution PIN-approved. <i>Reply</i> <b>create ajo</b> <i>to set one up.</i>');
         return;
       }
-      if (/^(hi|hello|hey)\b/.test(t)){ bot('Hi Adaeze \ud83d\udc4b I\'m Zitch on WhatsApp. Try <b>send 5k to my brother John</b>, paste <b>send 5000 to 7066737466 opay</b>, or tap <b>Choose service</b>.'); return; }
+      if (/^(hi|hello|hey)\b/.test(t)){ bot('Hi Adaeze \ud83d\udc4b I\'m Zitch on WhatsApp. Try <b>send 5k to my brother John</b>, paste <b>send 5000 to 9011223344 opay</b>, or tap <b>Choose service</b>.'); return; }
       if (t.indexOf('balance') > -1 || t === '1'){ bot('\ud83d\udcbc Your wallets:<br>NGN ' + naira(st.bal) + ' \u00b7 USD $' + st.usd.toFixed(2) + ' \u00b7 GBP \u00a3' + st.gbp.toFixed(2)); return; }
       if (t.indexOf('rate') > -1){ bot('\ud83d\udcb1 Today\'s rates:<br>\ud83c\uddfa\ud83c\uddf8 $1 = \u20a61,485.20<br>\ud83c\uddec\ud83c\udde7 \u00a31 = \u20a61,872.45<br>\ud83c\udde8\ud83c\udde6 C$1 = \u20a61,082.10<br>\ud83c\udde8\ud83c\uddf3 \u00a51 = \u20a6206.84 <i>(quotes only)</i>'); return; }
       if (t.indexOf('send') > -1 || t === '2'){
@@ -1300,12 +1300,18 @@
       menu();
     }
 
+    var userInteracted = false;
+    function markInteract(){ userInteracted = true; }
+    [body, chips, input, send].forEach(function(el){ if (el) el.addEventListener('click', markInteract); });
+    input.addEventListener('keydown', markInteract);
     send.addEventListener('click', function(){ handle(input.value); input.value = ''; input.focus(); });
     input.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ handle(input.value); input.value = ''; } });
     renderChips();
     setTimeout(function(){
-      bot('Hi Adaeze \ud83d\udc4b This is the <b>real Zitch flow</b> in demo mode. Type it, <b>paste it</b>, or tap <b>Choose service</b> \u2014 e.g. paste <b>send 5000 to 7066737466 opay</b> and I\'ll find the account; then approve with <b>Fingerprint</b>, <b>Face ID</b> or <b>PIN</b> for an instant receipt. \u2728', 900);
+      bot('Hi Adaeze \ud83d\udc4b This is the <b>real Zitch flow</b> in demo mode. Type it, <b>paste it</b>, or tap <b>Choose service</b> \u2014 e.g. paste <b>send 5000 to 9011223344 opay</b> and I\'ll find the account; then approve with <b>Fingerprint</b>, <b>Face ID</b> or <b>PIN</b> for an instant receipt. \u2728', 900);
     }, 600);
+    setTimeout(function(){ if (!userInteracted) handle('send 5000 to 9011223344 opay'); }, 3200);
+    setTimeout(function(){ if (!userInteracted && st.pending) authorize('finger'); }, 7000);
   })();
 </script>
 <style id="__om-edit-overrides"></style>
