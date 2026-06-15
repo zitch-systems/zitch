@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, ActivityIndicator } from 'react-native';
+import { View, Text } from 'react-native';
+import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
@@ -172,7 +173,7 @@ const BuyCable = () => {
 
       <Label>Choose a bouquet</Label>
       {loadingPlans ? (
-        <ActivityIndicator color={c.brand} style={{ marginVertical: 20 }} />
+        <Loading full={false} />
       ) : plans.length === 0 ? (
         <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No bouquets available.</Text>
       ) : (

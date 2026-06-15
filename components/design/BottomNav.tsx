@@ -45,15 +45,15 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
               {/* Active tab "lights up" with a highlighted pill behind the icon. */}
               <View
                 style={{
-                  paddingHorizontal: 14,
-                  paddingVertical: 5,
-                  borderRadius: 14,
+                  paddingHorizontal: 15,
+                  paddingVertical: 6,
+                  borderRadius: 15,
                   backgroundColor: on ? 'rgba(15,162,149,.14)' : 'transparent',
                 }}
               >
-                <ZIcon name={it.icon} size={22} color={on ? c.brand : c.ink3} stroke={on ? 2.1 : 1.7} />
+                <ZIcon name={it.icon} size={26} color={on ? c.brand : c.ink3} stroke={on ? 2.2 : 1.8} />
               </View>
-              <Text style={{ fontSize: 11, fontFamily: on ? font.semibold : font.medium, color: on ? c.brand : c.ink3 }}>
+              <Text style={{ fontSize: 11.5, fontFamily: on ? font.semibold : font.medium, color: on ? c.brand : c.ink3 }}>
                 {it.label}
               </Text>
             </Pressable>

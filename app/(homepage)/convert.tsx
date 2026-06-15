@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
+import { Loading } from '@/components/design/Loading';
 import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { apiJson } from '@/lib/api';
@@ -100,7 +101,7 @@ const Convert = () => {
 
           {loading ? (
             <Card style={{ alignItems: 'center', paddingVertical: 28 }}>
-              <ActivityIndicator color={c.brand} />
+              <Loading full={false} />
               <Text style={{ marginTop: 10, fontSize: 13, color: c.ink3, fontFamily: font.regular }}>Fetching live rates…</Text>
             </Card>
           ) : error ? (

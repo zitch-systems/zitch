@@ -17,7 +17,7 @@ import { getToken } from "@/lib/secureStore";
 // component's own style is merged after this default. On Android we also drop
 // the extra font padding the OS adds above/below glyphs — gives noticeably
 // crisper baseline alignment matching iOS.
-const textBase: { fontFamily: string; includeFontPadding?: boolean } = { fontFamily: font.regular };
+const textBase: { fontFamily: string; includeFontPadding?: boolean } = { fontFamily: font.medium };
 if (Platform.OS === 'android') textBase.includeFontPadding = false;
 const TextAny = RNText as any;
 const InputAny = RNTextInput as any;
