@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, Pressable } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
+import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
@@ -34,7 +35,7 @@ const Signin = () => {
 
   const handleBiometricSignin = async () => {
     if (!bioReady) {
-      Alert.alert('Biometric sign-in', 'Enable biometrics from Me → Face ID / Fingerprint after signing in with your password.');
+      notify('Biometric sign-in', 'Enable biometrics from Me → Face ID / Fingerprint after signing in with your password.');
       return;
     }
     const ok = await authenticate('Sign in to Zitch');
@@ -59,12 +60,12 @@ const Signin = () => {
   const handleSignin = async () => {
     setIsChecking(true);
     if (form.email.trim() === '') {
-      Alert.alert('Error', 'Email or phone cannot be empty');
+      notify('Error', 'Email or phone cannot be empty');
       setIsChecking(false);
       return;
     }
     if (form.password.trim() === '') {
-      Alert.alert('Error', 'Password cannot be empty');
+      notify('Error', 'Password cannot be empty');
       setIsChecking(false);
       return;
     }
@@ -83,10 +84,10 @@ const Signin = () => {
         await unlockSession(); // clear any idle lock + stamp activity
         router.replace('/home');
       } else {
-        Alert.alert('Error', result.message || 'Incorrect Details');
+        notify('Error', result.message || 'Incorrect Details');
       }
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsChecking(false);
     }

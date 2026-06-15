@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router } from 'expo-router';
+import { notify } from '@/components/design/Notify';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { getToken } from '@/lib/secureStore';
@@ -46,7 +47,7 @@ const AccountDetails = () => {
   const updatePhoto = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Permission needed', 'Allow photo access to update your picture.');
+      notify('Permission needed', 'Allow photo access to update your picture.');
       return;
     }
     const res = await ImagePicker.launchImageLibraryAsync({
@@ -67,10 +68,10 @@ const AccountDetails = () => {
         setAvatar(body.avatar);
         reloadWallet(); // refresh the photo shown on home/profile headers
       } else {
-        Alert.alert('Error', body.message || 'Could not update photo');
+        notify('Error', body.message || 'Could not update photo');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong uploading your photo.');
+      notify('Error', 'Something went wrong uploading your photo.');
     } finally {
       setUploadingPhoto(false);
     }
@@ -78,11 +79,11 @@ const AccountDetails = () => {
 
   const handleUpdate = async () => {
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
-      Alert.alert('Invalid email', 'Enter a valid email address.');
+      notify('Invalid email', 'Enter a valid email address.');
       return;
     }
     if (form.phone && form.phone.length !== 11) {
-      Alert.alert('Invalid phone', 'Enter a valid 11-digit phone number.');
+      notify('Invalid phone', 'Enter a valid 11-digit phone number.');
       return;
     }
     setIsUpdating(true);
@@ -97,12 +98,12 @@ const AccountDetails = () => {
       if (response.ok) {
         if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
         if (form.phone) await AsyncStorage.setItem('UserPhone', form.phone);
-        Alert.alert('Success', 'Account updated');
+        notify('Success', 'Account updated');
       } else {
-        Alert.alert('Error', result.message || 'Failed to update account');
+        notify('Error', result.message || 'Failed to update account');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsUpdating(false);
     }

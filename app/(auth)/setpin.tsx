@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken, saveTransactionPin } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
@@ -38,12 +39,12 @@ const SetPin = () => {
         // The account is already secured, so move on instead of getting stuck.
         router.replace('/completed');
       } else {
-        Alert.alert('Error', result.message || 'Could not set your PIN');
+        notify('Error', result.message || 'Could not set your PIN');
         setConfirm('');
         setSubmitting(false);
       }
     } catch (error) {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
       setConfirm('');
       setSubmitting(false);
     }

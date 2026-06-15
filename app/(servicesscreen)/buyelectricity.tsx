@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -49,7 +50,7 @@ const BuyElectricity = () => {
   const valid = meter.length >= 8 && amount >= 500;
 
   const validateMeter = async () => {
-    if (meter.trim().length < 8) { Alert.alert('Error', 'Enter a valid meter number.'); return; }
+    if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
     setValidating(true);
     try {
       const response = await apiPost('/api/utility/validate_meter/', { meter, disco, meter_type: meterType });
@@ -57,10 +58,10 @@ const BuyElectricity = () => {
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
       } else {
-        Alert.alert('Error', result.message || 'Could not verify meter number.');
+        notify('Error', result.message || 'Could not verify meter number.');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setValidating(false);
     }
@@ -91,11 +92,11 @@ const BuyElectricity = () => {
         setPinError(result.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         idemKey.current = '';  // definitive server failure — retry is a fresh attempt
-        Alert.alert('Error', result.message || 'Transaction failed');
+        notify('Error', result.message || 'Transaction failed');
         setStep(null);
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
       setStep(null);
     } finally {
       setBusy(false);

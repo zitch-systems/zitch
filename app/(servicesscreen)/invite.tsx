@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, Pressable, Share, Alert } from 'react-native';
+import { View, Text, Pressable, Share } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Screen, Header, Card, Btn } from '@/components/design/ui';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -34,7 +35,7 @@ const Invite = () => {
     try {
       await Share.share({ message });
     } catch {
-      Alert.alert('Error', 'Could not open the share sheet.');
+      notify('Error', 'Could not open the share sheet.');
     }
   };
 

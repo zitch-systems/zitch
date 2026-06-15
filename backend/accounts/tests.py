@@ -194,8 +194,25 @@ class KycTierTests(TestCase):
         self.assertNotIn("12345678901", u.bvn_hash)   # the plaintext isn't in the hash
         self.assertFalse(hasattr(u, "bvn"))            # the raw column no longer exists
 
+    def test_bvn_otp_flow(self):
+        # Redesigned flow: enter BVN -> code sent -> confirm code -> verified.
+        from django.core.cache import cache
+        r1, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        self.assertEqual(r1.status_code, 200)
+        code = cache.get(f"kyc_bvn:{self.user.id}")["code"]
+        r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": code})
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(body["tier"], 2)  # BVN verified -> tier 2
+        self.assertTrue(User.objects.get(pk=self.user.pk).bvn_verified)
+
+    def test_bvn_otp_rejects_wrong_code(self):
+        self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        r, _ = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
+
     def test_bvn_rejects_bad_format(self):
-        res, _ = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "123"})
+        res, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "123"})
         self.assertEqual(res.status_code, 400)
 
     def test_face_verification_sets_durable_flag(self):

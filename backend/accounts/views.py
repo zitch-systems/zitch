@@ -2,6 +2,7 @@ import logging
 import secrets
 from datetime import timedelta
 
+from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
@@ -9,7 +10,9 @@ from common.http import api, fail, ok, require_user, resolve_token
 from common.ratelimit import client_ip, ratelimit
 
 log = logging.getLogger("zitch.security")
-from utility.providers import kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, send_email, send_sms
+from utility.providers import (
+    kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, kyc_verify_nin_document, send_email, send_sms,
+)
 from wallet.services import get_or_create_wallet
 
 from .models import OTP, AccessToken, User
@@ -393,6 +396,54 @@ def kyc_status(request):
     return ok(success=True, **_kyc_state(request.user_obj))
 
 
+_KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid
+
+
+@api
+@require_user
+def kyc_bvn_start(request):
+    """POST /api/kyc/bvn/start {access_token, bvn}
+
+    Data-matches the BVN, then sends a one-time code (SMS + email) the user must
+    confirm to prove ownership before the BVN counts. When the Prembly plan
+    exposes native BVN-OTP to the BVN-registered phone, swap it in here
+    (verify-before-live).
+    """
+    user = request.user_obj
+    bvn = (request.data.get("bvn") or "").strip()
+    result = kyc_verify_bvn(bvn)
+    if not result.get("success"):
+        return fail(result.get("message", "BVN verification failed"), status=400)
+    code = _otp_code()
+    cache.set(f"kyc_bvn:{user.id}", {"code": code, "bvn": bvn}, _KYC_BVN_TTL)
+    msg = f"Your Zitch BVN verification code is {code}"
+    send_sms(user.phone or "", msg)
+    if user.email:
+        send_email(user.email, "Your Zitch BVN code", msg)
+    return ok(success=True, otp_required=True,
+              message="We sent a verification code to your phone and email.")
+
+
+@api
+@require_user
+def kyc_bvn_confirm(request):
+    """POST /api/kyc/bvn/confirm {access_token, otp} — confirm the BVN code and
+    mark the BVN verified."""
+    user = request.user_obj
+    otp = (request.data.get("otp") or "").strip()
+    pending = cache.get(f"kyc_bvn:{user.id}")
+    if not pending:
+        return fail("Your code expired — start BVN verification again", status=400)
+    if otp != pending["code"]:
+        return fail("Incorrect code", status=400)
+    cache.delete(f"kyc_bvn:{user.id}")
+    user.set_bvn(pending["bvn"])
+    user.bvn_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
+    return ok(success=True, message="BVN verified", **_kyc_state(user))
+
+
 @api
 @require_user
 def kyc_bvn(request):
@@ -418,6 +469,12 @@ def kyc_nin(request):
     result = kyc_verify_nin(nin)
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
+    # The redesigned flow also uploads the NIN slip/ID image; verify it when sent.
+    image = request.data.get("nin_image") or ""
+    if image:
+        doc = kyc_verify_nin_document(image)
+        if not doc.get("success"):
+            return fail(doc.get("message", "Couldn't verify your NIN document"), status=400)
     user.set_nin(nin)
     user.nin_verified = True
     user.recompute_tier()

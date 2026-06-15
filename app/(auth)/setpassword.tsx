@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, Link } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { notify } from '@/components/design/Notify';
 import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -40,7 +41,7 @@ const SetPassword = () => {
 
   const handleUpdate = async () => {
     if (!tally) {
-      Alert.alert('Error', 'Passwords do not match');
+      notify('Error', 'Passwords do not match');
       return;
     }
     setIsUpdating(true);
@@ -50,10 +51,10 @@ const SetPassword = () => {
       if (response.ok) {
         router.replace('/setpin');
       } else {
-        Alert.alert('Error', result.message || 'Could not set your password');
+        notify('Error', result.message || 'Could not set your password');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsUpdating(false);
     }

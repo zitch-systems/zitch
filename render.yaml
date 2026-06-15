@@ -30,7 +30,12 @@ services:
           name: zitch-db
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
-      # Payments — Monnify.
+      # Payments — Monnify. MONNIFY_BASE_URL MUST match your keys' environment —
+      # live: https://api.monnify.com, test: https://sandbox.monnify.com. It
+      # defaults to sandbox in code, so a live deploy MUST set this or funding
+      # fails with an auth/contract error.
+      - key: MONNIFY_BASE_URL
+        sync: false
       - key: MONNIFY_API_KEY
         sync: false
       - key: MONNIFY_SECRET_KEY

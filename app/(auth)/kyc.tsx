@@ -1,7 +1,8 @@
 import React, { useCallback, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
@@ -33,10 +34,13 @@ const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: str
 
 const Kyc = () => {
   const { c } = useTheme();
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
   const [bvn, setBvn] = useState('');
+  const [bvnOtp, setBvnOtp] = useState('');
+  const [bvnSent, setBvnSent] = useState(false);
   const [nin, setNin] = useState('');
+  const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -54,29 +58,53 @@ const Kyc = () => {
     setBusy(true);
     try {
       const res = await apiJson(path, body);
-      if (res.success) { setStatus(res); Alert.alert('Success', `${label} verified`); }
-      else Alert.alert('Error', res.message || `${label} verification failed`);
-    } catch { Alert.alert('Error', 'Something went wrong.'); }
+      if (res.success) { setStatus(res); notify('Success', `${label} verified`); }
+      else notify('Error', res.message || `${label} verification failed`);
+    } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
 
-  // Capture a live selfie and send it for server-side liveness verification.
-  // The backend gates large transfers on the result, so a real image (not a
-  // device-unlock claim) is what clears it.
-  const verifyFace = async () => {
+  // --- BVN: enter number -> we send a one-time code -> confirm it ---
+  const startBvn = async () => {
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/kyc/bvn/start/', { bvn });
+      if (res.success) { setBvnSent(true); notify('Code sent', 'Enter the code we sent to your phone and email.'); }
+      else notify('Error', res.message || 'Could not start BVN verification');
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+  const confirmBvn = async () => {
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/kyc/bvn/confirm/', { otp: bvnOtp });
+      if (res.success) { setStatus(res); setBvnSent(false); setBvn(''); setBvnOtp(''); notify('Success', 'BVN verified'); }
+      else notify('Error', res.message || 'Incorrect code');
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+
+  // --- NIN: number + a photo of the NIN slip ---
+  const pickNinSlip = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your NIN slip.'); return; }
+    const res = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
+    });
+    if (res.canceled || !res.assets?.[0]?.base64) return;
+    setNinImage(res.assets[0].base64);
+  };
+
+  // --- Selfie: a real captured image for server-side liveness (NOT device
+  // Face ID — KYC must match a face, which the device unlock can't prove). ---
+  const verifySelfie = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Camera needed', 'Allow camera access so we can verify your identity.');
-      return;
-    }
+    if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
     const shot = await ImagePicker.launchCameraAsync({
-      cameraType: ImagePicker.CameraType.front,
-      base64: true,
-      quality: 0.4,
-      allowsEditing: false,
+      cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
     });
     if (shot.canceled || !shot.assets?.[0]?.base64) return;
-    submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Face');
+    submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Selfie');
   };
 
   return (
@@ -96,24 +124,38 @@ const Kyc = () => {
         </View>
       )}
 
-      <KycRow icon="bank" title="BVN" sub="Bank Verification Number" done={!!status?.bvn_verified}>
-        <Field value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit BVN" />
-        <View style={{ height: 10 }} />
-        <Btn label="Verify BVN" size="md" disabled={busy || bvn.length !== 11} onPress={() => submit('/api/kyc/bvn/', { bvn }, 'BVN')} />
+      <KycRow icon="bank" title="BVN" sub="We'll send a code to verify it's yours" done={!!status?.bvn_verified}>
+        {!bvnSent ? (
+          <>
+            <Field value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit BVN" />
+            <View style={{ height: 10 }} />
+            <Btn label="Send verification code" size="md" disabled={busy || bvn.length !== 11} onPress={startBvn} />
+          </>
+        ) : (
+          <>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to your phone & email.</Text>
+            <Field value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
+            <View style={{ height: 10 }} />
+            <Btn label="Confirm BVN" size="md" disabled={busy || bvnOtp.length < 4} onPress={confirmBvn} />
+            <Text onPress={() => { setBvnSent(false); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text>
+          </>
+        )}
       </KycRow>
 
-      <KycRow icon="user" title="NIN" sub="National Identification Number" done={!!status?.nin_verified}>
+      <KycRow icon="user" title="NIN" sub="Number + a photo of your NIN slip" done={!!status?.nin_verified}>
         <Field value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit NIN" />
         <View style={{ height: 10 }} />
-        <Btn label="Verify NIN" size="md" disabled={busy || nin.length !== 11} onPress={() => submit('/api/kyc/nin/', { nin }, 'NIN')} />
+        <Btn label={ninImage ? 'NIN slip added ✓' : 'Upload your NIN slip'} icon="copy" size="md" variant="outline" disabled={busy} onPress={pickNinSlip} />
+        <View style={{ height: 10 }} />
+        <Btn label="Verify NIN" size="md" disabled={busy || nin.length !== 11 || !ninImage} onPress={() => submit('/api/kyc/nin/', { nin, nin_image: ninImage }, 'NIN')} />
       </KycRow>
 
-      <KycRow icon="faceid" title="Face verification" sub="Required for large transfers" done={!!status?.face_verified}>
-        <Btn label="Verify with Face ID" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifyFace} />
+      <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — required for large transfers" done={!!status?.face_verified}>
+        <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
       </KycRow>
 
       <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
-        Tier 1: ₦50,000 · Tier 2 (BVN or NIN): ₦200,000 · Tier 3 (BVN + NIN): ₦5,000,000 per transaction.
+        Tier 1: ₦50,000 · Tier 2 (BVN or NIN): ₦200,000 · Tier 3 (BVN + NIN): ₦5,000,000 per transaction. Your BVN/NIN are never stored in full.
       </NText>
     </Screen>
   );

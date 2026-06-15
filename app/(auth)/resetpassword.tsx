@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
+import { notify } from '@/components/design/Notify';
 import { saveToken } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -25,7 +26,7 @@ const ResetPassword = () => {
 
   const reset = async () => {
     if (!match) {
-      Alert.alert('Error', 'Passwords do not match');
+      notify('Error', 'Passwords do not match');
       return;
     }
     setBusy(true);
@@ -40,10 +41,10 @@ const ResetPassword = () => {
         await saveToken(result.access_token);
         router.replace('/home');
       } else {
-        Alert.alert('Error', result.message || 'Could not reset your password');
+        notify('Error', result.message || 'Could not reset your password');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setBusy(false);
     }

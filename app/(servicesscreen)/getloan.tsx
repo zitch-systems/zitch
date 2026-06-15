@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
@@ -7,6 +7,7 @@ import { Screen, Header, Btn, Sheet, PinPad, money, Naira } from '@/components/d
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
 import Receipt from '@/components/design/Receipt';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -47,7 +48,7 @@ const GetLoan = () => {
           if (res.available != null) setAvailable(Number(res.available));
           if (res.quote_rate) setRate(Number(res.quote_rate));
           if (res.active_loan) {
-            Alert.alert('Active loan', 'You already have an active loan. Repay it from the Loans tab before taking another.');
+            notify('Active loan', 'You already have an active loan. Repay it from the Loans tab before taking another.');
           }
         })
         .catch(() => {});
@@ -69,11 +70,11 @@ const GetLoan = () => {
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        Alert.alert('Error', res.message || 'Loan request failed');
+        notify('Error', res.message || 'Loan request failed');
         setStep(null);
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
       setStep(null);
     } finally {
       setBusy(false);

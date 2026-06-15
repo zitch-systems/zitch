@@ -17,6 +17,8 @@ urlpatterns = [
     path("profile/avatar/", views.avatar_upload),
     path("kyc/status/", views.kyc_status),
     path("kyc/bvn/", views.kyc_bvn),
+    path("kyc/bvn/start/", views.kyc_bvn_start),
+    path("kyc/bvn/confirm/", views.kyc_bvn_confirm),
     path("kyc/nin/", views.kyc_nin),
     path("kyc/face/", views.kyc_face),
 ]

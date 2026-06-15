@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
+import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiJson } from '@/lib/api';
@@ -27,7 +28,7 @@ const AddMoney = () => {
 
   const fund = async () => {
     if (amount < 100) {
-      Alert.alert('Error', 'Minimum funding amount is ₦100');
+      notify('Error', 'Minimum funding amount is ₦100');
       return;
     }
     setBusy(true);
@@ -36,7 +37,7 @@ const AddMoney = () => {
       const initRes = await apiJson('/api/fund/initialize/', { amount: amt });
 
       if (!initRes.success) {
-        Alert.alert('Error', initRes.message || 'Could not start payment');
+        notify('Error', initRes.message || 'Could not start payment');
         return;
       }
 
@@ -54,10 +55,10 @@ const AddMoney = () => {
         setDone(true);
         reload();
       } else {
-        Alert.alert('Payment not confirmed', verifyRes.message || 'We could not confirm your payment yet.');
+        notify('Payment not confirmed', verifyRes.message || 'We could not confirm your payment yet.');
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setBusy(false);
     }

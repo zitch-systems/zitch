@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, Linking, Alert } from 'react-native';
+import { View, Text, Linking } from 'react-native';
 import { router } from 'expo-router';
 import { Screen, Header, Card, ZItem } from '@/components/design/ui';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { SUPPORT_EMAIL, SUPPORT_PHONE, SUPPORT_WHATSAPP, FAQ_URL } from '@/components/configFiles/links';
@@ -10,9 +11,9 @@ const open = async (url: string) => {
   try {
     const ok = await Linking.canOpenURL(url);
     if (ok) await Linking.openURL(url);
-    else Alert.alert('Unavailable', 'No app is available to handle this action.');
+    else notify('Unavailable', 'No app is available to handle this action.');
   } catch {
-    Alert.alert('Error', 'Could not open this link.');
+    notify('Error', 'Could not open this link.');
   }
 };
 

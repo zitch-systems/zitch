@@ -9,6 +9,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -86,13 +87,13 @@ const SendMoney = () => {
   useEffect(() => { if (mode === 'bank' && acct.length === 10 && bank) resolveBank(); }, [acct, bank]); // eslint-disable-line
 
   const resolveZitch = async () => {
-    if (identifier.trim().length < 4) { Alert.alert('Error', 'Enter the recipient phone number.'); return; }
+    if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
     setResolving(true);
     try {
       const res = await apiJson('/api/transfer/resolve/', { identifier });
       if (res.success) setResolvedName(res.name);
-      else Alert.alert('Not found', res.message || 'No Zitch user with that detail.');
-    } catch { Alert.alert('Error', 'Something went wrong.'); }
+      else notify('Not found', res.message || 'No Zitch user with that detail.');
+    } catch { notify('Error', 'Something went wrong.'); }
     finally { setResolving(false); }
   };
 
@@ -144,9 +145,9 @@ const SendMoney = () => {
 
       if (res.success) { idemKey.current = ''; setStep(null); setDone(true); reload(); }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
-      else { idemKey.current = ''; Alert.alert('Error', res.message || 'Transfer failed'); setStep(null); }
+      else { idemKey.current = ''; notify('Error', res.message || 'Transfer failed'); setStep(null); }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.'); setStep(null);
+      notify('Error', 'Something went wrong. Please try again later.'); setStep(null);
     } finally { setBusy(false); }
   };
 

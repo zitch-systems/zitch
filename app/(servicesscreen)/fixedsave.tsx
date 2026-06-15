@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Alert } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, NText } from '@/components/design/ui';
 import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { notify } from '@/components/design/Notify';
 import { Hero } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
 import Receipt from '@/components/design/Receipt';
@@ -87,11 +88,11 @@ const FixedSave = () => {
         setPinError(res.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
         idemKey.current = '';  // definitive server failure — retry is a fresh attempt
-        Alert.alert('Error', res.message || 'Could not lock savings');
+        notify('Error', res.message || 'Could not lock savings');
         setStep(null);
       }
     } catch {
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
       setStep(null);
     } finally {
       setBusy(false);

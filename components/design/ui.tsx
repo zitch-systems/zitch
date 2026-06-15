@@ -14,6 +14,7 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
+import AmbientBackground from '@/components/design/AmbientBackground';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
@@ -57,6 +58,7 @@ export const Screen = ({
   const px = pad ? 20 : 0;
   return (
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
+      <AmbientBackground />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
         {scroll ? (
           <ScrollView

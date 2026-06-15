@@ -1,10 +1,11 @@
 import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, Alert } from 'react-native';
+import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -63,18 +64,18 @@ const Loans = () => {
         setPinOpen(false);
         setPinError('');
         idemKey.current = '';
-        Alert.alert('Success', 'Loan repaid');
+        notify('Success', 'Loan repaid');
         reloadWallet();
         load();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
         setPinOpen(false);
-        Alert.alert('Error', res.message || 'Repayment failed');
+        notify('Error', res.message || 'Repayment failed');
       }
     } catch {
       setPinOpen(false);
-      Alert.alert('Error', 'Something went wrong. Please try again later.');
+      notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setBusy(false);
     }
