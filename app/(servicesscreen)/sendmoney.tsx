@@ -178,27 +178,6 @@ const SendMoney = () => {
         onChange={(v) => { setMode(v as any); setPicked(null); setAcct(''); setBank(null); setIdentifier(''); setResolvedName(''); }}
       />
 
-      {/* Saved beneficiaries (when none picked) */}
-      {!picked && (
-        <>
-          <Label>Saved beneficiaries</Label>
-          <Field value={query} onChangeText={setQuery} placeholder="Search by name or account" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
-          <View style={{ height: 12 }} />
-          {filteredBens.length === 0 ? (
-            <Text style={{ fontSize: 13, color: c.ink3, marginBottom: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
-          ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 14 }}>
-              {filteredBens.map((b) => (
-                <Pressable key={b.id} onPress={() => setPicked(b)} style={{ alignItems: 'center', gap: 7, width: 64 }}>
-                  <Monogram text={b.initials} color={b.color} size={52} />
-                  <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{b.name.split(' ')[0]}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          )}
-        </>
-      )}
-
       {picked ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, marginBottom: 16 }}>
           <Monogram text={picked.initials} color={picked.color} />
@@ -246,6 +225,28 @@ const SendMoney = () => {
       <View style={{ height: 20 }} />
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
+
+      {/* Saved beneficiaries — moved to the bottom; tap one to fill the form above */}
+      {!picked && beneficiaries.length > 0 && (
+        <>
+          <View style={{ height: 28 }} />
+          <Label>Saved beneficiaries</Label>
+          <Field value={query} onChangeText={setQuery} placeholder="Search by name or account" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
+          <View style={{ height: 12 }} />
+          {filteredBens.length === 0 ? (
+            <Text style={{ fontSize: 13, color: c.ink3, marginBottom: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
+          ) : (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 4 }}>
+              {filteredBens.map((b) => (
+                <Pressable key={b.id} onPress={() => setPicked(b)} style={{ alignItems: 'center', gap: 7, width: 64 }}>
+                  <Monogram text={b.initials} color={b.color} size={52} />
+                  <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{b.name.split(' ')[0]}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+        </>
+      )}
 
       {/* Bank picker */}
       <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank">
