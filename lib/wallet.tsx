@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
@@ -93,11 +93,15 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     load();
   }, [load]);
 
-  return (
-    <WalletContext.Provider value={{ balance, firstName, avatar, txns, loading, showBal, setShowBal, reload: load }}>
-      {children}
-    </WalletContext.Provider>
+  // Memoize so the context value is stable between renders — otherwise every
+  // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
+  // whenever the provider renders, even when nothing it reads has changed.
+  const value = useMemo(
+    () => ({ balance, firstName, avatar, txns, loading, showBal, setShowBal, reload: load }),
+    [balance, firstName, avatar, txns, loading, showBal, load],
   );
+
+  return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 };
 
 export const useWallet = () => useContext(WalletContext);
