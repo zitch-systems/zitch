@@ -338,7 +338,8 @@ class AiIntentTests(TestCase):
     def test_clarify_shows_menu(self):
         with self._stub({"name": "clarify", "input": {"reason": "unsupported"}}):
             self.inbound("tell me a joke", "c1")
-        self.assertIn("Reply with a number", self.last_reply())
+        # Falls back to the main menu (which lists the core actions).
+        self.assertIn("Check balance", self.last_reply())
 
     def test_parsed_intent_is_recorded(self):
         with self._stub({"name": "check_balance", "input": {}}):
