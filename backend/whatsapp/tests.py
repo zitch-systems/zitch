@@ -28,8 +28,10 @@ MSISDN = "2348011112222"
 
 
 def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="50000"):
+    # App-linked users have completed KYC (BVN verified), so they can send on
+    # WhatsApp. WhatsApp-onboarded accounts start unverified (tested separately).
     u = User.objects.create(username=phone, phone=phone, email=email,
-                            first_name="Ada", last_name="Eze", tier=1)
+                            first_name="Ada", last_name="Eze", tier=1, bvn_verified=True)
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)
@@ -89,10 +91,56 @@ class ChannelTests(TestCase):
         return get_or_create_wallet(self.user).balance
 
     # --- linking ---
-    def test_unlinked_number_gets_link_flow(self):
-        self.inbound("hello", "m1")
-        self.assertIn("Link WhatsApp", self.last_reply())
-        self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
+    def test_unlinked_number_gets_create_or_link_choice(self):
+        self.inbound("hello", "m1", msisdn="2349090000001")
+        self.assertIn("create", self.last_reply(msisdn="2349090000001").lower())
+        # Choosing "link" points to the in-app link flow.
+        self.inbound("2", "m2", msisdn="2349090000001")
+        self.assertIn("Link WhatsApp", self.last_reply(msisdn="2349090000001"))
+        self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
+
+    # --- onboarding (create an account from WhatsApp) ---
+    def test_onboarding_creates_tier1_account_and_links(self):
+        m = "2349090000002"  # -> local 09090000002, no existing user
+        self.inbound("1", "o1", msisdn=m)
+        self.assertIn("first name", self.last_reply(m).lower())
+        self.inbound("Tunde", "o2", msisdn=m)
+        self.assertIn("last name", self.last_reply(m).lower())
+        self.inbound("Bello", "o3", msisdn=m)
+        self.assertIn("PIN", self.last_reply(m))
+        self.inbound("1357", "o4", msisdn=m)   # set PIN
+        self.inbound("1357", "o5", msisdn=m)   # confirm PIN
+        u = User.objects.get(phone="09090000002")
+        self.assertEqual(u.tier, 1)
+        self.assertFalse(u.bvn_verified)
+        self.assertTrue(u.check_transaction_pin("1357"))
+        self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
+        self.assertIn("Welcome to Zitch", self.last_reply(m))
+
+    def test_onboarding_pin_mismatch_retries(self):
+        m = "2349090000003"
+        self.inbound("1", "p1", msisdn=m)
+        self.inbound("Ada", "p2", msisdn=m)
+        self.inbound("Okafor", "p3", msisdn=m)
+        self.inbound("1111", "p4", msisdn=m)
+        self.inbound("2222", "p5", msisdn=m)  # mismatch
+        self.assertIn("match", self.last_reply(m).lower())
+        self.assertFalse(User.objects.filter(phone="09090000003").exists())
+
+    def test_onboarding_existing_account_is_directed_to_link(self):
+        # MSISDN normalises to 08011112222; create that account first.
+        User.objects.create(username="08011112222", phone="08011112222")
+        self.inbound("1", "e1")  # default MSISDN
+        self.assertIn("already has a Zitch account", self.last_reply())
+        self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
+
+    def test_whatsapp_send_requires_bvn(self):
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
+        self.link()
+        self.inbound("send", "b1")
+        self.assertIn("BVN", self.last_reply())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
 
     def test_link_code_links_number(self):
         # The code must be sent from the number on the user's Zitch account
