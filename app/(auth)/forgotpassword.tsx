@@ -8,19 +8,20 @@ import { ZMark } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
-// Step 1 of password recovery: ask for the account phone and request a reset
-// code. The backend always replies 200 with a generic message (it never reveals
-// whether the number is registered), so we advance to the code step regardless.
+// Step 1 of password recovery: ask for the account phone OR email and request a
+// reset code. The backend always replies 200 with a generic message (it never
+// reveals whether the account exists), so we advance to the code step regardless.
 const ForgotPassword = () => {
   const { c } = useTheme();
-  const [phone, setPhone] = useState('');
+  const [ident, setIdent] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const valid = phone.trim().length >= 10;
+  const isEmail = ident.includes('@');
+  const valid = isEmail ? /\S+@\S+\.\S+/.test(ident.trim()) : ident.replace(/\D/g, '').length >= 10;
 
   const requestCode = async () => {
     if (!valid) {
-      notify('Error', 'Enter the phone number on your account');
+      notify('Error', 'Enter the phone number or email on your account');
       return;
     }
     setBusy(true);
@@ -28,10 +29,10 @@ const ForgotPassword = () => {
       const response = await fetch(`${baseUrl}/api/password/forgot/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: phone.trim() }),
+        body: JSON.stringify({ email_or_phone: ident.trim() }),
       });
       if (response.ok) {
-        router.push({ pathname: '/resetpassword', params: { phone: phone.trim() } });
+        router.push({ pathname: '/resetpassword', params: { ident: ident.trim() } });
       } else {
         const result = await response.json().catch(() => ({} as any));
         notify('Error', result.message || 'Could not send a reset code. Please try again.');
@@ -51,15 +52,16 @@ const ForgotPassword = () => {
       </View>
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>Reset password</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 24, fontFamily: font.regular }}>
-        Enter your phone number and we'll send a code to reset your password.
+        Enter your phone number or email and we'll send a code to reset your password.
       </Text>
 
       <Field
-        label="Phone number"
-        value={phone}
-        onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
-        keyboardType="number-pad"
-        placeholder="0801 234 5678"
+        label="Email or phone"
+        value={ident}
+        onChangeText={setIdent}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        placeholder="Email or phone number"
         prefix={<ZIcon name="user" size={18} color={c.ink3} />}
       />
 

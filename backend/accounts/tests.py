@@ -487,6 +487,17 @@ class PasswordRecoveryTests(TestCase):
         res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1")
         self.assertEqual(res.status_code, 400)
 
+    def test_forgot_and_reset_work_with_an_email_identifier(self):
+        user, _ = make_user("08010000001", "a@zitch.test")
+        # Request + reset using the email (not the phone) as the identifier.
+        self.post("/api/password/forgot/", email_or_phone="a@zitch.test")
+        self.assertTrue(OTP.objects.filter(phone="08010000001", purpose=OTP.RESET).exists())
+        res, body = self.post("/api/password/reset/", email_or_phone="a@zitch.test",
+                              otp=self._reset_code("08010000001"), password="NewPassw0rd1")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1"))
+
     def test_signup_verifier_will_not_honour_a_reset_code(self):
         make_user("08010000001", "a@zitch.test")
         self.post("/api/password/forgot/", phone="08010000001")

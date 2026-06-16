@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
+import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
@@ -31,6 +32,9 @@ const Register = () => {
       if (response.ok) {
         await AsyncStorage.setItem('UserEmail', form.email);
         await AsyncStorage.setItem('UserPhone', form.phone);
+        // Mark OTP as pending so reopening the app mid-verification resumes here
+        // instead of dropping back to onboarding (cleared on verify / going back).
+        await AsyncStorage.setItem('otpPending', Date.now().toString());
         router.push('/otp');
       } else {
         notify('Error', result.message || 'Failed to register an account');
@@ -41,6 +45,14 @@ const Register = () => {
       setIsRegistering(false);
     }
   };
+
+  if (isRegistering) {
+    return (
+      <Screen scroll={false}>
+        <Loading label="Creating your account…" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen>

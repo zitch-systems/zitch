@@ -13,8 +13,8 @@ import { useTheme, font } from '@/lib/theme';
 // and drop the user straight into the app.
 const ResetPassword = () => {
   const { c } = useTheme();
-  const params = useLocalSearchParams<{ phone?: string }>();
-  const phone = params.phone ?? '';
+  const params = useLocalSearchParams<{ ident?: string; phone?: string }>();
+  const ident = params.ident ?? params.phone ?? '';
   const [otp, setOtp] = useState('');
   const [p1, setP1] = useState('');
   const [p2, setP2] = useState('');
@@ -34,7 +34,7 @@ const ResetPassword = () => {
       const response = await fetch(`${baseUrl}/api/password/reset/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, otp, password: p1 }),
+        body: JSON.stringify({ email_or_phone: ident, otp, password: p1 }),
       });
       const result = await response.json();
       if (response.ok && result.access_token) {
@@ -50,7 +50,11 @@ const ResetPassword = () => {
     }
   };
 
-  const masked = phone ? phone.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3') : 'your phone';
+  const masked = !ident
+    ? 'your phone'
+    : ident.includes('@')
+      ? ident
+      : ident.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3');
 
   return (
     <Screen>

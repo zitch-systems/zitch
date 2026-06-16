@@ -5,7 +5,8 @@ import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { saveToken } from '@/lib/secureStore';
-import { Screen, Header, Btn } from '@/components/design/ui';
+import { Loading } from '@/components/design/Loading';
+import { Screen, Header } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
 const OTP_LEN = 6;
@@ -39,6 +40,7 @@ const OTPVerification = () => {
       const result = await response.json();
       if (response.ok && result.access_token) {
         await saveToken(result.access_token);
+        await AsyncStorage.removeItem('otpPending'); // verification done
         router.push('/setpassword');
       } else {
         notify('Error', result.message || 'Failed to verify OTP');
@@ -78,9 +80,17 @@ const OTPVerification = () => {
 
   const masked = userPhone ? userPhone.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3') : 'your phone';
 
+  if (isCheckingOtp) {
+    return (
+      <Screen scroll={false}>
+        <Loading label="Verifying your code…" />
+      </Screen>
+    );
+  }
+
   return (
     <Screen scroll={false}>
-      <Header onBack={() => router.replace('/register')} />
+      <Header onBack={() => { AsyncStorage.removeItem('otpPending'); router.replace('/register'); }} />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
         Enter the {OTP_LEN}-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
@@ -135,7 +145,6 @@ const OTPVerification = () => {
       </Text>
 
       <View style={{ flex: 1 }} />
-      {isCheckingOtp && <Btn label="Verifying…" disabled onPress={() => {}} style={{ marginBottom: 12 }} />}
     </Screen>
   );
 };

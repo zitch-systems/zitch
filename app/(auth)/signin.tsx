@@ -9,6 +9,7 @@ import { unlockSession } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
+import { Loading } from '@/components/design/Loading';
 import { Screen, Field, Btn } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
@@ -93,15 +94,23 @@ const Signin = () => {
     }
   };
 
+  if (ischecking) {
+    return (
+      <Screen scroll={false}>
+        <Loading label="Signing you in…" />
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
-      <View style={{ marginTop: 14, marginBottom: 6 }}>
-        <ZMark size={48} />
+      <View style={{ alignItems: 'center', marginTop: 18, marginBottom: 26 }}>
+        <ZMark size={56} />
+        <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Welcome back</Text>
+        <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular, textAlign: 'center' }}>
+          Sign in to continue to Zitch
+        </Text>
       </View>
-      <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Welcome back</Text>
-      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 24, fontFamily: font.regular }}>
-        Sign in to continue to Zitch
-      </Text>
 
       <View style={{ gap: 16 }}>
         <Field

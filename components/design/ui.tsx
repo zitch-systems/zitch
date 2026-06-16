@@ -302,6 +302,7 @@ export const Field = ({
   suffix,
   editable = true,
   pointerEvents,
+  autoCapitalize,
 }: {
   label?: string;
   value?: string;
@@ -314,6 +315,7 @@ export const Field = ({
   suffix?: React.ReactNode;
   editable?: boolean;
   pointerEvents?: 'none' | 'auto' | 'box-none';
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
 }) => {
   const { c } = useTheme();
   return (
@@ -343,6 +345,7 @@ export const Field = ({
           keyboardType={keyboardType}
           secureTextEntry={secureTextEntry}
           maxLength={maxLength}
+          autoCapitalize={autoCapitalize}
           style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
         />
         {suffix}
