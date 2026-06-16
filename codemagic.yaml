@@ -9,7 +9,10 @@
 workflows:
   android-apk:
     name: Zitch Android APK (preview)
-    instance_type: linux_x2
+    # Codemagic's free plan runs on mac_mini_m2 (500 min/month). Android builds
+    # fine here — the Android SDK is preinstalled on the macOS image. Switch to
+    # linux_x2 if/when your plan includes Linux instances (cheaper for Android).
+    instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       node: 20
