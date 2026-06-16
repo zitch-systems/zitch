@@ -1,0 +1,53 @@
+# Codemagic CI build for the Zitch Expo (React Native) Android app.
+#
+# Produces an installable APK with no EAS/Expo build credits. The Expo project
+# lives at the repository root, so this file sits at the root too.
+#
+# Trigger a build from the Codemagic dashboard: "Start new build" → workflow
+# "android-apk". (Auto-trigger on push is left off to conserve free minutes —
+# see the commented `triggering:` block at the bottom to enable it.)
+workflows:
+  android-apk:
+    name: Zitch Android APK (preview)
+    instance_type: linux_x2
+    max_build_duration: 60
+    environment:
+      node: 20
+      java: 17
+      vars:
+        # Mirrors eas.json's "preview" profile so the app talks to the live API.
+        EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/node_modules
+        - $HOME/.gradle/caches
+    scripts:
+      - name: Install dependencies
+        script: npm ci
+      - name: Expo prebuild (generate the native android/ project)
+        script: npx expo prebuild --platform android --clean
+      - name: Build release APK
+        # Expo's prebuild template signs the release variant with the debug key,
+        # so this APK is installable for testing/sideloading out of the box.
+        # For a Play Store upload, configure Android code signing in Codemagic
+        # and switch to `assembleRelease`/`bundleRelease` with that keystore.
+        script: |
+          cd android
+          ./gradlew assembleRelease
+    artifacts:
+      - android/app/build/outputs/**/*.apk
+    # Optional — email the APK link when the build finishes:
+    # publishing:
+    #   email:
+    #     recipients:
+    #       - you@example.com
+    #     notify:
+    #       success: true
+    #       failure: true
+    # Optional — build automatically on every push to main (uses minutes):
+    # triggering:
+    #   events:
+    #     - push
+    #   branch_patterns:
+    #     - pattern: main
+    #       include: true
