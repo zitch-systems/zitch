@@ -29,7 +29,13 @@ const OTPVerification = () => {
     return () => clearTimeout(t);
   }, [seconds]);
 
+  const submittedRef = useRef('');
   const handleCheckOtp = useCallback(async () => {
+    // Verify each complete code at most once. Without this, the auto-submit
+    // effect re-fires after isCheckingOtp resets and re-sends the (now-consumed)
+    // code, producing a false "invalid OTP" right after a successful verify.
+    if (submittedRef.current === otp) return;
+    submittedRef.current = otp;
     setIsCheckingOtp(true);
     try {
       const response = await fetch(`${baseUrl}/api/verify_otp/`, {
@@ -41,22 +47,24 @@ const OTPVerification = () => {
       if (response.ok && result.access_token) {
         await saveToken(result.access_token);
         await AsyncStorage.removeItem('otpPending'); // verification done
-        router.push('/setpassword');
+        router.replace('/setpassword');
       } else {
         notify('Error', result.message || 'Failed to verify OTP');
         setOtp('');
+        submittedRef.current = ''; // let them try a fresh code
       }
     } catch (error) {
       notify('Error', 'Something went wrong. Please try again later.');
+      submittedRef.current = '';
     } finally {
       setIsCheckingOtp(false);
     }
   }, [otp, userPhone]);
 
-  // Auto-submit once all digits are entered.
+  // Auto-submit once all digits are entered (guarded above against re-runs).
   useEffect(() => {
-    if (otp.length === OTP_LEN && !isCheckingOtp) handleCheckOtp();
-  }, [otp, isCheckingOtp, handleCheckOtp]);
+    if (otp.length === OTP_LEN) handleCheckOtp();
+  }, [otp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
     if (seconds > 0) return;
@@ -141,6 +149,15 @@ const OTPVerification = () => {
         Didn't get it?{' '}
         <Text onPress={handleResendOtp} style={{ color: c.brand, fontFamily: font.bold }}>
           {seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+        </Text>
+      </Text>
+      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 12 }}>
+        Already have an account?{' '}
+        <Text
+          onPress={() => { AsyncStorage.removeItem('otpPending'); router.replace('/signin'); }}
+          style={{ color: c.brand, fontFamily: font.bold }}
+        >
+          Sign in
         </Text>
       </Text>
 
