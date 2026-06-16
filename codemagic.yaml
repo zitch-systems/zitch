@@ -3,9 +3,8 @@
 # Produces an installable APK with no EAS/Expo build credits. The Expo project
 # lives at the repository root, so this file sits at the root too.
 #
-# Trigger a build from the Codemagic dashboard: "Start new build" → workflow
-# "android-apk". (Auto-trigger on push is left off to conserve free minutes —
-# see the commented `triggering:` block at the bottom to enable it.)
+# Builds automatically when app code lands on main (see `triggering:` below), and
+# can be started anytime from the dashboard: "Start new build" → "android-apk".
 workflows:
   android-apk:
     name: Zitch Android APK (preview)
@@ -39,6 +38,28 @@ workflows:
           ./gradlew assembleRelease
     artifacts:
       - android/app/build/outputs/**/*.apk
+    # Auto-build when app code lands on main. The changeset filter skips
+    # landing/docs/backend-only changes so it doesn't burn free build minutes on
+    # changes that don't affect the APK. Trigger manually anytime from the
+    # dashboard ("Start new build" → android-apk).
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+      when:
+        changeset:
+          includes:
+            - 'app'
+            - 'components'
+            - 'lib'
+            - 'assets'
+            - 'package.json'
+            - 'package-lock.json'
+            - 'app.json'
+            - 'eas.json'
+            - 'codemagic.yaml'
     # Optional — email the APK link when the build finishes:
     # publishing:
     #   email:
@@ -47,10 +68,3 @@ workflows:
     #     notify:
     #       success: true
     #       failure: true
-    # Optional — build automatically on every push to main (uses minutes):
-    # triggering:
-    #   events:
-    #     - push
-    #   branch_patterns:
-    #     - pattern: main
-    #       include: true
