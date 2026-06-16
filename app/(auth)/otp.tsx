@@ -5,7 +5,8 @@ import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { saveToken } from '@/lib/secureStore';
-import { Screen, Header, Btn } from '@/components/design/ui';
+import { Loading } from '@/components/design/Loading';
+import { Screen, Header } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
 const OTP_LEN = 6;
@@ -28,7 +29,13 @@ const OTPVerification = () => {
     return () => clearTimeout(t);
   }, [seconds]);
 
+  const submittedRef = useRef('');
   const handleCheckOtp = useCallback(async () => {
+    // Verify each complete code at most once. Without this, the auto-submit
+    // effect re-fires after isCheckingOtp resets and re-sends the (now-consumed)
+    // code, producing a false "invalid OTP" right after a successful verify.
+    if (submittedRef.current === otp) return;
+    submittedRef.current = otp;
     setIsCheckingOtp(true);
     try {
       const response = await fetch(`${baseUrl}/api/verify_otp/`, {
@@ -39,22 +46,25 @@ const OTPVerification = () => {
       const result = await response.json();
       if (response.ok && result.access_token) {
         await saveToken(result.access_token);
-        router.push('/setpassword');
+        await AsyncStorage.removeItem('otpPending'); // verification done
+        router.replace('/setpassword');
       } else {
         notify('Error', result.message || 'Failed to verify OTP');
         setOtp('');
+        submittedRef.current = ''; // let them try a fresh code
       }
     } catch (error) {
       notify('Error', 'Something went wrong. Please try again later.');
+      submittedRef.current = '';
     } finally {
       setIsCheckingOtp(false);
     }
   }, [otp, userPhone]);
 
-  // Auto-submit once all digits are entered.
+  // Auto-submit once all digits are entered (guarded above against re-runs).
   useEffect(() => {
-    if (otp.length === OTP_LEN && !isCheckingOtp) handleCheckOtp();
-  }, [otp, isCheckingOtp, handleCheckOtp]);
+    if (otp.length === OTP_LEN) handleCheckOtp();
+  }, [otp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
     if (seconds > 0) return;
@@ -78,9 +88,17 @@ const OTPVerification = () => {
 
   const masked = userPhone ? userPhone.replace(/(\d{4})(\d{3})(\d{0,4})/, '$1 $2 $3') : 'your phone';
 
+  if (isCheckingOtp) {
+    return (
+      <Screen scroll={false}>
+        <Loading label="Verifying your code…" />
+      </Screen>
+    );
+  }
+
   return (
     <Screen scroll={false}>
-      <Header onBack={() => router.replace('/register')} />
+      <Header onBack={() => { AsyncStorage.removeItem('otpPending'); router.replace('/register'); }} />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
         Enter the {OTP_LEN}-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>
@@ -133,9 +151,17 @@ const OTPVerification = () => {
           {seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
         </Text>
       </Text>
+      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 12 }}>
+        Already have an account?{' '}
+        <Text
+          onPress={() => { AsyncStorage.removeItem('otpPending'); router.replace('/signin'); }}
+          style={{ color: c.brand, fontFamily: font.bold }}
+        >
+          Sign in
+        </Text>
+      </Text>
 
       <View style={{ flex: 1 }} />
-      {isCheckingOtp && <Btn label="Verifying…" disabled onPress={() => {}} style={{ marginBottom: 12 }} />}
     </Screen>
   );
 };

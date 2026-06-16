@@ -17,6 +17,31 @@ from wallet.services import get_or_create_wallet
 
 from .models import OTP, AccessToken, User
 
+# Brand mark hosted on the marketing site (Cloudflare), so email clients can load it.
+_LOGO_URL = "https://zitch.ng/assets/brand/zitch-icon.png"
+
+
+def _branded_email(title: str, intro: str, code: str, note: str) -> str:
+    """A simple, email-client-safe branded HTML body for one-time codes — the
+    Zitch logo, a heading, the code in a prominent box, and a footer. Inline
+    styles only (no <style>/external CSS) so it renders in Gmail/Outlook/Apple."""
+    return (
+        '<div style="background:#EFF7F5;padding:32px 16px;font-family:Arial,Helvetica,sans-serif;">'
+        '<div style="max-width:460px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #E2EEEB;">'
+        '<div style="background:#0C3A39;padding:26px 0;text-align:center;">'
+        f'<img src="{_LOGO_URL}" width="60" height="60" alt="Zitch" style="border-radius:15px;display:inline-block;" />'
+        '</div>'
+        '<div style="padding:32px 28px;text-align:center;">'
+        f'<h1 style="font-size:20px;color:#0A0A0B;margin:0 0 8px;">{title}</h1>'
+        f'<p style="font-size:14px;color:#737B83;line-height:1.55;margin:0 0 22px;">{intro}</p>'
+        f'<div style="font-size:32px;font-weight:bold;letter-spacing:10px;color:#0FA295;background:#EAF3F1;border-radius:12px;padding:18px 10px;margin:0 0 22px;">{code}</div>'
+        f'<p style="font-size:12.5px;color:#737B83;line-height:1.55;margin:0;">{note}</p>'
+        '</div>'
+        '<div style="background:#F4F9F8;border-top:1px solid #E2EEEB;padding:16px;text-align:center;font-size:11px;color:#9AAEB0;">'
+        'Zitch &middot; Licensed by the CBN &middot; Deposits insured by the NDIC'
+        '</div></div></div>'
+    )
+
 
 def _otp_on_cooldown(phone: str) -> bool:
     """True if a code was issued for this phone within the resend cooldown,
@@ -98,7 +123,10 @@ def phone_verification(request):
             OTP.objects.create(phone=phone, email=email, code=code)
             message = f"Your Zitch verification code is {code}"
             send_sms(phone, message)
-            send_email(email, "Your Zitch verification code", message)
+            send_email(email, "Your Zitch verification code", message,
+                       html=_branded_email("Verify your number",
+                                           "Use this code to finish creating your Zitch account.",
+                                           code, "This code expires shortly. If you didn't request it, ignore this email."))
     return ok(message="If this number can be registered, a verification code has been sent.")
 
 
@@ -159,7 +187,10 @@ def resend_verify_otp(request):
     OTP.objects.create(phone=phone, email=email, code=code)
     message = f"Your Zitch verification code is {code}"
     send_sms(phone, message)
-    send_email(email, "Your Zitch verification code", message)
+    send_email(email, "Your Zitch verification code", message,
+               html=_branded_email("Verify your number",
+                                   "Use this code to finish creating your Zitch account.",
+                                   code, "This code expires shortly. If you didn't request it, ignore this email."))
     return ok(message="OTP resent")
 
 
@@ -167,44 +198,54 @@ def resend_verify_otp(request):
 @ratelimit("otp_send", limit=5, window=60)
 @api
 def password_forgot(request):
-    """POST /api/password/forgot/ {phone} — send a reset code to a registered
-    phone.
+    """POST /api/password/forgot/ {email_or_phone} — send a reset code to a
+    registered account, looked up by phone OR email.
 
-    Always returns the same success message whether or not the phone is
-    registered, so the endpoint can't be used to enumerate accounts.
+    Always returns the same success message whether or not the account exists,
+    so the endpoint can't be used to enumerate accounts.
     """
-    phone = (request.data.get("phone") or "").strip()
-    if not phone:
-        return fail("Phone is required")
-    user = User.objects.filter(phone=phone).first()
-    if user is not None and not _otp_on_cooldown(phone):
+    ident = (request.data.get("email_or_phone") or request.data.get("phone") or "").strip()
+    if not ident:
+        return fail("Phone or email is required")
+    user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
+    if user is not None and user.phone and not _otp_on_cooldown(user.phone):
         code = _otp_code()
-        OTP.objects.create(phone=phone, email=user.email or "", code=code, purpose=OTP.RESET)
+        OTP.objects.create(phone=user.phone, email=user.email or "", code=code, purpose=OTP.RESET)
         message = f"Your Zitch password reset code is {code}"
-        send_sms(phone, message)
-        send_email(user.email or "", "Your Zitch password reset code", message)
-    return ok(message="If that number has a Zitch account, a reset code has been sent.")
+        send_sms(user.phone, message)
+        send_email(user.email or "", "Your Zitch password reset code", message,
+                   html=_branded_email("Reset your password",
+                                       "Use this code to reset your Zitch password.",
+                                       code, "If you didn't request a reset, ignore this email — your password is unchanged."))
+    return ok(message="If that account exists, a reset code has been sent.")
 
 
 @ratelimit("otp_verify", limit=20, window=60)
 @api
 def password_reset(request):
-    """POST /api/password/reset/ {phone, otp, password} -> {access_token}
+    """POST /api/password/reset/ {email_or_phone, otp, password} -> {access_token}
 
-    Verifies a RESET code and sets a new password. Revokes every existing
-    session (a reset means the old credential is gone) and returns a fresh token
-    so the resetting device is signed in.
+    Verifies a RESET code and sets a new password. The account is looked up by
+    phone OR email. Revokes every existing session (a reset means the old
+    credential is gone) and returns a fresh token so the resetting device is
+    signed in.
     """
-    phone = (request.data.get("phone") or "").strip()
+    ident = (request.data.get("email_or_phone") or request.data.get("phone") or "").strip()
     code = (request.data.get("otp") or "").strip()
     password = request.data.get("password") or ""
-    if not phone or not code:
-        return fail("Phone and reset code are required")
+    if not ident or not code:
+        return fail("Phone/email and reset code are required")
     weak = _weak_password(password)
     if weak:
         return fail(weak)
 
-    otp = OTP.objects.filter(phone=phone, used=False, purpose=OTP.RESET).order_by("-created").first()
+    # Resolve the account first; a generic 400 if unknown so the endpoint can't
+    # be used to tell a registered identifier from an unregistered one.
+    user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
+    if user is None:
+        return fail("Invalid reset code", status=400)
+
+    otp = OTP.objects.filter(phone=user.phone, used=False, purpose=OTP.RESET).order_by("-created").first()
     if otp is None:
         return fail("Invalid reset code", status=400)
     if otp.is_expired:
@@ -215,10 +256,6 @@ def password_reset(request):
         otp.attempts += 1
         otp.save(update_fields=["attempts"])
         return fail("Invalid reset code", status=400)
-
-    user = User.objects.filter(phone=phone).first()
-    if user is None:
-        return fail("Account not found", status=404)
 
     otp.used = True
     otp.save(update_fields=["used"])

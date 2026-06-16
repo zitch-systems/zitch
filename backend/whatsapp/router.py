@@ -9,6 +9,8 @@ import re
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.contrib.auth import get_user_model
+from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
 
 from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_error
@@ -26,8 +28,10 @@ from wallet.services import (
 )
 
 from . import ai
-from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WhatsAppLink
+from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import send_image, send_text
+
+User = get_user_model()
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
@@ -42,10 +46,25 @@ MENU = (
     "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
 UNLINKED = (
-    "👋 Welcome to *Zitch*! I don't recognise this number yet.\n\n"
-    "Open the Zitch app → *Settings → Link WhatsApp* to get your code, "
-    "then send it here to start banking from your chats."
+    "👋 Welcome to *Zitch* — banking right here on WhatsApp.\n\n"
+    "Reply *1* to create a new account, or *2* if you already have one."
 )
+ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
+BVN_NEEDED = (
+    "🔒 To send money or pay bills, first add your *BVN* in the Zitch app "
+    "(Settings → Account Limits). It takes a minute and unlocks transfers up to "
+    "₦1,000,000/day. You can still *check your balance* and *receive money* here."
+)
+
+
+def _local_phone(msisdn: str) -> str:
+    """Normalise a WhatsApp MSISDN (234XXXXXXXXXX) to the local form (0XXXXXXXXXX)
+    the app stores, so a WhatsApp-created account is consistent with app login,
+    OTP and password reset."""
+    d = re.sub(r"\D", "", msisdn or "")
+    if d.startswith("234"):
+        d = "0" + d[3:]
+    return d
 
 # Public biller logo URLs (served by the marketing site on Cloudflare). Meta
 # fetches these when we send an image message. Function-level prompts use emoji
@@ -93,9 +112,14 @@ def active_link_for(msisdn: str) -> WhatsAppLink | None:
 
 
 def is_awaiting_pin(msisdn: str) -> bool:
-    """True if the current flow expects a PIN next — so the webhook masks it."""
+    """True if the current flow expects a PIN next — so the webhook masks it.
+    Covers an in-progress money flow AND account onboarding (where the user sets
+    a PIN in chat), so neither PIN is ever written to the message log in clear."""
     pa = _current_action(msisdn)
-    return bool(pa and pa.state == "pin")
+    if pa and pa.state == "pin":
+        return True
+    ob = _current_onboarding(msisdn)
+    return bool(ob and ob.step in ("pin", "pin_confirm"))
 
 
 def parse_amount(text: str) -> Decimal | None:
@@ -210,35 +234,147 @@ def handle_inbound(msisdn: str, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # linking
 # --------------------------------------------------------------------------- #
+def _current_onboarding(msisdn: str) -> WaOnboarding | None:
+    WaOnboarding.objects.filter(msisdn=msisdn, expires_at__lt=timezone.now()).delete()
+    return WaOnboarding.objects.filter(msisdn=msisdn).first()
+
+
+def _clear_onboarding(msisdn: str) -> None:
+    WaOnboarding.objects.filter(msisdn=msisdn).delete()
+
+
 def _handle_unlinked(msisdn: str, text: str) -> None:
-    code = text.strip().upper()
-    if code.startswith("LINK "):
-        code = code[5:]
-    code = re.sub(r"[^A-Z0-9]", "", code)
+    # 1. Continue an in-progress WhatsApp signup.
+    ob = _current_onboarding(msisdn)
+    if ob is not None:
+        return _advance_onboarding(ob, msisdn, text)
+
+    raw = text.strip()
+    low = raw.lower()
+
+    # 2. Existing account: bind via the app-issued LINK code. Bind only if the
+    # code arrives from the number on the user's Zitch account — the code is shown
+    # in plaintext in the app, so without this a leaked/shoulder-surfed code lets
+    # an attacker's WhatsApp claim the victim's account (SIM-swap protection).
+    # Compare on the national significant number (last 10 digits) so local (080…)
+    # and international (23480…) forms match.
+    code = re.sub(r"[^A-Z0-9]", "", raw.upper().replace("LINK ", "", 1))
     link = (
         WhatsAppLink.objects.filter(
             status=WhatsAppLink.PENDING, link_code=code, expires_at__gt=timezone.now()
         ).first()
         if code else None
     )
-    if link is None:
-        return reply(msisdn, UNLINKED)
-    # Bind only if the code arrives from the number on the user's Zitch account.
-    # The code is the only factor and is shown in plaintext in the app, so without
-    # this a leaked/shoulder-surfed code lets an attacker's WhatsApp claim the
-    # victim's account. Compare on the national significant number (last 10 digits)
-    # so local (080…) and international (23480…) forms match.
-    registered = re.sub(r"\D", "", (link.user.phone or ""))
-    sender = re.sub(r"\D", "", msisdn)
-    if registered and registered[-10:] != sender[-10:]:
-        return reply(msisdn, "For your security, send this code from the phone number on your Zitch account.")
-    link.wa_msisdn = msisdn
-    link.status = WhatsAppLink.ACTIVE
-    link.link_code = ""
-    link.linked_at = timezone.now()
-    link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
-    name = (link.user.first_name or "there").strip()
-    reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
+    if link is not None:
+        registered = re.sub(r"\D", "", (link.user.phone or ""))
+        sender = re.sub(r"\D", "", msisdn)
+        if registered and registered[-10:] != sender[-10:]:
+            return reply(msisdn, "For your security, send this code from the phone number on your Zitch account.")
+        link.wa_msisdn = msisdn
+        link.status = WhatsAppLink.ACTIVE
+        link.link_code = ""
+        link.linked_at = timezone.now()
+        link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
+        name = (link.user.first_name or "there").strip()
+        return reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
+
+    # 3. Brand-new number: offer to create an account or link an existing one.
+    if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started"):
+        return _start_onboarding(msisdn)
+    if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in"):
+        return reply(msisdn, "To connect an existing account, open the Zitch app → *Settings → Link WhatsApp*, get your code, and send it here.")
+
+    # 4. Default welcome (with the create/link choices).
+    return reply(msisdn, UNLINKED)
+
+
+# --------------------------------------------------------------------------- #
+# onboarding (create a Zitch account from WhatsApp) — phone-only Tier 1; BVN in
+# the app unlocks sending. The PIN is set in chat (masked in the log) and stored
+# hashed, never in clear.
+# --------------------------------------------------------------------------- #
+def _start_onboarding(msisdn: str) -> None:
+    if User.objects.filter(phone=_local_phone(msisdn)).exists():
+        return reply(msisdn, "This number already has a Zitch account. Open the app → *Settings → Link WhatsApp* to connect it here.")
+    WaOnboarding.objects.update_or_create(
+        msisdn=msisdn,
+        defaults={"step": "first_name", "payload": {}, "expires_at": timezone.now() + ONBOARD_TTL},
+    )
+    reply(msisdn, "Let's set up your Zitch account \U0001f389\n\nWhat's your *first name*?")
+
+
+def _onboard_to(ob: WaOnboarding, step: str) -> None:
+    ob.step = step
+    ob.expires_at = timezone.now() + ONBOARD_TTL
+    ob.save(update_fields=["step", "payload", "expires_at"])
+
+
+def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
+    val = text.strip()
+    if val.lower() in ("cancel", "quit", "stop"):
+        _clear_onboarding(msisdn)
+        return reply(msisdn, "No problem — signup cancelled. Reply *1* to start again anytime.")
+    if ob.step == "first_name":
+        if len(val) < 2:
+            return reply(msisdn, "Please enter your first name.")
+        ob.payload["first_name"] = val[:40]
+        _onboard_to(ob, "last_name")
+        return reply(msisdn, f"Nice to meet you, {val.split()[0].title()}! What's your *last name*?")
+    if ob.step == "last_name":
+        if len(val) < 2:
+            return reply(msisdn, "Please enter your last name.")
+        ob.payload["last_name"] = val[:40]
+        _onboard_to(ob, "pin")
+        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+    if ob.step == "pin":
+        if not re.fullmatch(r"\d{4}", val):
+            return reply(msisdn, "Your PIN must be exactly 4 digits. Try again.")
+        ob.payload["pin_hash"] = make_password(val)  # never store the raw PIN
+        _onboard_to(ob, "pin_confirm")
+        return reply(msisdn, "Great — re-enter your *4-digit PIN* to confirm.")
+    if ob.step == "pin_confirm":
+        if not re.fullmatch(r"\d{4}", val) or not check_password(val, ob.payload.get("pin_hash", "")):
+            ob.payload["pin_hash"] = ""
+            _onboard_to(ob, "pin")
+            return reply(msisdn, "Those didn't match. Let's set it again — create your *4-digit PIN*.")
+        return _finish_onboarding(ob, msisdn, val)
+    _clear_onboarding(msisdn)
+    return reply(msisdn, UNLINKED)
+
+
+def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
+    local = _local_phone(msisdn)
+    fn = (ob.payload.get("first_name") or "").strip()
+    ln = (ob.payload.get("last_name") or "").strip()
+    if User.objects.filter(phone=local).exists():  # raced with the app / another signup
+        _clear_onboarding(msisdn)
+        return reply(msisdn, "This number already has a Zitch account — open the app to link it.")
+    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln)
+    user.set_unusable_password()       # no app password yet; "Forgot password" sets one
+    user.set_transaction_pin(pin)
+    user.save()
+    get_or_create_wallet(user)
+    WhatsAppLink.objects.create(
+        user=user, wa_msisdn=msisdn, status=WhatsAppLink.ACTIVE, linked_at=timezone.now(),
+    )
+    _clear_onboarding(msisdn)
+    reply(
+        msisdn,
+        f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
+        "You can *check your balance* and *receive money* right away. To *send money* "
+        "or pay bills, add your *BVN* in the Zitch app (Settings → Account Limits) — "
+        "it unlocks transfers up to ₦1,000,000/day.\n\n" + MENU,
+    )
+
+
+def _require_bvn(user, msisdn: str) -> bool:
+    """Gate money-out on BVN. Returns True (and replies) when the user must add a
+    BVN before sending. WhatsApp-onboarded accounts start at Tier 1 with no BVN,
+    so they can receive and check balance but must verify to send."""
+    if getattr(user, "bvn_verified", False):
+        return False
+    reply(msisdn, BVN_NEEDED)
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -256,6 +392,8 @@ def _do_balance(user, msisdn: str) -> None:
 # transfer (slot-filling state machine)
 # --------------------------------------------------------------------------- #
 def _start_transfer(user, msisdn: str) -> None:
+    if _require_bvn(user, msisdn):
+        return
     _clear_actions(msisdn)
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="transfer", state="amount",
@@ -443,6 +581,8 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
     matches = _match_banks(bank_query)
     if not matches:
         return False
+    if _require_bvn(user, msisdn):
+        return True
     if amount < 10:
         reply(msisdn, "Minimum transfer is ₦10.")
         return True
@@ -526,6 +666,8 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
 
 # ---- airtime ----
 def _start_airtime(user, msisdn: str) -> None:
+    if _require_bvn(user, msisdn):
+        return
     _new_flow(user, msisdn, "airtime", "network")
     reply(msisdn, NETWORK_PROMPT)
 
@@ -583,6 +725,8 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 # ---- data ----
 def _start_data(user, msisdn: str) -> None:
+    if _require_bvn(user, msisdn):
+        return
     _new_flow(user, msisdn, "data", "network")
     reply(msisdn, NETWORK_PROMPT)
 
@@ -647,6 +791,8 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 # ---- electricity ----
 def _start_electricity(user, msisdn: str) -> None:
+    if _require_bvn(user, msisdn):
+        return
     _new_flow(user, msisdn, "electricity", "disco")
     reply(msisdn, DISCO_PROMPT)
 
@@ -726,6 +872,8 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
 
 # ---- cable ----
 def _start_cable(user, msisdn: str) -> None:
+    if _require_bvn(user, msisdn):
+        return
     _new_flow(user, msisdn, "cable", "provider")
     reply(msisdn, CABLE_PROMPT)
 
@@ -878,6 +1026,8 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
 def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
     """LLM airtime: if amount + network + phone are all known, jump to confirm;
     otherwise start the guided flow."""
+    if _require_bvn(user, msisdn):
+        return True
     netid = _network_id(network)
     ph = _phone_from(str(phone), user) if phone else None
     try:
@@ -906,6 +1056,8 @@ CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (b
 
 
 def _start_convert(user, msisdn: str) -> None:
+    if _require_bvn(user, msisdn):
+        return
     _new_flow(user, msisdn, "convert", "from")
     reply(msisdn, "Convert currency.\nWhich currency are you selling? (NGN, USD, GBP, CAD)")
 

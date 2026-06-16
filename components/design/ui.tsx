@@ -302,6 +302,7 @@ export const Field = ({
   suffix,
   editable = true,
   pointerEvents,
+  autoCapitalize,
 }: {
   label?: string;
   value?: string;
@@ -314,8 +315,11 @@ export const Field = ({
   suffix?: React.ReactNode;
   editable?: boolean;
   pointerEvents?: 'none' | 'auto' | 'box-none';
+  autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
 }) => {
   const { c } = useTheme();
+  const [show, setShow] = useState(false);
+  const secure = !!secureTextEntry && !show;
   return (
     <View>
       {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text>}
@@ -341,11 +345,16 @@ export const Field = ({
           placeholder={placeholder}
           placeholderTextColor={c.ink3}
           keyboardType={keyboardType}
-          secureTextEntry={secureTextEntry}
+          secureTextEntry={secure}
           maxLength={maxLength}
+          autoCapitalize={autoCapitalize}
           style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
         />
-        {suffix}
+        {secureTextEntry ? (
+          <Pressable onPress={() => setShow((s) => !s)} hitSlop={10} accessibilityLabel={show ? 'Hide password' : 'Show password'}>
+            <ZIcon name={show ? 'eyeoff' : 'eye'} size={20} color={c.ink3} />
+          </Pressable>
+        ) : suffix}
       </View>
     </View>
   );

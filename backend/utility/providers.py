@@ -573,24 +573,23 @@ def send_sms(phone: str, message: str) -> dict:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
 
 
-def send_email(to: str, subject: str, message: str) -> dict:
+def send_email(to: str, subject: str, message: str, html: str | None = None) -> dict:
     """Send a transactional email via Resend. Mirrors send_sms's mock-mode
     contract: blank API_KEY or empty `to` returns a silent-success dict so
     callers can fire-and-forget without branching on configuration. Used as a
     parallel OTP channel alongside Sendchamp so SMS routing issues never strand
-    a user mid-signup."""
+    a user mid-signup. Pass `html` for a branded body (the plain `message` is
+    kept as the text fallback for clients that don't render HTML)."""
     cfg = settings.RESEND
     if not cfg["API_KEY"] or not to:
         return {"success": True, "mock": True, "message": "Email sent (mock mode)"}
+    payload = {"from": cfg["FROM_EMAIL"], "to": [to], "subject": subject, "text": message}
+    if html:
+        payload["html"] = html
     try:
         resp = requests.post(
             f"{cfg['BASE_URL']}/emails",
-            json={
-                "from": cfg["FROM_EMAIL"],
-                "to": [to],
-                "subject": subject,
-                "text": message,
-            },
+            json=payload,
             headers={
                 "Authorization": f"Bearer {cfg['API_KEY']}",
                 "Content-Type": "application/json",

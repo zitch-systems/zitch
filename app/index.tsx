@@ -3,17 +3,21 @@ import { View, Text, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Link } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import ZIcon from '@/components/design/ZIcon';
-import { ZMark } from '@/components/design/Brand';
+import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
+import { Loading } from '@/components/design/Loading';
 import { NText } from '@/components/design/Naira';
 import { getToken } from '@/lib/secureStore';
 import { font } from '@/lib/theme';
 
 const SLIDES = [
-  { icon: 'bills', t: 'Pay every bill in seconds', d: 'Airtime, data, cable TV, electricity, betting & exam pins — all in one app.' },
-  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to Zitch and any Nigerian bank, with saved beneficiaries.' },
-  { icon: 'loan', t: 'Borrow & grow your money', d: 'Instant loans up to ₦500,000 and Fixed Save earning 22% p.a.' },
+  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to any Nigerian bank in seconds — with saved beneficiaries.' },
+  { wa: true, t: 'Bank on WhatsApp', d: 'Check your balance, send money and pay bills right from your chats — no download needed.' },
+  { icon: 'wallet', t: 'Everything in one app', d: 'Airtime, data, bills, dollar cards, savings and loans — all in one place.' },
 ];
+
+const GRADIENT = ['#DDF3EF', '#EFF7F5', '#F5FAF9'] as const;
 
 const Index = () => {
   const [ready, setReady] = useState(false);
@@ -21,20 +25,32 @@ const Index = () => {
   const s = SLIDES[i];
   const last = i === SLIDES.length - 1;
 
-  // Returning user (a session token is on the device) → skip onboarding and go
-  // straight to the unlock screen, which immediately prompts Face ID/fingerprint.
-  // New user (no token) → show the onboarding slides.
+  // Returning user (a session token is on the device) → unlock screen.
+  // Mid-registration (no token, but an OTP request is pending and recent) →
+  // resume the OTP screen instead of dropping back to onboarding.
+  // Otherwise → show the onboarding slides.
   useEffect(() => {
-    getToken().then((t) => {
-      if (t) router.replace('/signin');
-      else setReady(true);
-    });
+    (async () => {
+      const t = await getToken();
+      if (t) { router.replace('/signin'); return; }
+      const pend = await AsyncStorage.getItem('otpPending');
+      if (pend && Date.now() - Number(pend) < 60 * 60 * 1000) { router.replace('/otp'); return; }
+      if (pend) await AsyncStorage.removeItem('otpPending'); // stale — clear it
+      setReady(true);
+    })();
   }, []);
 
-  if (!ready) return null;
+  // Animated brand loader on open (instead of a blank flash) while we decide.
+  if (!ready) {
+    return (
+      <LinearGradient colors={GRADIENT} style={{ flex: 1 }}>
+        <Loading />
+      </LinearGradient>
+    );
+  }
 
   return (
-    <LinearGradient colors={['#DDF3EF', '#EFF7F5', '#F5FAF9']} style={{ flex: 1 }}>
+    <LinearGradient colors={GRADIENT} style={{ flex: 1 }}>
       <SafeAreaView style={{ flex: 1 }}>
         {/* skip */}
         <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 20, paddingTop: 8 }}>
@@ -51,7 +67,7 @@ const Index = () => {
             end={{ x: 1, y: 1 }}
             style={{ width: 150, height: 150, borderRadius: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#00847B', shadowOpacity: 0.5, shadowRadius: 26, shadowOffset: { width: 0, height: 22 }, elevation: 8 }}
           >
-            <ZIcon name={s.icon} size={64} color="#fff" />
+            {s.wa ? <WhatsAppGlyph size={66} color="#fff" /> : <ZIcon name={s.icon!} size={64} color="#fff" />}
           </LinearGradient>
           <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: '#000000', marginTop: 38, textAlign: 'center' }}>{s.t}</Text>
           <NText style={{ fontSize: 14.5, color: '#6E8B86', marginTop: 12, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>{s.d}</NText>

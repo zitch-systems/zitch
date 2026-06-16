@@ -70,6 +70,27 @@ class PendingAction(models.Model):
         return f"{self.msisdn} {self.action_type}/{self.state}"
 
 
+class WaOnboarding(models.Model):
+    """Pre-account onboarding state for a number that is creating a Zitch account
+    from WhatsApp (no User exists yet, so PendingAction — which is keyed to a
+    user — can't hold it). One row per number; `payload` accumulates the collected
+    fields. The PIN is never stored raw: only a hash is held between entry and
+    confirmation, and the message log masks the PIN digits in transit."""
+
+    msisdn = models.CharField(max_length=20, unique=True, db_index=True)
+    step = models.CharField(max_length=20)                    # first_name | last_name | pin | pin_confirm
+    payload = models.JSONField(default=dict, blank=True)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def expired(self) -> bool:
+        return timezone.now() >= self.expires_at
+
+    def __str__(self):
+        return f"{self.msisdn} onboarding/{self.step}"
+
+
 class WaMessageLog(models.Model):
     """Append-only audit of every inbound/outbound message.
 
