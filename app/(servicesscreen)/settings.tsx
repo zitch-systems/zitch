@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import { Screen, Header, Card, ZItem } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
+import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
 import { clearSession } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
@@ -73,6 +74,20 @@ const Settings = () => {
       </View>
 
       <View style={{ paddingHorizontal: 16 }}>
+        {/* Bank on WhatsApp — the channel's hero entry */}
+        <Card pad={0} style={{ paddingHorizontal: 16, marginBottom: 18 }}>
+          <Pressable onPress={() => router.push('/linkwhatsapp')} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 15, gap: 14 }}>
+            <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: '#25D366', alignItems: 'center', justifyContent: 'center' }}>
+              <WhatsAppGlyph size={22} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 15 }}>Link WhatsApp</Text>
+              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, marginTop: 2 }}>Bank from your WhatsApp chats</Text>
+            </View>
+            {chev}
+          </Pressable>
+        </Card>
+
         {/* Preferences */}
         <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 6, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>Preferences</Text>
         <Card pad={0} style={{ paddingHorizontal: 16 }}>

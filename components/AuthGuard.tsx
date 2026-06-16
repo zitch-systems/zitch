@@ -7,6 +7,14 @@ import { Loading } from '@/components/design/Loading';
 
 type AuthState = 'loading' | 'authed' | 'unauthed';
 
+// Remember the last resolved auth result across mounts. Each route group wraps
+// its content in its own AuthGuard, so navigating (homepage) -> (servicesscreen)
+// mounts a fresh guard; without this it would start in 'loading' and flash the
+// full-screen loader on every navigation. Seeding from the cache lets an in-app
+// navigation render the target screen immediately while the check re-confirms in
+// the background (it still redirects if the session has since locked/expired).
+let lastKnownAuth: AuthState | null = null;
+
 /**
  * Gates a route group behind a valid access token. Screens inside the
  * authenticated groups must not be reachable without signing in — nor while the
@@ -18,7 +26,7 @@ type AuthState = 'loading' | 'authed' | 'unauthed';
  * rendered is dropped to /signin rather than staying visible until remount.
  */
 const AuthGuard = ({ children }: { children: React.ReactNode }) => {
-  const [state, setState] = useState<AuthState>('loading');
+  const [state, setState] = useState<AuthState>(lastKnownAuth ?? 'loading');
 
   useEffect(() => {
     let active = true;
@@ -26,7 +34,9 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => {
       try {
         const token = await getToken();
         const locked = token ? await isSessionLocked() : false;
-        if (active) setState(token && !locked ? 'authed' : 'unauthed');
+        const next: AuthState = token && !locked ? 'authed' : 'unauthed';
+        lastKnownAuth = next;
+        if (active) setState(next);
       } catch {
         if (active) setState('unauthed');
       }
@@ -35,7 +45,10 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => {
     const sub = AppState.addEventListener('change', (s) => {
       if (s === 'active') check();
     });
-    const timer = setInterval(check, 5000);
+    // Catches a session that locks while a screen is already open. The root
+    // layout also enforces the idle lock (every 30s + on foreground), so this is
+    // a backstop and doesn't need to be aggressive — 5s churned the keychain.
+    const timer = setInterval(check, 15000);
     return () => {
       active = false;
       sub.remove();

@@ -21,6 +21,7 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="savings" />
         <Stack.Screen name="betting" />
         <Stack.Screen name="support" />
+        <Stack.Screen name="linkwhatsapp" />
         <Stack.Screen name="invite" />
         <Stack.Screen name="settings" />
         <Stack.Screen name="safetytips" />

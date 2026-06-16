@@ -13,7 +13,16 @@ import { Platform } from 'react-native';
 const TOKEN_KEY = 'access_token';
 const isWeb = Platform.OS === 'web';
 
+// In-memory cache of the access token. getToken() is on the hot path of every
+// authenticated API call (plus the auth guard and wallet load), and a native
+// keychain read costs real milliseconds on each call — enough to make taps feel
+// laggy on Android. We read the keychain once, then serve from memory; the cache
+// is updated on save and cleared on sign-out, and it never outlives the process.
+// `undefined` = not loaded yet; `null` = loaded and known-absent.
+let cachedToken: string | null | undefined;
+
 export async function saveToken(token: string): Promise<void> {
+  cachedToken = token;
   if (isWeb) {
     await AsyncStorage.setItem(TOKEN_KEY, token);
     return;
@@ -22,13 +31,16 @@ export async function saveToken(token: string): Promise<void> {
 }
 
 export async function getToken(): Promise<string | null> {
-  if (isWeb) {
-    return AsyncStorage.getItem(TOKEN_KEY);
-  }
-  return SecureStore.getItemAsync(TOKEN_KEY);
+  if (cachedToken !== undefined) return cachedToken;
+  const token = isWeb
+    ? await AsyncStorage.getItem(TOKEN_KEY)
+    : await SecureStore.getItemAsync(TOKEN_KEY);
+  cachedToken = token;
+  return token;
 }
 
 export async function clearToken(): Promise<void> {
+  cachedToken = null;
   if (isWeb) {
     await AsyncStorage.removeItem(TOKEN_KEY);
     return;

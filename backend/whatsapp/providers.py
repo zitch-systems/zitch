@@ -70,6 +70,34 @@ def send_text(msisdn: str, text: str) -> dict:
         return {"success": False, "message": str(exc)}
 
 
+def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
+    """Send an image message (e.g. a biller/bank logo or the Zitch mark) with an
+    optional caption. Meta fetches the image from `image_url`, so it must be a
+    public URL. MOCK mode logs and returns success."""
+    if not wa_live():
+        log.info("[wa-mock] image -> %s: %s (%s)", msisdn, image_url, caption)
+        return {"success": True, "mock": True, "message_id": ""}
+    url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages"
+    headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"}
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": msisdn,
+        "type": "image",
+        "image": {"link": image_url, "caption": caption[:1024]},
+    }
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        data = r.json() if r.content else {}
+        return {
+            "success": r.ok,
+            "message_id": (data.get("messages") or [{}])[0].get("id", ""),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        log.warning("wa image send failed -> %s: %s", msisdn, exc)
+        return {"success": False, "message": str(exc)}
+
+
 def send_template(msisdn: str, template_name: str, params: list | None = None, lang: str = "en_US") -> dict:
     """Send a pre-approved template message (used for broadcasts outside the
     24-hr window). MOCK mode logs and returns success."""

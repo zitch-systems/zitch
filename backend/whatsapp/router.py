@@ -27,24 +27,46 @@ from wallet.services import (
 
 from . import ai
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WhatsAppLink
-from .providers import send_text
+from .providers import send_image, send_text
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
 
 MENU = (
-    "Zitch • Reply with a number:\n"
-    "1  Check balance\n"
-    "2  Send money\n"
-    "3  Airtime / Data\n"
-    "4  Pay a bill\n"
-    "5  Convert currency\n\n"
-    "Or just type, e.g. \"send 5k\". Reply \"cancel\" anytime."
+    "💚 *Zitch* — what would you like to do?\n\n"
+    "1️⃣  💰 Check balance\n"
+    "2️⃣  💸 Send money\n"
+    "3️⃣  📱 Airtime / Data\n"
+    "4️⃣  💡 Pay a bill\n"
+    "5️⃣  💱 Convert currency\n\n"
+    "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
 UNLINKED = (
-    "I couldn't match this number to a Zitch account. Open the Zitch app → "
-    "Settings → Link WhatsApp to get a code, then send it here."
+    "👋 Welcome to *Zitch*! I don't recognise this number yet.\n\n"
+    "Open the Zitch app → *Settings → Link WhatsApp* to get your code, "
+    "then send it here to start banking from your chats."
 )
+
+# Public biller logo URLs (served by the marketing site on Cloudflare). Meta
+# fetches these when we send an image message. Function-level prompts use emoji
+# icons; once a *specific* biller is chosen we show its real logo on the confirm
+# screen and the receipt. Billers without a logo asset (electricity discos) and
+# transfers send plain text — the Zitch brand shows as the WhatsApp Business
+# profile picture in the chat header, not as a substitute logo in messages.
+PROVIDER_LOGOS = {
+    "mtn": "https://zitch.ng/assets/providers/mtn.png",
+    "glo": "https://zitch.ng/assets/providers/glo.png",
+    "airtel": "https://zitch.ng/assets/providers/airtel.png",
+    "9mobile": "https://zitch.ng/assets/providers/9mobile.png",
+    "gotv": "https://zitch.ng/assets/providers/gotv.png",
+    "dstv": "https://zitch.ng/assets/providers/dstv.png",
+    "startimes": "https://zitch.ng/assets/providers/startimes.png",
+}
+
+
+def provider_logo(name: str) -> str | None:
+    """Map a biller display name (e.g. 'MTN', 'GOtv') to its public logo URL."""
+    return PROVIDER_LOGOS.get(re.sub(r"\s", "", (name or "").lower()))
 
 
 # --------------------------------------------------------------------------- #
@@ -54,6 +76,16 @@ def reply(msisdn: str, text: str) -> None:
     """Send a message and record it (the OUT audit row; never contains a PIN)."""
     send_text(msisdn, text)
     WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text)
+
+
+def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
+    """Send a logo image with a text caption (recording the caption as the OUT
+    row). With no image_url — or if the media send fails — it sends plain text, so
+    a reply is never lost when a logo is missing or briefly unreachable."""
+    sent = bool(image_url) and send_image(msisdn, image_url, caption).get("success", False)
+    if not sent:
+        send_text(msisdn, caption)
+    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=caption)
 
 
 def active_link_for(msisdn: str) -> WhatsAppLink | None:
@@ -206,7 +238,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     link.linked_at = timezone.now()
     link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
     name = (link.user.first_name or "there").strip()
-    reply(msisdn, f"✅ Linked! Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
+    reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
 
 
 # --------------------------------------------------------------------------- #
@@ -383,8 +415,8 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
     wallet = get_or_create_wallet(user)
     reply(
         msisdn,
-        f"✅ Sent {_money(amount)} to {pa.payload['name'].upper()} ({pa.payload['bank_name']}).\n"
-        f"Ref {txn.reference}. New balance: {_money(wallet.balance)}.",
+        f"✅ *Sent* {_money(amount)} to {pa.payload['name'].upper()} ({pa.payload['bank_name']}) 🎉\n"
+        f"🧾 Ref {txn.reference}\n💰 New balance: {_money(wallet.balance)}",
     )
 
 
@@ -462,9 +494,10 @@ def _insufficient(user, amount: Decimal) -> bool:
 
 
 def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
-             provider_call, success_line) -> None:
+             provider_call, success_line, logo_url: str | None = None) -> None:
     """Debit -> provider -> settle via the shared run_provider_purchase, then
-    reply with the receipt / processing / failure line."""
+    reply with the receipt / processing / failure line. On success the receipt
+    carries the biller logo (or the Zitch mark) when `logo_url` is given."""
     bill_limit_msg = daily_limit_error(user, amount, "bill")
     if bill_limit_msg:
         _clear_actions(msisdn)
@@ -482,7 +515,10 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         return reply(msisdn, "That request was already processed.")
     _clear_actions(msisdn)
     if status == "success":
-        return reply(msisdn, success_line(txn, result))
+        line = success_line(txn, result)
+        if logo_url:
+            return reply_image(msisdn, logo_url, line)
+        return reply(msisdn, line)
     if status == "pending":
         return reply(msisdn, f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}.")
     return reply(msisdn, f"❌ {label} failed: {result.get('message', 'please try again')}. You were not charged.")
@@ -524,8 +560,10 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
         _touch(pa, state="pin", payload=pa.payload)
-        return reply(msisdn, f"Confirm airtime\n{_money(amount)} {net} → {pa.payload['phone']}\n"
-                             "Reply with your PIN to confirm, or \"cancel\".")
+        return reply_image(
+            msisdn, provider_logo(net),
+            f"📱 *Confirm airtime*\n{_money(amount)} {net} → {pa.payload['phone']}\n\n"
+            "Reply with your PIN to confirm, or \"cancel\".")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -536,7 +574,8 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             pa, user, msisdn, amount, f"Airtime — {net}",
             lambda ref: vtu_purchase(f"{net.lower()}-airtime",
                                      {"amount": str(amount), "phone": phone}, reference=ref),
-            lambda txn, res: f"✅ {_money(amount)} {net} airtime sent to {phone}. Ref {txn.reference}.",
+            lambda txn, res: f"✅ {_money(amount)} {net} airtime sent to {phone} 🎉\nRef {txn.reference}.",
+            logo_url=provider_logo(net),
         )
     _clear_actions(msisdn)
     return reply(msisdn, MENU)
@@ -586,8 +625,10 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["phone"] = phone
         pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
         _touch(pa, state="pin", payload=pa.payload)
-        return reply(msisdn, f"Confirm data\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}\n"
-                             "Reply with your PIN to confirm, or \"cancel\".")
+        return reply_image(
+            msisdn, provider_logo(net),
+            f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}\n\n"
+            "Reply with your PIN to confirm, or \"cancel\".")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -597,7 +638,8 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
             pa, user, msisdn, price, f"Data — {net} {pa.payload['plan_name']}",
             lambda ref: vtu_purchase(f"{net.lower()}-data",
                                      {"billersCode": phone, "variation_code": plan_code, "phone": phone}, reference=ref),
-            lambda txn, res: f"✅ {pa.payload['plan_name']} ({net}) sent to {phone}. Ref {txn.reference}.",
+            lambda txn, res: f"✅ {pa.payload['plan_name']} ({net}) sent to {phone} 🎉\nRef {txn.reference}.",
+            logo_url=provider_logo(net),
         )
     _clear_actions(msisdn)
     return reply(msisdn, MENU)
@@ -654,9 +696,11 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
                               "meter_type": pa.payload["meter_type"]}
         _touch(pa, state="pin", payload=pa.payload)
         cust = pa.payload.get("customer") or "—"
-        return reply(msisdn, f"Confirm electricity\n{disco_name} ({pa.payload['meter_type']}) • "
-                             f"Meter {pa.payload['meter']}\nCustomer: {cust} • {_money(amount)}\n"
-                             "Reply with your PIN to confirm, or \"cancel\".")
+        return reply(
+            msisdn,
+            f"💡 *Confirm electricity*\n{disco_name} ({pa.payload['meter_type']}) • "
+            f"Meter {pa.payload['meter']}\nCustomer: {cust} • {_money(amount)}\n\n"
+            "Reply with your PIN to confirm, or \"cancel\".")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -667,8 +711,8 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
 
         def _line(txn, res):
             token = res.get("token") or res.get("provider_reference", "")
-            extra = f" Token: {token}." if token else ""
-            return f"✅ {_money(amount)} {disco_name} on meter {meter}.{extra} Ref {txn.reference}."
+            extra = f"\n🔌 Token: {token}." if token else ""
+            return f"✅ {_money(amount)} {disco_name} on meter {meter} 🎉{extra}\nRef {txn.reference}."
 
         return _run_vtu(
             pa, user, msisdn, amount, f"Electricity — {disco_name}",
@@ -731,9 +775,11 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["meta"] = {"iuc": iuc, "provider": pa.payload["prov"], "plan_code": pa.payload["plan_code"]}
         _touch(pa, state="pin", payload=pa.payload)
         cust = cust or "—"
-        return reply(msisdn, f"Confirm cable\n{prov_name} • {pa.payload['plan_name']}\n"
-                             f"Card {iuc} • {cust} • {_money(price)}\n"
-                             "Reply with your PIN to confirm, or \"cancel\".")
+        return reply_image(
+            msisdn, provider_logo(prov_name),
+            f"📺 *Confirm cable*\n{prov_name} • {pa.payload['plan_name']}\n"
+            f"Card {iuc} • {cust} • {_money(price)}\n\n"
+            "Reply with your PIN to confirm, or \"cancel\".")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -743,7 +789,8 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return _run_vtu(
             pa, user, msisdn, price, f"Cable — {prov_name} {pa.payload['plan_name']}",
             lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
-            lambda txn, res: f"✅ {prov_name} {pa.payload['plan_name']} activated on {iuc}. Ref {txn.reference}.",
+            lambda txn, res: f"✅ {prov_name} {pa.payload['plan_name']} activated on {iuc} 🎉\nRef {txn.reference}.",
+            logo_url=provider_logo(prov_name),
         )
     _clear_actions(msisdn)
     return reply(msisdn, MENU)
