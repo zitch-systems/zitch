@@ -100,7 +100,7 @@ class ChannelTests(TestCase):
         self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
 
     # --- onboarding (create an account from WhatsApp) ---
-    def test_onboarding_creates_tier1_account_and_links(self):
+    def test_onboarding_creates_tier2_account_and_links(self):
         m = "2349090000002"  # -> local 09090000002, no existing user
         self.inbound("1", "o1", msisdn=m)
         self.assertIn("first name", self.last_reply(m).lower())
@@ -111,8 +111,7 @@ class ChannelTests(TestCase):
         self.inbound("1357", "o4", msisdn=m)   # set PIN
         self.inbound("1357", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
-        self.assertEqual(u.tier, 1)
-        self.assertFalse(u.bvn_verified)
+        self.assertEqual(u.tier, 2)            # WhatsApp onboarding -> ₦1m/day caps
         self.assertTrue(u.check_transaction_pin("1357"))
         self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
         self.assertIn("Welcome to Zitch", self.last_reply(m))
@@ -134,13 +133,15 @@ class ChannelTests(TestCase):
         self.assertIn("already has a Zitch account", self.last_reply())
         self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
 
-    def test_whatsapp_send_requires_bvn(self):
+    def test_whatsapp_user_can_send_without_bvn(self):
+        # WhatsApp accounts transact immediately (capped at the ₦1m/day tier-2
+        # limits) — no BVN gate before sending.
         self.user.bvn_verified = False
         self.user.save(update_fields=["bvn_verified"])
         self.link()
         self.inbound("send", "b1")
-        self.assertIn("BVN", self.last_reply())
-        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+        self.assertIn("how much", self.last_reply().lower())
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
 
     def test_link_code_links_number(self):
         # The code must be sent from the number on the user's Zitch account
