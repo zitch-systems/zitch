@@ -50,11 +50,6 @@ UNLINKED = (
     "Reply *1* to create a new account, or *2* if you already have one."
 )
 ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
-BVN_NEEDED = (
-    "🔒 To send money or pay bills, first add your *BVN* in the Zitch app "
-    "(Settings → Account Limits). It takes a minute and unlocks transfers up to "
-    "₦1,000,000/day. You can still *check your balance* and *receive money* here."
-)
 
 
 def _local_phone(msisdn: str) -> str:
@@ -349,7 +344,10 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
         _clear_onboarding(msisdn)
         return reply(msisdn, "This number already has a Zitch account — open the app to link it.")
-    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln)
+    # WhatsApp onboarding -> Tier 2 caps (₦1,000,000/day transfers, ₦100,000/day
+    # bills); full KYC in the app raises to Tier 3. The caps are enforced by the
+    # shared daily-limit checks in the money flows, identically to the app.
+    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln, tier=2)
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
     user.set_transaction_pin(pin)
     user.save()
@@ -361,20 +359,10 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     reply(
         msisdn,
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
-        "You can *check your balance* and *receive money* right away. To *send money* "
-        "or pay bills, add your *BVN* in the Zitch app (Settings → Account Limits) — "
-        "it unlocks transfers up to ₦1,000,000/day.\n\n" + MENU,
+        "You can *send money up to ₦1,000,000/day*, pay bills, buy airtime & data, "
+        "and check your balance — right here. Complete full KYC in the Zitch app to "
+        "raise your limits.\n\n" + MENU,
     )
-
-
-def _require_bvn(user, msisdn: str) -> bool:
-    """Gate money-out on BVN. Returns True (and replies) when the user must add a
-    BVN before sending. WhatsApp-onboarded accounts start at Tier 1 with no BVN,
-    so they can receive and check balance but must verify to send."""
-    if getattr(user, "bvn_verified", False):
-        return False
-    reply(msisdn, BVN_NEEDED)
-    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -392,8 +380,6 @@ def _do_balance(user, msisdn: str) -> None:
 # transfer (slot-filling state machine)
 # --------------------------------------------------------------------------- #
 def _start_transfer(user, msisdn: str) -> None:
-    if _require_bvn(user, msisdn):
-        return
     _clear_actions(msisdn)
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="transfer", state="amount",
@@ -581,8 +567,6 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
     matches = _match_banks(bank_query)
     if not matches:
         return False
-    if _require_bvn(user, msisdn):
-        return True
     if amount < 10:
         reply(msisdn, "Minimum transfer is ₦10.")
         return True
@@ -666,8 +650,6 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
 
 # ---- airtime ----
 def _start_airtime(user, msisdn: str) -> None:
-    if _require_bvn(user, msisdn):
-        return
     _new_flow(user, msisdn, "airtime", "network")
     reply(msisdn, NETWORK_PROMPT)
 
@@ -725,8 +707,6 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 # ---- data ----
 def _start_data(user, msisdn: str) -> None:
-    if _require_bvn(user, msisdn):
-        return
     _new_flow(user, msisdn, "data", "network")
     reply(msisdn, NETWORK_PROMPT)
 
@@ -791,8 +771,6 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 # ---- electricity ----
 def _start_electricity(user, msisdn: str) -> None:
-    if _require_bvn(user, msisdn):
-        return
     _new_flow(user, msisdn, "electricity", "disco")
     reply(msisdn, DISCO_PROMPT)
 
@@ -872,8 +850,6 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
 
 # ---- cable ----
 def _start_cable(user, msisdn: str) -> None:
-    if _require_bvn(user, msisdn):
-        return
     _new_flow(user, msisdn, "cable", "provider")
     reply(msisdn, CABLE_PROMPT)
 
@@ -1026,8 +1002,6 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
 def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
     """LLM airtime: if amount + network + phone are all known, jump to confirm;
     otherwise start the guided flow."""
-    if _require_bvn(user, msisdn):
-        return True
     netid = _network_id(network)
     ph = _phone_from(str(phone), user) if phone else None
     try:
@@ -1056,8 +1030,6 @@ CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (b
 
 
 def _start_convert(user, msisdn: str) -> None:
-    if _require_bvn(user, msisdn):
-        return
     _new_flow(user, msisdn, "convert", "from")
     reply(msisdn, "Convert currency.\nWhich currency are you selling? (NGN, USD, GBP, CAD)")
 
