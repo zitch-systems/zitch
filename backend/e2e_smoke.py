@@ -122,6 +122,14 @@ def main():
     r = post("/api/kyc/status/", token=tok)
     check("kyc/status tier=3", j(r).get("tier") == 3, str(j(r)))
 
+    # Dedicated (reserved) account: minted at BVN verification above; surfaced on
+    # the wallet and via the account endpoint, and fundable by bank transfer.
+    r = post("/api/wallet/account/", token=tok)
+    acct = j(r).get("account_number")
+    check("wallet/account returns a dedicated NUBAN", bool(acct), str(j(r)))
+    r = post("/api/wallet_balance/", token=tok)
+    check("wallet_balance surfaces the dedicated account", j(r).get("account_number") == acct, str(j(r)))
+
     idem = f"e2e-{uuid.uuid4().hex[:12]}"
     r = post("/api/utility/buyairtime/", {"network": "1", "phone": phone_a, "amount": "200",
                                           "transaction_pin": "1234", "idempotency_key": idem}, token=tok)

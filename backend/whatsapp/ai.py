@@ -68,6 +68,10 @@ TOOLS = [
                           "variation": {"type": ["string", "null"]},
                           "amount": {"type": ["integer", "null"]}},
                       "required": ["category"]}},
+    {"name": "add_money",
+     "description": "Show the user's dedicated Zitch account number so they can fund "
+                    "(top up / add money to) their wallet by bank transfer.",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "convert_currency",
      "description": "Convert between currencies.",
      "input_schema": {"type": "object",
