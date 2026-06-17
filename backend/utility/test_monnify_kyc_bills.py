@@ -149,6 +149,33 @@ class MonnifyKycBillsLiveTests(SimpleTestCase):
         self.assertEqual(body["reference"], "ZB-ELEC-1")          # idempotency key threaded
         self.assertEqual(body["validationReference"], "VR-123")   # only present when supplied
 
+    @patch("utility.providers.requests.post")
+    def test_pay_bill_accepted_but_pending_is_pending_not_success(self, mock_post, *_):
+        """An accepted vend that Monnify reports PENDING must NOT settle as success:
+        settle_or_refund would mark the debit Successful and stop reconciling a vend
+        that has not yet delivered. It must return pending so the caller requeries."""
+        mock_post.return_value = _resp({
+            "requestSuccessful": True,
+            "responseBody": {"status": "PENDING", "transactionReference": "MNFY-TX-P"},
+        })
+        r = P.monnify_pay_bill("PROD", "0810", 1000, "ZB-REF-P")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])
+        self.assertEqual(r["status"], "PENDING")
+
+    @patch("utility.providers.requests.post")
+    def test_pay_bill_rejected_is_failed_not_pending(self, mock_post, *_):
+        """An outright rejection (requestSuccessful=False) means the vend never
+        entered Monnify's queue, so it is a definitive failure the caller refunds —
+        not a pending the caller would reconcile forever."""
+        mock_post.return_value = _resp({
+            "requestSuccessful": False, "responseMessage": "Invalid product",
+            "responseBody": {},
+        })
+        r = P.monnify_pay_bill("BAD-PROD", "0810", 1000, "ZB-REF-R")
+        self.assertFalse(r["success"])
+        self.assertFalse(r.get("pending", False))
+
     @patch("utility.providers.requests.post", side_effect=requests.RequestException("down"))
     def test_pay_bill_network_error_is_pending_not_failed(self, *_):
         """A timeout must not look like a definitive failure — the vend may have
