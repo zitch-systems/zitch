@@ -177,7 +177,10 @@ MONNIFY = {
 SENDCHAMP = {
     "BASE_URL": os.environ.get("SENDCHAMP_BASE_URL", "https://api.sendchamp.com/api/v1"),
     "API_KEY": os.environ.get("SENDCHAMP_API_KEY", ""),
-    "SENDER_NAME": os.environ.get("SENDCHAMP_SENDER_NAME", "Sendchamp"),
+    # Default sender ID is "Zitch" — it must be an APPROVED Sender ID in
+    # Sendchamp for the DND route to deliver; override with SENDCHAMP_SENDER_NAME
+    # (e.g. an already-approved "SC-OTP") until "Zitch" is approved.
+    "SENDER_NAME": os.environ.get("SENDCHAMP_SENDER_NAME", "Zitch"),
 }
 # Email / OTP fallback — Resend. Sends the same OTP code in parallel with
 # Sendchamp so SMS delivery issues (DND, sender ID approval, carrier blocks)
