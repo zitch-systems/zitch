@@ -13,6 +13,8 @@ from .models import FundingIntent
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
+    credit_reserved_account_funding,
+    ensure_reserved_account,
     existing_for_key,
     get_or_create_wallet,
     make_reference,
@@ -34,11 +36,38 @@ def wallet_balance(request):
     return ok(
         success=True,
         wallet=str(wallet.balance),
+        account_number=wallet.account_number,
+        account_name=wallet.account_name,
+        bank_name=wallet.bank_name,
+        bank_accounts=wallet.bank_accounts or [],
         user_first_name=user.first_name or "",
         user_last_name=user.last_name or "",
         user_phone_number=user.phone or "",
         user_email=user.email or "",
         user_avatar=avatar_url(request, user),
+    )
+
+
+@api
+@require_user
+def wallet_account(request):
+    """POST /api/wallet/account/ {access_token}
+    -> {success, account_number, account_name, bank_name, bank_accounts}
+
+    Returns the user's dedicated funding account, reserving one on first call if
+    it's missing but the user is already KYC-verified (Monnify can mint a
+    dedicated account from the BVN/NIN already on file via the contract).
+    """
+    user = request.user_obj
+    wallet = get_or_create_wallet(user)
+    if not wallet.account_number and (user.bvn_verified or user.nin_verified):
+        wallet = ensure_reserved_account(user)
+    return ok(
+        success=True,
+        account_number=wallet.account_number,
+        account_name=wallet.account_name,
+        bank_name=wallet.bank_name,
+        bank_accounts=wallet.bank_accounts or [],
     )
 
 
@@ -136,10 +165,16 @@ def fund_webhook(request):
 
     if event.get("eventType") == "SUCCESSFUL_TRANSACTION":
         data = event.get("eventData", {}) or {}
-        reference = data.get("paymentReference", "")
-        amount = data.get("amountPaid")  # Monnify reports naira
-        if reference:
-            settle_funding(reference, amount)
+        # A transfer into a user's dedicated (reserved) account funds the wallet
+        # with no FundingIntent behind it — credit it via the account mapping.
+        # A checkout/init-transaction payment settles its FundingIntent as before.
+        if (data.get("product", {}) or {}).get("type") == "RESERVED_ACCOUNT":
+            credit_reserved_account_funding(data)
+        else:
+            reference = data.get("paymentReference", "")
+            amount = data.get("amountPaid")  # Monnify reports naira
+            if reference:
+                settle_funding(reference, amount)
     from whatsapp.ops import record_audit
     record_audit("webhook.monnify", actor_type="system",
                  target=(event.get("eventData") or {}).get("paymentReference", ""),

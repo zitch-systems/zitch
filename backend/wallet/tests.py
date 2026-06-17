@@ -217,6 +217,79 @@ class WalletTests(TestCase):
         self.assertTrue(b["success"])
 
 
+class ReservedAccountTests(TestCase):
+    """Dedicated (reserved) virtual account: minted at KYC, surfaced on the wallet,
+    and credited by the funding webhook — idempotently."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test")
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def bal(self):
+        return get_or_create_wallet(self.user).balance
+
+    def test_ensure_reserved_account_is_idempotent(self):
+        from .services import ensure_reserved_account
+
+        w1 = ensure_reserved_account(self.user, bvn="22200000001")
+        self.assertTrue(w1.account_number)
+        self.assertTrue(w1.account_reference)
+        self.assertTrue(w1.bank_accounts)
+        # A second call must not re-reserve / change the number.
+        number = w1.account_number
+        w2 = ensure_reserved_account(self.user, bvn="22200000001")
+        self.assertEqual(w2.account_number, number)
+
+    def test_bvn_verification_reserves_and_balance_surfaces_it(self):
+        res, body = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "22200000001"})
+        self.assertEqual(res.status_code, 200)
+        wallet = get_or_create_wallet(self.user)
+        self.assertTrue(wallet.account_number)
+        # wallet_balance now carries the dedicated account for the app to show.
+        res, body = self.post("/api/wallet_balance/", {"access_token": self.token})
+        self.assertEqual(body["account_number"], wallet.account_number)
+        self.assertTrue(body["bank_name"])
+        self.assertTrue(body["bank_accounts"])
+
+    def test_webhook_credits_reserved_account_once(self):
+        from .services import ensure_reserved_account
+
+        wallet = ensure_reserved_account(self.user, bvn="22200000001")
+        event = {"eventType": "SUCCESSFUL_TRANSACTION", "eventData": {
+            "product": {"type": "RESERVED_ACCOUNT", "reference": wallet.account_reference},
+            "transactionReference": "MNFY|TXN|RSV001", "amountPaid": 5000,
+            "destinationAccountInformation": {"accountNumber": wallet.account_number},
+        }}
+        body = json.dumps(event)
+        r1 = self.client.post("/api/fund/webhook/", data=body, content_type="application/json")
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(self.bal(), Decimal("5000"))
+        # Redelivered webhook (same transactionReference) must not double-credit.
+        self.client.post("/api/fund/webhook/", data=body, content_type="application/json")
+        self.assertEqual(self.bal(), Decimal("5000"))
+
+    def test_webhook_ignores_unknown_reserved_account(self):
+        event = {"eventType": "SUCCESSFUL_TRANSACTION", "eventData": {
+            "product": {"type": "RESERVED_ACCOUNT", "reference": "ZITCH-WALLET-999999"},
+            "transactionReference": "MNFY|TXN|RSV404", "amountPaid": 5000,
+            "destinationAccountInformation": {"accountNumber": "0000000000"},
+        }}
+        r = self.client.post("/api/fund/webhook/", data=json.dumps(event), content_type="application/json")
+        self.assertEqual(r.status_code, 200)  # accepted so Monnify stops retrying
+        self.assertEqual(self.bal(), Decimal("0"))  # but nothing credited
+
+    def test_wallet_account_endpoint_reserves_lazily_for_verified_user(self):
+        self.user.bvn_verified = True
+        self.user.save(update_fields=["bvn_verified"])
+        res, body = self.post("/api/wallet/account/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["account_number"])
+
+
 class LedgerConstraintTests(TestCase):
     """DB-level guards that back up the service-layer money checks."""
 

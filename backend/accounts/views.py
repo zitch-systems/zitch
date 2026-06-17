@@ -415,6 +415,18 @@ def avatar_upload(request):
 
 
 # --------------------------------- KYC ---------------------------------
+def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
+    """Best-effort: mint the user's dedicated funding account once KYC supplies a
+    BVN/NIN. Never lets a provider hiccup fail the KYC response — it's retried on
+    the next KYC action (and lazily via /api/wallet/account/)."""
+    from wallet.services import ensure_reserved_account
+
+    try:
+        ensure_reserved_account(user, bvn=bvn, nin=nin)
+    except Exception:  # noqa: BLE001 — reservation must never break verification
+        log.warning("reserve_account_failed user=%s", user.id, exc_info=True)
+
+
 def _kyc_state(user) -> dict:
     return {
         "tier": user.tier,
@@ -478,6 +490,7 @@ def kyc_bvn_confirm(request):
     user.bvn_verified = True
     user.recompute_tier()
     user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
+    _reserve_wallet_account(user, bvn=pending["bvn"])
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
 
@@ -494,6 +507,7 @@ def kyc_bvn(request):
     user.bvn_verified = True
     user.recompute_tier()
     user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
+    _reserve_wallet_account(user, bvn=bvn)
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
 
@@ -516,6 +530,7 @@ def kyc_nin(request):
     user.nin_verified = True
     user.recompute_tier()
     user.save(update_fields=["nin_hash", "nin_last4", "nin_verified", "tier"])
+    _reserve_wallet_account(user, nin=nin)
     return ok(success=True, message="NIN verified", **_kyc_state(user))
 
 
