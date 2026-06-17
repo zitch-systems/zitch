@@ -454,14 +454,27 @@ def monnify_pay_bill(product_code: str, customer_id: str, amount_naira,
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
         status = str(rb.get("status") or rb.get("transactionStatus", "")).upper()
-        return {
-            "success": bool(data.get("requestSuccessful")) and status in (
-                "SUCCESS", "SUCCESSFUL", "PENDING", "DELIVERED"),
+        out = {
             "status": status,
             "provider_reference": str(rb.get("transactionReference") or rb.get("reference", "")),
             "token": rb.get("token", ""),
             "raw": data,
         }
+        accepted = bool(data.get("requestSuccessful"))
+        # A vend Monnify ACCEPTS but has not yet delivered (PENDING/PROCESSING, or
+        # an accepted call with no terminal status yet) is NOT a success: returning
+        # success here would let settle_or_refund mark the debit Successful and clear
+        # the reconcile flag, so the requery job would never run — money debited,
+        # never delivered, never refunded. Mirror monnify_bill_status: pending stays
+        # pending so the caller reconciles via monnify_bill_status rather than either
+        # claiming delivery or blind-refunding a vend that may still land.
+        # An outright rejection (requestSuccessful=False, or a terminal failure
+        # status) refunds, since the vend did not enter Monnify's queue.
+        if accepted and status in ("SUCCESS", "SUCCESSFUL", "DELIVERED"):
+            return {"success": True, **out}
+        if accepted and status in ("PENDING", "PROCESSING", ""):
+            return {"success": False, "pending": True, **out}
+        return {"success": False, **out}
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bills provider unreachable: {exc}"}
 
