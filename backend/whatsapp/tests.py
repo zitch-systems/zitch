@@ -173,6 +173,31 @@ class ChannelTests(TestCase):
         self.inbound("balance", "m1")
         self.assertIn("50,000.00", self.last_reply())
 
+    # --- add money (dedicated reserved account) ---
+    def test_add_money_shows_dedicated_account_for_verified_user(self):
+        # make_user is BVN-verified, so a reserved account can be minted lazily.
+        self.link()
+        self.inbound("add money", "am1")
+        wallet = get_or_create_wallet(self.user)
+        self.assertTrue(wallet.account_number)               # reserved on demand
+        reply = self.last_reply()
+        self.assertIn(wallet.account_number, reply)
+        self.assertIn("credited automatically", reply.lower())
+
+    def test_add_money_menu_number_works(self):
+        self.link()
+        self.inbound("6", "am2")
+        self.assertIn(get_or_create_wallet(self.user).account_number, self.last_reply())
+
+    def test_add_money_without_kyc_points_to_verification(self):
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+        self.link()
+        self.inbound("fund", "am3")
+        self.assertFalse(get_or_create_wallet(self.user).account_number)
+        self.assertIn("verify your bvn", self.last_reply().lower())
+
     # --- transfer ---
     def _run_transfer(self, pin="1234", start_mid="t"):
         self.link()
@@ -377,6 +402,13 @@ class AiIntentTests(TestCase):
             self.inbound("please send money to my gtbank account", "t1")
         self.assertIn("Confirm transfer", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # bank-verified name
+
+    def test_freeform_add_money(self):
+        with self._stub({"name": "add_money", "input": {}}):
+            self.inbound("how do I fund my wallet?", "f1")
+        reply = self.last_reply()
+        self.assertIn(get_or_create_wallet(self.user).account_number, reply)
+        self.assertIn("credited automatically", reply.lower())
 
     def test_freeform_airtime_prefilled_confirm(self):
         with self._stub({"name": "buy_airtime",

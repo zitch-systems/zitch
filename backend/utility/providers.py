@@ -149,6 +149,116 @@ def payment_verify_signature(body: bytes, signature: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Reserved (dedicated) virtual accounts — Monnify Bank Transfer
+#
+# Mints a permanent NUBAN per user that funds the wallet by bank transfer (no
+# checkout page). Monnify requires the customer's BVN/NIN for a dedicated
+# account (CBN compliance), so reservation is driven from the KYC step where the
+# raw number is still in hand. Inbound funding arrives as a SUCCESSFUL_TRANSACTION
+# webhook whose eventData.product.type is RESERVED_ACCOUNT — credited by
+# wallet.services.credit_reserved_account_funding. Blank Monnify keys => MOCK.
+# ---------------------------------------------------------------------------
+def _parse_reserved(data: dict) -> dict:
+    """Normalise a reserve/get-reserved-account response into our shape.
+
+    V2 with getAllAvailableBanks returns the issued accounts under ``accounts``;
+    the single-bank shape carries accountNumber/bankName at the top level. We
+    surface both: a flat primary (account_number/bank_name) plus the full list.
+    """
+    rb = data.get("responseBody", {}) or {}
+    accounts = [
+        {"bank_name": a.get("bankName", ""), "account_number": a.get("accountNumber", ""),
+         "bank_code": a.get("bankCode", "")}
+        for a in (rb.get("accounts") or []) if a.get("accountNumber")
+    ]
+    primary_num = accounts[0]["account_number"] if accounts else rb.get("accountNumber", "")
+    primary_bank = accounts[0]["bank_name"] if accounts else rb.get("bankName", "")
+    return {
+        "success": bool(data.get("requestSuccessful")) and bool(primary_num),
+        "account_number": primary_num,
+        "bank_name": primary_bank,
+        "account_name": rb.get("accountName", ""),
+        "reference": rb.get("accountReference", ""),
+        "reservation_reference": rb.get("reservationReference", ""),
+        "accounts": accounts,
+        "message": data.get("responseMessage", "Could not reserve account"),
+        "raw": data,
+    }
+
+
+def reserve_account(account_reference: str, account_name: str, customer_email: str,
+                    customer_name: str, bvn: str = "", nin: str = "") -> dict:
+    """Reserve a dedicated virtual account for a customer.
+
+    POST /api/v2/bank-transfer/reserved-accounts. ``account_reference`` is our
+    stable per-user key (Monnify rejects a duplicate, so reuse it). MOCK mode
+    fabricates a deterministic NUBAN so the funding flow is testable offline.
+    """
+    if not payments_live():
+        seed = int(hashlib.sha256(account_reference.encode()).hexdigest(), 16)
+        num = "99" + f"{seed % 10**8:08d}"
+        return {
+            "success": True, "mock": True,
+            "account_number": num, "bank_name": "Moniepoint MFB",
+            "account_name": account_name, "reference": account_reference,
+            "reservation_reference": "MOCK-" + secrets.token_hex(6).upper(),
+            "accounts": [{"bank_name": "Moniepoint MFB", "account_number": num, "bank_code": "50515"}],
+        }
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        body = {
+            "accountReference": account_reference,
+            "accountName": account_name,
+            "currencyCode": "NGN",
+            "contractCode": m["CONTRACT_CODE"],
+            "customerEmail": customer_email,
+            "customerName": customer_name,
+            "getAllAvailableBanks": True,
+        }
+        # Monnify accepts either; supply whichever KYC value we hold.
+        if bvn:
+            body["bvn"] = bvn
+        if nin:
+            body["nin"] = nin
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts",
+            json=body, headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
+        )
+        out = _parse_reserved(resp.json())
+        if not out["success"]:
+            log.warning("monnify_reserve_failed ref=%s msg=%s", account_reference, out.get("message"))
+        return out
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
+
+
+def get_reserved_account(account_reference: str) -> dict:
+    """Fetch an existing reserved account by our accountReference.
+
+    GET /api/v2/bank-transfer/reserved-accounts/{accountReference}. Used to
+    recover the account details when a prior reserve_account succeeded at Monnify
+    but we failed to persist it (a re-create would be rejected as a duplicate).
+    """
+    if not payments_live():
+        return {"success": False, "message": "mock"}
+    try:
+        token = _monnify_token()
+        if not token:
+            return {"success": False, "message": "Monnify authentication failed"}
+        m = settings.MONNIFY
+        resp = requests.get(
+            f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts/{account_reference}",
+            headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
+        )
+        return _parse_reserved(resp.json())
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
+
+
+# ---------------------------------------------------------------------------
 # Bank transfers / payouts — Monnify disbursements
 #
 # Draws from your Monnify wallet (MONNIFY_SOURCE_ACCOUNT) to any NIBSS bank.

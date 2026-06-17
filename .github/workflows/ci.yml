@@ -13,8 +13,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decide which suites actually need to run for this change, so a backend-only
+  # PR doesn't spin up the (heavier) Expo job and vice versa — the single biggest
+  # lever on Actions minutes. The backend/app jobs gate on these outputs; a job
+  # skipped this way still reports success, so required-status-check branch
+  # protection is unaffected (unlike a workflow-level paths filter, which would
+  # leave a required check pending forever).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci.yml'
+            app:
+              - 'app/**'
+              - 'components/**'
+              - 'constants/**'
+              - 'hooks/**'
+              - 'lib/**'
+              - 'assets/**'
+              - 'shims/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'tsconfig.json'
+              - 'app.json'
+              - 'babel.config.js'
+              - 'metro.config.js'
+              - 'eas.json'
+              - '.github/workflows/ci.yml'
+
   backend:
     name: Backend (Django)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     env:
       # CI runs with the production-secure default (DEBUG off). Provide a
@@ -46,6 +87,8 @@ jobs:
 
   app:
     name: App (Expo)
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,5 +101,9 @@ jobs:
         run: npx tsc --noEmit
       - name: Unit tests
         run: npm test -- --ci
+      # The full Metro/iOS bundle is the most minute-heavy step and rarely catches
+      # what tsc + jest miss, so only run it on pushes to main (the merged result),
+      # not on every PR revision.
       - name: Bundle (Metro export, iOS)
+        if: github.event_name == 'push'
         run: npx expo export --platform ios --output-dir /tmp/ciexport

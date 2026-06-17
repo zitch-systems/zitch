@@ -23,6 +23,7 @@ from wallet.forex import FxError, all_balances, create_fx_quote, currency_balanc
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
+    ensure_reserved_account,
     get_or_create_wallet,
     run_provider_purchase,
 )
@@ -42,7 +43,8 @@ MENU = (
     "2️⃣  💸 Send money\n"
     "3️⃣  📱 Airtime / Data\n"
     "4️⃣  💡 Pay a bill\n"
-    "5️⃣  💱 Convert currency\n\n"
+    "5️⃣  💱 Convert currency\n"
+    "6️⃣  🏦 Add money\n\n"
     "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
 UNLINKED = (
@@ -195,6 +197,9 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # Fresh command (keyword or menu number).
     if low in ("balance", "bal", "1"):
         return _do_balance(user, msisdn)
+    if low in ("6", "add money", "fund", "fund wallet", "fund account", "deposit",
+               "account", "account number", "add cash", "top up", "topup"):
+        return _do_add_money(user, msisdn)
     if low in ("2", "transfer", "send", "send money"):
         return _start_transfer(user, msisdn)
     if low == "airtime":
@@ -374,6 +379,41 @@ def _do_balance(user, msisdn: str) -> None:
         return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}.")
     lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]
     reply(msisdn, "💰 Your balances:\n" + "\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
+# add money — the user's dedicated (reserved) account for bank-transfer funding
+# --------------------------------------------------------------------------- #
+def _do_add_money(user, msisdn: str) -> None:
+    """Show the user's dedicated Zitch account number so they can fund the wallet
+    by bank transfer (credited automatically by the Monnify webhook). Reserves one
+    lazily if KYC is done but no account exists yet; otherwise points to KYC."""
+    wallet = get_or_create_wallet(user)
+    if not wallet.account_number and (user.bvn_verified or user.nin_verified):
+        wallet = ensure_reserved_account(user)
+
+    if not wallet.account_number:
+        return reply(
+            msisdn,
+            "🏦 *Add money*\n\nTo get your own Zitch account number for funding by "
+            "bank transfer, first verify your BVN or NIN in the Zitch app. Once "
+            "verified, your number appears here automatically.\n\n"
+            "You can still receive money from other Zitch users any time.",
+        )
+
+    accts = wallet.bank_accounts or []
+    if len(accts) > 1:
+        body = "\n".join(f"🔢 *{a.get('account_number')}* — {a.get('bank_name')}" for a in accts)
+    else:
+        body = f"🔢 *{wallet.account_number}*\n🏛️ {wallet.bank_name}"
+    reply(
+        msisdn,
+        "🏦 *Add money to your wallet*\n\n"
+        "Transfer to your dedicated Zitch account from any bank — your wallet is "
+        "credited automatically, usually within seconds:\n\n"
+        f"{body}\n"
+        f"👤 {wallet.account_name}",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -968,6 +1008,9 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
 
     if name == "check_balance":
         _do_balance(user, msisdn)
+        return True
+    if name == "add_money":
+        _do_add_money(user, msisdn)
         return True
     if name == "transfer":
         amt, acct, bank = p.get("amount"), p.get("account_number"), p.get("bank_name")

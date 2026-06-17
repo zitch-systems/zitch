@@ -36,6 +36,47 @@ def get_or_create_wallet(user) -> Wallet:
     return wallet
 
 
+def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
+    """Reserve a dedicated virtual account for the user's wallet, exactly once.
+
+    Idempotent: returns immediately if the wallet already carries a number, so it
+    is safe to call from every KYC path. Best-effort — a provider failure leaves
+    the wallet numberless (the caller logs) and it is retried on the next KYC
+    action. Monnify needs a BVN/NIN to mint a dedicated account, so pass the raw
+    value while it is still in hand at verification time.
+    """
+    from utility.providers import get_reserved_account, reserve_account
+
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return wallet
+
+    reference = f"ZITCH-WALLET-{user.id}"
+    name = (user.get_full_name() or user.phone or "Zitch user").strip()
+    email = user.email or f"{user.phone}@zitch.app"
+
+    result = reserve_account(reference, name, email, name, bvn=bvn, nin=nin)
+    if not result.get("success"):
+        # A duplicate accountReference means a prior attempt reserved the account
+        # but we never persisted it — fetch rather than re-create (which Monnify
+        # rejects). If that also fails, leave the wallet numberless to retry later.
+        existing = get_reserved_account(reference)
+        if not existing.get("success"):
+            return wallet
+        result = existing
+
+    wallet.account_number = result.get("account_number", "")
+    wallet.bank_name = result.get("bank_name", "")
+    wallet.account_name = result.get("account_name", "") or name
+    wallet.account_reference = result.get("reference", "") or reference
+    wallet.bank_accounts = result.get("accounts", []) or []
+    wallet.save(update_fields=[
+        "account_number", "bank_name", "account_name", "account_reference",
+        "bank_accounts", "updated",
+    ])
+    return wallet
+
+
 @db_transaction.atomic
 def debit(user, amount, service: str, meta: dict | None = None, reference: str | None = None,
           idempotency_key: str = "") -> Transaction:
@@ -264,6 +305,56 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     intent.amount = amount
     intent.save(update_fields=["status", "credited", "amount", "updated"])
     return txn
+
+
+@db_transaction.atomic
+def settle_reserved_funding(transaction_reference: str, amount, user) -> Transaction | None:
+    """Credit a wallet for an inbound bank transfer to its reserved account, once.
+
+    Keyed on Monnify's transactionReference (unique per payment): the ledger
+    row's unique `reference` is the idempotency guard, so a redelivered webhook
+    is a no-op rather than a double-credit. Returns the credit row, or None if
+    the payment was already applied (or the inputs are incomplete).
+    """
+    if not transaction_reference or amount is None:
+        return None
+    if Transaction.objects.filter(reference=transaction_reference).exists():
+        return None
+    try:
+        return credit(
+            user, amount, "Wallet funding",
+            meta={"reference": transaction_reference, "channel": "reserved_account"},
+            reference=transaction_reference,
+        )
+    except IntegrityError:
+        # Raced duplicate webhook slipped past the exists() check — the unique
+        # reference rejected it; the balance bump is rolled back to the savepoint.
+        return None
+
+
+def credit_reserved_account_funding(event_data: dict) -> Transaction | None:
+    """Map a Monnify RESERVED_ACCOUNT funding event to a wallet and credit it.
+
+    Resolves the wallet by our accountReference (product.reference), falling back
+    to the destination account number, then credits idempotently. Returns the
+    credit row, or None when the account isn't ours / already credited.
+    """
+    product = event_data.get("product", {}) or {}
+    wallet = None
+    account_ref = product.get("reference", "")
+    if account_ref:
+        wallet = Wallet.objects.filter(account_reference=account_ref).first()
+    if wallet is None:
+        dest = event_data.get("destinationAccountInformation", {}) or {}
+        number = dest.get("accountNumber", "")
+        if number:
+            wallet = Wallet.objects.filter(account_number=number).first()
+    if wallet is None:
+        return None
+    amount = event_data.get("amountPaid")
+    if amount is None:
+        amount = event_data.get("settlementAmount")
+    return settle_reserved_funding(event_data.get("transactionReference", ""), amount, wallet.user)
 
 
 @db_transaction.atomic
