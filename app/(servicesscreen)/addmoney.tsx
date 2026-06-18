@@ -1,40 +1,31 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
-import * as WebBrowser from 'expo-web-browser';
 import * as Clipboard from 'expo-clipboard';
-import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
+import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
-import { Screen, Header, Field, Btn, money, Naira } from '@/components/design/ui';
-import { Label, QuickAmounts } from '@/components/design/flowkit';
-import Receipt from '@/components/design/Receipt';
+import { Loading } from '@/components/design/Loading';
+import { Screen, Header, Btn } from '@/components/design/ui';
+import { Label } from '@/components/design/flowkit';
+import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
-
-const FUND_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
+// Funding is bank-transfer only: the user transfers to their dedicated Zitch
+// (Monnify reserved) account and the wallet is credited automatically by the
+// webhook — no card checkout. The account only exists once KYC (BVN/NIN) is
+// done, so until then we point the user to verification.
 const AddMoney = () => {
   const { c } = useTheme();
-  const { reload } = useWallet();
-  const [token, setToken] = useState('');
-  const [amt, setAmt] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
-  const [funded, setFunded] = useState('0');
+  const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-
-  // A user's dedicated Zitch account number (Monnify reserved account) — funding
-  // it by bank transfer credits the wallet automatically via webhook, no checkout.
-  // Only present once KYC (BVN/NIN) is done; otherwise we just show the card flow.
   useEffect(() => {
     apiJson('/api/wallet/account/')
       .then((r) => { if (r?.success && r.account_number) setAccount(r as DediAccount); })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
   const copyAccount = async () => {
@@ -43,55 +34,11 @@ const AddMoney = () => {
     notify('Copied', 'Account number copied to clipboard');
   };
 
-  const amount = Number(amt || 0);
-
-  const fund = async () => {
-    if (amount < 100) {
-      notify('Error', 'Minimum funding amount is ₦100');
-      return;
-    }
-    setBusy(true);
-    try {
-      // 1. initialize -> get reference + checkout url
-      const initRes = await apiJson('/api/fund/initialize/', { amount: amt });
-
-      if (!initRes.success) {
-        notify('Error', initRes.message || 'Could not start payment');
-        return;
-      }
-
-      // 2. open Monnify checkout (skipped in mock mode where url is mock://)
-      const url = initRes.authorization_url || '';
-      if (url && url.startsWith('http')) {
-        await WebBrowser.openBrowserAsync(url);
-      }
-
-      // 3. verify -> credits the wallet once confirmed
-      const verifyRes = await apiJson('/api/fund/verify/', { reference: initRes.reference });
-
-      if (verifyRes.success) {
-        setFunded(verifyRes.wallet ?? '0');
-        setDone(true);
-        reload();
-      } else {
-        notify('Payment not confirmed', verifyRes.message || 'We could not confirm your payment yet.');
-      }
-    } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (done) {
+  if (loading) {
     return (
-      <Screen scroll={false}>
-        <Receipt
-          title="Wallet funded"
-          message={`${money(amount)} has been added to your Zitch wallet.`}
-          rows={[['Amount', money(amount)], ['Method', 'Card / Bank'], ['New balance', money(Number(funded)), true]]}
-          onDone={() => router.replace('/home')}
-        />
+      <Screen>
+        <Header title="Add money" onBack={() => router.back()} />
+        <Loading />
       </Screen>
     );
   }
@@ -100,48 +47,58 @@ const AddMoney = () => {
     <Screen>
       <Header title="Add money" onBack={() => router.back()} />
 
-      {account && (
-        <View style={{ marginBottom: 22 }}>
+      {account ? (
+        <>
           <Label>Fund by bank transfer</Label>
-          <View style={{ backgroundColor: c.surface, borderRadius: 16, borderWidth: 1, borderColor: c.line, padding: 16 }}>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
-              Transfer to this account from any bank — your wallet is credited automatically.
+          <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
+            <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
+              Transfer any amount to this account from any bank app — your Zitch wallet is credited
+              automatically, usually within seconds.
             </Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-              <View>
-                <Text style={{ fontSize: 22, color: c.ink1, fontFamily: font.bold, letterSpacing: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5 }}>
                   {account.account_number}
                 </Text>
-                <Text style={{ fontSize: 13, color: c.ink2, fontFamily: font.regular, marginTop: 2 }}>
+                <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.medium, marginTop: 4 }}>
                   {account.bank_name}{account.account_name ? ` · ${account.account_name}` : ''}
                 </Text>
               </View>
-              <Pressable onPress={copyAccount} hitSlop={10} style={{ backgroundColor: c.surface2, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 14, borderWidth: 1, borderColor: c.line }}>
-                <Text style={{ fontSize: 13, color: c.brand, fontFamily: font.bold }}>Copy</Text>
+              <Pressable
+                onPress={copyAccount}
+                hitSlop={10}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(15,162,149,.12)', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14 }}
+              >
+                <ZIcon name="copy" size={15} color={c.brand} />
+                <Text style={{ fontSize: 13.5, color: c.brand, fontFamily: font.bold }}>Copy</Text>
               </Pressable>
             </View>
           </View>
-          <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 14, textAlign: 'center', fontFamily: font.regular }}>
-            Or fund instantly with your card below
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 18, paddingHorizontal: 4 }}>
+            <ZIcon name="check" size={16} color={c.lime} stroke={2.6} />
+            <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
+              Save this account — it's permanently yours. Transfers reflect automatically, no need to confirm anything here.
+            </Text>
+          </View>
+        </>
+      ) : (
+        <View style={{ alignItems: 'center', paddingTop: 40, paddingHorizontal: 16 }}>
+          <View style={{ width: 84, height: 84, borderRadius: 26, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="bank" size={40} color={c.brand} />
+          </View>
+          <Text style={{ fontSize: 19, color: c.ink1, fontFamily: font.extrabold, marginTop: 22, textAlign: 'center' }}>
+            Get your Zitch account number
           </Text>
+          <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
+            Verify your BVN or NIN to receive a dedicated account you can fund by bank transfer from
+            any bank — instantly, with no card needed. If you've just verified, it may take a moment
+            to appear.
+          </Text>
+          <View style={{ height: 28 }} />
+          <Btn label="Verify my identity" icon="lock" onPress={() => router.push('/kyc')} />
         </View>
       )}
-
-      <Label>Choose amount</Label>
-      <QuickAmounts amounts={FUND_AMOUNTS} value={amt} onPick={setAmt} />
-      <Field
-        label="Or enter amount"
-        value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
-        placeholder="0.00"
-        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-      />
-      <View style={{ height: 24 }} />
-      <Btn label={amount > 0 ? `Fund ${money(amount)}` : 'Fund wallet'} icon="plus" disabled={busy || amount < 100} onPress={fund} />
-      <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 14, textAlign: 'center', fontFamily: font.regular }}>
-        Secured by Monnify · cards & bank transfer
-      </Text>
     </Screen>
   );
 };
