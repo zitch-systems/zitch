@@ -38,28 +38,32 @@ workflows:
           ./gradlew assembleRelease
     artifacts:
       - android/app/build/outputs/**/*.apk
-    # Auto-build when app code lands on main. The changeset filter skips
-    # landing/docs/backend-only changes so it doesn't burn free build minutes on
-    # changes that don't affect the APK. Trigger manually anytime from the
-    # dashboard ("Start new build" → android-apk).
+    # Auto-build when app code lands on main. Trigger manually anytime from the
+    # dashboard ("Start new build" → android-apk). The changeset filter that
+    # avoids burning free build minutes on irrelevant changes lives in the
+    # workflow-level `when:` below.
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
           include: true
-      when:
-        changeset:
-          includes:
-            - 'app'
-            - 'components'
-            - 'lib'
-            - 'assets'
-            - 'package.json'
-            - 'package-lock.json'
-            - 'app.json'
-            - 'eas.json'
-            - 'codemagic.yaml'
+    # `when` is a workflow-level key (sibling of `triggering`, not a child of
+    # it). With a changeset filter it skips webhook-triggered builds whose
+    # changes don't touch any of these paths, so landing/docs/backend-only
+    # changes don't burn free build minutes.
+    when:
+      changeset:
+        includes:
+          - 'app'
+          - 'components'
+          - 'lib'
+          - 'assets'
+          - 'package.json'
+          - 'package-lock.json'
+          - 'app.json'
+          - 'eas.json'
+          - 'codemagic.yaml'
     # Optional — email the APK link when the build finishes:
     # publishing:
     #   email:
