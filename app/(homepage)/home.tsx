@@ -41,11 +41,19 @@ const Home = () => {
   const { c, theme } = useTheme();
   const { balance, firstName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Refresh balance & activity whenever Home regains focus — after sign-in and
   // after returning from a transfer/purchase — so the dashboard never shows a
   // stale figure.
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  // Pull-to-refresh: re-fetch balance + activity (e.g. after a bank-transfer
+  // top-up the webhook just credited).
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await reload(); } finally { setRefreshing(false); }
+  }, [reload]);
 
   const copyAccount = async () => {
     if (!accountNumber) return;
@@ -54,7 +62,7 @@ const Home = () => {
   };
 
   return (
-    <Screen pad={false} tab>
+    <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
         <Pressable onPress={() => router.push('/me')}>

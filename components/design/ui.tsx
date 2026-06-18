@@ -5,6 +5,7 @@ import {
   TextInput,
   Pressable,
   ScrollView,
+  RefreshControl,
   Modal,
   StyleSheet,
   ViewStyle,
@@ -41,11 +42,16 @@ export const Screen = ({
   pad = true,
   scroll = true,
   tab = false,
+  onRefresh,
+  refreshing = false,
 }: {
   children: React.ReactNode;
   pad?: boolean;
   scroll?: boolean;
   tab?: boolean;
+  // Pass onRefresh to enable pull-to-refresh on the scroll view.
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
@@ -63,6 +69,11 @@ export const Screen = ({
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
+            refreshControl={
+              onRefresh
+                ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.brand} colors={[c.brand]} />
+                : undefined
+            }
             // Add the device's bottom safe-area inset so the last content (buttons,
             // PIN pad, list rows) clears the home indicator / gesture bar instead of
             // being cut off — fixes the "cut at the bottom" on installed builds.
