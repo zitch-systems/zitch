@@ -44,6 +44,9 @@ services:
         sync: false
       - key: MONNIFY_SOURCE_ACCOUNT
         sync: false
+      # Where Monnify returns the payer after a hosted-checkout top-up.
+      - key: MONNIFY_REDIRECT_URL
+        sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).
@@ -67,8 +70,35 @@ services:
         sync: false
       - key: PREMBLY_APP_ID
         sync: false
-      # Virtual card issuer (provider TBD).
+      # Virtual card issuer (provider TBD — no integration wired yet, so the
+      # card feature stays mocked until an issuer is chosen and coded).
       - key: CARD_ISSUER_API_KEY
+        sync: false
+      # FX rail — Fincra (multi-currency Convert). Without these the Convert
+      # screen fails closed in production. NGN/USD/GBP/CAD settle; CNY is
+      # quote-only. BASE_URL defaults to https://api.fincra.com in code.
+      - key: FINCRA_SECRET_KEY
+        sync: false
+      - key: FINCRA_BUSINESS_ID
+        sync: false
+      # WhatsApp channel — Meta Cloud API. Blank TOKEN => channel stays mocked.
+      # Set the same VERIFY_TOKEN in the Meta app dashboard; APP_SECRET enables
+      # inbound webhook HMAC verification.
+      - key: WHATSAPP_TOKEN
+        sync: false
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
+      - key: WHATSAPP_BUSINESS_NUMBER
+        sync: false
+      # WhatsApp AI intent layer (optional). Blank => the deterministic router
+      # handles everything; the model only proposes intents, never moves money.
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
         sync: false
 
   # Daily Fixed Save maturity sweep — pays out matured plans, including for
