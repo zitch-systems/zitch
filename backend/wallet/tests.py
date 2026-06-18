@@ -13,7 +13,7 @@ from django.test import Client, TestCase
 from accounts.models import AccessToken
 
 from .forex import FxError, create_fx_quote
-from .models import FundingIntent, Transaction
+from .models import FundingIntent, Transaction, Wallet
 from .services import credit, get_or_create_wallet
 
 User = get_user_model()
@@ -140,6 +140,22 @@ class WalletTests(TestCase):
         bob, _ = make_user("08020000002", "bob@zitch.test")
         res, body = self.post("/api/transfer/send/", {
             "access_token": self.token, "identifier": "08020000002",
+            "amount": "5000", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertEqual(self.balance(self.user), Decimal("15000"))
+        self.assertEqual(self.balance(bob), Decimal("5000"))
+
+    def test_transfer_to_recipient_without_wallet_row(self):
+        """A recipient only gets a wallet when they first authenticate, so an
+        admin-created/seeded user can exist with no wallet row. Sending to them
+        must mint one and move the money, not 500 with a KeyError."""
+        bob = User.objects.create(username="08020000099", phone="08020000099",
+                                  email="bob2@zitch.test")
+        self.assertFalse(Wallet.objects.filter(user=bob).exists())
+        res, body = self.post("/api/transfer/send/", {
+            "access_token": self.token, "identifier": "08020000099",
             "amount": "5000", "transaction_pin": "1234",
         })
         self.assertEqual(res.status_code, 200)
