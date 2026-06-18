@@ -23,7 +23,7 @@ from common.http import api, fail, ok, require_user
 from .models import Broadcast, BroadcastRecipient, ConversationState, WaMessageLog, WhatsAppLink
 from .ops import record_audit, send_broadcast
 from .providers import verify_signature
-from .router import handle_inbound, is_awaiting_pin, reply
+from .router import handle_inbound, is_awaiting_bvn, is_awaiting_pin, reply
 
 LINK_CODE_TTL = timedelta(minutes=10)
 
@@ -127,7 +127,12 @@ def _process(msg: dict) -> None:
     # Mask a PIN before it ever touches the log/monitor — by flow state AND by
     # shape, so a PIN typed out-of-band is never stored in clear.
     looks_like_pin = bool(is_text and _PIN_RE.match(body or ""))
-    logged = "[PIN]" if (is_awaiting_pin(frm) or looks_like_pin) else (body or f"[{msg.get('type', 'non-text')}]")
+    if is_awaiting_pin(frm) or looks_like_pin:
+        logged = "[PIN]"
+    elif is_awaiting_bvn(frm):
+        logged = "[BVN]"  # keep the BVN out of the message log, like the PIN
+    else:
+        logged = body or f"[{msg.get('type', 'non-text')}]"
 
     # Dedupe on Meta's message id: the unique row is the gate against a
     # re-delivered webhook (Meta retries until it gets a 200).

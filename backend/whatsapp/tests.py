@@ -189,14 +189,39 @@ class ChannelTests(TestCase):
         self.inbound("6", "am2")
         self.assertIn(get_or_create_wallet(self.user).account_number, self.last_reply())
 
-    def test_add_money_without_kyc_points_to_verification(self):
+    def test_add_money_without_account_onboards_via_bvn(self):
+        # An unverified, account-less user funds for the first time: WhatsApp
+        # collects the BVN and Monnify (mock) mints the account in-chat.
         self.user.bvn_verified = False
         self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         self.link()
         self.inbound("fund", "am3")
         self.assertFalse(get_or_create_wallet(self.user).account_number)
-        self.assertIn("verify your bvn", self.last_reply().lower())
+        self.assertIn("bvn", self.last_reply().lower())
+        self.assertTrue(PendingAction.objects.filter(
+            msisdn=MSISDN, action_type="add_account", state="bvn").exists())
+
+        # Send the 11-digit BVN -> account is minted and shown.
+        self.inbound("22211100099", "am4")
+        wallet = get_or_create_wallet(self.user)
+        self.assertTrue(wallet.account_number)
+        self.assertIn(wallet.account_number, self.last_reply())
+        # The BVN must be masked in the inbound log — never stored in clear.
+        self.assertFalse(WaMessageLog.objects.filter(direction=WaMessageLog.IN, text="22211100099").exists())
+        self.assertTrue(WaMessageLog.objects.filter(direction=WaMessageLog.IN, text="[BVN]").exists())
+
+    def test_add_money_rejects_bad_bvn_and_keeps_flow(self):
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+        self.link()
+        self.inbound("fund", "amb1")
+        self.inbound("123", "amb2")  # too short
+        self.assertIn("11-digit", self.last_reply())
+        self.assertFalse(get_or_create_wallet(self.user).account_number)
+        self.assertTrue(PendingAction.objects.filter(
+            msisdn=MSISDN, action_type="add_account", state="bvn").exists())
 
     # --- transfer ---
     def _run_transfer(self, pin="1234", start_mid="t"):

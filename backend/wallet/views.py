@@ -72,6 +72,7 @@ def wallet_account(request):
 
 
 @api
+@ratelimit("account_create", limit=5, window=60)
 @require_user
 def wallet_account_create(request):
     """POST /api/wallet/account/create/ {access_token, bvn?, nin?}
