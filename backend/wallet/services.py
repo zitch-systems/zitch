@@ -369,6 +369,13 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     """
     amount = Decimal(str(amount))
 
+    # Make sure both wallet rows exist before we lock them. A recipient only gets
+    # a wallet when they first authenticate, so a transfer to a user who exists
+    # but has never signed in (admin-created/seeded account) would otherwise miss
+    # from the locked read below and raise KeyError -> 500 with nothing moved.
+    get_or_create_wallet(sender)
+    get_or_create_wallet(recipient)
+
     # Lock both wallets in a deterministic order (by user id) to prevent
     # deadlocks when two users transfer to each other simultaneously.
     first, second = sorted([sender.id, recipient.id])
