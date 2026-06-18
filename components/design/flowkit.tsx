@@ -204,6 +204,10 @@ export const ConfirmSheet = ({
   onPay: () => void;
 }) => {
   const { c } = useTheme();
+  // Never let a wallet-funded payment proceed past confirm when the funds (or,
+  // for a loan, the available credit) can't cover it — the server rejects it
+  // anyway, but the user should be blocked here, not after entering their PIN.
+  const insufficient = total > balance;
   return (
     <Sheet open={open} onClose={onClose}>
       <View style={{ alignItems: 'center', marginBottom: 18 }}>
@@ -227,7 +231,12 @@ export const ConfirmSheet = ({
           <ZIcon name="check" size={18} color={c.brand} />
         </View>
       </View>
-      <Btn label={`Pay ${money(total)}`} icon="lock" onPress={onPay} />
+      <Btn
+        label={insufficient ? 'Insufficient balance' : `Pay ${money(total)}`}
+        icon="lock"
+        onPress={onPay}
+        disabled={insufficient}
+      />
     </Sheet>
   );
 };
