@@ -431,20 +431,35 @@ def _do_add_money(user, msisdn: str) -> None:
     )
 
 
+BVN_MAX_ATTEMPTS = 3
+
+
 def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
     """Slot-filling step for in-chat virtual-account onboarding: receive the BVN,
-    hand it to Monnify (which verifies it and issues the NUBAN), show the account."""
+    hand it to Monnify (which verifies it and issues the NUBAN), show the account.
+
+    Verification attempts are capped (like the PIN flow): each BVN Monnify
+    rejects counts toward BVN_MAX_ATTEMPTS, after which the flow aborts — so a
+    linked number can't brute-force BVNs against Monnify's name match."""
     bvn = re.sub(r"\D", "", text)
     if len(bvn) != 11:
+        # Malformed input is guidance, not a verification attempt — don't count it.
         return reply(msisdn, 'That doesn\'t look like an 11-digit BVN. Please send your '
                              '*11-digit BVN*, or reply "cancel".')
     wallet = ensure_reserved_account(user, bvn=bvn)
-    if not wallet.account_number:
-        # Keep the flow open so they can retry with a corrected number.
-        return reply(msisdn, "Hmm, we couldn't create your account with that BVN. Check it's "
-                             'correct and matches your name, then send it again — or reply "cancel".')
-    _clear_actions(msisdn)
-    return _send_account_details(msisdn, wallet, intro="✅ *Your Zitch account is ready!*")
+    if wallet.account_number:
+        _clear_actions(msisdn)
+        return _send_account_details(msisdn, wallet, intro="✅ *Your Zitch account is ready!*")
+
+    attempts = int(pa.payload.get("bvn_attempts", 0)) + 1
+    if attempts >= BVN_MAX_ATTEMPTS:
+        _clear_actions(msisdn)
+        return reply(msisdn, "We still couldn't create your account. Double-check your BVN and "
+                             'try again later from the menu, or contact support. Reply "menu" for options.')
+    pa.payload["bvn_attempts"] = attempts
+    _touch(pa, payload=pa.payload)
+    return reply(msisdn, "Hmm, we couldn't create your account with that BVN. Check it's "
+                         'correct and matches your name, then send it again — or reply "cancel".')
 
 
 

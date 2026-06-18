@@ -223,6 +223,22 @@ class ChannelTests(TestCase):
         self.assertTrue(PendingAction.objects.filter(
             msisdn=MSISDN, action_type="add_account", state="bvn").exists())
 
+    @patch("whatsapp.router.ensure_reserved_account")
+    def test_add_money_bvn_attempts_are_capped(self, mock_reserve):
+        # Monnify keeps rejecting (numberless wallet) — the flow must abort after
+        # BVN_MAX_ATTEMPTS so a linked number can't brute-force BVNs.
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+        mock_reserve.return_value = get_or_create_wallet(self.user)  # never gets a number
+        self.link()
+        self.inbound("fund", "cap1")
+        for i in range(3):
+            self.inbound("22211100099", f"cap{i + 2}")
+        self.assertIn("try again later", self.last_reply().lower())
+        self.assertFalse(PendingAction.objects.filter(
+            msisdn=MSISDN, action_type="add_account").exists())  # flow aborted
+
     # --- transfer ---
     def _run_transfer(self, pin="1234", start_mid="t"):
         self.link()
