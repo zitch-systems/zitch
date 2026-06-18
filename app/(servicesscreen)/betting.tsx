@@ -34,7 +34,7 @@ const Betting = () => {
   useEffect(() => {
     fetch(`${baseUrl}/api/betting/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then((r) => r.json())
-      .then((res) => { if (res.platforms) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
+      .then((res) => { if (Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
       .catch(() => {});
   }, []);
 

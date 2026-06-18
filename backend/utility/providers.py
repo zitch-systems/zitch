@@ -195,6 +195,13 @@ def reserve_account(account_reference: str, account_name: str, customer_email: s
     fabricates a deterministic NUBAN so the funding flow is testable offline.
     """
     if not payments_live():
+        # Never fabricate an account in production. A mock NUBAN looks real in the
+        # app, so a user would transfer real money to a number Monnify never
+        # issued — funds that vanish with no webhook to credit them. Fail closed
+        # so the wallet stays numberless and the UI shows "not available yet"
+        # instead of a dead account. (Dev/test still get a deterministic mock.)
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Reserved accounts are not configured"}
         seed = int(hashlib.sha256(account_reference.encode()).hexdigest(), 16)
         num = "99" + f"{seed % 10**8:08d}"
         return {

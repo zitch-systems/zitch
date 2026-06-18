@@ -79,7 +79,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         setAvatar(String(balRes.value.user_avatar ?? ''));
       }
       if (txRes.status === 'fulfilled' && txRes.value?.status) {
-        const list = txRes.value.all_site_transactions ?? [];
+        const list = Array.isArray(txRes.value.all_site_transactions) ? txRes.value.all_site_transactions : [];
         setTxns(list.map(mapTxn));
       }
     } catch {

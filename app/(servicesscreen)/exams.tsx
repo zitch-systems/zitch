@@ -36,7 +36,7 @@ const Exams = () => {
   useEffect(() => {
     fetch(`${baseUrl}/api/exams/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then((r) => r.json())
-      .then((res) => { if (res.exams) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
+      .then((res) => { if (Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
       .catch(() => {});
   }, []);
 

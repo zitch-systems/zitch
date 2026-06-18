@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
-import { useTheme, font, radius } from '@/lib/theme';
+import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 
 // Section label with optional right-aligned action (e.g. "See all").
 export const SectionLabel = ({ children, action, onAction }: { children: string; action?: string; onAction?: () => void }) => {
@@ -86,6 +86,7 @@ export const ServiceTile = ({
   round?: boolean;
 }) => {
   const { c, theme } = useTheme();
+  const accent = ICON_COLORS[icon] ?? c.brand;
   return (
     <Pressable onPress={onPress} style={{ alignItems: 'center', gap: 7 }}>
       <View>
@@ -96,10 +97,10 @@ export const ServiceTile = ({
             borderRadius: round ? 27 : 18,
             alignItems: 'center',
             justifyContent: 'center',
-            backgroundColor: theme === 'dark' ? 'rgba(15,162,149,.18)' : '#E6F7F4',
+            backgroundColor: iconTint(accent, theme === 'dark'),
           }}
         >
-          <ZIcon name={icon} size={27} color={round ? c.brandDeep : c.brand} stroke={2} />
+          <ZIcon name={icon} size={27} color={accent} stroke={2} />
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>
