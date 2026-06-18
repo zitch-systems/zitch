@@ -1,4 +1,5 @@
 import json
+import logging
 
 from django.views.decorators.csrf import csrf_exempt
 
@@ -21,6 +22,8 @@ from .services import (
     settle_funding,
     transfer,
 )
+
+log = logging.getLogger("wallet")
 
 
 @api
@@ -205,24 +208,35 @@ def fund_webhook(request):
         return fail("Method not allowed", status=405)
     signature = request.headers.get("monnify-signature", "")
     if not payment_verify_signature(request.body, signature):
+        # The #1 reason a real transfer never credits: Monnify is calling but the
+        # hash doesn't match (wrong MONNIFY_SECRET_KEY) or no signature header.
+        log.warning("monnify_webhook_bad_signature has_header=%s body_len=%s",
+                    bool(signature), len(request.body or b""))
         return fail("Invalid signature", status=401)
     try:
         event = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
         return fail("Invalid payload", status=400)
 
-    if event.get("eventType") == "SUCCESSFUL_TRANSACTION":
+    event_type = event.get("eventType")
+    if event_type == "SUCCESSFUL_TRANSACTION":
         data = event.get("eventData", {}) or {}
+        product_type = (data.get("product", {}) or {}).get("type")
+        log.info("monnify_webhook event=%s product=%s txref=%s amount=%s",
+                 event_type, product_type, data.get("transactionReference", ""),
+                 data.get("amountPaid"))
         # A transfer into a user's dedicated (reserved) account funds the wallet
         # with no FundingIntent behind it — credit it via the account mapping.
         # A checkout/init-transaction payment settles its FundingIntent as before.
-        if (data.get("product", {}) or {}).get("type") == "RESERVED_ACCOUNT":
+        if product_type == "RESERVED_ACCOUNT":
             credit_reserved_account_funding(data)
         else:
             reference = data.get("paymentReference", "")
             amount = data.get("amountPaid")  # Monnify reports naira
             if reference:
                 settle_funding(reference, amount)
+    else:
+        log.info("monnify_webhook ignored_event=%s", event_type)
     from whatsapp.ops import record_audit
     record_audit("webhook.monnify", actor_type="system",
                  target=(event.get("eventData") or {}).get("paymentReference", ""),
