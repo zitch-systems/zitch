@@ -14,7 +14,7 @@ from accounts.models import AccessToken
 
 from .forex import FxError, create_fx_quote
 from .models import FundingIntent, Transaction, Wallet
-from .services import credit, get_or_create_wallet
+from .services import credit, credit_reserved_account_funding, get_or_create_wallet
 
 User = get_user_model()
 
@@ -387,3 +387,48 @@ class IdempotencyTests(TestCase):
         with self.assertRaises(DuplicateTransaction):
             debit(self.user, Decimal("100"), "X", idempotency_key="k-raw-1")
         self.assertEqual(self.bal(), Decimal("19900"))  # the second debit rolled back
+
+
+class ReservedFundingTests(TestCase):
+    """Reserved (virtual) account funding: a wallet maps 1:1 to its account, and
+    an inbound transfer credits the right wallet exactly once."""
+
+    def test_account_number_must_be_unique(self):
+        a, _ = make_user("08077700001", "ra@zitch.test")
+        b, _ = make_user("08077700002", "rb@zitch.test")
+        wa = get_or_create_wallet(a)
+        wa.account_number = "9921000001"
+        wa.save()
+        wb = get_or_create_wallet(b)
+        wb.account_number = "9921000001"
+        with self.assertRaises(IntegrityError):
+            with db_transaction.atomic():
+                wb.save()
+
+    def test_reserved_funding_credits_correct_wallet_by_account_number(self):
+        u, _ = make_user("08077700003", "rc@zitch.test")
+        w = get_or_create_wallet(u)
+        w.account_number = "9921000099"
+        w.account_reference = "ZITCH-WALLET-X"
+        w.save()
+        event = {
+            "product": {"type": "RESERVED_ACCOUNT", "reference": "does-not-match"},
+            "destinationAccountInformation": {"accountNumber": "9921000099"},
+            "transactionReference": "MNFY|TEST|001",
+            "amountPaid": "5000.00",
+        }
+        txn = credit_reserved_account_funding(event)
+        self.assertIsNotNone(txn)
+        self.assertEqual(get_or_create_wallet(u).balance, Decimal("5000.00"))
+        # Redelivered webhook (same transactionReference) must not double-credit.
+        self.assertIsNone(credit_reserved_account_funding(event))
+        self.assertEqual(get_or_create_wallet(u).balance, Decimal("5000.00"))
+
+    def test_reserved_funding_unknown_account_is_ignored(self):
+        event = {
+            "product": {"type": "RESERVED_ACCOUNT", "reference": "nobody"},
+            "destinationAccountInformation": {"accountNumber": "0000000000"},
+            "transactionReference": "MNFY|TEST|002",
+            "amountPaid": "1000.00",
+        }
+        self.assertIsNone(credit_reserved_account_funding(event))

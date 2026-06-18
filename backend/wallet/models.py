@@ -25,6 +25,22 @@ class Wallet(models.Model):
             # Defence-in-depth behind the service-layer balance checks: the DB
             # itself rejects a negative balance, so no bug or race can overdraw.
             models.CheckConstraint(check=models.Q(balance__gte=0), name="wallet_balance_non_negative"),
+            # A reserved (virtual) account belongs to exactly one wallet. The
+            # funding webhook maps an inbound transfer to a wallet by these, so
+            # the DB must guarantee they're unique — otherwise a bug or bad data
+            # could credit the wrong user, or two wallets could be provisioned
+            # with the same account. Scoped to non-empty so un-provisioned
+            # wallets (the default "") are unconstrained.
+            models.UniqueConstraint(
+                fields=["account_number"],
+                condition=~models.Q(account_number=""),
+                name="uniq_wallet_account_number",
+            ),
+            models.UniqueConstraint(
+                fields=["account_reference"],
+                condition=~models.Q(account_reference=""),
+                name="uniq_wallet_account_reference",
+            ),
         ]
 
     def __str__(self):
