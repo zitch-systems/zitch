@@ -118,6 +118,33 @@ export const dark: ThemeTokens = {
   violet: palette.violet,
 };
 
+// Per-icon accent colours so each service/transaction reads as its own
+// colourful tile instead of one flat brand tint. Keyed by ZIcon name; anything
+// unlisted falls back to the brand colour so new icons still look intentional.
+export const ICON_COLORS: Record<string, string> = {
+  airtime: '#0FA295',
+  data: '#2D7FF9',
+  dice: '#F5A623',     // betting
+  tv: '#7A5CFF',       // cable
+  fixed: '#16A34A',    // save
+  loan: '#FF3B3B',
+  jamb: '#5B6CFF',     // exams
+  bills: '#FB8C00',    // electricity
+  send: '#0FA295',     // transfer
+  withdraw: '#16A34A',
+  insurance: '#00B8D4',
+  remita: '#7A5CFF',
+  movie: '#FF4D8D',
+  convert: '#00B8D4',
+  invite: '#F5A623',
+  spark: '#00B51D',
+  more: '#64748B',
+};
+
+// A soft translucent tint of an accent (hex + alpha) that sits cleanly on both
+// light and dark surfaces, so we don't need a separate colour per theme.
+export const iconTint = (hex: string, dark: boolean) => hex + (dark ? '33' : '1F');
+
 // ---- Radii ----
 export const radius = { sm: 12, md: 18, lg: 24, xl: 30, pill: 999 };
 

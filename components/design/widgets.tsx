@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
-import { useTheme, font, radius } from '@/lib/theme';
+import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 
 // Section label with optional right-aligned action (e.g. "See all").
 export const SectionLabel = ({ children, action, onAction }: { children: string; action?: string; onAction?: () => void }) => {
@@ -70,33 +70,6 @@ export const Badge = ({ label, hot }: { label: string; hot?: boolean }) => {
 };
 
 // 48px rounded icon tile used by the services grid + quick actions.
-// Per-icon accent colours so each service reads as its own colourful tile
-// (Opay-style) instead of one flat brand tint. Anything not listed falls back
-// to the brand colour, so a new icon still looks intentional.
-export const ICON_COLORS: Record<string, string> = {
-  airtime: '#0FA295',
-  data: '#2D7FF9',
-  dice: '#F5A623',     // betting
-  tv: '#7A5CFF',       // cable
-  fixed: '#16A34A',    // save
-  loan: '#FF3B3B',
-  jamb: '#5B6CFF',     // exams
-  bills: '#FB8C00',    // electricity
-  send: '#0FA295',     // transfer
-  withdraw: '#16A34A',
-  insurance: '#00B8D4',
-  remita: '#7A5CFF',
-  movie: '#FF4D8D',
-  convert: '#00B8D4',
-  invite: '#F5A623',
-  spark: '#00B51D',
-  more: '#64748B',
-};
-
-// A soft translucent tint of the accent (hex + alpha) that sits cleanly on both
-// light and dark surfaces, so we don't need a separate colour per theme.
-const tintFor = (hex: string, dark: boolean) => hex + (dark ? '33' : '1F');
-
 export const ServiceTile = ({
   icon,
   label,
@@ -124,7 +97,7 @@ export const ServiceTile = ({
             borderRadius: round ? 27 : 18,
             alignItems: 'center',
             justifyContent: 'center',
-            backgroundColor: tintFor(accent, theme === 'dark'),
+            backgroundColor: iconTint(accent, theme === 'dark'),
           }}
         >
           <ZIcon name={icon} size={27} color={accent} stroke={2} />

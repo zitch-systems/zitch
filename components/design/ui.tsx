@@ -16,7 +16,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import ZIcon from '@/components/design/ZIcon';
 import AmbientBackground from '@/components/design/AmbientBackground';
 import { Naira, NText } from '@/components/design/Naira';
-import { useTheme, font, radius, ThemeTokens } from '@/lib/theme';
+import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 import { isBiometricEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin } from '@/lib/secureStore';
@@ -562,13 +562,18 @@ export type Txn = {
 };
 
 export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPress?: () => void }) => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
   const inflow = txn.dir === 'in';
+  // Credits stay green; debits take their service's accent colour (airtime
+  // teal, data blue, …) so transaction lists read colourful instead of flat
+  // grey. Unmapped icons fall back to the neutral ink tone.
+  const accent = inflow ? c.lime : (ICON_COLORS[txn.icon] ?? c.ink2);
+  const tint = inflow ? 'rgba(0,181,29,.12)' : (ICON_COLORS[txn.icon] ? iconTint(ICON_COLORS[txn.icon], theme === 'dark') : c.surface3);
   const Wrap: any = onPress ? Pressable : View;
   return (
     <Wrap onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
-      <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: inflow ? 'rgba(0,181,29,.12)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-        <ZIcon name={txn.icon} size={20} color={inflow ? c.lime : c.ink2} stroke={2} />
+      <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
+        <ZIcon name={txn.icon} size={20} color={accent} stroke={2} />
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
