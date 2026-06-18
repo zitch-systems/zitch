@@ -93,7 +93,7 @@ export const ProviderGrid = ({
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginBottom: 18 }}>
       {items.map((it) => {
         const on = value === it.id;
-        const initials = it.name.replace(/[^A-Za-z0-9 ]/g, '').split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+        const initials = (it.name || '').replace(/[^A-Za-z0-9 ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
         return (
           <View key={it.id} style={{ width: `${100 / cols}%`, padding: 5 }}>
             <Pressable

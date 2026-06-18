@@ -88,7 +88,7 @@ const Cards = () => {
   };
 
   const frozen = card?.frozen ?? false;
-  const panGroups = reveal ? reveal.pan.replace(/(.{4})/g, '$1 ').trim() : '';
+  const panGroups = reveal?.pan ? String(reveal.pan).replace(/(.{4})/g, '$1 ').trim() : '';
 
   return (
     <Screen pad={false} tab>
