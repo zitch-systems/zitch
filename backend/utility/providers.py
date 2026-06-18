@@ -844,6 +844,10 @@ def _card_issuer_headers() -> dict:
 def issue_card(holder: str, customer_ref: str) -> dict:
     """Create a virtual card with the issuer. MOCK fabricates presentation data."""
     if not _card_issuer_live():
+        if mock_disabled_in_prod():
+            # Never fabricate a card in production — a fake PAN/last4 would look
+            # real in the app. Fail closed until a real issuer is configured.
+            return {"success": False, "message": "Card issuing is not configured"}
         return {
             "success": True, "mock": True,
             "card_token": "mock_" + secrets.token_hex(8),
@@ -876,6 +880,8 @@ def issue_card(holder: str, customer_ref: str) -> dict:
 def set_card_status(card_token: str, active: bool) -> dict:
     """Freeze/unfreeze a card with the issuer. MOCK always succeeds."""
     if not _card_issuer_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Card issuing is not configured"}
         return {"success": True, "mock": True}
     try:
         resp = requests.put(
@@ -894,6 +900,8 @@ def card_secure_details(card_token: str) -> dict:
     MOCK returns a deterministic-looking fake so the reveal UI works.
     """
     if not _card_issuer_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Card issuing is not configured"}
         seed = int(hashlib.sha256(card_token.encode()).hexdigest(), 16)
         pan = "5061" + "".join(str((seed >> (i * 4)) % 10) for i in range(12))
         cvv = f"{seed % 1000:03d}"
@@ -913,6 +921,10 @@ def card_secure_details(card_token: str) -> dict:
 def fund_card(card_token: str, amount) -> dict:
     """Top up an issued card from the funding source. MOCK succeeds."""
     if not _card_issuer_live():
+        if mock_disabled_in_prod():
+            # Fail closed: a fake success here would debit the real wallet to a
+            # card that doesn't exist (the caller refunds on this failure).
+            return {"success": False, "message": "Card issuing is not configured"}
         return {"success": True, "mock": True}
     try:
         resp = requests.post(

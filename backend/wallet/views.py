@@ -72,6 +72,54 @@ def wallet_account(request):
 
 
 @api
+@ratelimit("account_create", limit=5, window=60)
+@require_user
+def wallet_account_create(request):
+    """POST /api/wallet/account/create/ {access_token, bvn?, nin?}
+    -> {success, account_number, account_name, bank_name, bank_accounts}
+
+    Mints the user's dedicated funding account via Monnify's own onboarding:
+    the BVN/NIN is handed to Monnify, which verifies it and issues the NUBAN.
+    Lets a user get a funding account by entering their BVN here, without first
+    completing the separate in-app (Prembly) KYC flow.
+    """
+    user = request.user_obj
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:  # already provisioned — return it (idempotent)
+        return ok(
+            success=True,
+            account_number=wallet.account_number,
+            account_name=wallet.account_name,
+            bank_name=wallet.bank_name,
+            bank_accounts=wallet.bank_accounts or [],
+        )
+
+    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
+    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+    if len(bvn) != 11 and len(nin) != 11:
+        return fail("Enter your 11-digit BVN or NIN")
+
+    wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
+    if not wallet.account_number:
+        # Monnify rejected onboarding (wrong number, name mismatch, or the
+        # contract has no reserved-account product). The exact reason is logged
+        # server-side (monnify_reserve_failed).
+        return fail(
+            "We couldn't create your account. Check that your BVN/NIN is correct "
+            "and matches your name, then try again.",
+            status=502,
+        )
+    return ok(
+        success=True,
+        account_number=wallet.account_number,
+        account_name=wallet.account_name,
+        bank_name=wallet.bank_name,
+        bank_accounts=wallet.bank_accounts or [],
+        message="Your Zitch account is ready",
+    )
+
+
+@api
 @require_user
 def transaction_history(request):
     """POST /api/user-transaction-history/ {access_token}

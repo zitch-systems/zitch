@@ -261,8 +261,13 @@ export const ZItem = ({
   onPress?: () => void;
   last?: boolean;
 }) => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
   const Wrap: any = onPress ? Pressable : View;
+  // Per-icon accent so list rows (profile, settings, savings, loan…) read
+  // colourful — unless the caller overrides, or the icon isn't mapped.
+  const mapped = icon ? ICON_COLORS[icon] : undefined;
+  const accent = iconColor || mapped || c.brand;
+  const accentBg = iconBg || (mapped ? iconTint(mapped, theme === 'dark') : c.surface3);
   return (
     <Wrap
       onPress={onPress}
@@ -276,8 +281,8 @@ export const ZItem = ({
       }}
     >
       {icon && (
-        <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: iconBg || c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name={icon} size={21} color={iconColor || c.brand} stroke={2} />
+        <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name={icon} size={21} color={accent} stroke={2} />
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>

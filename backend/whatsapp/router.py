@@ -119,6 +119,14 @@ def is_awaiting_pin(msisdn: str) -> bool:
     return bool(ob and ob.step in ("pin", "pin_confirm"))
 
 
+def is_awaiting_bvn(msisdn: str) -> bool:
+    """True if the current flow expects a BVN next (the in-chat virtual-account
+    onboarding) — so the webhook masks it and the BVN never reaches the message
+    log in clear, the same protection PINs get."""
+    pa = _current_action(msisdn)
+    return bool(pa and pa.action_type == "add_account" and pa.state == "bvn")
+
+
 def parse_amount(text: str) -> Decimal | None:
     """Nigerian shorthand → amount. '5k'→5000, '2m'→2_000_000, '1,500'→1500."""
     t = text.strip().lower().replace(",", "").replace("₦", "").replace("ngn", "").strip()
@@ -384,23 +392,7 @@ def _do_balance(user, msisdn: str) -> None:
 # --------------------------------------------------------------------------- #
 # add money — the user's dedicated (reserved) account for bank-transfer funding
 # --------------------------------------------------------------------------- #
-def _do_add_money(user, msisdn: str) -> None:
-    """Show the user's dedicated Zitch account number so they can fund the wallet
-    by bank transfer (credited automatically by the Monnify webhook). Reserves one
-    lazily if KYC is done but no account exists yet; otherwise points to KYC."""
-    wallet = get_or_create_wallet(user)
-    if not wallet.account_number and (user.bvn_verified or user.nin_verified):
-        wallet = ensure_reserved_account(user)
-
-    if not wallet.account_number:
-        return reply(
-            msisdn,
-            "🏦 *Add money*\n\nTo get your own Zitch account number for funding by "
-            "bank transfer, first verify your BVN or NIN in the Zitch app. Once "
-            "verified, your number appears here automatically.\n\n"
-            "You can still receive money from other Zitch users any time.",
-        )
-
+def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
     accts = wallet.bank_accounts or []
     if len(accts) > 1:
         body = "\n".join(f"🔢 *{a.get('account_number')}* — {a.get('bank_name')}" for a in accts)
@@ -408,12 +400,67 @@ def _do_add_money(user, msisdn: str) -> None:
         body = f"🔢 *{wallet.account_number}*\n🏛️ {wallet.bank_name}"
     reply(
         msisdn,
-        "🏦 *Add money to your wallet*\n\n"
+        f"{intro}\n\n"
         "Transfer to your dedicated Zitch account from any bank — your wallet is "
         "credited automatically, usually within seconds:\n\n"
         f"{body}\n"
         f"👤 {wallet.account_name}",
     )
+
+
+def _do_add_money(user, msisdn: str) -> None:
+    """Show the user's dedicated Zitch account for bank-transfer funding (credited
+    automatically by the Monnify webhook). If they don't have one yet, onboard them
+    right here on WhatsApp via Monnify — collect the BVN and mint the account."""
+    wallet = get_or_create_wallet(user)
+    if not wallet.account_number and (user.bvn_verified or user.nin_verified):
+        wallet = ensure_reserved_account(user)
+
+    if wallet.account_number:
+        return _send_account_details(msisdn, wallet)
+
+    # No account yet — start the Monnify onboarding in-chat by collecting the BVN.
+    _new_flow(user, msisdn, "add_account", "bvn")
+    return reply(
+        msisdn,
+        "🏦 *Add money*\n\nTo get your dedicated Zitch account for funding by bank "
+        "transfer, reply with your *11-digit BVN*. We verify it securely with our "
+        "licensed bank partner and issue your account instantly.\n\n"
+        "_Don't know your BVN? Dial *565*0# on your registered line._\n"
+        'Reply "cancel" to stop.',
+    )
+
+
+BVN_MAX_ATTEMPTS = 3
+
+
+def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """Slot-filling step for in-chat virtual-account onboarding: receive the BVN,
+    hand it to Monnify (which verifies it and issues the NUBAN), show the account.
+
+    Verification attempts are capped (like the PIN flow): each BVN Monnify
+    rejects counts toward BVN_MAX_ATTEMPTS, after which the flow aborts — so a
+    linked number can't brute-force BVNs against Monnify's name match."""
+    bvn = re.sub(r"\D", "", text)
+    if len(bvn) != 11:
+        # Malformed input is guidance, not a verification attempt — don't count it.
+        return reply(msisdn, 'That doesn\'t look like an 11-digit BVN. Please send your '
+                             '*11-digit BVN*, or reply "cancel".')
+    wallet = ensure_reserved_account(user, bvn=bvn)
+    if wallet.account_number:
+        _clear_actions(msisdn)
+        return _send_account_details(msisdn, wallet, intro="✅ *Your Zitch account is ready!*")
+
+    attempts = int(pa.payload.get("bvn_attempts", 0)) + 1
+    if attempts >= BVN_MAX_ATTEMPTS:
+        _clear_actions(msisdn)
+        return reply(msisdn, "We still couldn't create your account. Double-check your BVN and "
+                             'try again later from the menu, or contact support. Reply "menu" for options.')
+    pa.payload["bvn_attempts"] = attempts
+    _touch(pa, payload=pa.payload)
+    return reply(msisdn, "Hmm, we couldn't create your account with that BVN. Check it's "
+                         'correct and matches your name, then send it again — or reply "cancel".')
+
 
 
 # --------------------------------------------------------------------------- #
@@ -436,6 +483,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "electricity": _advance_electricity,
         "cable": _advance_cable,
         "convert": _advance_convert,
+        "add_account": _advance_add_account,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)

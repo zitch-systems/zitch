@@ -70,9 +70,15 @@ services:
         sync: false
       - key: PREMBLY_APP_ID
         sync: false
-      # Virtual card issuer (provider TBD — no integration wired yet, so the
-      # card feature stays mocked until an issuer is chosen and coded).
+      # Virtual card issuer. The integration is generic (configurable base URL +
+      # Bearer key, standard /cards endpoints) — set these for your provider
+      # (e.g. Sudo, Maplerad, Bani). Until API_KEY is set the card feature fails
+      # closed in production (no fake cards). BRAND defaults to Verve in code.
       - key: CARD_ISSUER_API_KEY
+        sync: false
+      - key: CARD_ISSUER_BASE_URL
+        sync: false
+      - key: CARD_ISSUER_BRAND
         sync: false
       # FX rail — Fincra (multi-currency Convert). Without these the Convert
       # screen fails closed in production. NGN/USD/GBP/CAD settle; CNY is

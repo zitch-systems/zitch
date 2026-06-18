@@ -5,7 +5,7 @@ import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Btn } from '@/components/design/ui';
+import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Label } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
@@ -14,12 +14,15 @@ type DediAccount = { account_number: string; account_name: string; bank_name: st
 
 // Funding is bank-transfer only: the user transfers to their dedicated Zitch
 // (Monnify reserved) account and the wallet is credited automatically by the
-// webhook — no card checkout. The account only exists once KYC (BVN/NIN) is
-// done, so until then we point the user to verification.
+// webhook — no card checkout. The account is minted through Monnify's own
+// onboarding: the user enters their BVN here and Monnify verifies it and issues
+// the NUBAN (no separate in-app KYC step needed first).
 const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
+  const [bvn, setBvn] = useState('');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     apiJson('/api/wallet/account/')
@@ -32,6 +35,23 @@ const AddMoney = () => {
     if (!account) return;
     await Clipboard.setStringAsync(account.account_number);
     notify('Copied', 'Account number copied to clipboard');
+  };
+
+  const createAccount = async () => {
+    if (bvn.length !== 11) return;
+    setCreating(true);
+    try {
+      const r = await apiJson('/api/wallet/account/create/', { bvn });
+      if (r?.success && r.account_number) {
+        setAccount(r as DediAccount);
+      } else {
+        notify('Error', r?.message || "We couldn't create your account. Please try again.");
+      }
+    } catch {
+      notify('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setCreating(false);
+    }
   };
 
   if (loading) {
@@ -83,20 +103,42 @@ const AddMoney = () => {
           </View>
         </>
       ) : (
-        <View style={{ alignItems: 'center', paddingTop: 40, paddingHorizontal: 16 }}>
-          <View style={{ width: 84, height: 84, borderRadius: 26, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="bank" size={40} color={c.brand} />
+        <View style={{ paddingTop: 12 }}>
+          <View style={{ alignItems: 'center', paddingHorizontal: 16 }}>
+            <View style={{ width: 84, height: 84, borderRadius: 26, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="bank" size={40} color={c.brand} />
+            </View>
+            <Text style={{ fontSize: 19, color: c.ink1, fontFamily: font.extrabold, marginTop: 22, textAlign: 'center' }}>
+              Get your Zitch account number
+            </Text>
+            <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
+              Enter your BVN to instantly get a dedicated account for funding by bank transfer — no
+              card needed. It's verified securely; we never store it.
+            </Text>
           </View>
-          <Text style={{ fontSize: 19, color: c.ink1, fontFamily: font.extrabold, marginTop: 22, textAlign: 'center' }}>
-            Get your Zitch account number
-          </Text>
-          <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
-            Verify your BVN or NIN to receive a dedicated account you can fund by bank transfer from
-            any bank — instantly, with no card needed. If you've just verified, it may take a moment
-            to appear.
-          </Text>
-          <View style={{ height: 28 }} />
-          <Btn label="Verify my identity" icon="lock" onPress={() => router.push('/kyc')} />
+
+          <View style={{ height: 22 }} />
+          <Field
+            label="Bank Verification Number (BVN)"
+            value={bvn}
+            onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))}
+            keyboardType="number-pad"
+            placeholder="Enter your 11-digit BVN"
+          />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8, paddingHorizontal: 2 }}>
+            <ZIcon name="lock" size={13} color={c.ink3} />
+            <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
+              Dial *565*0# on your registered line to get your BVN.
+            </Text>
+          </View>
+
+          <View style={{ height: 22 }} />
+          <Btn
+            label={creating ? 'Creating your account…' : 'Get my account'}
+            icon="bank"
+            disabled={creating || bvn.length !== 11}
+            onPress={createAccount}
+          />
         </View>
       )}
     </Screen>
