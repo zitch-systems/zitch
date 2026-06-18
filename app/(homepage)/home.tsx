@@ -1,6 +1,8 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
+import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
@@ -37,16 +39,30 @@ const MORE = [
 
 const Home = () => {
   const { c, theme } = useTheme();
-  const { balance, firstName, avatar, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Refresh balance & activity whenever Home regains focus — after sign-in and
   // after returning from a transfer/purchase — so the dashboard never shows a
   // stale figure.
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
+  // Pull-to-refresh: re-fetch balance + activity (e.g. after a bank-transfer
+  // top-up the webhook just credited).
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await reload(); } finally { setRefreshing(false); }
+  }, [reload]);
+
+  const copyAccount = async () => {
+    if (!accountNumber) return;
+    await Clipboard.setStringAsync(accountNumber);
+    notify('Copied', 'Account number copied to clipboard');
+  };
+
   return (
-    <Screen pad={false} tab>
+    <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
         <Pressable onPress={() => router.push('/me')}>
@@ -91,10 +107,24 @@ const Home = () => {
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 12 }}>
-          {/* A deposit account number is shown here once the wallet is provisioned
-              with one — never a hardcoded placeholder (it could be mistaken for a
-              real account and shared). */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>
+          {/* The dedicated (Monnify reserved) account number, shown only once the
+              wallet is provisioned with one — never a hardcoded placeholder (it
+              could be mistaken for a real account and shared). Tap to copy. */}
+          {accountNumber ? (
+            <Pressable
+              onPress={copyAccount}
+              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}
+            >
+              <ZIcon name="bank" size={14} color="#fff" />
+              <NText numberOfLines={1} style={{ flex: 1, color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
+                {accountNumber}{bankName ? ` · ${bankName}` : ''}
+              </NText>
+              <ZIcon name="copy" size={14} color="rgba(255,255,255,.85)" />
+            </Pressable>
+          ) : (
+            <View style={{ flex: 1 }} />
+          )}
           <Pressable onPress={() => router.push('/addmoney')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
             <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
             <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>

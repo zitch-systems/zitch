@@ -124,13 +124,15 @@ const Cards = () => {
           {/* actions */}
           <View style={{ flexDirection: 'row', gap: 10, marginHorizontal: 16 }}>
             {[
-              { icon: 'plus', label: 'Fund', go: () => setFundOpen(true) },
-              { icon: 'lock', label: frozen ? 'Unfreeze' : 'Freeze', go: toggleFreeze },
-              { icon: reveal ? 'eyeoff' : 'eye', label: reveal ? 'Hide' : 'Details', go: () => (reveal ? setReveal(null) : (setPinError(''), setDetailsPin(true))) },
+              { icon: 'plus', label: 'Fund', color: '#16A34A', go: () => setFundOpen(true) },
+              { icon: 'lock', label: frozen ? 'Unfreeze' : 'Freeze', color: '#2D7FF9', go: toggleFreeze },
+              { icon: reveal ? 'eyeoff' : 'eye', label: reveal ? 'Hide' : 'Details', color: '#7A5CFF', go: () => (reveal ? setReveal(null) : (setPinError(''), setDetailsPin(true))) },
             ].map((a) => (
               <Pressable key={a.label} onPress={a.go} style={{ flex: 1 }}>
                 <View style={{ alignItems: 'center', gap: 8, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
-                  <ZIcon name={a.icon} size={20} color={c.brand} />
+                  <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: a.color + '22', alignItems: 'center', justifyContent: 'center' }}>
+                    <ZIcon name={a.icon} size={20} color={a.color} />
+                  </View>
                   <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{a.label}</Text>
                 </View>
               </Pressable>

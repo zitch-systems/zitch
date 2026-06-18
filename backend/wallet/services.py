@@ -3,12 +3,15 @@
 Every debit/credit goes through here so balance changes and ledger rows are
 always written together, atomically, with row locking to prevent double-spend.
 """
+import logging
 import secrets
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction as db_transaction
 
 from .models import FundingIntent, Transaction, Wallet
+
+log = logging.getLogger("wallet")
 
 
 class InsufficientFunds(Exception):
@@ -317,8 +320,10 @@ def settle_reserved_funding(transaction_reference: str, amount, user) -> Transac
     the payment was already applied (or the inputs are incomplete).
     """
     if not transaction_reference or amount is None:
+        log.warning("reserved_funding_incomplete txref=%r amount=%r", transaction_reference, amount)
         return None
     if Transaction.objects.filter(reference=transaction_reference).exists():
+        log.info("reserved_funding_duplicate txref=%s (already applied)", transaction_reference)
         return None
     try:
         return credit(
@@ -340,21 +345,29 @@ def credit_reserved_account_funding(event_data: dict) -> Transaction | None:
     credit row, or None when the account isn't ours / already credited.
     """
     product = event_data.get("product", {}) or {}
-    wallet = None
     account_ref = product.get("reference", "")
+    dest = event_data.get("destinationAccountInformation", {}) or {}
+    number = dest.get("accountNumber", "")
+    wallet = None
     if account_ref:
         wallet = Wallet.objects.filter(account_reference=account_ref).first()
+    if wallet is None and number:
+        wallet = Wallet.objects.filter(account_number=number).first()
     if wallet is None:
-        dest = event_data.get("destinationAccountInformation", {}) or {}
-        number = dest.get("accountNumber", "")
-        if number:
-            wallet = Wallet.objects.filter(account_number=number).first()
-    if wallet is None:
+        # Money arrived but we can't map it to a wallet — the webhook's account
+        # reference/number doesn't match any provisioned account. Log the keys so
+        # they can be compared against Wallet.account_reference/account_number.
+        log.warning("reserved_funding_no_wallet account_ref=%r dest_account=%r txref=%s",
+                    account_ref, number, event_data.get("transactionReference", ""))
         return None
     amount = event_data.get("amountPaid")
     if amount is None:
         amount = event_data.get("settlementAmount")
-    return settle_reserved_funding(event_data.get("transactionReference", ""), amount, wallet.user)
+    txn = settle_reserved_funding(event_data.get("transactionReference", ""), amount, wallet.user)
+    if txn is not None:
+        log.info("reserved_funding_credited user=%s amount=%s txref=%s",
+                 wallet.user_id, amount, event_data.get("transactionReference", ""))
+    return txn
 
 
 @db_transaction.atomic
