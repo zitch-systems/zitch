@@ -135,6 +135,21 @@ class WalletTests(TestCase):
         res, _ = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "50"})
         self.assertEqual(res.status_code, 400)
 
+    # --- dedicated account via Monnify onboarding (BVN) ---
+    def test_account_create_via_bvn_onboarding(self):
+        res, body = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertTrue(body["account_number"])
+        # Idempotent: a second call returns the same account, never a second mint.
+        res2, body2 = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(body2["account_number"], body["account_number"])
+
+    def test_account_create_requires_valid_id(self):
+        res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "123"})
+        self.assertEqual(res.status_code, 400)
+
     # --- transfer ---
     def test_transfer_moves_funds_atomically(self):
         bob, _ = make_user("08020000002", "bob@zitch.test")
