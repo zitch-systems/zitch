@@ -34,6 +34,8 @@ type WalletValue = {
   balance: number;
   firstName: string;
   avatar: string;
+  accountNumber: string;
+  bankName: string;
   txns: Txn[];
   loading: boolean;
   showBal: boolean;
@@ -45,6 +47,8 @@ const WalletContext = createContext<WalletValue>({
   balance: 0,
   firstName: '',
   avatar: '',
+  accountNumber: '',
+  bankName: '',
   txns: [],
   loading: true,
   showBal: true,
@@ -56,6 +60,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [balance, setBalance] = useState(0);
   const [firstName, setFirstName] = useState('');
   const [avatar, setAvatar] = useState('');
+  const [accountNumber, setAccountNumber] = useState('');
+  const [bankName, setBankName] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
   const [showBal, setShowBal] = useState(true);
@@ -77,6 +83,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         setBalance(Number(balRes.value.wallet ?? 0));
         setFirstName(String(balRes.value.user_first_name ?? balRes.value.user_last_name ?? ''));
         setAvatar(String(balRes.value.user_avatar ?? ''));
+        setAccountNumber(String(balRes.value.account_number ?? ''));
+        setBankName(String(balRes.value.bank_name ?? ''));
       }
       if (txRes.status === 'fulfilled' && txRes.value?.status) {
         const list = Array.isArray(txRes.value.all_site_transactions) ? txRes.value.all_site_transactions : [];
@@ -97,8 +105,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance, firstName, avatar, txns, loading, showBal, setShowBal, reload: load }),
-    [balance, firstName, avatar, txns, loading, showBal, load],
+    () => ({ balance, firstName, avatar, accountNumber, bankName, txns, loading, showBal, setShowBal, reload: load }),
+    [balance, firstName, avatar, accountNumber, bankName, txns, loading, showBal, load],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
