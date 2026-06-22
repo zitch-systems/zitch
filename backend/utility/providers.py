@@ -279,6 +279,11 @@ def disbursement_resolve_account(account_number: str, bank_code: str) -> dict:
         return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
     try:
         token = _monnify_token()
+        if not token:
+            # Distinguish an auth/config failure from a genuinely bad account, so
+            # ops don't chase "invalid account" reports that are really a key issue.
+            log.warning("monnify_resolve_auth_failed acct_tail=%s", account_number[-4:])
+            return {"success": False, "message": "Could not verify this account right now — try again shortly"}
         m = settings.MONNIFY
         resp = requests.get(
             f"{m['BASE_URL']}/api/v1/disbursements/account/validate",
@@ -289,7 +294,11 @@ def disbursement_resolve_account(account_number: str, bank_code: str) -> dict:
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
         name = rb.get("accountName", "")
-        return {"success": bool(data.get("requestSuccessful")) and bool(name), "name": name, "raw": data}
+        ok_ = bool(data.get("requestSuccessful")) and bool(name)
+        if not ok_:
+            log.info("monnify_resolve_miss bank=%s acct_tail=%s code=%s",
+                     bank_code, account_number[-4:], data.get("responseCode"))
+        return {"success": ok_, "name": name, "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"Payout provider unreachable: {exc}"}
 
@@ -858,15 +867,31 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
 
     Normalises both backends to the ``{success, message, ...}`` contract the
     views expect; the optional name/DOB/mobile are passed to Monnify's
-    information-match (ignored by Prembly's number-only check)."""
-    if kyc_provider() == "prembly":
+    information-match (ignored by Prembly's number-only check).
+
+    Fails closed in production when the selected provider has no keys: a money
+    app must never mock-pass identity checks on a misconfigured deploy, which
+    would otherwise hand out free BVN "verification" and the tier upgrade that
+    rides on it. Dev/tests keep the offline mock."""
+    provider = kyc_provider()
+    live = _prembly_live() if provider == "prembly" else payments_live()
+    if not live and mock_disabled_in_prod():
+        return {"success": False, "message": "Identity verification is temporarily unavailable"}
+    if provider == "prembly":
         return kyc_verify_bvn(bvn)
     return monnify_verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
 def verify_nin(nin: str) -> dict:
-    """Verify a NIN via the configured KYC provider (Monnify VAS or Prembly)."""
-    if kyc_provider() == "prembly":
+    """Verify a NIN via the configured KYC provider (Monnify VAS or Prembly).
+
+    Fails closed in production when the selected provider has no keys (see
+    verify_bvn); dev/tests keep the offline mock."""
+    provider = kyc_provider()
+    live = _prembly_live() if provider == "prembly" else payments_live()
+    if not live and mock_disabled_in_prod():
+        return {"success": False, "message": "Identity verification is temporarily unavailable"}
+    if provider == "prembly":
         return kyc_verify_nin(nin)
     return monnify_verify_nin(nin)
 
