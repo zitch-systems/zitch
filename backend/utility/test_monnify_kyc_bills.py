@@ -278,5 +278,32 @@ class MonnifyCheckCommandTests(SimpleTestCase):
         call_command("monnify_check", stdout=out)
         s = out.getvalue()
         self.assertIn("Monnify configuration", s)
-        self.assertIn("payments_live()", s)
+        self.assertIn("payments_live", s)
         self.assertIn("keys incomplete", s)  # no keys in tests
+
+
+class MonnifyDiagnoseEndpointTests(SimpleTestCase):
+    """The browser diagnostic (/monnify-diagnose) is opt-in + token-gated and
+    leaks no secrets — the no-shell path to the same self-test."""
+
+    def test_disabled_404_without_token_env(self):
+        import os
+        with patch.dict(os.environ):
+            os.environ.pop("MONNIFY_DIAG_TOKEN", None)
+            res = self.client.get("/monnify-diagnose")
+        self.assertEqual(res.status_code, 404)
+
+    def test_forbidden_with_wrong_token(self):
+        import os
+        with patch.dict(os.environ, {"MONNIFY_DIAG_TOKEN": "s3cret"}):
+            res = self.client.get("/monnify-diagnose?token=nope")
+        self.assertEqual(res.status_code, 403)
+
+    def test_returns_diagnosis_with_correct_token(self):
+        import os
+        with patch.dict(os.environ, {"MONNIFY_DIAG_TOKEN": "s3cret"}):
+            res = self.client.get("/monnify-diagnose?token=s3cret")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("monnify", body)
+        self.assertEqual(body["monnify"]["status"], "keys_incomplete")  # mock mode, no keys

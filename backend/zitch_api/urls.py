@@ -57,6 +57,36 @@ def robots_txt(_request):
     return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
 
 
+def monnify_diagnose(request):
+    """GET /monnify-diagnose?token=<MONNIFY_DIAG_TOKEN>[&account=&bank=]
+
+    A browser-accessible Monnify connectivity self-test for hosts without shell
+    access (e.g. Render's free tier). Mirrors the `monnify_check` management
+    command: reports config + OAuth + a sample name-enquiry with Monnify's real
+    message, so 'nothing works' becomes a precise fix. Returns NO secrets.
+
+    Opt-in and protected: 404 unless MONNIFY_DIAG_TOKEN is set, and it must be
+    supplied as ?token= (constant-time compared). Set the env var to any secret,
+    redeploy, then visit the URL — no shell needed.
+    """
+    import hmac
+    import os
+
+    diag_token = os.environ.get("MONNIFY_DIAG_TOKEN", "")
+    if not diag_token:
+        return JsonResponse(
+            {"detail": "Set MONNIFY_DIAG_TOKEN (any secret value) in the environment to enable this."},
+            status=404,
+        )
+    if not hmac.compare_digest(request.GET.get("token", ""), diag_token):
+        return JsonResponse({"detail": "forbidden"}, status=403)
+    from utility.providers import monnify_diagnostics
+
+    account = "".join(c for c in request.GET.get("account", "") if c.isdigit())[:10] or "0000000000"
+    bank = "".join(c for c in request.GET.get("bank", "") if c.isalnum())[:10] or "058"
+    return JsonResponse({"monnify": monnify_diagnostics(account, bank)})
+
+
 urlpatterns = [
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
@@ -67,6 +97,7 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
+    path("monnify-diagnose", monnify_diagnose),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
