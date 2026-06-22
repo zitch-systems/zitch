@@ -828,6 +828,50 @@ def kyc_verify_face(selfie: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# KYC provider selection — Monnify VAS (default) or Prembly
+#
+# BVN/NIN verification has two interchangeable backends in this file: Monnify's
+# VAS (monnify_verify_*) and Prembly (kyc_verify_*). verify_bvn / verify_nin are
+# the provider-agnostic entry points the rest of the app calls; they route to
+# whichever provider kyc_provider() selects so the backend can be switched
+# (KYC_PROVIDER) without touching the views. Monnify is preferred because the
+# same BVN it verifies also mints the user's dedicated funding account.
+# ---------------------------------------------------------------------------
+def kyc_provider() -> str:
+    """'monnify' or 'prembly' — the backend for BVN/NIN checks.
+
+    An explicit KYC_PROVIDER setting wins; otherwise prefer whichever has live
+    keys (Monnify first), falling back to Monnify's mock path when neither is
+    configured (so dev/test still verifies offline)."""
+    choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
+    if choice in ("monnify", "prembly"):
+        return choice
+    if payments_live():
+        return "monnify"
+    if _prembly_live():
+        return "prembly"
+    return "monnify"
+
+
+def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
+    """Verify a BVN via the configured KYC provider.
+
+    Normalises both backends to the ``{success, message, ...}`` contract the
+    views expect; the optional name/DOB/mobile are passed to Monnify's
+    information-match (ignored by Prembly's number-only check)."""
+    if kyc_provider() == "prembly":
+        return kyc_verify_bvn(bvn)
+    return monnify_verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
+
+
+def verify_nin(nin: str) -> dict:
+    """Verify a NIN via the configured KYC provider (Monnify VAS or Prembly)."""
+    if kyc_provider() == "prembly":
+        return kyc_verify_nin(nin)
+    return monnify_verify_nin(nin)
+
+
+# ---------------------------------------------------------------------------
 # Card issuer (virtual cards) — provider TBD. Blank key => MOCK mode.
 # ---------------------------------------------------------------------------
 def _card_issuer_live() -> bool:

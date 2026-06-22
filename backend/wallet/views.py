@@ -8,7 +8,9 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import payment_initialize, payment_verify, payment_verify_signature
+from utility.providers import (
+    payment_initialize, payment_verify, payment_verify_signature, verify_bvn, verify_nin,
+)
 
 from .models import FundingIntent
 from .services import (
@@ -74,33 +76,56 @@ def wallet_account(request):
     )
 
 
+def _account_payload(wallet, **extra) -> dict:
+    """The dedicated-account fields every account endpoint returns, plus extras."""
+    return dict(
+        success=True,
+        account_number=wallet.account_number,
+        account_name=wallet.account_name,
+        bank_name=wallet.bank_name,
+        bank_accounts=wallet.bank_accounts or [],
+        **extra,
+    )
+
+
 @api
 @ratelimit("account_create", limit=5, window=60)
 @require_user
 def wallet_account_create(request):
     """POST /api/wallet/account/create/ {access_token, bvn?, nin?}
-    -> {success, account_number, account_name, bank_name, bank_accounts}
+    -> {success, account_number, account_name, bank_name, bank_accounts, tier,
+        bvn_verified, nin_verified}
 
-    Mints the user's dedicated funding account via Monnify's own onboarding:
-    the BVN/NIN is handed to Monnify, which verifies it and issues the NUBAN.
-    Lets a user get a funding account by entering their BVN here, without first
-    completing the separate in-app (Prembly) KYC flow.
+    The one-step "get my account" / KYC flow: the BVN (or NIN) is verified through
+    the KYC provider (Monnify VAS) and, on success, handed to Monnify's
+    reserved-account onboarding which issues the dedicated NUBAN. The user is then
+    marked KYC-verified for that identifier and their tier recomputed, so a single
+    BVN both provisions the virtual wallet account AND lifts their limit — no
+    separate in-app KYC step needed first. Only a BVN is required (NIN accepted as
+    an alternative). Idempotent: returns the existing account on a repeat call.
     """
     user = request.user_obj
     wallet = get_or_create_wallet(user)
     if wallet.account_number:  # already provisioned — return it (idempotent)
-        return ok(
-            success=True,
-            account_number=wallet.account_number,
-            account_name=wallet.account_name,
-            bank_name=wallet.bank_name,
-            bank_accounts=wallet.bank_accounts or [],
-        )
+        return ok(**_account_payload(
+            wallet, tier=user.tier, bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     if len(bvn) != 11 and len(nin) != 11:
         return fail("Enter your 11-digit BVN or NIN")
+
+    # Verify the identifier BEFORE asking Monnify to mint an account from it, so a
+    # bad/mismatched number fails here with a clear reason instead of as an opaque
+    # reserve rejection. BVN takes precedence (the only thing strictly required).
+    using_bvn = len(bvn) == 11
+    if using_bvn:
+        check = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
+    else:
+        check = verify_nin(nin)
+    if not check.get("success"):
+        return fail(check.get(
+            "message", "We couldn't verify your BVN. Check the number and try again."), status=400)
 
     wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
     if not wallet.account_number:
@@ -112,14 +137,26 @@ def wallet_account_create(request):
             "and matches your name, then try again.",
             status=502,
         )
-    return ok(
-        success=True,
-        account_number=wallet.account_number,
-        account_name=wallet.account_name,
-        bank_name=wallet.bank_name,
-        bank_accounts=wallet.bank_accounts or [],
-        message="Your Zitch account is ready",
-    )
+
+    # Provisioning succeeded on a verified identifier — record it as KYC and lift
+    # the tier (mirrors the dedicated KYC screen) so this single step also raises
+    # the user's limit. Best-effort: never fail the account response on this.
+    fields: list[str] = []
+    if using_bvn and not user.bvn_verified:
+        user.set_bvn(bvn)
+        user.bvn_verified = True
+        fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
+    elif not using_bvn and not user.nin_verified:
+        user.set_nin(nin)
+        user.nin_verified = True
+        fields += ["nin_hash", "nin_last4", "nin_verified"]
+    if fields:
+        user.recompute_tier()
+        user.save(update_fields=fields + ["tier"])
+
+    return ok(**_account_payload(
+        wallet, message="Your Zitch account is ready", tier=user.tier,
+        bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
 
 @api

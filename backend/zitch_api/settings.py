@@ -196,6 +196,11 @@ PREMBLY = {
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
+# Which provider verifies BVN/NIN: "monnify" (Monnify VAS — the app's primary
+# rail, also mints the dedicated funding account) or "prembly". Blank => auto:
+# prefer whichever has live keys (Monnify first), else mock. See
+# utility.providers.kyc_provider / verify_bvn / verify_nin.
+KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 # Card issuer (virtual cards) — provider TBD. Blank => mock mode.
 CARD_ISSUER = {
     "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),
