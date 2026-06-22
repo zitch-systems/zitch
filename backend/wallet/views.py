@@ -119,14 +119,15 @@ def wallet_account_create(request):
 
     wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
     if not wallet.account_number:
-        # Monnify rejected onboarding (wrong number, name mismatch, or the contract
-        # has no reserved-account product). The exact reason is logged server-side
-        # (monnify_reserve_failed) so ops can tell a bad BVN from a config issue.
-        return fail(
-            "We couldn't create your account. Check that your BVN is correct and "
-            "matches your name, then try again.",
-            status=502,
-        )
+        # Surface Monnify's actual reason (also logged as monnify_reserve_failed) so
+        # the failure is self-diagnosing in the app: "authentication failed" points
+        # at the keys/MONNIFY_BASE_URL, a name/BVN mismatch points at the data, and
+        # "not configured" means the reserved-account product isn't enabled.
+        reason = getattr(wallet, "reserve_error", "") or ""
+        msg = "We couldn't create your account. Check that your BVN is correct and matches your name, then try again."
+        if reason:
+            msg = f"We couldn't create your account: {reason}"
+        return fail(msg, status=502, reason=reason)
 
     # Provisioning succeeded on a verified identifier — record it as KYC and lift
     # the tier (mirrors the dedicated KYC screen) so this single step also raises

@@ -65,6 +65,10 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
         # rejects). If that also fails, leave the wallet numberless to retry later.
         existing = get_reserved_account(reference)
         if not existing.get("success"):
+            # Stash Monnify's real reason on the (unsaved) instance so the caller
+            # can surface it — "authentication failed" (keys/base-URL) vs a BVN/name
+            # mismatch vs "not configured" turns a dead end into a fixable signal.
+            wallet.reserve_error = result.get("message", "") or existing.get("message", "")
             return wallet
         result = existing
 
