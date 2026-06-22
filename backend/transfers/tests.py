@@ -38,6 +38,19 @@ class BankTransferTests(TestCase):
         res, body = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789", "bank": "gtb"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["name"])
+        self.assertEqual(body["bank"], "gtb")  # echoes the bank back
+
+    def test_resolve_auto_detects_bank_without_bank_param(self):
+        # No `bank` supplied -> the server detects it (mock: the first active bank)
+        # and returns the bank + name so the app can fill it in automatically.
+        from django.core.cache import cache
+        cache.clear()
+        res, body = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertTrue(body["name"])
+        self.assertEqual(body["bank"], "gtb")
+        self.assertEqual(len(body["matches"]), 1)
 
     def test_send_debits_and_saves_beneficiary(self):
         res, body = self.post("/api/transfers/send/", {

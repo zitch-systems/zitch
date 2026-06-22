@@ -16,7 +16,51 @@ from wallet.services import (
     refund,
 )
 
-from .models import Beneficiary
+from .models import Bank, Beneficiary
+
+
+def detect_account_banks(account_number: str) -> list[dict]:
+    """Auto-detect which bank(s) a 10-digit NUBAN belongs to.
+
+    A NUBAN can't be mapped to a bank offline, so we run a name-enquiry across the
+    active banks in parallel and keep the ones that resolve, returning
+    ``[{"bank", "bank_name", "name"}]`` (``bank`` is our slug code). Usually one
+    match; a number that's a valid account at two banks (different holders) returns
+    both. Cached briefly per account number so a re-resolve/retry doesn't re-sweep.
+
+    MOCK mode (no Monnify keys) returns a single deterministic match — fanning out
+    there would make every bank "match" the stub — so the flow stays testable.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from django.core.cache import cache
+
+    from utility.providers import disbursement_resolve_account, payments_live
+
+    ckey = f"acctdetect:{account_number}"
+    cached = cache.get(ckey)
+    if cached is not None:
+        return cached
+
+    banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
+    if not payments_live():
+        matches = ([{"bank": banks[0].code, "bank_name": banks[0].name, "name": "ADEYEMI WILLIAM"}]
+                   if banks else [])
+        cache.set(ckey, matches, 60)
+        return matches
+
+    def probe(b):
+        res = disbursement_resolve_account(account_number, b.bank_code)
+        if res.get("success") and res.get("name"):
+            return {"bank": b.code, "bank_name": b.name, "name": res["name"]}
+        return None
+
+    matches = []
+    if banks:
+        with ThreadPoolExecutor(max_workers=min(8, len(banks))) as ex:
+            matches = [r for r in ex.map(probe, banks) if r]
+    cache.set(ckey, matches, 600)
+    return matches
 
 
 class PayoutError(Exception):

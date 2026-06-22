@@ -161,6 +161,21 @@ class MonnifyResolveE2E(TestCase):
         self.assertTrue(mg.call_args.args[0].endswith("/api/v1/disbursements/account/validate"))
         self.assertEqual(mg.call_args.kwargs["params"], {"accountNumber": "0123456789", "bankCode": "058"})
 
+    def test_auto_detect_returns_bank_and_name(self, *_):
+        # No bank supplied -> the server sweeps active banks and returns the match,
+        # so the app fills the bank in automatically.
+        from django.core.cache import cache
+        cache.clear()
+        with patch("utility.providers.requests.get",
+                   return_value=_resp({"requestSuccessful": True,
+                                       "responseBody": {"accountName": "ADA EZE"}})):
+            res, body = self._resolve(account_number="0123456789")  # no bank
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["success"])
+        self.assertEqual(body["name"], "ADA EZE")
+        self.assertEqual(body["bank"], "gtb")
+        self.assertEqual(len(body["matches"]), 1)
+
     def test_unresolvable_account_is_rejected_clearly(self, *_):
         with patch("utility.providers.requests.get",
                    return_value=_resp({"requestSuccessful": True, "responseBody": {}})):
