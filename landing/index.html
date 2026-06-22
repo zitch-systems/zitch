@@ -338,12 +338,24 @@
   .svc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;}
   .svc{position:relative;background:var(--card);border:1px solid var(--line);border-radius:19px;padding:26px 22px;transition:border-color .18s,transform .18s,box-shadow .18s;}
   .svc:hover{border-color:var(--teal);transform:perspective(800px) translateY(-5px) rotateX(5deg);box-shadow:var(--shadow);}
-  .svc .ic{width:44px;height:44px;border-radius:13px;background:var(--mint);display:grid;place-items:center;color:var(--teal-deep);margin-bottom:17px;transition:background .18s,color .18s;}
+  .svc .ic{width:44px;height:44px;border-radius:13px;background:var(--mint);display:grid;place-items:center;color:var(--teal-deep);margin-bottom:17px;transition:background .22s,color .22s,box-shadow .35s;transform-style:preserve-3d;}
   .svc:hover .ic{background:var(--teal-deep);color:#fff;}
   .svc h4{font-family:var(--disp);font-size:16.5px;color:var(--head);}
   .svc p{font-size:13.5px;color:var(--t2);line-height:1.58;margin-top:7px;}
   .svc .go{position:absolute;top:22px;right:20px;color:var(--teal-deep);opacity:0;transform:translateX(-6px);transition:opacity .18s,transform .18s;}
   .svc:hover .go{opacity:1;transform:none;}
+  /* services: a 3D flip that spotlights one icon at a time, advancing every 5s
+     (driven by JS below). Motion-gated so reduced-motion users get the static grid. */
+  @keyframes svcflip{
+    0%{transform:perspective(680px) rotateY(0) scale(1);}
+    35%{transform:perspective(680px) rotateY(180deg) scale(1.22);}
+    70%{transform:perspective(680px) rotateY(360deg) scale(1.07);}
+    100%{transform:perspective(680px) rotateY(360deg) scale(1);}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    .svc .ic.flip3d{animation:svcflip 1.15s cubic-bezier(.45,.05,.25,1) both;background:var(--teal-deep);color:#fff;box-shadow:0 12px 28px rgba(2,52,74,.26);}
+  }
+  body[data-theme="dark"] .svc .ic.flip3d{box-shadow:0 12px 30px rgba(0,0,0,.5);}
 
   /* compact FX band */
   .fx-band{display:grid;grid-template-columns:1fr 1.15fr;gap:48px;align-items:center;background:radial-gradient(ellipse 55% 90% at 100% 0%,rgba(35,177,168,.09),transparent 60%),radial-gradient(ellipse 40% 70% at 0% 100%,rgba(92,245,235,.1),transparent 65%),var(--paper);border:1px solid var(--line);border-radius:var(--rl);padding:48px 52px;position:relative;overflow:hidden;}
@@ -1074,6 +1086,37 @@
     setTimeout(function(){
       document.querySelectorAll('.rev:not(.vis)').forEach(reveal);
     }, 3500);
+  })();
+
+  // Services grid: spotlight one icon at a time with a 3D flip, advancing to the
+  // next every 5s. Skipped for reduced-motion users; paused when the section is
+  // off-screen or the tab is hidden so it never animates needlessly.
+  (function(){
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var icons = [].slice.call(document.querySelectorAll('#services .svc .ic'));
+    if (icons.length < 2) return;
+    icons.forEach(function(ic){
+      ic.addEventListener('animationend', function(){ ic.classList.remove('flip3d'); });
+    });
+    var i = -1, timer = null, inView = false;
+    function step(){
+      i = (i + 1) % icons.length;
+      var ic = icons[i];
+      ic.classList.remove('flip3d');
+      void ic.offsetWidth;            // reflow so the animation re-triggers each time
+      ic.classList.add('flip3d');
+    }
+    function sync(){
+      var go = inView && !document.hidden;
+      if (go && !timer){ step(); timer = setInterval(step, 5000); }
+      else if (!go && timer){ clearInterval(timer); timer = null; }
+    }
+    var sec = document.getElementById('services');
+    if (sec && 'IntersectionObserver' in window){
+      new IntersectionObserver(function(es){ inView = es[0].isIntersecting; sync(); },
+        { threshold: 0.15 }).observe(sec);
+    } else { inView = true; sync(); }
+    document.addEventListener('visibilitychange', sync);
   })();
 </script>
 <script>

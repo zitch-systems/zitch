@@ -156,13 +156,15 @@ class WalletTests(TestCase):
         self.assertEqual(res2.status_code, 200)
         self.assertEqual(body2["account_number"], body["account_number"])
 
-    def test_account_create_rejected_when_bvn_fails_kyc(self):
-        """A BVN the KYC provider can't verify is rejected up front — no account is
-        minted and the user stays tier 1 / unverified."""
-        with patch("wallet.views.verify_bvn", return_value={"success": False, "message": "BVN not found"}):
-            res, body = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(body["message"], "BVN not found")
+    def test_account_create_rejected_when_reserve_fails(self):
+        """When Monnify rejects the reserved-account onboarding (e.g. a BVN/name
+        mismatch — it validates the BVN itself), no account is minted and the user
+        stays tier 1 / unverified."""
+        with patch("utility.providers.reserve_account",
+                   return_value={"success": False, "message": "BVN/name mismatch"}), \
+                patch("utility.providers.get_reserved_account", return_value={"success": False}):
+            res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
+        self.assertEqual(res.status_code, 502)
         u = User.objects.get(pk=self.user.pk)
         self.assertFalse(u.bvn_verified)
         self.assertEqual(u.tier, 1)
