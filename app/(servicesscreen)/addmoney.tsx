@@ -25,10 +25,16 @@ const AddMoney = () => {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
+    let alive = true;
+    // Never let a slow/hanging backend (e.g. a slow Monnify call) leave the page
+    // stuck on the spinner: show the screen within a few seconds no matter what.
+    // If the account lookup resolves later, it still fills in (account state).
+    const guard = setTimeout(() => { if (alive) setLoading(false); }, 8000);
     apiJson('/api/wallet/account/')
-      .then((r) => { if (r?.success && r.account_number) setAccount(r as DediAccount); })
+      .then((r) => { if (alive && r?.success && r.account_number) setAccount(r as DediAccount); })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
+    return () => { alive = false; clearTimeout(guard); };
   }, []);
 
   const copyAccount = async () => {

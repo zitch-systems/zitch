@@ -337,12 +337,22 @@ class ReservedAccountTests(TestCase):
         self.assertEqual(r.status_code, 200)  # accepted so Monnify stops retrying
         self.assertEqual(self.bal(), Decimal("0"))  # but nothing credited
 
-    def test_wallet_account_endpoint_reserves_lazily_for_verified_user(self):
+    def test_wallet_account_endpoint_is_a_fast_read_without_provisioning(self):
+        # The read endpoint never provisions on load (that needs the BVN, which we
+        # don't store, and a slow provider call would hang the page). A verified
+        # user with no number yet just gets an empty one back, fast.
         self.user.bvn_verified = True
         self.user.save(update_fields=["bvn_verified"])
         res, body = self.post("/api/wallet/account/", {"access_token": self.token})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["account_number"])
+        self.assertEqual(body["account_number"], "")
+        # Once provisioned, the read returns the stored account.
+        w = get_or_create_wallet(self.user)
+        w.account_number, w.bank_name, w.account_name = "7012345678", "Wema Bank", "Ada Eze"
+        w.save(update_fields=["account_number", "bank_name", "account_name"])
+        _, body2 = self.post("/api/wallet/account/", {"access_token": self.token})
+        self.assertEqual(body2["account_number"], "7012345678")
+        self.assertEqual(body2["bank_name"], "Wema Bank")
 
 
 class LedgerConstraintTests(TestCase):

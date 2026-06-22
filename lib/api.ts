@@ -23,36 +23,51 @@ async function onSessionExpired(): Promise<void> {
  * it into the JSON body as `access_token` — the backend accepts either. Returns
  * the raw Response so callers keep using `res.ok` and `await res.json()`.
  */
-export async function apiPost(path: string, body: Record<string, any> = {}): Promise<Response> {
+export async function apiPost(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<Response> {
   const token = await getToken();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${baseUrl}${path}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(token ? { access_token: token, ...body } : body),
-  });
-  // A 401 on a request we authenticated means the token expired or was revoked.
-  // (Sign-in and other token-less calls also 401 on bad input, but `token` is
-  // null there, so this won't fire for them.)
-  if (token && res.status === 401) await onSessionExpired();
-  else if (token) void touchActivity(); // record activity for the idle timeout
-  return res;
+  // Bound every request so a slow/hanging backend (e.g. a slow upstream provider
+  // call) can never leave a screen stuck forever — it aborts and the caller's
+  // error path runs instead.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(token ? { access_token: token, ...body } : body),
+      signal: ctrl.signal,
+    });
+    // A 401 on a request we authenticated means the token expired or was revoked.
+    // (Sign-in and other token-less calls also 401 on bad input, but `token` is
+    // null there, so this won't fire for them.)
+    if (token && res.status === 401) await onSessionExpired();
+    else if (token) void touchActivity(); // record activity for the idle timeout
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** POST and parse the JSON response (for call sites that don't branch on status).
  *
- * Guards against a non-JSON body — a gateway HTML error page or an empty 502/504
- * from the host — which would otherwise throw a SyntaxError mid-flow. On a parse
- * failure it resolves to a uniform error shape so callers' `success`/`message`
- * checks degrade gracefully instead of crashing. */
-export async function apiJson<T = any>(path: string, body: Record<string, any> = {}): Promise<T> {
-  const res = await apiPost(path, body);
-  const text = await res.text();
+ * Always resolves to an object: a non-JSON body (a gateway HTML error page or an
+ * empty 502/504), a network failure, or a timeout/abort all degrade to a uniform
+ * { success:false, message } shape so callers' `success`/`message` checks keep
+ * working and no screen hangs waiting on a promise that never settles. */
+export async function apiJson<T = any>(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<T> {
+  const offline = { success: false, message: 'Service temporarily unavailable. Please try again.' } as T;
   try {
-    return JSON.parse(text) as T;
+    const res = await apiPost(path, body, timeoutMs);
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return offline;
+    }
   } catch {
-    return { success: false, message: 'Service temporarily unavailable. Please try again.' } as T;
+    return offline;
   }
 }
 
