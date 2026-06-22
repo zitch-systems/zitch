@@ -234,3 +234,32 @@ class KycProviderDispatchTests(SimpleTestCase):
         self.assertEqual(out["via"], "prembly")
         pv.assert_called_once()
         mv.assert_not_called()
+
+
+class KycFailClosedTests(SimpleTestCase):
+    """A money app must not mock-pass identity checks on a misconfigured prod
+    deploy — that would hand out free BVN/NIN "verification" and the tier upgrade
+    riding on it. The mock only survives in dev/test."""
+
+    def test_bvn_fails_closed_when_unconfigured_in_prod(self):
+        with patch("utility.providers.payments_live", return_value=False), \
+                patch("utility.providers._prembly_live", return_value=False), \
+                patch("utility.providers.mock_disabled_in_prod", return_value=True):
+            out = P.verify_bvn("22212345678")
+        self.assertFalse(out["success"])
+        self.assertNotIn("mock", out)
+
+    def test_nin_fails_closed_when_unconfigured_in_prod(self):
+        with patch("utility.providers.payments_live", return_value=False), \
+                patch("utility.providers._prembly_live", return_value=False), \
+                patch("utility.providers.mock_disabled_in_prod", return_value=True):
+            out = P.verify_nin("98765432109")
+        self.assertFalse(out["success"])
+
+    def test_bvn_mock_passes_in_dev_test(self):
+        # Same unconfigured state, but dev/test (mock NOT disabled) keeps the
+        # offline mock so the flow is exercisable without keys.
+        with patch("utility.providers.payments_live", return_value=False), \
+                patch("utility.providers.mock_disabled_in_prod", return_value=False):
+            out = P.verify_bvn("22212345678")
+        self.assertTrue(out["success"])
