@@ -630,7 +630,7 @@ def txn_requery(request):
     settle vs refund, idempotently. Anything not provider-pending is a 409."""
     from utility.providers import vtu_requery
     from wallet.models import Transaction
-    from wallet.services import settle_or_refund
+    from wallet.services import is_bank_payout, settle_or_refund
 
     ref = (request.data.get("ref") or "").strip()
     txn = Transaction.objects.filter(reference=ref).first()
@@ -638,6 +638,10 @@ def txn_requery(request):
         return fail("Transaction not found", status=404)
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
+    if is_bank_payout(txn):
+        # A bank transfer settles via the Monnify disbursement webhook, not a VTU
+        # requery — don't query the wrong provider for a reference it never saw.
+        return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
     status = settle_or_refund(txn, vtu_requery(txn.reference))
     audit(request, "txn.requery", target=ref, before={"status": "pending"}, after={"status": status})
     return ok(success=True, ref=ref, status=status)
@@ -714,14 +718,12 @@ def run_recon(request):
     """POST {} — requery + settle every provider-pending purchase (the VTU
     reconcile cron's loop, on demand)."""
     from utility.providers import vtu_requery
-    from wallet.models import Transaction
-    from wallet.services import settle_or_refund
+    from wallet.services import pending_vtu_purchases, settle_or_refund
 
     cutoff = timezone.now() - timedelta(minutes=5)
-    pending = list(Transaction.objects.filter(
-        transaction_status=Transaction.PENDING, direction=Transaction.OUT,
-        meta__reconcile=True, created__lte=cutoff,
-    ))
+    # VTU.ng purchases only; bank-transfer payouts settle via the disbursement
+    # webhook, not a VTU requery (see wallet.services.pending_vtu_purchases).
+    pending = list(pending_vtu_purchases(cutoff))
     settled = 0
     for txn in pending:
         if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":

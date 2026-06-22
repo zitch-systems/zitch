@@ -22,7 +22,7 @@ from savings.models import FixedSave
 from savings.services import run_maturities as run_maturities_service
 from utility.providers import fx_quote, vtu_requery
 from wallet.models import CurrencyWallet, Transaction, Wallet
-from wallet.services import settle_or_refund
+from wallet.services import is_bank_payout, pending_vtu_purchases, settle_or_refund
 from whatsapp.models import (
     AuditLog,
     Broadcast,
@@ -334,6 +334,10 @@ def txn_requery(request):
         return fail("Transaction not found", status=404)
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
+    if is_bank_payout(txn):
+        # A bank transfer settles via the Monnify disbursement webhook, not a VTU
+        # requery — don't query the wrong provider for a reference it never saw.
+        return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
     result = vtu_requery(txn.reference)
     status = settle_or_refund(txn, result)
     record_audit("txn.requery", actor=request.user_obj, target=ref,
@@ -504,10 +508,9 @@ def maturities_run(request):
 def recon_run(request):
     """Requery + settle every provider-pending purchase — the cron's loop, on demand."""
     cutoff = timezone.now() - timedelta(minutes=5)
-    pending = list(Transaction.objects.filter(
-        transaction_status=Transaction.PENDING, direction=Transaction.OUT,
-        meta__reconcile=True, created__lte=cutoff,
-    ))
+    # VTU.ng purchases only; bank-transfer payouts settle via the disbursement
+    # webhook, not a VTU requery (see wallet.services.pending_vtu_purchases).
+    pending = list(pending_vtu_purchases(cutoff))
     settled = 0
     for txn in pending:
         if settle_or_refund(txn, vtu_requery(txn.reference)) != "pending":

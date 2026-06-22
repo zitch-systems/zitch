@@ -232,6 +232,31 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     return status, txn, result
 
 
+def is_bank_payout(txn) -> bool:
+    """True for a bank-transfer (Monnify disbursement) payout, as opposed to a
+    VTU.ng purchase.
+
+    Both leave a PENDING + ``meta.reconcile`` outbound row, but a payout is
+    settled by the disbursement webhook (settle_payout / reverse_transfer) and has
+    NO VTU.ng record — requerying it via vtu_requery would query the wrong provider
+    for a reference VTU.ng never saw. Bank payouts are the only such rows that
+    carry a ``bank`` in meta (set in transfers.services.execute_payout)."""
+    return bool((txn.meta or {}).get("bank"))
+
+
+def pending_vtu_purchases(cutoff):
+    """PENDING outbound VTU.ng purchases due for requery, EXCLUDING bank-transfer
+    payouts. The reconcile sweep (cron + on-demand) requeries each row via
+    vtu_requery, which is only correct for VTU.ng purchases; bank payouts are
+    settled by the Monnify disbursement webhook, so they must not be swept here."""
+    return Transaction.objects.filter(
+        transaction_status=Transaction.PENDING,
+        direction=Transaction.OUT,
+        meta__reconcile=True,
+        created__lte=cutoff,
+    ).exclude(meta__has_key="bank")
+
+
 @db_transaction.atomic
 def reverse_transfer(reference: str) -> Transaction | None:
     """Refund a settled outbound transfer the provider later failed/reversed.
