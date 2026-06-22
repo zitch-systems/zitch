@@ -263,3 +263,20 @@ class KycFailClosedTests(SimpleTestCase):
                 patch("utility.providers.mock_disabled_in_prod", return_value=False):
             out = P.verify_bvn("22212345678")
         self.assertTrue(out["success"])
+
+
+class MonnifyCheckCommandTests(SimpleTestCase):
+    """The ops self-test command runs and reports config state without crashing
+    (mock mode here -> 'keys incomplete', the short-circuit before any network)."""
+
+    def test_runs_and_reports_config(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("monnify_check", stdout=out)
+        s = out.getvalue()
+        self.assertIn("Monnify configuration", s)
+        self.assertIn("payments_live()", s)
+        self.assertIn("keys incomplete", s)  # no keys in tests
