@@ -11,6 +11,7 @@ the whole wiring (HTTP shape + parse + DB side-effects + step ordering) without 
 network, which the mock paths can't prove.
 """
 import json
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -42,10 +43,10 @@ def _bvn_invalid():
                   "responseBody": {}})
 
 
-def _reserve_ok():
+def _reserve_ok(reference="ZITCH-WALLET-X"):
     # V2 getAllAvailableBanks shape: issued accounts under `accounts`.
     return _resp({"requestSuccessful": True, "responseMessage": "success",
-                  "responseBody": {"accountReference": "ZITCH-WALLET-X",
+                  "responseBody": {"accountReference": reference,
                                    "accountName": "ADA EZE",
                                    "reservationReference": "RSV-1",
                                    "accounts": [
@@ -209,3 +210,75 @@ class MonnifyResolveE2E(TestCase):
             res, _ = self._resolve(account_number="123", bank="gtb")
         self.assertEqual(res.status_code, 400)
         mg.assert_not_called()
+
+
+class MonnifyReservedFundingLoopE2E(TestCase):
+    """The whole point of the virtual account: prove money transferred INTO it
+    actually lands in the wallet. BVN -> dedicated NUBAN -> Monnify
+    SUCCESSFUL_TRANSACTION/RESERVED_ACCOUNT webhook -> wallet credited, once.
+
+    Note: the account-create step runs in LIVE mode (mocked Monnify HTTP); the
+    webhook itself runs in MOCK mode so its signature is accepted offline — the
+    crediting under test is pure ledger logic, no Monnify call."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create(username="08077700001", phone="08077700001",
+                                        email="fund@zitch.test", first_name="Ada", last_name="Eze")
+        self.user.set_transaction_pin("1234")
+        self.user.save()
+        get_or_create_wallet(self.user)
+        self.token = AccessToken.issue(self.user).key
+
+    def _provision_account(self):
+        ref = f"ZITCH-WALLET-{self.user.id}"
+
+        def router(url, *a, **kw):
+            if "/api/v1/vas/bvn-details-match" in url:
+                return _bvn_ok()
+            if "/api/v2/bank-transfer/reserved-accounts" in url:
+                return _reserve_ok(reference=ref)
+            raise AssertionError(f"unexpected POST {url}")
+
+        with patch("utility.providers.payments_live", return_value=True), \
+                patch("utility.providers._monnify_token", return_value="tok"), \
+                patch("utility.providers.requests.post", side_effect=router):
+            r = self.client.post("/api/wallet/account/create/",
+                                 data=json.dumps({"access_token": self.token, "bvn": "22212345678"}),
+                                 content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        return get_or_create_wallet(self.user)
+
+    def _webhook(self, *, txref, amount, reference, dest_account):
+        event = {"eventType": "SUCCESSFUL_TRANSACTION",
+                 "eventData": {"transactionReference": txref, "amountPaid": amount,
+                               "product": {"type": "RESERVED_ACCOUNT", "reference": reference},
+                               "destinationAccountInformation": {"accountNumber": dest_account}}}
+        return self.client.post("/api/fund/webhook/", data=json.dumps(event),
+                                content_type="application/json")
+
+    def _balance(self):
+        return get_or_create_wallet(self.user).balance
+
+    def test_inbound_transfer_credits_wallet_exactly_once(self):
+        wallet = self._provision_account()
+        r1 = self._webhook(txref="MNFY|TXN|001", amount=5000,
+                           reference=wallet.account_reference, dest_account=wallet.account_number)
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(self._balance(), Decimal("5000"))
+        # Monnify redelivers webhooks — must never double-credit.
+        self._webhook(txref="MNFY|TXN|001", amount=5000,
+                      reference=wallet.account_reference, dest_account=wallet.account_number)
+        self.assertEqual(self._balance(), Decimal("5000"))
+
+    def test_funding_via_secondary_linked_bank_still_credits(self):
+        """getAllAvailableBanks issues several NUBANs; only the primary is on the
+        wallet row. A transfer into a SECONDARY linked account must still credit —
+        it maps by product.reference, not the destination number."""
+        wallet = self._provision_account()
+        self.assertEqual(wallet.account_number, "7011223344")  # primary
+        r = self._webhook(txref="MNFY|TXN|SEC", amount=2500,
+                          reference=wallet.account_reference,
+                          dest_account="8022334455")  # the secondary Sterling NUBAN
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._balance(), Decimal("2500"))

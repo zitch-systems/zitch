@@ -105,6 +105,47 @@ class BankTransferTests(TestCase):
         self.assertTrue(txn.meta.get("reconcile"))
         self.assertEqual(self.balance(), Decimal("40000"))  # debited, not refunded
 
+    def test_pending_payout_excluded_from_vtu_reconcile_sweep(self):
+        """Regression: a PENDING bank payout shares the reconcile+OUT shape with a
+        VTU purchase, but must NOT be swept by the VTU.ng requery — that would
+        query the wrong provider for a reference VTU.ng never saw (risking a wrong
+        refund/settle). It is settled only by the disbursement webhook."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from wallet.services import credit, debit, pending_vtu_purchases
+
+        # A PENDING bank payout (what execute_payout leaves on a rail 'PENDING').
+        with patch("transfers.services.disbursement_send",
+                   return_value={"success": True, "status": "PENDING"}):
+            _, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        payout = Transaction.objects.get(reference=body["reference"])
+
+        # A PENDING VTU purchase (reconcile, no bank meta) for contrast.
+        credit(self.user, Decimal("1000"), "Seed")
+        vtu = debit(self.user, Decimal("500"), "Airtime",
+                    meta={"phone": "08010000001", "reconcile": True})
+
+        cutoff = timezone.now() + timedelta(minutes=1)  # both are "old enough"
+        swept = set(pending_vtu_purchases(cutoff).values_list("reference", flat=True))
+        self.assertIn(vtu.reference, swept)         # VTU purchase is reconciled
+        self.assertNotIn(payout.reference, swept)   # bank payout is not
+
+        # And the cron leaves the payout untouched (never calls vtu_requery on it).
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": True}) as mq:
+            from django.core.management import call_command
+            call_command("reconcile_vtu", "--older-than-minutes=0")
+        requeried_refs = [c.args[0] for c in mq.call_args_list]
+        self.assertNotIn(payout.reference, requeried_refs)
+        payout.refresh_from_db()
+        self.assertEqual(payout.transaction_status, Transaction.PENDING)  # still pending, not refunded
+        self.assertEqual(self.balance(), Decimal("40500"))  # 50000 - 10000 payout + 1000 seed - 500 vtu
+
     def test_pending_payout_settled_by_webhook(self):
         from utility.providers import payment_verify_signature  # noqa: F401 (sig mocked below)
         with patch("transfers.services.disbursement_send",

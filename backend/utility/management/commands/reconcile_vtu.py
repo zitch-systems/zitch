@@ -14,8 +14,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from utility.providers import vtu_requery
-from wallet.models import Transaction
-from wallet.services import settle_or_refund
+from wallet.services import pending_vtu_purchases, settle_or_refund
 
 
 class Command(BaseCommand):
@@ -29,12 +28,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         cutoff = timezone.now() - timedelta(minutes=options["older_than_minutes"])
-        pending = Transaction.objects.filter(
-            transaction_status=Transaction.PENDING,
-            direction=Transaction.OUT,
-            meta__reconcile=True,
-            created__lte=cutoff,
-        )
+        # VTU.ng purchases only — bank-transfer payouts share the PENDING+reconcile
+        # shape but are settled by the Monnify disbursement webhook, never a VTU
+        # requery (which would hit the wrong provider for a foreign reference).
+        pending = pending_vtu_purchases(cutoff)
         total = pending.count()
         settled = 0
         for txn in pending:
