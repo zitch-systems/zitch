@@ -370,6 +370,58 @@ def disbursement_send(amount_naira, reference: str, narration: str,
         return {"success": False, "message": f"Payout provider unreachable: {exc}"}
 
 
+def monnify_diagnostics(account: str = "0000000000", bank: str = "058") -> dict:
+    """Structured Monnify connectivity self-test (no secrets) shared by the
+    `monnify_check` command and the web diagnostic endpoint.
+
+    Reports the config (booleans + base URL), whether the OAuth login actually
+    succeeds, and what a sample name-enquiry returns with Monnify's real message —
+    each step short-circuiting with a `status` + `hint` that names the fix.
+    """
+    m = settings.MONNIFY
+    out = {
+        "base_url": m["BASE_URL"],
+        "base_url_kind": "live" if "api.monnify.com" in m["BASE_URL"] else "test/sandbox",
+        "api_key_set": bool(m["API_KEY"]),
+        "secret_key_set": bool(m["SECRET_KEY"]),
+        "contract_code_set": bool(m["CONTRACT_CODE"]),
+        "source_account_set": bool(m["SOURCE_ACCOUNT"]),
+        "payments_live": payments_live(),
+    }
+    if not payments_live():
+        out["status"] = "keys_incomplete"
+        out["hint"] = ("Set MONNIFY_API_KEY, MONNIFY_SECRET_KEY and MONNIFY_CONTRACT_CODE. "
+                       "Until all three are set, every Monnify feature fails.")
+        return out
+    out["auth_ok"] = bool(_monnify_token())
+    if not out["auth_ok"]:
+        out["status"] = "auth_failed"
+        out["hint"] = ("OAuth login failed — this breaks ALL Monnify features at once. "
+                       "Usually a base-URL/keys mismatch (live keys need "
+                       "https://api.monnify.com; test keys need https://sandbox.monnify.com). "
+                       "If the pairing is already correct, the keys are invalid or the live "
+                       "account isn't activated yet — regenerate them / contact Monnify.")
+        return out
+    res = disbursement_resolve_account(account, bank)
+    raw = res.get("raw") or {}
+    out["sample_enquiry"] = {
+        "account": account, "bank_code": bank, "resolved": bool(res.get("success")),
+        "name": res.get("name", ""),
+        "monnify_code": raw.get("responseCode"),
+        "monnify_message": raw.get("responseMessage") or res.get("message"),
+    }
+    if res.get("success"):
+        out["status"] = "ok"
+        out["hint"] = "Auth + name-enquiry both work. If users still hit errors, capture the exact in-app message."
+    else:
+        out["status"] = "auth_ok_enquiry_failed"
+        out["hint"] = ("Auth works but the name-enquiry failed. If the account+bank are valid, "
+                       "the Disbursement/Transfer product is most likely not enabled on your "
+                       "contract (it powers name lookup AND bank transfers). Reserved Accounts "
+                       "(add money) is a separate product — confirm it's enabled too.")
+    return out
+
+
 # ---------------------------------------------------------------------------
 # KYC / identity — Monnify Verification (VAS)
 #
