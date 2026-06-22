@@ -57,25 +57,13 @@ def wallet_account(request):
     """POST /api/wallet/account/ {access_token}
     -> {success, account_number, account_name, bank_name, bank_accounts}
 
-    Returns the user's dedicated funding account. If the user is KYC-verified but
-    has no number yet, it makes one best-effort reserve attempt, rate-limited by a
-    short cool-down so a slow/failing provider never makes this page hang on every
-    open. The reliable path to a number is the explicit create endpoint, which
-    supplies the BVN the reserve actually needs.
+    A fast, side-effect-free read of the user's dedicated funding account: it never
+    calls the provider on load. (A reserve needs the raw BVN, which we never store,
+    so a read-time attempt can't succeed — it would only hang the Add-money page on
+    a slow Monnify call.) Provisioning is explicit: at BVN verification time, or via
+    /api/wallet/account/create/, both of which have the BVN in hand.
     """
-    from django.core.cache import cache
-
-    user = request.user_obj
-    wallet = get_or_create_wallet(user)
-    if not wallet.account_number and (user.bvn_verified or user.nin_verified):
-        # Reserving hits Monnify (a network call). Back off for a few minutes after
-        # a failure so a provider outage/misconfig doesn't make the user re-wait on
-        # every Add-money open — they can still mint it via the create endpoint.
-        cooldown = f"reserve_retry:{user.id}"
-        if not cache.get(cooldown):
-            wallet = ensure_reserved_account(user)
-            if not wallet.account_number:
-                cache.set(cooldown, "1", 300)
+    wallet = get_or_create_wallet(request.user_obj)
     return ok(
         success=True,
         account_number=wallet.account_number,
