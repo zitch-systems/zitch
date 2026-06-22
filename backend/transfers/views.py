@@ -18,7 +18,7 @@ from wallet.models import Transaction
 from wallet.services import existing_for_key, reverse_transfer, settle_payout
 
 from .models import Bank
-from .services import PayoutError, execute_payout
+from .services import PayoutError, detect_account_banks, execute_payout
 
 
 @api
@@ -48,22 +48,34 @@ def list_beneficiaries(request):
 @ratelimit("resolve_account", limit=20, window=60)
 @require_user
 def resolve_account(request):
-    """POST /api/transfers/resolve/ {access_token, account_number, bank}
-    -> {success, name}
+    """POST /api/transfers/resolve/ {access_token, account_number, bank?}
+    -> {success, name, bank, bank_name, matches}
 
-    MOCK mode returns a placeholder name; replace with the provider's
-    account-name enquiry for production.
+    With ``bank`` (our slug) it resolves at that one bank. WITHOUT it, the bank is
+    auto-detected: a name-enquiry runs across the active banks and the match(es)
+    are returned, so the app fills the bank in automatically once a 10-digit
+    account number is typed (``matches`` lists every hit; usually exactly one).
     """
     acct = (request.data.get("account_number") or "").strip()
-    if len(acct) != 10:
+    if len(acct) != 10 or not acct.isdigit():
         return fail("Enter a valid 10-digit account number")
-    bank = Bank.objects.filter(code=str(request.data.get("bank", ""))).first()
-    if bank is None:
-        return fail("Select a bank", status=404)
-    res = disbursement_resolve_account(acct, bank.bank_code)
-    if not res.get("success"):
-        return fail(res.get("message", "Could not verify this account number"), status=400)
-    return ok(success=True, name=res.get("name", ""))
+
+    bank_slug = str(request.data.get("bank", "") or "").strip()
+    if bank_slug:  # explicit bank (manual pick / override) — resolve at just that one
+        bank = Bank.objects.filter(code=bank_slug).first()
+        if bank is None:
+            return fail("Select a bank", status=404)
+        res = disbursement_resolve_account(acct, bank.bank_code)
+        if not res.get("success"):
+            return fail(res.get("message", "Could not verify this account number"), status=400)
+        return ok(success=True, name=res.get("name", ""), bank=bank.code, bank_name=bank.name,
+                  matches=[{"bank": bank.code, "bank_name": bank.name, "name": res.get("name", "")}])
+
+    matches = detect_account_banks(acct)  # auto-detect across banks
+    if not matches:
+        return fail("Couldn't detect the bank for this account number — pick the bank manually.", status=404)
+    top = matches[0]
+    return ok(success=True, name=top["name"], bank=top["bank"], bank_name=top["bank_name"], matches=matches)
 
 
 @api

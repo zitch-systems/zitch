@@ -19,6 +19,7 @@ const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; initials: string; color: string };
+type BankMatch = { bank: string; bank_name: string; name: string };
 
 const SendMoney = () => {
   const { c } = useTheme();
@@ -62,40 +63,62 @@ const SendMoney = () => {
   useEffect(() => { setResolvedName(''); }, [identifier]);
 
   const amount = Number(amt || 0);
-  // Bank mode: once a 10-digit account + a (user-selected) bank are present we do a
-  // name enquiry and show the account holder's name. A NUBAN can't be mapped to a
-  // bank on the client, so the bank is always an explicit choice — never guessed.
+  // Bank mode: type a 10-digit account and we AUTO-DETECT the bank — the server
+  // name-enquires across banks and returns the match, so the bank + holder name
+  // fill in by themselves. The user can still tap the bank field to override
+  // (which resolves at just that one bank).
   const [bankName, setBankName] = useState('');   // resolved account holder name
   const [resolvingBank, setResolvingBank] = useState(false);
   const [bankErr, setBankErr] = useState('');
-  // Re-resolve whenever the account number or bank changes; clear the old result.
-  // (Runs before the resolve effect below, which re-arms the spinner when ready.)
-  useEffect(() => { setBankName(''); setBankErr(''); setResolvingBank(false); }, [acct, bank]);
+  const [matches, setMatches] = useState<BankMatch[]>([]);  // shown when >1 bank matches
 
-  const acctReady = mode === 'bank' ? acct.length === 10 && !!bank : !!resolvedName;
-  const recipientName = picked ? picked.name : mode === 'bank' ? bankName : resolvedName;
-  const valid = (!!picked || acctReady) && amount >= 10 && amount <= balance;
+  const applyMatch = (m: BankMatch) => {
+    setBank(banks.find((b) => b.code === m.bank) || { code: m.bank, name: m.bank_name, color: c.brand });
+    setBankName(m.name);
+    setMatches([]);
+    setBankErr('');
+  };
 
+  // Auto-detect on a 10-digit account. Keyed on acct only, so the bank it sets
+  // (or a manual pick) doesn't re-trigger it; editing the account re-detects.
   useEffect(() => {
-    if (mode !== 'bank' || acct.length !== 10 || !bank) return;
+    if (mode !== 'bank') return;
+    setBank(null); setBankName(''); setBankErr(''); setMatches([]);
+    if (acct.length !== 10) return;
     let cancelled = false;
     setResolvingBank(true);
-    setBankErr('');
-    // Small debounce so switching banks / fixing a digit doesn't fire a burst.
     const t = setTimeout(async () => {
       try {
-        const res = await apiJson('/api/transfers/resolve/', { account_number: acct, bank: bank.code });
+        const res = await apiJson('/api/transfers/resolve/', { account_number: acct }); // no bank -> auto-detect
         if (cancelled) return;
-        if (res.success && res.name) setBankName(res.name);
-        else setBankErr(res.message || "Couldn't verify this account. Check the number and bank.");
+        if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
+        else if (res.success && res.matches?.length) setMatches(res.matches);
+        else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
       } catch {
         if (!cancelled) setBankErr("Couldn't verify this account. Please try again.");
       } finally {
         if (!cancelled) setResolvingBank(false);
       }
-    }, 350);
+    }, 500);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [acct, bank, mode]);
+  }, [acct, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Manual override: resolve at the specific bank the user picks from the sheet.
+  const chooseBank = async (b: Bank) => {
+    setBank(b); setBankSheet(false); setMatches([]); setBankName(''); setBankErr('');
+    if (acct.length !== 10) return;
+    setResolvingBank(true);
+    try {
+      const res = await apiJson('/api/transfers/resolve/', { account_number: acct, bank: b.code });
+      if (res.success && res.name) setBankName(res.name);
+      else setBankErr(res.message || "Couldn't verify this account at that bank.");
+    } catch { setBankErr("Couldn't verify this account. Please try again."); }
+    finally { setResolvingBank(false); }
+  };
+
+  const acctReady = mode === 'bank' ? acct.length === 10 && !!bank : !!resolvedName;
+  const recipientName = picked ? picked.name : mode === 'bank' ? bankName : resolvedName;
+  const valid = (!!picked || acctReady) && amount >= 10 && amount <= balance;
 
   const resolveZitch = async () => {
     if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
@@ -207,14 +230,24 @@ const SendMoney = () => {
               label="Bank"
               value={bank?.name || ''}
               editable={false}
-              placeholder="Select bank"
+              placeholder={resolvingBank ? 'Detecting…' : 'Auto-detected from account — or tap to choose'}
               prefix={bank ? <View style={{ width: 18, height: 18, borderRadius: 5, backgroundColor: bank.color }} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
               suffix={<ZIcon name="down" size={16} color={c.ink3} />}
               pointerEvents="none"
             />
           </Pressable>
           {resolvingBank ? (
-            <Text style={{ color: c.ink3, fontFamily: font.medium, fontSize: 12.5, marginTop: 8 }}>Checking account…</Text>
+            <Text style={{ color: c.ink3, fontFamily: font.medium, fontSize: 12.5, marginTop: 8 }}>Detecting bank…</Text>
+          ) : matches.length > 1 ? (
+            <View style={{ marginTop: 8 }}>
+              <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Found at more than one bank — pick the right one:</Text>
+              {matches.map((m) => (
+                <Pressable key={m.bank} onPress={() => applyMatch(m)} style={{ paddingVertical: 7 }}>
+                  <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 13 }}>{m.bank_name}</Text>
+                  <Text style={{ color: c.ink2, fontFamily: font.regular, fontSize: 12 }}>{m.name}</Text>
+                </Pressable>
+              ))}
+            </View>
           ) : bankName ? (
             <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 8 }}>✓ {bankName}</Text>
           ) : bankErr ? (
@@ -268,7 +301,7 @@ const SendMoney = () => {
       {/* Bank picker */}
       <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank">
         {banks.map((b, i) => (
-          <Pressable key={b.code} onPress={() => { setBank(b); setBankSheet(false); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
+          <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
             <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
               <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
             </View>
