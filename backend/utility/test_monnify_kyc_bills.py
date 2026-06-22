@@ -13,7 +13,7 @@ Two layers, neither of which needs real Monnify credentials:
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 
 from utility import providers as P
 
@@ -198,3 +198,39 @@ class MonnifyKycBillsLiveTests(SimpleTestCase):
             "requestSuccessful": True, "responseBody": {"status": "DELIVERED"}})
         r = P.monnify_bill_status("ZB-REF-Y")
         self.assertTrue(r["success"])
+
+
+class KycProviderDispatchTests(SimpleTestCase):
+    """verify_bvn / verify_nin route to the provider KYC_PROVIDER selects, and the
+    accounts/wallet views call these (not a hard-wired provider)."""
+
+    def test_default_unconfigured_is_monnify(self):
+        # No keys + no explicit setting -> Monnify (the app's primary rail).
+        self.assertEqual(P.kyc_provider(), "monnify")
+
+    @override_settings(KYC_PROVIDER="monnify")
+    def test_verify_bvn_routes_to_monnify(self):
+        with patch("utility.providers.monnify_verify_bvn", return_value={"success": True, "via": "monnify"}) as mv, \
+                patch("utility.providers.kyc_verify_bvn") as pv:
+            out = P.verify_bvn("22212345678", name="ADA EZE", mobile="08010000001")
+        self.assertEqual(out["via"], "monnify")
+        mv.assert_called_once()
+        pv.assert_not_called()
+
+    @override_settings(KYC_PROVIDER="prembly")
+    def test_verify_bvn_routes_to_prembly(self):
+        with patch("utility.providers.kyc_verify_bvn", return_value={"success": True, "via": "prembly"}) as pv, \
+                patch("utility.providers.monnify_verify_bvn") as mv:
+            out = P.verify_bvn("22212345678")
+        self.assertEqual(out["via"], "prembly")
+        pv.assert_called_once()
+        mv.assert_not_called()
+
+    @override_settings(KYC_PROVIDER="prembly")
+    def test_verify_nin_routes_to_prembly(self):
+        with patch("utility.providers.kyc_verify_nin", return_value={"success": True, "via": "prembly"}) as pv, \
+                patch("utility.providers.monnify_verify_nin") as mv:
+            out = P.verify_nin("98765432109")
+        self.assertEqual(out["via"], "prembly")
+        pv.assert_called_once()
+        mv.assert_not_called()

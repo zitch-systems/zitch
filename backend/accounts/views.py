@@ -11,7 +11,7 @@ from common.ratelimit import client_ip, ratelimit
 
 log = logging.getLogger("zitch.security")
 from utility.providers import (
-    kyc_verify_bvn, kyc_verify_face, kyc_verify_nin, kyc_verify_nin_document, send_email, send_sms,
+    kyc_verify_face, kyc_verify_nin_document, send_email, send_sms, verify_bvn, verify_nin,
 )
 from wallet.services import get_or_create_wallet
 
@@ -460,7 +460,7 @@ def kyc_bvn_start(request):
     """
     user = request.user_obj
     bvn = (request.data.get("bvn") or "").strip()
-    result = kyc_verify_bvn(bvn)
+    result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
     code = _otp_code()
@@ -500,7 +500,7 @@ def kyc_bvn(request):
     """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
     user = request.user_obj
     bvn = (request.data.get("bvn") or "").strip()
-    result = kyc_verify_bvn(bvn)
+    result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
     user.set_bvn(bvn)
@@ -517,7 +517,7 @@ def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
     user = request.user_obj
     nin = (request.data.get("nin") or "").strip()
-    result = kyc_verify_nin(nin)
+    result = verify_nin(nin)
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
     # The redesigned flow also uploads the NIN slip/ID image; verify it when sent.

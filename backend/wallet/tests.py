@@ -5,6 +5,7 @@ All run in MOCK provider mode (no keys), so funding settles automatically.
 """
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction as db_transaction
@@ -141,10 +142,31 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
         self.assertTrue(body["account_number"])
+        # The one BVN step both provisions the account AND records KYC: the user is
+        # marked BVN-verified and lifted to tier 2 (BVN-or-NIN).
+        self.assertTrue(body["bvn_verified"])
+        self.assertEqual(body["tier"], 2)
+        u = User.objects.get(pk=self.user.pk)
+        self.assertTrue(u.bvn_verified)
+        self.assertEqual(u.tier, 2)
+        self.assertEqual(u.bvn_last4, "0099")          # stored hashed, last-4 only
+        self.assertFalse(hasattr(u, "bvn"))            # never the raw number
         # Idempotent: a second call returns the same account, never a second mint.
         res2, body2 = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
         self.assertEqual(res2.status_code, 200)
         self.assertEqual(body2["account_number"], body["account_number"])
+
+    def test_account_create_rejected_when_bvn_fails_kyc(self):
+        """A BVN the KYC provider can't verify is rejected up front — no account is
+        minted and the user stays tier 1 / unverified."""
+        with patch("wallet.views.verify_bvn", return_value={"success": False, "message": "BVN not found"}):
+            res, body = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body["message"], "BVN not found")
+        u = User.objects.get(pk=self.user.pk)
+        self.assertFalse(u.bvn_verified)
+        self.assertEqual(u.tier, 1)
+        self.assertFalse(get_or_create_wallet(u).account_number)
 
     def test_account_create_requires_valid_id(self):
         res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "123"})
