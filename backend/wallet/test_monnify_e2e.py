@@ -32,17 +32,6 @@ def _resp(body, ok=True):
 
 
 # --- Monnify envelopes, by the path fragment each call targets -----------------
-def _bvn_ok():
-    return _resp({"requestSuccessful": True, "responseMessage": "success",
-                  "responseBody": {"bvn": "22212345678",
-                                   "bvnInformationMatch": {"name": "FULL_MATCH"}}})
-
-
-def _bvn_invalid():
-    return _resp({"requestSuccessful": False, "responseMessage": "Invalid BVN",
-                  "responseBody": {}})
-
-
 def _reserve_ok(reference="ZITCH-WALLET-X"):
     # V2 getAllAvailableBanks shape: issued accounts under `accounts`.
     return _resp({"requestSuccessful": True, "responseMessage": "success",
@@ -62,7 +51,11 @@ def _reserve_fail():
 @patch("utility.providers._monnify_token", return_value="tok")
 @patch("utility.providers.payments_live", return_value=True)
 class MonnifyAccountCreateE2E(TestCase):
-    """POST /api/wallet/account/create/ — BVN -> verify -> reserve -> tier-up."""
+    """POST /api/wallet/account/create/ — BVN -> reserve -> tier-up.
+
+    Account creation is gated on the reserved-account onboarding alone (which
+    validates the BVN itself), NOT the separate VAS identity-match product — a
+    contract may not have VAS enabled, and gating on it would block the flow."""
 
     def setUp(self):
         self.client = Client()
@@ -79,13 +72,13 @@ class MonnifyAccountCreateE2E(TestCase):
                              content_type="application/json")
         return r, r.json()
 
-    def test_bvn_verifies_provisions_account_and_tiers_up(self, *_):
+    def test_bvn_provisions_account_and_tiers_up_via_reserve_only(self, *_):
+        # No VAS call: the reserve alone provisions and (by validating the BVN)
+        # grants verification. The router rejects any VAS hit to prove it.
         def router(url, *a, **kw):
-            if "/api/v1/vas/bvn-details-match" in url:
-                return _bvn_ok()
             if "/api/v2/bank-transfer/reserved-accounts" in url:
-                return _reserve_ok()
-            raise AssertionError(f"unexpected POST {url}")
+                return _reserve_ok(reference=f"ZITCH-WALLET-{self.user.id}")
+            raise AssertionError(f"VAS/other Monnify call must not happen: {url}")
 
         with patch("utility.providers.requests.post", side_effect=router) as mp:
             res, body = self._create(bvn="22212345678")
@@ -97,15 +90,12 @@ class MonnifyAccountCreateE2E(TestCase):
         self.assertEqual(body["bank_name"], "Wema Bank")
         self.assertEqual(body["account_name"], "ADA EZE")
         self.assertEqual(len(body["bank_accounts"]), 2)
-        # One BVN both verifies and lifts the tier.
+        # One BVN both provisions the account and lifts the tier.
         self.assertTrue(body["bvn_verified"])
         self.assertEqual(body["tier"], 2)
-        # Ordering matters: verify the BVN BEFORE minting an account from it.
-        urls = [c.args[0] for c in mp.call_args_list]
-        self.assertTrue(urls[0].endswith("/api/v1/vas/bvn-details-match"))
-        self.assertTrue(urls[1].endswith("/api/v2/bank-transfer/reserved-accounts"))
-        # The reserve request carries the BVN and our stable per-user reference.
-        reserve_body = mp.call_args_list[1].kwargs["json"]
+        # Exactly one Monnify POST — the reserve — carrying the BVN + our reference.
+        self.assertEqual(len(mp.call_args_list), 1)
+        reserve_body = mp.call_args_list[0].kwargs["json"]
         self.assertEqual(reserve_body["bvn"], "22212345678")
         self.assertEqual(reserve_body["accountReference"], f"ZITCH-WALLET-{self.user.id}")
         # Persisted: hashed BVN (never raw), tier, and the NUBAN on the wallet.
@@ -115,30 +105,11 @@ class MonnifyAccountCreateE2E(TestCase):
         self.assertEqual(u.bvn_last4, "5678")
         self.assertEqual(get_or_create_wallet(u).account_number, "7011223344")
 
-    def test_kyc_failure_blocks_account_and_never_reserves(self, *_):
-        """A BVN Monnify can't verify must be rejected up front — no reserve call,
-        no account, user stays tier 1 (regression for verify-before-mint ordering)."""
+    def test_reserve_rejection_blocks_account_and_keeps_user_unverified(self, *_):
+        """Monnify rejects the reserve (bad BVN / name mismatch / product off):
+        502, no account, and the tier is NOT lifted — provisioning, not an
+        un-minted attempt, is what grants verification."""
         def router(url, *a, **kw):
-            if "/api/v1/vas/bvn-details-match" in url:
-                return _bvn_invalid()
-            raise AssertionError("reserve must NOT run when KYC fails")
-
-        with patch("utility.providers.requests.post", side_effect=router):
-            res, body = self._create(bvn="22212345678")
-
-        self.assertEqual(res.status_code, 400)
-        u = User.objects.get(pk=self.user.pk)
-        self.assertFalse(u.bvn_verified)
-        self.assertEqual(u.tier, 1)
-        self.assertFalse(get_or_create_wallet(u).account_number)
-
-    def test_reserve_failure_after_kyc_leaves_user_unverified(self, *_):
-        """BVN verifies but Monnify rejects the reserve (name mismatch / product
-        not enabled): 502, no account, and the tier is NOT lifted — provisioning,
-        not the KYC call alone, is what grants verification."""
-        def router(url, *a, **kw):
-            if "/api/v1/vas/bvn-details-match" in url:
-                return _bvn_ok()
             if "/api/v2/bank-transfer/reserved-accounts" in url:
                 return _reserve_fail()
             raise AssertionError(f"unexpected POST {url}")
@@ -234,8 +205,6 @@ class MonnifyReservedFundingLoopE2E(TestCase):
         ref = f"ZITCH-WALLET-{self.user.id}"
 
         def router(url, *a, **kw):
-            if "/api/v1/vas/bvn-details-match" in url:
-                return _bvn_ok()
             if "/api/v2/bank-transfer/reserved-accounts" in url:
                 return _reserve_ok(reference=ref)
             raise AssertionError(f"unexpected POST {url}")

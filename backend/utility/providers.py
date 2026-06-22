@@ -22,8 +22,10 @@ import secrets
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 
 REQUEST_TIMEOUT = 30
+_MONNIFY_AUTH_TIMEOUT = 12  # interactive calls must not hang on a slow auth leg
 log = logging.getLogger("zitch")
 
 
@@ -36,15 +38,36 @@ def payments_live() -> bool:
 
 
 def _monnify_token() -> str:
-    """OAuth login: Basic base64(apiKey:secretKey) -> bearer access token."""
+    """OAuth login (Basic base64(apiKey:secretKey) -> bearer access token), cached.
+
+    Monnify access tokens are valid for ~1h, so we cache until shortly before they
+    expire instead of logging in on every call. The fresh login on every
+    reserve/resolve/verify was doubling each call's latency (two round-trips) and
+    could hang an interactive page load. Returns "" on failure so callers — which
+    already guard on an empty token — degrade gracefully instead of 500-ing."""
     m = settings.MONNIFY
+    ckey = "monnify:tok:" + hashlib.sha256(m["API_KEY"].encode()).hexdigest()[:16]
+    cached = cache.get(ckey)
+    if cached:
+        return cached
     basic = base64.b64encode(f"{m['API_KEY']}:{m['SECRET_KEY']}".encode()).decode()
-    resp = requests.post(
-        f"{m['BASE_URL']}/api/v1/auth/login",
-        headers={"Authorization": f"Basic {basic}"},
-        timeout=REQUEST_TIMEOUT,
-    )
-    return (resp.json().get("responseBody", {}) or {}).get("accessToken", "")
+    try:
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v1/auth/login",
+            headers={"Authorization": f"Basic {basic}"},
+            timeout=_MONNIFY_AUTH_TIMEOUT,
+        )
+        rb = (resp.json() or {}).get("responseBody", {}) or {}
+    except (requests.RequestException, ValueError):
+        log.warning("monnify_auth_unreachable base=%s", m["BASE_URL"])
+        return ""
+    token = rb.get("accessToken", "")
+    if token:
+        # Cache for a bit less than the stated lifetime so we never present an
+        # expired token; default to ~50 min if Monnify omits expiresIn.
+        ttl = max(60, int(rb.get("expiresIn", 3000) or 3000) - 120)
+        cache.set(ckey, token, ttl)
+    return token
 
 
 def payment_initialize(email: str, amount_naira, reference: str) -> dict:

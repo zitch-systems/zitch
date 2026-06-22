@@ -8,9 +8,7 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import (
-    payment_initialize, payment_verify, payment_verify_signature, verify_bvn, verify_nin,
-)
+from utility.providers import payment_initialize, payment_verify, payment_verify_signature
 
 from .models import FundingIntent
 from .services import (
@@ -59,14 +57,25 @@ def wallet_account(request):
     """POST /api/wallet/account/ {access_token}
     -> {success, account_number, account_name, bank_name, bank_accounts}
 
-    Returns the user's dedicated funding account, reserving one on first call if
-    it's missing but the user is already KYC-verified (Monnify can mint a
-    dedicated account from the BVN/NIN already on file via the contract).
+    Returns the user's dedicated funding account. If the user is KYC-verified but
+    has no number yet, it makes one best-effort reserve attempt, rate-limited by a
+    short cool-down so a slow/failing provider never makes this page hang on every
+    open. The reliable path to a number is the explicit create endpoint, which
+    supplies the BVN the reserve actually needs.
     """
+    from django.core.cache import cache
+
     user = request.user_obj
     wallet = get_or_create_wallet(user)
     if not wallet.account_number and (user.bvn_verified or user.nin_verified):
-        wallet = ensure_reserved_account(user)
+        # Reserving hits Monnify (a network call). Back off for a few minutes after
+        # a failure so a provider outage/misconfig doesn't make the user re-wait on
+        # every Add-money open — they can still mint it via the create endpoint.
+        cooldown = f"reserve_retry:{user.id}"
+        if not cache.get(cooldown):
+            wallet = ensure_reserved_account(user)
+            if not wallet.account_number:
+                cache.set(cooldown, "1", 300)
     return ok(
         success=True,
         account_number=wallet.account_number,
@@ -96,13 +105,17 @@ def wallet_account_create(request):
     -> {success, account_number, account_name, bank_name, bank_accounts, tier,
         bvn_verified, nin_verified}
 
-    The one-step "get my account" / KYC flow: the BVN (or NIN) is verified through
-    the KYC provider (Monnify VAS) and, on success, handed to Monnify's
-    reserved-account onboarding which issues the dedicated NUBAN. The user is then
-    marked KYC-verified for that identifier and their tier recomputed, so a single
-    BVN both provisions the virtual wallet account AND lifts their limit — no
-    separate in-app KYC step needed first. Only a BVN is required (NIN accepted as
-    an alternative). Idempotent: returns the existing account on a repeat call.
+    The one-step "get my account" / KYC flow: the BVN (or NIN) is handed to
+    Monnify's reserved-account onboarding, which validates it (CBN rules — Monnify
+    won't issue a dedicated account for a number that fails its own KYC) and issues
+    the NUBAN. On success the user is marked KYC-verified for that identifier and
+    their tier recomputed, so a single BVN both provisions the virtual wallet
+    account AND lifts their limit. Only a BVN is required (NIN accepted as an
+    alternative). Idempotent: returns the existing account on a repeat call.
+
+    Note: we deliberately do NOT gate on the separate Monnify VAS identity-match
+    product here — a contract may not have it enabled, and gating on it would block
+    account creation even though reserved-account onboarding does its own BVN check.
     """
     user = request.user_obj
     wallet = get_or_create_wallet(user)
@@ -114,27 +127,16 @@ def wallet_account_create(request):
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     if len(bvn) != 11 and len(nin) != 11:
         return fail("Enter your 11-digit BVN or NIN")
-
-    # Verify the identifier BEFORE asking Monnify to mint an account from it, so a
-    # bad/mismatched number fails here with a clear reason instead of as an opaque
-    # reserve rejection. BVN takes precedence (the only thing strictly required).
     using_bvn = len(bvn) == 11
-    if using_bvn:
-        check = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
-    else:
-        check = verify_nin(nin)
-    if not check.get("success"):
-        return fail(check.get(
-            "message", "We couldn't verify your BVN. Check the number and try again."), status=400)
 
     wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
     if not wallet.account_number:
-        # Monnify rejected onboarding (wrong number, name mismatch, or the
-        # contract has no reserved-account product). The exact reason is logged
-        # server-side (monnify_reserve_failed).
+        # Monnify rejected onboarding (wrong number, name mismatch, or the contract
+        # has no reserved-account product). The exact reason is logged server-side
+        # (monnify_reserve_failed) so ops can tell a bad BVN from a config issue.
         return fail(
-            "We couldn't create your account. Check that your BVN/NIN is correct "
-            "and matches your name, then try again.",
+            "We couldn't create your account. Check that your BVN is correct and "
+            "matches your name, then try again.",
             status=502,
         )
 
