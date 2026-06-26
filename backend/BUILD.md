@@ -43,7 +43,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (Monnify / VTU.ng / Sendchamp / Prembly keys).
+3. After first deploy, set the service env vars (Monnify / Kora / VTU.ng / Sendchamp / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 

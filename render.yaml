@@ -47,6 +47,15 @@ services:
       # Where Monnify returns the payer after a hosted-checkout top-up.
       - key: MONNIFY_REDIRECT_URL
         sync: false
+      # Kora (Korapay) — alternate/secondary rail (funding, payouts, balances,
+      # BVN/NIN/vNIN identity, card issuing). One base URL serves both modes; the
+      # key prefix (sk_test_/sk_live_) selects test vs live. Blank SECRET_KEY =>
+      # mock mode. Diagnose with `manage.py kora_check`. BASE_URL defaults to
+      # https://api.korapay.com/merchant in code.
+      - key: KORA_SECRET_KEY
+        sync: false
+      - key: KORA_PUBLIC_KEY
+        sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).
