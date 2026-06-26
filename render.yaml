@@ -56,6 +56,15 @@ services:
         sync: false
       - key: KORA_PUBLIC_KEY
         sync: false
+      # Rail selection (blank => auto: Monnify/issuer first, then Kora). Set to
+      # "kora" to move that flow onto Kora. Kora webhooks: /api/fund/kora-webhook/
+      # and /api/transfers/kora-webhook/.
+      - key: PAYMENT_PROVIDER
+        sync: false
+      - key: PAYOUT_PROVIDER
+        sync: false
+      - key: CARD_PROVIDER
+        sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).

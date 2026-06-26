@@ -56,7 +56,7 @@ Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/update_info/`
 KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
-Funding (Monnify): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
+Funding (Monnify/Kora): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/` · `/api/fund/kora-webhook/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
@@ -66,7 +66,7 @@ Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
 Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
-Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/` · `/api/transfers/webhook/`
+Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/` · `/api/transfers/webhook/` · `/api/transfers/kora-webhook/`
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
 
 ## Fixed Save maturities
@@ -94,6 +94,24 @@ Payout is idempotent per plan, so overlapping runs never double-pay.
 
 Set the webhook URL in the Monnify dashboard to:
 `https://<your-render-host>/api/fund/webhook/`
+
+### Selectable rails (Monnify or Kora)
+
+Funding, payouts and card issuing each pick a provider via a setting, defaulting
+to Monnify/the generic issuer so existing behaviour is unchanged:
+- `PAYMENT_PROVIDER` (`monnify`|`kora`) — funding (checkout + virtual accounts)
+- `PAYOUT_PROVIDER` (`monnify`|`kora`) — bank payouts
+- `CARD_PROVIDER` (`issuer`|`kora`) — virtual cards
+
+Blank => auto (prefer whichever has live keys). The views/services call
+provider-agnostic wrappers (`utility.providers.funding_*` / `payout_*` /
+`card_*`) that route to Monnify or the Kora client. When a flow runs on Kora,
+point Kora's dashboard webhooks at `/api/fund/kora-webhook/` and
+`/api/transfers/kora-webhook/` (signed with `x-korapay-signature`, HMAC-SHA256
+over the payload `data` object). Kora has no PAN-reveal endpoint, so
+`/api/cards/details/` returns "not available on this card provider" under
+`CARD_PROVIDER=kora`. Kora endpoint shapes are marked VERIFY-BEFORE-LIVE in
+`utility/kora.py`.
 
 ## WhatsApp channel (deterministic; AI layer comes later)
 A WhatsApp banking channel where a **linked** user checks balance and sends money

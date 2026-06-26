@@ -104,7 +104,7 @@ class BankTransferTests(TestCase):
         # A rail that returns PENDING (queued / awaiting auth) must NOT be settled
         # as Successful — the row stays Pending (money debited, flagged for the
         # webhook) and the response says "processing", not "sent".
-        with patch("transfers.services.disbursement_send",
+        with patch("transfers.services.payout_send",
                    return_value={"success": True, "status": "PENDING"}):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
@@ -130,7 +130,7 @@ class BankTransferTests(TestCase):
         from wallet.services import credit, debit, pending_vtu_purchases
 
         # A PENDING bank payout (what execute_payout leaves on a rail 'PENDING').
-        with patch("transfers.services.disbursement_send",
+        with patch("transfers.services.payout_send",
                    return_value={"success": True, "status": "PENDING"}):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
@@ -161,7 +161,7 @@ class BankTransferTests(TestCase):
 
     def test_pending_payout_settled_by_webhook(self):
         from utility.providers import payment_verify_signature  # noqa: F401 (sig mocked below)
-        with patch("transfers.services.disbursement_send",
+        with patch("transfers.services.payout_send",
                    return_value={"success": True, "status": "PENDING"}):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
@@ -176,7 +176,7 @@ class BankTransferTests(TestCase):
 
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""
-        with patch("transfers.services.disbursement_send",
+        with patch("transfers.services.payout_send",
                    return_value={"success": False, "message": "bank declined"}):
             res, _ = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",

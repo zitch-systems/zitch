@@ -8,12 +8,19 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import payment_initialize, payment_verify, payment_verify_signature
+from utility.providers import (
+    funding_initialize,
+    funding_verify,
+    payment_provider,
+    payment_verify_signature,
+)
+from utility import kora as kora_provider
 
 from .models import FundingIntent
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
+    credit_kora_virtual_account_funding,
     credit_reserved_account_funding,
     ensure_reserved_account,
     existing_for_key,
@@ -174,7 +181,7 @@ def transaction_history(request):
     )
 
 
-# --------------------------- WALLET FUNDING (Monnify) ---------------------------
+# ----------------------- WALLET FUNDING (Monnify / Kora) -----------------------
 @api
 @ratelimit("fund_initialize", limit=20, window=60)
 @require_user
@@ -183,7 +190,8 @@ def fund_initialize(request):
     -> {success, reference, authorization_url}
 
     The app opens authorization_url in a browser. The wallet is credited only
-    after Monnify confirms payment (verify endpoint and/or webhook).
+    after the payment rail (Monnify or Kora — see PAYMENT_PROVIDER) confirms
+    payment (verify endpoint and/or webhook).
     """
     user = request.user_obj
     amount = parse_amount(request.data.get("amount"))
@@ -193,8 +201,14 @@ def fund_initialize(request):
         return fail("Minimum funding amount is ₦100")
 
     reference = make_reference("ZPAY")
-    FundingIntent.objects.create(user=user, reference=reference, amount=amount)
-    result = payment_initialize(user.email or f"{user.phone}@zitch.app", amount, reference)
+    # Stamp the rail that started this charge so verify uses the same one even if
+    # PAYMENT_PROVIDER is flipped before the user returns from checkout.
+    provider = payment_provider()
+    FundingIntent.objects.create(user=user, reference=reference, amount=amount,
+                                 meta={"provider": provider})
+    email = user.email or f"{user.phone}@zitch.app"
+    name = (user.get_full_name() or user.phone or "").strip()
+    result = funding_initialize(email, amount, reference, name=name)
     if not result.get("success"):
         return fail(result.get("message", "Could not start payment"), status=502)
     return ok(
@@ -209,13 +223,17 @@ def fund_initialize(request):
 @require_user
 def fund_verify(request):
     """POST /api/fund/verify/ {access_token, reference}
-    -> {success, wallet} — confirms with Monnify and credits once.
+    -> {success, wallet} — confirms with the rail and credits once.
     """
     reference = (request.data.get("reference") or "").strip()
     if not reference:
         return fail("Reference is required")
 
-    result = payment_verify(reference)
+    # Verify against the rail that started this intent (falls back to the current
+    # default when the intent or its stamp is missing).
+    intent = FundingIntent.objects.filter(reference=reference).first()
+    provider = (intent.meta or {}).get("provider", "") if intent else ""
+    result = funding_verify(reference, provider=provider)
     if not result.get("success"):
         return fail(result.get("message", "Payment not successful"), status=402)
 
@@ -269,6 +287,49 @@ def fund_webhook(request):
     record_audit("webhook.monnify", actor_type="system",
                  target=(event.get("eventData") or {}).get("paymentReference", ""),
                  after={"event": event.get("eventType", ""), "signature": "verified"})
+    return ok(status=True)
+
+
+@csrf_exempt
+def fund_kora_webhook(request):
+    """POST /api/fund/kora-webhook/ — Kora (Korapay) pay-in callback.
+
+    Kept on a separate route from the Monnify webhook because Kora signs
+    differently (x-korapay-signature = HMAC-SHA256 over the payload `data`
+    object) and ships a different event shape. A `charge.success` with our
+    `reference` settles its FundingIntent; one carrying virtual-account details
+    (a spontaneous transfer with no intent) credits via the account mapping.
+    Idempotent, and always 200 on accepted events so Kora stops retrying.
+    """
+    if request.method != "POST":
+        return fail("Method not allowed", status=405)
+    try:
+        event = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return fail("Invalid payload", status=400)
+
+    signature = request.headers.get("x-korapay-signature", "")
+    if not kora_provider.verify_webhook(event, signature):
+        log.warning("kora_webhook_bad_signature has_header=%s body_len=%s",
+                    bool(signature), len(request.body or b""))
+        return fail("Invalid signature", status=401)
+
+    etype = event.get("event", "")
+    data = event.get("data", {}) or {}
+    if etype == "charge.success":
+        reference = data.get("reference", "") or data.get("payment_reference", "")
+        amount = data.get("amount")
+        # A dedicated-account transfer has no FundingIntent; settle_funding is a
+        # no-op for it, so fall back to the account mapping.
+        if reference and settle_funding(reference, amount) is None:
+            credit_kora_virtual_account_funding(data)
+        log.info("kora_webhook event=%s ref=%s amount=%s", etype, reference, amount)
+    else:
+        log.info("kora_webhook ignored_event=%s", etype)
+    from whatsapp.ops import record_audit
+    record_audit("webhook.kora", actor_type="system",
+                 target=data.get("reference", ""),
+                 after={"event": etype, "signature": "verified"})
     return ok(status=True)
 
 

@@ -18,10 +18,10 @@ from common.http import (
 )
 from common.ratelimit import ratelimit
 from utility.providers import (
-    card_secure_details,
-    fund_card as issuer_fund_card,
-    issue_card,
-    set_card_status,
+    card_fund as issuer_fund_card,
+    card_issue,
+    card_reveal,
+    card_set_status,
 )
 from wallet.models import Transaction
 from wallet.services import DuplicateTransaction, InsufficientFunds, debit, existing_for_key, refund
@@ -62,7 +62,7 @@ def create_card(request):
         return ok(success=True, card=_card_dict(user.cards.first()), message="You already have a card")
 
     holder = (user.get_full_name() or user.phone or "Zitch User").upper()
-    result = issue_card(holder, customer_ref=str(user.id))
+    result = card_issue(holder, customer_ref=str(user.id), email=user.email or "")
     if not result.get("success"):
         return fail(result.get("message", "Could not create card"), status=502)
 
@@ -88,7 +88,7 @@ def toggle_freeze(request):
         return fail("No card found", status=404)
 
     going_active = card.frozen  # if currently frozen, we're activating
-    result = set_card_status(card.card_token, active=going_active)
+    result = card_set_status(card.card_token, active=going_active)
     if not result.get("success"):
         return fail(result.get("message", "Could not update card"), status=502)
 
@@ -116,7 +116,7 @@ def card_details(request):
     if card is None:
         return fail("No card found", status=404)
 
-    result = card_secure_details(card.card_token)
+    result = card_reveal(card.card_token)
     if not result.get("success"):
         return fail(result.get("message", "Could not fetch card details"), status=502)
     return ok(success=True, pan=result.get("pan", ""), cvv=result.get("cvv", ""),

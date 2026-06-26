@@ -7,7 +7,7 @@ hand a resolved account name to `execute_payout`.
 """
 from decimal import Decimal
 
-from utility.providers import disbursement_send
+from utility.providers import payout_send
 from wallet.models import Transaction
 from wallet.services import (
     DuplicateTransaction,
@@ -35,7 +35,7 @@ def detect_account_banks(account_number: str) -> list[dict]:
 
     from django.core.cache import cache
 
-    from utility.providers import disbursement_resolve_account, payments_live
+    from utility.providers import payout_live, payout_resolve_account
 
     ckey = f"acctdetect:{account_number}"
     cached = cache.get(ckey)
@@ -43,14 +43,14 @@ def detect_account_banks(account_number: str) -> list[dict]:
         return cached
 
     banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
-    if not payments_live():
+    if not payout_live():
         matches = ([{"bank": banks[0].code, "bank_name": banks[0].name, "name": "ADEYEMI WILLIAM"}]
                    if banks else [])
         cache.set(ckey, matches, 60)
         return matches
 
     def probe(b):
-        res = disbursement_resolve_account(account_number, b.bank_code)
+        res = payout_resolve_account(account_number, b.bank_code)
         if res.get("success") and res.get("name"):
             return {"bank": b.code, "bank_name": b.name, "name": res["name"]}
         return None
@@ -97,13 +97,13 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     except InsufficientFunds:
         raise PayoutError("insufficient", "Insufficient wallet balance.")
 
-    result = disbursement_send(amount, txn.reference, note or f"Transfer to {name}",
-                               bank.bank_code, account_number, name)
+    result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
+                         bank.bank_code, account_number, name)
     if not result.get("success"):
         refund(txn)
         raise PayoutError("provider", result.get("message", "Transfer failed"))
 
-    if (result.get("status") or "").upper() == "PENDING":
+    if (result.get("status") or "").upper() in ("PENDING", "PROCESSING"):
         # Accepted by the rail but not yet confirmed (queued / awaiting auth). Keep
         # the row PENDING and flag it for the disbursement webhook + reconciliation
         # rather than claiming success — the money stays debited, and the webhook

@@ -48,7 +48,7 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     action. Monnify needs a BVN/NIN to mint a dedicated account, so pass the raw
     value while it is still in hand at verification time.
     """
-    from utility.providers import get_reserved_account, reserve_account
+    from utility.providers import funding_account_get, funding_account_reserve
 
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
@@ -58,12 +58,12 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     name = (user.get_full_name() or user.phone or "Zitch user").strip()
     email = user.email or f"{user.phone}@zitch.app"
 
-    result = reserve_account(reference, name, email, name, bvn=bvn, nin=nin)
+    result = funding_account_reserve(reference, name, email, name, bvn=bvn, nin=nin)
     if not result.get("success"):
         # A duplicate accountReference means a prior attempt reserved the account
-        # but we never persisted it — fetch rather than re-create (which Monnify
+        # but we never persisted it — fetch rather than re-create (which the rail
         # rejects). If that also fails, leave the wallet numberless to retry later.
-        existing = get_reserved_account(reference)
+        existing = funding_account_get(reference)
         if not existing.get("success"):
             # Stash Monnify's real reason on the (unsaved) instance so the caller
             # can surface it — "authentication failed" (keys/base-URL) vs a BVN/name
@@ -396,6 +396,35 @@ def credit_reserved_account_funding(event_data: dict) -> Transaction | None:
     if txn is not None:
         log.info("reserved_funding_credited user=%s amount=%s txref=%s",
                  wallet.user_id, amount, event_data.get("transactionReference", ""))
+    return txn
+
+
+def credit_kora_virtual_account_funding(data: dict) -> Transaction | None:
+    """Map a Kora virtual-account credit event to a wallet and credit it once.
+
+    Kora's charge `data` carries the destination account under
+    ``virtual_bank_account_details`` (or a flat ``account_number``) and a unique
+    ``reference``. Resolves the wallet by our account_reference, then the account
+    number, and credits idempotently keyed on Kora's reference — mirroring the
+    Monnify reserved-account path.
+    """
+    vba = data.get("virtual_bank_account_details", {}) or {}
+    account_ref = data.get("account_reference", "") or vba.get("account_reference", "")
+    number = data.get("account_number", "") or vba.get("account_number", "")
+    wallet = None
+    if account_ref:
+        wallet = Wallet.objects.filter(account_reference=account_ref).first()
+    if wallet is None and number:
+        wallet = Wallet.objects.filter(account_number=number).first()
+    if wallet is None:
+        log.warning("kora_funding_no_wallet account_ref=%r dest_account=%r ref=%s",
+                    account_ref, number, data.get("reference", ""))
+        return None
+    amount = data.get("amount")
+    txn = settle_reserved_funding(data.get("reference", ""), amount, wallet.user)
+    if txn is not None:
+        log.info("kora_funding_credited user=%s amount=%s ref=%s",
+                 wallet.user_id, amount, data.get("reference", ""))
     return txn
 
 
