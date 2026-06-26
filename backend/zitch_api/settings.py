@@ -184,6 +184,15 @@ KORA = {
     "SECRET_KEY": os.environ.get("KORA_SECRET_KEY", ""),
     "PUBLIC_KEY": os.environ.get("KORA_PUBLIC_KEY", ""),
 }
+# Which rail moves money. Blank => auto: prefer whichever has live keys
+# (Monnify/CARD_ISSUER first, then Kora), else Monnify's mock. See
+# utility.providers.{payment_provider,payout_provider,card_provider}.
+# - PAYMENT_PROVIDER: "monnify" | "kora" — wallet funding (checkout + accounts)
+# - PAYOUT_PROVIDER:  "monnify" | "kora" — bank payouts
+# - CARD_PROVIDER:    "issuer"  | "kora" — virtual card issuing
+PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
+PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
+CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
 # SMS / OTP — Sendchamp.
 SENDCHAMP = {
     "BASE_URL": os.environ.get("SENDCHAMP_BASE_URL", "https://api.sendchamp.com/api/v1"),

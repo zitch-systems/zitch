@@ -13,7 +13,8 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import disbursement_resolve_account, payment_verify_signature
+from utility import kora as kora_provider
+from utility.providers import payment_verify_signature, payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key, reverse_transfer, settle_payout
 
@@ -65,7 +66,7 @@ def resolve_account(request):
         bank = Bank.objects.filter(code=bank_slug).first()
         if bank is None:
             return fail("Select a bank", status=404)
-        res = disbursement_resolve_account(acct, bank.bank_code)
+        res = payout_resolve_account(acct, bank.bank_code)
         if not res.get("success"):
             return fail(res.get("message", "Could not verify this account number"), status=400)
         return ok(success=True, name=res.get("name", ""), bank=bank.code, bank_name=bank.name,
@@ -122,7 +123,7 @@ def bank_transfer(request):
     note = data.get("note", "")
     # Resolve server-side for the authoritative account name — Monnify rejects a
     # payout whose name doesn't match the enquiry, and we don't trust the client.
-    resolved = disbursement_resolve_account(acct, bank.bank_code)
+    resolved = payout_resolve_account(acct, bank.bank_code)
     if not resolved.get("success"):
         return fail(resolved.get("message", "Could not verify this account number"), status=400)
     name = resolved.get("name") or (data.get("name") or "Bank recipient").strip()
@@ -174,4 +175,35 @@ def disbursement_webhook(request):
     from whatsapp.ops import record_audit
     record_audit("webhook.monnify_disbursement", actor_type="system", target=reference,
                  after={"event": event.get("eventType", ""), "signature": "verified"})
+    return ok(status=True)
+
+
+@csrf_exempt
+def kora_disbursement_webhook(request):
+    """POST /api/transfers/kora-webhook/ — Kora payout (transfer) callback.
+
+    Mirrors the Monnify disbursement webhook on a separate route (Kora signs the
+    payload `data` object with HMAC-SHA256). ``transfer.success`` settles a
+    PENDING payout; ``transfer.failed``/``reversed`` refunds the wallet. Keyed on
+    our reference, status-guarded (idempotent), always 200 on accepted events.
+    """
+    if request.method != "POST":
+        return fail("Method not allowed", status=405)
+    try:
+        event = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return fail("Invalid payload", status=400)
+    if not kora_provider.verify_webhook(event, request.headers.get("x-korapay-signature", "")):
+        return fail("Invalid signature", status=401)
+
+    data = event.get("data", {}) or {}
+    reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
+    etype = event.get("event", "")
+    if etype in ("transfer.failed", "transfer.reversed") and reference:
+        reverse_transfer(reference)
+    elif etype == "transfer.success" and reference:
+        settle_payout(reference)
+    from whatsapp.ops import record_audit
+    record_audit("webhook.kora_disbursement", actor_type="system", target=reference,
+                 after={"event": etype, "signature": "verified"})
     return ok(status=True)

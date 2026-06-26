@@ -1167,3 +1167,172 @@ def fx_execute(quote_ref: str) -> dict:
         return {"success": bool(r.ok), "raw": (r.json() if r.content else {})}
     except requests.RequestException as exc:
         return {"success": False, "message": f"FX execute failed: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Provider selection — payments (funding) / payouts / cards
+#
+# Like kyc_provider(), these pick the rail for money movement so the app can run
+# Kora alongside (or instead of) Monnify without the views/services knowing which
+# is active. Each honours an explicit *_PROVIDER setting; blank => auto (prefer
+# whichever has live keys, Monnify/issuer first). The funding_* / payout_* /
+# card_* wrappers below are the provider-agnostic entry points the views call;
+# they route to the Monnify/issuer functions above or the Kora client
+# (utility.kora). Defaulting to Monnify keeps existing behaviour byte-identical
+# whenever no provider is explicitly selected.
+#
+# Provider stickiness: selection is a deploy-level setting, not per-transaction.
+# A funding/payout reference is OURS (same value sent to either rail), so a
+# verify/webhook resolves correctly as long as the setting isn't flipped while
+# transactions are mid-flight. Kora funding/payout webhooks land on their own
+# endpoints (see wallet/transfers views), so a provider switch never crosses
+# webhook wires.
+# ---------------------------------------------------------------------------
+def _kora_live() -> bool:
+    from . import kora
+    return kora.kora_live()
+
+
+def payment_provider() -> str:
+    """'monnify' or 'kora' — the rail for wallet funding (checkout + accounts)."""
+    choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
+    if choice in ("monnify", "kora"):
+        return choice
+    if payments_live():
+        return "monnify"
+    if _kora_live():
+        return "kora"
+    return "monnify"
+
+
+def payout_provider() -> str:
+    """'monnify' or 'kora' — the rail for bank payouts."""
+    choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
+    if choice in ("monnify", "kora"):
+        return choice
+    if payments_live():
+        return "monnify"
+    if _kora_live():
+        return "kora"
+    return "monnify"
+
+
+def payout_live() -> bool:
+    """Whether the selected payout rail has live keys (else MOCK)."""
+    return payments_live() if payout_provider() == "monnify" else _kora_live()
+
+
+def card_provider() -> str:
+    """'issuer' (the generic CARD_ISSUER) or 'kora' — the virtual-card backend."""
+    choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
+    if choice in ("issuer", "kora"):
+        return choice
+    if _card_issuer_live():
+        return "issuer"
+    if _kora_live():
+        return "kora"
+    return "issuer"
+
+
+# --- Funding (wallet top-up) dispatch ---
+def funding_initialize(email: str, amount_naira, reference: str, *,
+                       name: str = "", redirect_url: str = "") -> dict:
+    """Start a funding charge via the selected rail -> {success, authorization_url}."""
+    if payment_provider() == "kora":
+        from . import kora
+        return kora.payment_initialize(email, amount_naira, reference,
+                                       name=name, redirect_url=redirect_url)
+    return payment_initialize(email, amount_naira, reference)
+
+
+def funding_verify(reference: str, provider: str = "") -> dict:
+    """Verify a funding charge via the selected (or explicitly named) rail."""
+    prov = (provider or payment_provider()).lower()
+    if prov == "kora":
+        from . import kora
+        return kora.payment_verify(reference)
+    return payment_verify(reference)
+
+
+def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
+                            customer_name: str, bvn: str = "", nin: str = "") -> dict:
+    """Provision a dedicated funding account via the selected rail.
+
+    Both backends normalise to {success, account_number, bank_name, account_name,
+    reference, accounts?} so wallet.services.ensure_reserved_account is agnostic.
+    """
+    if payment_provider() == "kora":
+        from . import kora
+        return kora.create_virtual_account(account_reference, account_name, customer_email,
+                                           customer_name, bvn=bvn, nin=nin)
+    return reserve_account(account_reference, account_name, customer_email, customer_name,
+                           bvn=bvn, nin=nin)
+
+
+def funding_account_get(account_reference: str) -> dict:
+    """Fetch an existing funding account via the selected rail (duplicate recovery)."""
+    if payment_provider() == "kora":
+        from . import kora
+        return kora.get_virtual_account(account_reference)
+    return get_reserved_account(account_reference)
+
+
+# --- Payout (bank transfer) dispatch ---
+def payout_resolve_account(account_number: str, bank_code: str) -> dict:
+    """Name enquiry via the selected payout rail."""
+    if payout_provider() == "kora":
+        from . import kora
+        return kora.resolve_account(account_number, bank_code)
+    return disbursement_resolve_account(account_number, bank_code)
+
+
+def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
+                account_number: str, account_name: str) -> dict:
+    """Single bank payout via the selected rail.
+
+    Both normalise to {success, status, ...}. Monnify yields SUCCESS/PENDING/
+    COMPLETED; Kora yields success/processing/pending — execute_payout treats
+    PENDING/PROCESSING as not-yet-confirmed.
+    """
+    if payout_provider() == "kora":
+        from . import kora
+        return kora.disburse(amount_naira, reference, narration, bank_code,
+                             account_number, account_name)
+    return disbursement_send(amount_naira, reference, narration, bank_code,
+                             account_number, account_name)
+
+
+# --- Virtual card dispatch ---
+# Kora issues cards in two steps (cardholder -> card) and has no PAN-reveal
+# endpoint, so card_reveal degrades gracefully on Kora. The generic CARD_ISSUER
+# path is unchanged. VERIFY-BEFORE-LIVE for the Kora card endpoints (see kora.py).
+def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:
+    if card_provider() == "kora":
+        from . import kora
+        ch = kora.create_cardholder(holder, email or f"{customer_ref}@zitch.app")
+        if not ch.get("success"):
+            return ch
+        return kora.create_card(ch["reference"])
+    return issue_card(holder, customer_ref)
+
+
+def card_set_status(card_token: str, active: bool) -> dict:
+    if card_provider() == "kora":
+        from . import kora
+        return kora.set_card_status(card_token, active)
+    return set_card_status(card_token, active)
+
+
+def card_fund(card_token: str, amount) -> dict:
+    if card_provider() == "kora":
+        from . import kora
+        return kora.fund_card(card_token, amount)
+    return fund_card(card_token, amount)
+
+
+def card_reveal(card_token: str) -> dict:
+    if card_provider() == "kora":
+        # Kora exposes card details (masked) but no full PAN/CVV reveal endpoint.
+        return {"success": False,
+                "message": "Card detail reveal isn't available on this card provider"}
+    return card_secure_details(card_token)

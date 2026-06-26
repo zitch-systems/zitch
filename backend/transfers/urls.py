@@ -8,4 +8,5 @@ urlpatterns = [
     path("resolve/", views.resolve_account),
     path("send/", views.bank_transfer),
     path("webhook/", views.disbursement_webhook),
+    path("kora-webhook/", views.kora_disbursement_webhook),
 ]
