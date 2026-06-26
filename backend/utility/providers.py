@@ -921,20 +921,36 @@ def kyc_verify_face(selfie: str = "") -> dict:
 # (KYC_PROVIDER) without touching the views. Monnify is preferred because the
 # same BVN it verifies also mints the user's dedicated funding account.
 # ---------------------------------------------------------------------------
+def _kora_kyc_live() -> bool:
+    from . import kora
+    return kora.kora_live()
+
+
 def kyc_provider() -> str:
-    """'monnify' or 'prembly' — the backend for BVN/NIN checks.
+    """'monnify', 'prembly' or 'kora' — the backend for BVN/NIN checks.
 
     An explicit KYC_PROVIDER setting wins; otherwise prefer whichever has live
-    keys (Monnify first), falling back to Monnify's mock path when neither is
-    configured (so dev/test still verifies offline)."""
+    keys (Monnify first, then Prembly, then Kora), falling back to Monnify's mock
+    path when none is configured (so dev/test still verifies offline)."""
     choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "prembly"):
+    if choice in ("monnify", "prembly", "kora"):
         return choice
     if payments_live():
         return "monnify"
     if _prembly_live():
         return "prembly"
+    if _kora_kyc_live():
+        return "kora"
     return "monnify"
+
+
+def _kyc_provider_live(provider: str) -> bool:
+    """Whether the selected KYC backend has live keys."""
+    if provider == "prembly":
+        return _prembly_live()
+    if provider == "kora":
+        return _kora_kyc_live()
+    return payments_live()
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
@@ -949,11 +965,13 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     would otherwise hand out free BVN "verification" and the tier upgrade that
     rides on it. Dev/tests keep the offline mock."""
     provider = kyc_provider()
-    live = _prembly_live() if provider == "prembly" else payments_live()
-    if not live and mock_disabled_in_prod():
+    if not _kyc_provider_live(provider) and mock_disabled_in_prod():
         return {"success": False, "message": "Identity verification is temporarily unavailable"}
     if provider == "prembly":
         return kyc_verify_bvn(bvn)
+    if provider == "kora":
+        from . import kora
+        return kora.verify_bvn(bvn)
     return monnify_verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
@@ -963,12 +981,26 @@ def verify_nin(nin: str) -> dict:
     Fails closed in production when the selected provider has no keys (see
     verify_bvn); dev/tests keep the offline mock."""
     provider = kyc_provider()
-    live = _prembly_live() if provider == "prembly" else payments_live()
-    if not live and mock_disabled_in_prod():
+    if not _kyc_provider_live(provider) and mock_disabled_in_prod():
         return {"success": False, "message": "Identity verification is temporarily unavailable"}
     if provider == "prembly":
         return kyc_verify_nin(nin)
+    if provider == "kora":
+        from . import kora
+        return kora.verify_nin(nin)
     return monnify_verify_nin(nin)
+
+
+def verify_vnin(vnin: str) -> dict:
+    """Verify a Virtual NIN (16-char tokenised NIN).
+
+    Only Kora exposes a vNIN lookup among the configured backends, so this routes
+    to Kora directly. Fails closed in production when Kora has no keys; dev/tests
+    keep the offline mock."""
+    from . import kora
+    if not kora.kora_live() and mock_disabled_in_prod():
+        return {"success": False, "message": "Identity verification is temporarily unavailable"}
+    return kora.verify_vnin(vnin)
 
 
 # ---------------------------------------------------------------------------
