@@ -186,6 +186,22 @@
   .hero-note .dots span{width:30px;height:30px;border-radius:50%;border:2.5px solid #EDF6F4;background:linear-gradient(135deg,var(--teal),var(--teal-deep));display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;margin-left:-9px;font-family:var(--disp);}
   .hero-note .dots span:first-child{margin-left:0;}
   .hero-note b{color:var(--navy);}
+  /* Plaid-style split hero on desktop: copy left, the two phones side-by-side
+     on the right. Below 1180px it falls back to the centered/stacked layout. */
+  @media (min-width:1180px){
+    .hero-in{display:grid;grid-template-columns:minmax(340px,44%) 1fr;align-items:center;gap:40px;}
+    .hero-copy{max-width:520px;margin:0;text-align:left;}
+    .hero p.lead{margin:22px 0 32px;}
+    .hero-ctas{justify-content:flex-start;}
+    .hero-note{justify-content:flex-start;}
+    .hero .demo-duo{justify-content:center;align-items:center;flex-wrap:nowrap;gap:22px;zoom:.72;}
+    /* Cluster the floating depth objects around the phones (right half). */
+    .hero-3d .h-glow{left:72%;}
+    .hero-3d .g-card{left:auto;right:34%;top:30%;}
+    .hero-3d .g-pill{left:auto;right:8%;top:12%;}
+    .hero-3d .g-blob{right:2%;bottom:8%;}
+    .hero-3d .g-ring{right:30%;top:24%;}
+  }
 
   /* phone */
   .phone-zone{position:relative;display:flex;flex-direction:column;align-items:center;}
