@@ -43,7 +43,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (Monnify / Kora / VTU.ng / Sendchamp / Prembly keys).
+3. After first deploy, set the service env vars (Kora / VTU.ng / Sendchamp / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 
@@ -56,7 +56,7 @@ Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/update_info/`
 KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
-Funding (Monnify/Kora): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/` · `/api/fund/kora-webhook/`
+Funding (Kora): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/webhook/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
@@ -66,7 +66,7 @@ Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
 Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
-Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/` · `/api/transfers/webhook/` · `/api/transfers/kora-webhook/`
+Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/` · `/api/transfers/webhook/`
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
 
 ## Fixed Save maturities
@@ -80,38 +80,35 @@ Matured plans are paid out (principal + interest credited to the wallet) two way
 
 Payout is idempotent per plan, so overlapping runs never double-pay.
 
-## Wallet funding flow (Monnify)
+## Wallet funding flow (Kora)
 1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
    authorization_url}`. A `FundingIntent` row is created (pending).
-2. App opens `authorization_url` (Monnify checkout) in a browser.
+2. App opens `authorization_url` (Kora hosted checkout) in a browser.
 3. Wallet is credited **once**, by whichever arrives first:
    - `/api/fund/verify/` `{access_token, reference}` (app calls on return), and/or
-   - `/api/fund/webhook/` (Monnify callback, `monnify-signature` HMAC-SHA512 verified).
+   - `/api/fund/webhook/` (Kora `charge.success`, `x-korapay-signature` HMAC-SHA256
+     over the payload `data` object, verified).
    `settle_funding()` locks the intent row and guards on `credited`, so
-   duplicate verify/webhook calls never double-credit.
-4. In MOCK mode (no Monnify keys) verify/webhook succeed automatically so the
-   flow is testable offline.
+   duplicate verify/webhook calls never double-credit. A bank transfer into a
+   dedicated virtual account (no `FundingIntent`) is credited by account mapping
+   (`credit_kora_virtual_account_funding`), keyed on Kora's reference.
+4. In MOCK mode (no `KORA_SECRET_KEY`) verify/webhook succeed automatically so the
+   flow is testable offline; in production a missing key fails closed.
 
-Set the webhook URL in the Monnify dashboard to:
-`https://<your-render-host>/api/fund/webhook/`
+Set the Kora dashboard webhooks to:
+- pay-in:  `https://<your-render-host>/api/fund/webhook/`
+- payout:  `https://<your-render-host>/api/transfers/webhook/`
 
-### Selectable rails (Monnify or Kora)
+### Provider layout
 
-Funding, payouts and card issuing each pick a provider via a setting, defaulting
-to Monnify/the generic issuer so existing behaviour is unchanged:
-- `PAYMENT_PROVIDER` (`monnify`|`kora`) — funding (checkout + virtual accounts)
-- `PAYOUT_PROVIDER` (`monnify`|`kora`) — bank payouts
-- `CARD_PROVIDER` (`issuer`|`kora`) — virtual cards
-
-Blank => auto (prefer whichever has live keys). The views/services call
-provider-agnostic wrappers (`utility.providers.funding_*` / `payout_*` /
-`card_*`) that route to Monnify or the Kora client. When a flow runs on Kora,
-point Kora's dashboard webhooks at `/api/fund/kora-webhook/` and
-`/api/transfers/kora-webhook/` (signed with `x-korapay-signature`, HMAC-SHA256
-over the payload `data` object). Kora has no PAN-reveal endpoint, so
-`/api/cards/details/` returns "not available on this card provider" under
-`CARD_PROVIDER=kora`. Kora endpoint shapes are marked VERIFY-BEFORE-LIVE in
-`utility/kora.py`.
+Kora is the sole money-movement rail (funding, virtual accounts, payouts) and the
+KYC backend (BVN/NIN/vNIN). The views/services call provider-agnostic wrappers
+(`utility.providers.funding_*` / `payout_*` / `verify_*`) that delegate to the
+Kora client (`utility/kora.py`). Prembly handles the selfie/liveness step only
+(Kora has no liveness check). Cards default to the generic `CARD_ISSUER` but can
+run on Kora via `CARD_PROVIDER=kora`; Kora has no PAN-reveal endpoint, so
+`/api/cards/details/` returns "not available on this card provider" there. Kora
+endpoint shapes are marked VERIFY-BEFORE-LIVE in `utility/kora.py`.
 
 ## WhatsApp channel (deterministic; AI layer comes later)
 A WhatsApp banking channel where a **linked** user checks balance and sends money
@@ -204,23 +201,20 @@ the `WHATSAPP_*` env vars (see `.env.example`).
   request field names, the customer-verify endpoint, the 9mobile `service_id`,
   and that the seeded data/cable `variation_id` codes match VTU.ng's catalogue —
   these couldn't be fetched from CI.
-- Monnify webhook + verify shapes are confirmed against Monnify's docs (no
-  change needed). Just set `MONNIFY_API_KEY` / `MONNIFY_SECRET_KEY` /
-  `MONNIFY_CONTRACT_CODE` and configure the webhook URL above.
-- Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID`, and (when a
-  card issuer is chosen) `CARD_ISSUER_*` — confirm the request/response mapping
-  in `utility/providers.py`.
+- Kora request/response shapes are VERIFY-BEFORE-LIVE: set `KORA_SECRET_KEY`
+  (sk_test_ first), run `python manage.py kora_check`, and confirm the funding /
+  virtual-account / payout / identity field names against your Kora dashboard
+  before flipping off mock. Configure the dashboard webhooks (URLs above).
+- Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID` (liveness only),
+  and (when a card issuer is chosen) `CARD_ISSUER_*` / `CARD_PROVIDER` — confirm
+  the request/response mapping in `utility/providers.py` / `utility/kora.py`.
 - Auth accepts `Authorization: Bearer <token>` (preferred) or body `access_token`.
   The app's `lib/api.ts` `apiPost`/`apiJson` helpers send the Bearer header and
   the core money screens use them; remaining screens can adopt incrementally —
   the body token still works, so nothing breaks mid-migration.
 - Replace seeded plans with the live aggregator catalogue.
-- Bank transfers use Monnify disbursements: set `MONNIFY_SOURCE_ACCOUNT` (the
-  Monnify wallet to pay out from) and point the Monnify **disbursement** webhook
-  at `https://<your-render-host>/api/transfers/webhook/` — it refunds the wallet
-  on `FAILED/REVERSED_DISBURSEMENT` (payouts settle optimistically on send).
-- Disable 2FA on the Monnify disbursement account for programmatic transfers:
-  the authorization OTP is sent to the merchant, not the app user, so it can't
-  fit the in-app flow. A 2FA-required send currently fails-and-refunds rather
-  than silently succeeding (safe). Wiring the OTP-authorization step is future
-  work if you must keep 2FA on.
+- Bank transfers use Kora payouts (drawn from your Kora payout balance, which you
+  pre-fund). Point the Kora **transfer** webhook at
+  `https://<your-render-host>/api/transfers/webhook/` — `transfer.success` settles
+  a PENDING payout and `transfer.failed`/`reversed` refunds the wallet (payouts
+  that come back `processing` stay PENDING until the webhook confirms).

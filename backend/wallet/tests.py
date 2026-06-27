@@ -15,7 +15,7 @@ from accounts.models import AccessToken
 
 from .forex import FxError, create_fx_quote
 from .models import FundingIntent, Transaction, Wallet
-from .services import credit, credit_reserved_account_funding, get_or_create_wallet
+from .services import credit, credit_kora_virtual_account_funding, get_or_create_wallet
 
 User = get_user_model()
 
@@ -121,14 +121,15 @@ class WalletTests(TestCase):
     def test_fund_webhook_credits_once_and_dedupes_with_verify(self):
         _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "7500"})
         ref = init["reference"]
-        event = {"eventType": "SUCCESSFUL_TRANSACTION",
-                 "eventData": {"paymentReference": ref, "amountPaid": 7500, "paymentStatus": "PAID"}}
+        event = {"event": "charge.success", "data": {"reference": ref, "amount": 7500}}
         # Webhook credits (mock signature accepted).
-        r1 = self.client.post("/api/fund/webhook/", data=json.dumps(event), content_type="application/json")
+        r1 = self.client.post("/api/fund/webhook/", data=json.dumps(event),
+                              content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(self.balance(self.user), Decimal("27500"))
         # Webhook AND the app's verify racing: still only one credit.
-        self.client.post("/api/fund/webhook/", data=json.dumps(event), content_type="application/json")
+        self.client.post("/api/fund/webhook/", data=json.dumps(event),
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.post("/api/fund/verify/", {"access_token": self.token, "reference": ref})
         self.assertEqual(self.balance(self.user), Decimal("27500"))
 
@@ -136,7 +137,7 @@ class WalletTests(TestCase):
         res, _ = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "50"})
         self.assertEqual(res.status_code, 400)
 
-    # --- dedicated account via Monnify onboarding (BVN) ---
+    # --- dedicated account via Kora onboarding (BVN) ---
     def test_account_create_via_bvn_onboarding(self):
         res, body = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
         self.assertEqual(res.status_code, 200)
@@ -157,12 +158,11 @@ class WalletTests(TestCase):
         self.assertEqual(body2["account_number"], body["account_number"])
 
     def test_account_create_rejected_when_reserve_fails(self):
-        """When Monnify rejects the reserved-account onboarding (e.g. a BVN/name
-        mismatch — it validates the BVN itself), no account is minted and the user
-        stays tier 1 / unverified."""
-        with patch("utility.providers.reserve_account",
+        """When Kora rejects the virtual-account onboarding (e.g. a BVN/name
+        mismatch), no account is minted and the user stays tier 1 / unverified."""
+        with patch("utility.kora.create_virtual_account",
                    return_value={"success": False, "message": "BVN/name mismatch"}), \
-                patch("utility.providers.get_reserved_account", return_value={"success": False}):
+                patch("utility.kora.get_virtual_account", return_value={"success": False}):
             res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
         self.assertEqual(res.status_code, 502)
         u = User.objects.get(pk=self.user.pk)
@@ -314,27 +314,30 @@ class ReservedAccountTests(TestCase):
         from .services import ensure_reserved_account
 
         wallet = ensure_reserved_account(self.user, bvn="22200000001")
-        event = {"eventType": "SUCCESSFUL_TRANSACTION", "eventData": {
-            "product": {"type": "RESERVED_ACCOUNT", "reference": wallet.account_reference},
-            "transactionReference": "MNFY|TXN|RSV001", "amountPaid": 5000,
-            "destinationAccountInformation": {"accountNumber": wallet.account_number},
+        event = {"event": "charge.success", "data": {
+            "reference": "KORA-TX-RSV001", "amount": 5000,
+            "account_reference": wallet.account_reference,
+            "virtual_bank_account_details": {"account_number": wallet.account_number},
         }}
         body = json.dumps(event)
-        r1 = self.client.post("/api/fund/webhook/", data=body, content_type="application/json")
+        r1 = self.client.post("/api/fund/webhook/", data=body, content_type="application/json",
+                              HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(self.bal(), Decimal("5000"))
-        # Redelivered webhook (same transactionReference) must not double-credit.
-        self.client.post("/api/fund/webhook/", data=body, content_type="application/json")
+        # Redelivered webhook (same reference) must not double-credit.
+        self.client.post("/api/fund/webhook/", data=body, content_type="application/json",
+                         HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(self.bal(), Decimal("5000"))
 
     def test_webhook_ignores_unknown_reserved_account(self):
-        event = {"eventType": "SUCCESSFUL_TRANSACTION", "eventData": {
-            "product": {"type": "RESERVED_ACCOUNT", "reference": "ZITCH-WALLET-999999"},
-            "transactionReference": "MNFY|TXN|RSV404", "amountPaid": 5000,
-            "destinationAccountInformation": {"accountNumber": "0000000000"},
+        event = {"event": "charge.success", "data": {
+            "reference": "KORA-TX-RSV404", "amount": 5000,
+            "account_reference": "ZITCH-WALLET-999999",
+            "virtual_bank_account_details": {"account_number": "0000000000"},
         }}
-        r = self.client.post("/api/fund/webhook/", data=json.dumps(event), content_type="application/json")
-        self.assertEqual(r.status_code, 200)  # accepted so Monnify stops retrying
+        r = self.client.post("/api/fund/webhook/", data=json.dumps(event),
+                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
+        self.assertEqual(r.status_code, 200)  # accepted so Kora stops retrying
         self.assertEqual(self.bal(), Decimal("0"))  # but nothing credited
 
     def test_wallet_account_endpoint_is_a_fast_read_without_provisioning(self):
@@ -445,24 +448,24 @@ class ReservedFundingTests(TestCase):
         w.account_number = "9921000099"
         w.account_reference = "ZITCH-WALLET-X"
         w.save()
-        event = {
-            "product": {"type": "RESERVED_ACCOUNT", "reference": "does-not-match"},
-            "destinationAccountInformation": {"accountNumber": "9921000099"},
-            "transactionReference": "MNFY|TEST|001",
-            "amountPaid": "5000.00",
+        data = {
+            "account_reference": "does-not-match",
+            "virtual_bank_account_details": {"account_number": "9921000099"},
+            "reference": "KORA|TEST|001",
+            "amount": "5000.00",
         }
-        txn = credit_reserved_account_funding(event)
+        txn = credit_kora_virtual_account_funding(data)
         self.assertIsNotNone(txn)
         self.assertEqual(get_or_create_wallet(u).balance, Decimal("5000.00"))
-        # Redelivered webhook (same transactionReference) must not double-credit.
-        self.assertIsNone(credit_reserved_account_funding(event))
+        # Redelivered webhook (same reference) must not double-credit.
+        self.assertIsNone(credit_kora_virtual_account_funding(data))
         self.assertEqual(get_or_create_wallet(u).balance, Decimal("5000.00"))
 
     def test_reserved_funding_unknown_account_is_ignored(self):
-        event = {
-            "product": {"type": "RESERVED_ACCOUNT", "reference": "nobody"},
-            "destinationAccountInformation": {"accountNumber": "0000000000"},
-            "transactionReference": "MNFY|TEST|002",
-            "amountPaid": "1000.00",
+        data = {
+            "account_reference": "nobody",
+            "virtual_bank_account_details": {"account_number": "0000000000"},
+            "reference": "KORA|TEST|002",
+            "amount": "1000.00",
         }
-        self.assertIsNone(credit_reserved_account_funding(event))
+        self.assertIsNone(credit_kora_virtual_account_funding(data))

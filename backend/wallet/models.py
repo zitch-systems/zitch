@@ -8,10 +8,10 @@ class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet")
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     # Dedicated (reserved) virtual account — a permanent NUBAN the user funds by
-    # bank transfer, minted via Monnify once KYC supplies a BVN/NIN. `account_number`
+    # bank transfer, minted via Kora once KYC supplies a BVN/NIN. `account_number`
     # / `bank_name` are the primary account shown in the app; `bank_accounts` holds
-    # the full list when Monnify issues one per partner bank; `account_reference` is
-    # our stable key with Monnify (used to match the funding webhook back to a user).
+    # the full list when Kora issues one per partner bank; `account_reference` is
+    # our stable key with Kora (used to match the funding webhook back to a user).
     account_number = models.CharField(max_length=20, blank=True, default="")
     account_name = models.CharField(max_length=120, blank=True, default="")
     bank_name = models.CharField(max_length=80, blank=True, default="")

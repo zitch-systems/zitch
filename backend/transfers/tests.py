@@ -160,18 +160,16 @@ class BankTransferTests(TestCase):
         self.assertEqual(self.balance(), Decimal("40500"))  # 50000 - 10000 payout + 1000 seed - 500 vtu
 
     def test_pending_payout_settled_by_webhook(self):
-        from utility.providers import payment_verify_signature  # noqa: F401 (sig mocked below)
         with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "PENDING"}):
+                   return_value={"success": True, "status": "processing"}):
             _, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
             })
         ref = body["reference"]
-        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": ref}}
-        with patch("transfers.views.payment_verify_signature", return_value=True):
-            self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                             content_type="application/json")
+        event = {"event": "transfer.success", "data": {"reference": ref}}
+        self.client.post("/api/transfers/webhook/", data=json.dumps(event),
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
 
     def test_send_refunds_when_payout_fails(self):
@@ -197,14 +195,16 @@ class BankTransferTests(TestCase):
         ref = body["reference"]
         self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
 
-        event = {"eventType": "FAILED_DISBURSEMENT", "eventData": {"reference": ref, "status": "FAILED"}}
-        r = self.client.post("/api/transfers/webhook/", data=json.dumps(event), content_type="application/json")
+        event = {"event": "transfer.failed", "data": {"reference": ref, "status": "failed"}}
+        r = self.client.post("/api/transfers/webhook/", data=json.dumps(event),
+                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.balance(), Decimal("50000"))  # refunded by the webhook
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
 
-        # Duplicate webhook (Monnify retry) must not double-refund.
-        self.client.post("/api/transfers/webhook/", data=json.dumps(event), content_type="application/json")
+        # Duplicate webhook (Kora retry) must not double-refund.
+        self.client.post("/api/transfers/webhook/", data=json.dumps(event),
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("50000"))
 
     def test_disbursement_webhook_ignores_success_event(self):
@@ -213,7 +213,8 @@ class BankTransferTests(TestCase):
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
             "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
         })
-        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": body["reference"]}}
-        self.client.post("/api/transfers/webhook/", data=json.dumps(event), content_type="application/json")
+        event = {"event": "transfer.success", "data": {"reference": body["reference"]}}
+        self.client.post("/api/transfers/webhook/", data=json.dumps(event),
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)

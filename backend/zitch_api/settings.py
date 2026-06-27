@@ -163,20 +163,10 @@ VTUNG = {
     "USERNAME": os.environ.get("VTUNG_USERNAME", ""),
     "PASSWORD": os.environ.get("VTUNG_PASSWORD", ""),
 }
-# Payments (wallet funding) — Monnify.
-MONNIFY = {
-    "BASE_URL": os.environ.get("MONNIFY_BASE_URL", "https://sandbox.monnify.com"),
-    "API_KEY": os.environ.get("MONNIFY_API_KEY", ""),
-    "SECRET_KEY": os.environ.get("MONNIFY_SECRET_KEY", ""),
-    "CONTRACT_CODE": os.environ.get("MONNIFY_CONTRACT_CODE", ""),
-    "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
-    # Monnify wallet account funds are disbursed from (bank transfers / payouts).
-    "SOURCE_ACCOUNT": os.environ.get("MONNIFY_SOURCE_ACCOUNT", ""),
-}
-# Kora (Korapay) — alternate/secondary rail: funding (checkout + virtual
-# accounts), payouts, balances, identity (BVN/NIN/vNIN) and card issuing.
-# Auth is a single static bearer secret key (no OAuth). One base URL serves both
-# modes — the key prefix (sk_test_/sk_live_) selects test vs live. Blank
+# Money-movement rail — Kora (Korapay): funding (checkout + virtual accounts),
+# payouts, balances, identity (BVN/NIN/vNIN) and card issuing. Kora is the sole
+# rail. Auth is a single static bearer secret key (no OAuth). One base URL serves
+# both modes — the key prefix (sk_test_/sk_live_) selects test vs live. Blank
 # SECRET_KEY => MOCK mode (see utility.kora). The PUBLIC_KEY is only needed for
 # the few public-key endpoints (e.g. list banks) and is safe to expose.
 KORA = {
@@ -184,14 +174,8 @@ KORA = {
     "SECRET_KEY": os.environ.get("KORA_SECRET_KEY", ""),
     "PUBLIC_KEY": os.environ.get("KORA_PUBLIC_KEY", ""),
 }
-# Which rail moves money. Blank => auto: prefer whichever has live keys
-# (Monnify/CARD_ISSUER first, then Kora), else Monnify's mock. See
-# utility.providers.{payment_provider,payout_provider,card_provider}.
-# - PAYMENT_PROVIDER: "monnify" | "kora" — wallet funding (checkout + accounts)
-# - PAYOUT_PROVIDER:  "monnify" | "kora" — bank payouts
-# - CARD_PROVIDER:    "issuer"  | "kora" — virtual card issuing
-PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
-PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
+# Virtual-card backend: "kora" or "issuer" (the generic CARD_ISSUER). Blank =>
+# auto (issuer if configured, else Kora). See utility.providers.card_provider.
 CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
 # SMS / OTP — Sendchamp.
 SENDCHAMP = {
@@ -216,13 +200,10 @@ PREMBLY = {
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
-# Which provider verifies BVN/NIN: "monnify" (Monnify VAS — the app's primary
-# rail, also mints the dedicated funding account), "prembly", or "kora" (Kora
-# Identity — BVN/NIN/vNIN). Blank => auto: prefer whichever has live keys
-# (Monnify first), else mock. See utility.providers.kyc_provider /
-# verify_bvn / verify_nin.
-KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
-# Card issuer (virtual cards) — provider TBD. Blank => mock mode.
+# BVN/NIN/vNIN verification is done by Kora Identity (see utility.providers.
+# verify_bvn / verify_nin / verify_vnin). Prembly above is used only for the
+# selfie/liveness step (kyc_verify_face), which Kora does not provide.
+# Card issuer (virtual cards) — generic provider; blank => mock mode.
 CARD_ISSUER = {
     "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),
     "API_KEY": os.environ.get("CARD_ISSUER_API_KEY", ""),

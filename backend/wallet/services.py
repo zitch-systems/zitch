@@ -45,7 +45,7 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     Idempotent: returns immediately if the wallet already carries a number, so it
     is safe to call from every KYC path. Best-effort — a provider failure leaves
     the wallet numberless (the caller logs) and it is retried on the next KYC
-    action. Monnify needs a BVN/NIN to mint a dedicated account, so pass the raw
+    action. Kora needs a BVN/NIN to mint a dedicated account, so pass the raw
     value while it is still in hand at verification time.
     """
     from utility.providers import funding_account_get, funding_account_reserve
@@ -65,7 +65,7 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
         # rejects). If that also fails, leave the wallet numberless to retry later.
         existing = funding_account_get(reference)
         if not existing.get("success"):
-            # Stash Monnify's real reason on the (unsaved) instance so the caller
+            # Stash Kora's real reason on the (unsaved) instance so the caller
             # can surface it — "authentication failed" (keys/base-URL) vs a BVN/name
             # mismatch vs "not configured" turns a dead end into a fixable signal.
             wallet.reserve_error = result.get("message", "") or existing.get("message", "")
@@ -237,7 +237,7 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
 
 
 def is_bank_payout(txn) -> bool:
-    """True for a bank-transfer (Monnify disbursement) payout, as opposed to a
+    """True for a bank-transfer (Kora disbursement) payout, as opposed to a
     VTU.ng purchase.
 
     Both leave a PENDING + ``meta.reconcile`` outbound row, but a payout is
@@ -252,7 +252,7 @@ def pending_vtu_purchases(cutoff):
     """PENDING outbound VTU.ng purchases due for requery, EXCLUDING bank-transfer
     payouts. The reconcile sweep (cron + on-demand) requeries each row via
     vtu_requery, which is only correct for VTU.ng purchases; bank payouts are
-    settled by the Monnify disbursement webhook, so they must not be swept here."""
+    settled by the Kora payout webhook, so they must not be swept here."""
     return Transaction.objects.filter(
         transaction_status=Transaction.PENDING,
         direction=Transaction.OUT,
@@ -318,7 +318,7 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     """Credit the wallet for a verified funding reference, exactly once.
 
     Locks the FundingIntent row so concurrent calls (the app's verify request
-    AND the Monnify webhook hitting at the same time) can't double-credit.
+    AND the Kora webhook hitting at the same time) can't double-credit.
     Returns the credit Transaction if this call performed the credit, else None.
     """
     try:
@@ -343,7 +343,7 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
 def settle_reserved_funding(transaction_reference: str, amount, user) -> Transaction | None:
     """Credit a wallet for an inbound bank transfer to its reserved account, once.
 
-    Keyed on Monnify's transactionReference (unique per payment): the ledger
+    Keyed on Kora's transactionReference (unique per payment): the ledger
     row's unique `reference` is the idempotency guard, so a redelivered webhook
     is a no-op rather than a double-credit. Returns the credit row, or None if
     the payment was already applied (or the inputs are incomplete).
@@ -366,39 +366,6 @@ def settle_reserved_funding(transaction_reference: str, amount, user) -> Transac
         return None
 
 
-def credit_reserved_account_funding(event_data: dict) -> Transaction | None:
-    """Map a Monnify RESERVED_ACCOUNT funding event to a wallet and credit it.
-
-    Resolves the wallet by our accountReference (product.reference), falling back
-    to the destination account number, then credits idempotently. Returns the
-    credit row, or None when the account isn't ours / already credited.
-    """
-    product = event_data.get("product", {}) or {}
-    account_ref = product.get("reference", "")
-    dest = event_data.get("destinationAccountInformation", {}) or {}
-    number = dest.get("accountNumber", "")
-    wallet = None
-    if account_ref:
-        wallet = Wallet.objects.filter(account_reference=account_ref).first()
-    if wallet is None and number:
-        wallet = Wallet.objects.filter(account_number=number).first()
-    if wallet is None:
-        # Money arrived but we can't map it to a wallet — the webhook's account
-        # reference/number doesn't match any provisioned account. Log the keys so
-        # they can be compared against Wallet.account_reference/account_number.
-        log.warning("reserved_funding_no_wallet account_ref=%r dest_account=%r txref=%s",
-                    account_ref, number, event_data.get("transactionReference", ""))
-        return None
-    amount = event_data.get("amountPaid")
-    if amount is None:
-        amount = event_data.get("settlementAmount")
-    txn = settle_reserved_funding(event_data.get("transactionReference", ""), amount, wallet.user)
-    if txn is not None:
-        log.info("reserved_funding_credited user=%s amount=%s txref=%s",
-                 wallet.user_id, amount, event_data.get("transactionReference", ""))
-    return txn
-
-
 def credit_kora_virtual_account_funding(data: dict) -> Transaction | None:
     """Map a Kora virtual-account credit event to a wallet and credit it once.
 
@@ -406,7 +373,7 @@ def credit_kora_virtual_account_funding(data: dict) -> Transaction | None:
     ``virtual_bank_account_details`` (or a flat ``account_number``) and a unique
     ``reference``. Resolves the wallet by our account_reference, then the account
     number, and credits idempotently keyed on Kora's reference — mirroring the
-    Monnify reserved-account path.
+    Kora reserved-account path.
     """
     vba = data.get("virtual_bank_account_details", {}) or {}
     account_ref = data.get("account_reference", "") or vba.get("account_reference", "")

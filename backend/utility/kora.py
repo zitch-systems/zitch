@@ -1,4 +1,4 @@
-"""Kora (Korapay) integration — an alternate/secondary rail to Monnify.
+"""Kora (Korapay) integration — the money-movement rail for Zitch.
 
 Covers the Kora features Zitch needs, each mirroring the conventions in
 ``utility.providers``:
@@ -6,12 +6,12 @@ Covers the Kora features Zitch needs, each mirroring the conventions in
 - Funding (pay-in): hosted checkout + dedicated Virtual Bank Accounts.
 - Payouts: single bank disbursement, name enquiry (bank resolve), verify.
 - Balances: merchant balance read.
-- Identity / KYC: BVN, NIN, vNIN lookups (interchangeable with the Monnify VAS
-  / Prembly backends via ``providers.kyc_provider``).
+- Identity / KYC: BVN, NIN, vNIN lookups (the app's KYC backend; Prembly
+  handles the selfie/liveness step only).
 - Card issuing: cardholder + virtual card create / fund / withdraw / status.
 - Webhook signature verification (HMAC-SHA256 over the payload ``data`` object).
 
-Auth is a single static bearer **secret key** (no OAuth handshake like Monnify),
+Auth is a single static bearer **secret key** (no OAuth handshake),
 so there is no token cache. Base URL is ``https://api.korapay.com/merchant`` and
 every endpoint hangs off ``/api/v1/...``. Every function returns
 ``{"success": bool, ...}``.
@@ -147,12 +147,17 @@ def _parse_vba(data: dict) -> dict:
     d = data.get("data", {}) or {}
     acct = d.get("account_number", "") or (d.get("bank_account", {}) or {}).get("account_number", "")
     bank = d.get("bank_name", "") or (d.get("bank_account", {}) or {}).get("bank_name", "")
+    # Kora issues a single dedicated account; surface it as a one-item `accounts`
+    # list too, matching the shape the wallet/app expects (Wallet.bank_accounts).
+    accounts = ([{"bank_name": bank, "account_number": acct,
+                  "bank_code": d.get("bank_code", "")}] if acct else [])
     return {
         "success": _ok(data) and bool(acct),
         "account_number": acct,
         "bank_name": bank,
         "account_name": d.get("account_name", ""),
         "reference": d.get("account_reference", ""),
+        "accounts": accounts,
         "message": data.get("message", "Could not create virtual account"),
         "raw": data,
     }
@@ -170,13 +175,15 @@ def create_virtual_account(account_reference: str, account_name: str, customer_e
     if not kora_live():
         if mock_disabled_in_prod():
             # Never fabricate an account in production — a user would transfer real
-            # money to a number Kora never issued. Fail closed (mirrors Monnify).
+            # money to a number Kora never issued. Fail closed.
             return {"success": False, "message": "Virtual accounts are not configured"}
         seed = int(hashlib.sha256(account_reference.encode()).hexdigest(), 16)
+        num = "88" + f"{seed % 10**8:08d}"
         return {"success": True, "mock": True,
-                "account_number": "88" + f"{seed % 10**8:08d}",
+                "account_number": num,
                 "bank_name": "Kora (Wema) MFB", "account_name": account_name,
-                "reference": account_reference}
+                "reference": account_reference,
+                "accounts": [{"bank_name": "Kora (Wema) MFB", "account_number": num, "bank_code": "035"}]}
     try:
         body = {
             "account_name": account_name,
@@ -307,7 +314,7 @@ def get_balances() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Identity / KYC — interchangeable with Monnify VAS / Prembly
+# Identity / KYC — BVN / NIN / vNIN (Prembly handles liveness only)
 # ---------------------------------------------------------------------------
 def _identity(country_doc: str, number: str, *, length: int = 11, label: str = "ID") -> dict:
     """Shared lookup for the /identities/{country}/{doc} endpoints.
@@ -461,7 +468,7 @@ def set_card_status(card_reference: str, active: bool) -> dict:
 def verify_webhook(payload: dict, signature: str) -> bool:
     """Validate a Kora webhook via the ``x-korapay-signature`` header.
 
-    Unlike Monnify (which signs the whole raw body), Kora signs ONLY the
+    Kora signs ONLY the
     ``data`` object of the payload: HMAC-SHA256 of the JSON-encoded ``data``
     with the secret key. Pass the parsed payload dict and the header value.
 
@@ -480,7 +487,7 @@ def verify_webhook(payload: dict, signature: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics — mirrors providers.monnify_diagnostics
+# Diagnostics — Kora connectivity self-test
 # ---------------------------------------------------------------------------
 def kora_diagnostics(account: str = "0000000000", bank: str = "058") -> dict:
     """Structured Kora connectivity self-test (no secrets).
