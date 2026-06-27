@@ -589,6 +589,14 @@
   .price-foot b{color:var(--teal-deep);}
 
   @media (max-width:760px){ .ways-grid,.price-grid{grid-template-columns:1fr;} }
+
+  /* How it works — three-step band */
+  .how-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:46px;}
+  .how-step{background:var(--card);border:1px solid var(--line);border-radius:var(--rl);padding:30px 28px;box-shadow:var(--shadow);}
+  .how-step .num{font-family:var(--disp);font-weight:700;font-size:15px;color:var(--teal-deep);background:var(--mint);width:40px;height:40px;border-radius:13px;display:grid;place-items:center;margin-bottom:18px;}
+  .how-step h4{font-family:var(--disp);font-size:19px;color:var(--head);margin:0 0 8px;letter-spacing:-.01em;}
+  .how-step p{font-size:15px;line-height:1.62;color:var(--t2);margin:0;}
+  @media (max-width:820px){ .how-grid{grid-template-columns:1fr;} }
 </style>
 <script type="application/ld+json">
 {
@@ -734,6 +742,7 @@
   <div class="wrap nav-in">
     <a class="brand" href="#"><img src="assets/brand/zitch-ribbon2.png" alt="Zitch" />ZITCH</a>
     <nav class="nav-links">
+      <a href="#how">How it works</a>
       <a href="#whatsapp">WhatsApp banking</a>
       <a href="#services">The app</a>
       <a href="#fx">Currencies</a>
@@ -865,6 +874,33 @@
     <div class="stat rev" style="--d:.24s;"><div class="n num">24/7</div><div class="l">banking from your WhatsApp</div></div>
   </div>
 </div>
+
+<section class="block how" id="how" data-screen-label="How it works">
+  <div class="wrap">
+    <div class="sec-head rev">
+      <span class="eyebrow">How it works</span>
+      <h2>Money moves in three taps.</h2>
+      <p>No forms, no queues, no jargon. Tell Zitch what you want — in the app or by chat — confirm with your PIN, and it's done.</p>
+    </div>
+    <div class="how-grid">
+      <div class="how-step rev">
+        <div class="num">1</div>
+        <h4>Say it your way</h4>
+        <p>Type, tap or send a voice note — "send 5k to John", buy airtime, pay a bill — in English, Pidgin, Yoruba, Igbo or Hausa.</p>
+      </div>
+      <div class="how-step rev" style="--d:.08s;">
+        <div class="num">2</div>
+        <h4>Confirm with your PIN</h4>
+        <p>Zitch shows exactly who gets paid and how much. Nothing moves until you approve it with your transaction PIN.</p>
+      </div>
+      <div class="how-step rev" style="--d:.16s;">
+        <div class="num">3</div>
+        <h4>Done in seconds</h4>
+        <p>Money lands instantly, you get a receipt, and every kobo is recorded on your statement. That's it.</p>
+      </div>
+    </div>
+  </div>
+</section>
 
 <section class="block ways" id="ways" data-screen-label="Two ways to bank">
   <div class="wrap">
