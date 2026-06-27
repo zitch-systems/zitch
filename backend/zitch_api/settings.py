@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "transfers",
     "cards",
     "convert",
+    "banklink",
     "whatsapp",
     "portal",
     "console",
@@ -177,6 +178,17 @@ KORA = {
 # Virtual-card backend: "kora" or "issuer" (the generic CARD_ISSUER). Blank =>
 # auto (issuer if configured, else Kora). See utility.providers.card_provider.
 CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
+# Open banking — Mono: link an external bank, read balance/transactions, and fund
+# the wallet from it via DirectPay (see utility.mono + the banklink app). The
+# Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY
+# (mono-sec-key header). Blank SECRET_KEY => MOCK mode. WEBHOOK_SECRET is the
+# shared secret compared against the mono-webhook-secret header.
+MONO = {
+    "BASE_URL": os.environ.get("MONO_BASE_URL", "https://api.withmono.com"),
+    "SECRET_KEY": os.environ.get("MONO_SECRET_KEY", ""),
+    "PUBLIC_KEY": os.environ.get("MONO_PUBLIC_KEY", ""),
+    "WEBHOOK_SECRET": os.environ.get("MONO_WEBHOOK_SECRET", ""),
+}
 # SMS / OTP — Sendchamp.
 SENDCHAMP = {
     "BASE_URL": os.environ.get("SENDCHAMP_BASE_URL", "https://api.sendchamp.com/api/v1"),

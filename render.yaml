@@ -46,6 +46,15 @@ services:
       # Virtual-card backend: "kora" or "issuer" (generic CARD_ISSUER); blank => auto.
       - key: CARD_PROVIDER
         sync: false
+      # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
+      # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
+      # defaults to https://api.withmono.com in code.
+      - key: MONO_SECRET_KEY
+        sync: false
+      - key: MONO_PUBLIC_KEY
+        sync: false
+      - key: MONO_WEBHOOK_SECRET
+        sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).
