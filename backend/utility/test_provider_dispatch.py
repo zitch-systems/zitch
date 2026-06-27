@@ -3,7 +3,7 @@ Kora webhook endpoints (utility.providers dispatch + wallet/transfers views).
 
 Two layers:
 - Pure routing (SimpleTestCase): the *_provider() selectors and the funding_* /
-  payout_* / card_* wrappers route to Monnify (default) or Kora per setting.
+  payout_* / card_* wrappers delegate to the Kora client.
 - Webhook crediting (TestCase): the Kora pay-in/payout webhooks credit/settle
   the ledger. In MOCK mode (no KORA key) verify_webhook accepts, so the routes
   are testable offline.
@@ -22,56 +22,49 @@ KORA_LIVE = {"BASE_URL": "https://api.korapay.com/merchant", "SECRET_KEY": "sk_t
 
 
 class ProviderSelectionTests(SimpleTestCase):
-    """Explicit *_PROVIDER wins; blank auto-selects (Monnify/issuer first)."""
+    """Kora is the sole money-movement rail; cards keep the issuer/kora choice."""
 
-    def test_defaults_to_monnify(self):
-        self.assertEqual(P.payment_provider(), "monnify")
-        self.assertEqual(P.payout_provider(), "monnify")
-        self.assertEqual(P.card_provider(), "issuer")
-
-    @override_settings(PAYMENT_PROVIDER="kora", PAYOUT_PROVIDER="kora", CARD_PROVIDER="kora")
-    def test_explicit_kora(self):
+    def test_money_rail_is_kora(self):
         self.assertEqual(P.payment_provider(), "kora")
         self.assertEqual(P.payout_provider(), "kora")
+
+    def test_card_provider_defaults_to_issuer(self):
+        self.assertEqual(P.card_provider(), "issuer")
+
+    @override_settings(CARD_PROVIDER="kora")
+    def test_card_provider_explicit_kora(self):
         self.assertEqual(P.card_provider(), "kora")
 
     @override_settings(KORA=KORA_LIVE)
-    def test_auto_prefers_kora_when_only_kora_has_keys(self):
-        # Monnify keys blank in tests, Kora has a key -> auto picks kora.
-        self.assertEqual(P.payment_provider(), "kora")
-        self.assertEqual(P.payout_provider(), "kora")
+    def test_payout_live_tracks_kora_keys(self):
         self.assertTrue(P.payout_live())
 
 
 class FundingDispatchTests(SimpleTestCase):
-    @override_settings(PAYMENT_PROVIDER="kora", KORA=KORA_LIVE)
     def test_funding_initialize_routes_to_kora(self):
         with patch("utility.kora.payment_initialize",
                    return_value={"success": True, "authorization_url": "https://k", "reference": "R"}) as m:
             P.funding_initialize("a@b.com", 1000, "ZPAY1", name="Ada")
         m.assert_called_once()
 
-    def test_funding_initialize_defaults_to_monnify(self):
-        with patch("utility.providers.payment_initialize",
-                   return_value={"success": True, "authorization_url": "m", "reference": "R"}) as m:
-            P.funding_initialize("a@b.com", 1000, "ZPAY1")
+    def test_funding_verify_routes_to_kora(self):
+        with patch("utility.kora.payment_verify", return_value={"success": True}) as m:
+            P.funding_verify("ZPAY1")
         m.assert_called_once()
 
-    @override_settings(KORA=KORA_LIVE)
-    def test_funding_verify_honours_explicit_provider(self):
-        with patch("utility.kora.payment_verify", return_value={"success": True}) as m:
-            P.funding_verify("ZPAY1", provider="kora")
+    def test_funding_account_reserve_routes_to_kora(self):
+        with patch("utility.kora.create_virtual_account",
+                   return_value={"success": True, "account_number": "880", "reference": "r"}) as m:
+            P.funding_account_reserve("usr-1", "Ada", "a@b.com", "Ada", bvn="22212345678")
         m.assert_called_once()
 
 
 class PayoutDispatchTests(SimpleTestCase):
-    @override_settings(PAYOUT_PROVIDER="kora", KORA=KORA_LIVE)
     def test_payout_send_routes_to_kora(self):
         with patch("utility.kora.disburse", return_value={"success": True, "status": "processing"}) as m:
             P.payout_send(1000, "ZTRF1", "note", "058", "0123456789", "ADA EZE")
         m.assert_called_once()
 
-    @override_settings(PAYOUT_PROVIDER="kora", KORA=KORA_LIVE)
     def test_payout_resolve_routes_to_kora(self):
         with patch("utility.kora.resolve_account", return_value={"success": True, "name": "ADA"}) as m:
             P.payout_resolve_account("0123456789", "058")
@@ -102,7 +95,7 @@ class KoraFundingWebhookTests(TestCase):
         self.user, self.token = make_user("08030000001", "fund@zitch.app")
 
     def _post(self, payload):
-        return self.client.post("/api/fund/kora-webhook/", data=json.dumps(payload),
+        return self.client.post("/api/fund/webhook/", data=json.dumps(payload),
                                 content_type="application/json",
                                 HTTP_X_KORAPAY_SIGNATURE="mock")
 
@@ -138,7 +131,7 @@ class KoraPayoutWebhookTests(TestCase):
         self.client = Client()
 
     def _post(self, payload):
-        return self.client.post("/api/transfers/kora-webhook/", data=json.dumps(payload),
+        return self.client.post("/api/transfers/webhook/", data=json.dumps(payload),
                                 content_type="application/json",
                                 HTTP_X_KORAPAY_SIGNATURE="mock")
 

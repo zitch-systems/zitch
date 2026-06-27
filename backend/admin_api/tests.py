@@ -366,11 +366,11 @@ class AdminApiFeatureTests(TestCase):
         from whatsapp.models import AuditLog
         from whatsapp.ops import record_audit
 
-        record_audit("webhook.monnify", actor_type="system", target="MNFY|X1",
-                     after={"event": "fund.success"})
+        record_audit("webhook.kora", actor_type="system", target="KORA|X1",
+                     after={"event": "charge.success"})
         self.post("ops/recon", self.finance_token, {})
         res, body = self.get("bootstrap", self.readonly_token)
-        self.assertTrue(any(w["ref"] == "MNFY|X1" and w["src"] == "Monnify" for w in body["webhooks"]))
+        self.assertTrue(any(w["ref"] == "KORA|X1" and w["src"] == "Kora" for w in body["webhooks"]))
         self.assertTrue(any(r["run"] == "zitch-reconcile-vtu" for r in body["recons"]))
 
     def test_wallet_credit_happy_path_and_audit(self):

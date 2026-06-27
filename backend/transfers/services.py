@@ -28,7 +28,7 @@ def detect_account_banks(account_number: str) -> list[dict]:
     match; a number that's a valid account at two banks (different holders) returns
     both. Cached briefly per account number so a re-resolve/retry doesn't re-sweep.
 
-    MOCK mode (no Monnify keys) returns a single deterministic match — fanning out
+    MOCK mode (no Kora keys) returns a single deterministic match — fanning out
     there would make every bank "match" the stub — so the flow stays testable.
     """
     from concurrent.futures import ThreadPoolExecutor

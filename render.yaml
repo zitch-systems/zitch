@@ -30,39 +30,20 @@ services:
           name: zitch-db
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
-      # Payments — Monnify. MONNIFY_BASE_URL MUST match your keys' environment —
-      # live: https://api.monnify.com, test: https://sandbox.monnify.com. It
-      # defaults to sandbox in code, so a live deploy MUST set this or funding
-      # fails with an auth/contract error.
-      - key: MONNIFY_BASE_URL
-        sync: false
-      - key: MONNIFY_API_KEY
-        sync: false
-      - key: MONNIFY_SECRET_KEY
-        sync: false
-      - key: MONNIFY_CONTRACT_CODE
-        sync: false
-      - key: MONNIFY_SOURCE_ACCOUNT
-        sync: false
-      # Where Monnify returns the payer after a hosted-checkout top-up.
-      - key: MONNIFY_REDIRECT_URL
-        sync: false
-      # Kora (Korapay) — alternate/secondary rail (funding, payouts, balances,
-      # BVN/NIN/vNIN identity, card issuing). One base URL serves both modes; the
+      # Money rail — Kora (Korapay): funding, virtual accounts, payouts, balances,
+      # BVN/NIN/vNIN identity, card issuing. One base URL serves both modes; the
       # key prefix (sk_test_/sk_live_) selects test vs live. Blank SECRET_KEY =>
       # mock mode. Diagnose with `manage.py kora_check`. BASE_URL defaults to
-      # https://api.korapay.com/merchant in code.
+      # https://api.korapay.com/merchant in code. Set the Kora dashboard webhooks
+      # to /api/fund/webhook/ (pay-in) and /api/transfers/webhook/ (payout).
       - key: KORA_SECRET_KEY
         sync: false
       - key: KORA_PUBLIC_KEY
         sync: false
-      # Rail selection (blank => auto: Monnify/issuer first, then Kora). Set to
-      # "kora" to move that flow onto Kora. Kora webhooks: /api/fund/kora-webhook/
-      # and /api/transfers/kora-webhook/.
-      - key: PAYMENT_PROVIDER
+      # Optional: enables /kora-diagnose?token=... browser self-test.
+      - key: KORA_DIAG_TOKEN
         sync: false
-      - key: PAYOUT_PROVIDER
-        sync: false
+      # Virtual-card backend: "kora" or "issuer" (generic CARD_ISSUER); blank => auto.
       - key: CARD_PROVIDER
         sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set

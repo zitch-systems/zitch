@@ -17,7 +17,7 @@ from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_
 from transfers.models import Bank
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
-from utility.providers import disbursement_resolve_account, vtu_purchase, vtu_verify_customer
+from utility.providers import payout_resolve_account, vtu_purchase, vtu_verify_customer
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
@@ -410,8 +410,8 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
 
 def _do_add_money(user, msisdn: str) -> None:
     """Show the user's dedicated Zitch account for bank-transfer funding (credited
-    automatically by the Monnify webhook). If they don't have one yet, onboard them
-    right here on WhatsApp via Monnify — collect the BVN and mint the account."""
+    automatically by the Kora pay-in webhook). If they don't have one yet, onboard
+    them right here on WhatsApp via Kora — collect the BVN and mint the account."""
     wallet = get_or_create_wallet(user)
     if not wallet.account_number and (user.bvn_verified or user.nin_verified):
         wallet = ensure_reserved_account(user)
@@ -419,7 +419,7 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
 
-    # No account yet — start the Monnify onboarding in-chat by collecting the BVN.
+    # No account yet — start the Kora onboarding in-chat by collecting the BVN.
     _new_flow(user, msisdn, "add_account", "bvn")
     return reply(
         msisdn,
@@ -436,11 +436,11 @@ BVN_MAX_ATTEMPTS = 3
 
 def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
     """Slot-filling step for in-chat virtual-account onboarding: receive the BVN,
-    hand it to Monnify (which verifies it and issues the NUBAN), show the account.
+    hand it to Kora (which verifies it and issues the virtual account), show it.
 
-    Verification attempts are capped (like the PIN flow): each BVN Monnify
-    rejects counts toward BVN_MAX_ATTEMPTS, after which the flow aborts — so a
-    linked number can't brute-force BVNs against Monnify's name match."""
+    Verification attempts are capped (like the PIN flow): each BVN Kora rejects
+    counts toward BVN_MAX_ATTEMPTS, after which the flow aborts — so a linked
+    number can't brute-force BVNs against Kora's identity check."""
     bvn = re.sub(r"\D", "", text)
     if len(bvn) != 11:
         # Malformed input is guidance, not a verification attempt — don't count it.
@@ -561,7 +561,7 @@ def _match_banks(text: str) -> list:
 def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     """Name-enquiry against the bank, then show the confirm card and await PIN."""
     acct = pa.payload["account"]
-    res = disbursement_resolve_account(acct, bank.bank_code)
+    res = payout_resolve_account(acct, bank.bank_code)
     if not res.get("success"):
         _touch(pa, state="account")
         return reply(msisdn, f"Couldn't verify that account at {bank.name}. "

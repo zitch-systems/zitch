@@ -1,706 +1,26 @@
 """Third-party integration layer.
 
-Providers: Monnify (payments; also optional KYC/VAS + bills via monnify_*),
-VTU.ng (VTU — airtime, data, cable, electricity, betting; via vtu_purchase /
-vtu_requery / vtu_verify_customer), Sendchamp (SMS/OTP), Prembly/IdentityPass
-(KYC: BVN/NIN/face). Each function returns {"success": bool, ...}. When the
-relevant key is blank it runs in MOCK mode and simulates success so the whole app
-flow is testable without an external account — EXCEPT in production (DEBUG off),
-where the VTU mock fails closed (see mock_disabled_in_prod) so a misconfigured
-deploy never fakes a money movement.
+Providers: Kora/Korapay (payments — funding, virtual accounts, payouts, and KYC
+BVN/NIN/vNIN; client in utility/kora.py), VTU.ng (airtime/data/cable/electricity/
+betting), Sendchamp (SMS/OTP), Resend (email/OTP), Prembly/IdentityPass (face /
+liveness KYC only), Fincra (FX). Each function returns {"success": bool, ...}.
+When the relevant key is blank it runs in MOCK mode and simulates success so the
+whole app flow is testable without an external account — EXCEPT in production
+(DEBUG off), where money/identity mocks fail closed (see mock_disabled_in_prod)
+so a misconfigured deploy never fakes a money movement.
 
-TODO before go-live: verify each provider's exact request/response field names,
-endpoints and auth against their dashboards/docs. Live calls can't be exercised
-from CI, so the shapes below are documented best-effort scaffolding; the MOCK
-paths are the source of truth until real keys are configured.
+The funding_* / payout_* / card_* / verify_* wrappers are the stable, provider-
+agnostic contract the views and services call; they delegate to the Kora client.
 """
-import base64
 import hashlib
-import hmac
 import logging
 import secrets
 
 import requests
 from django.conf import settings
-from django.core.cache import cache
 
 REQUEST_TIMEOUT = 30
-_MONNIFY_AUTH_TIMEOUT = 12  # interactive calls must not hang on a slow auth leg
 log = logging.getLogger("zitch")
-
-
-# ---------------------------------------------------------------------------
-# Payments (wallet funding) — Monnify
-# ---------------------------------------------------------------------------
-def payments_live() -> bool:
-    m = settings.MONNIFY
-    return bool(m["API_KEY"] and m["SECRET_KEY"] and m["CONTRACT_CODE"])
-
-
-def _monnify_token() -> str:
-    """OAuth login (Basic base64(apiKey:secretKey) -> bearer access token), cached.
-
-    Monnify access tokens are valid for ~1h, so we cache until shortly before they
-    expire instead of logging in on every call. The fresh login on every
-    reserve/resolve/verify was doubling each call's latency (two round-trips) and
-    could hang an interactive page load. Returns "" on failure so callers — which
-    already guard on an empty token — degrade gracefully instead of 500-ing."""
-    m = settings.MONNIFY
-    ckey = "monnify:tok:" + hashlib.sha256(m["API_KEY"].encode()).hexdigest()[:16]
-    cached = cache.get(ckey)
-    if cached:
-        return cached
-    basic = base64.b64encode(f"{m['API_KEY']}:{m['SECRET_KEY']}".encode()).decode()
-    try:
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v1/auth/login",
-            headers={"Authorization": f"Basic {basic}"},
-            timeout=_MONNIFY_AUTH_TIMEOUT,
-        )
-        rb = (resp.json() or {}).get("responseBody", {}) or {}
-    except (requests.RequestException, ValueError):
-        log.warning("monnify_auth_unreachable base=%s", m["BASE_URL"])
-        return ""
-    token = rb.get("accessToken", "")
-    if token:
-        # Cache for a bit less than the stated lifetime so we never present an
-        # expired token; default to ~50 min if Monnify omits expiresIn.
-        ttl = max(60, int(rb.get("expiresIn", 3000) or 3000) - 120)
-        cache.set(ckey, token, ttl)
-    return token
-
-
-def payment_initialize(email: str, amount_naira, reference: str) -> dict:
-    """Start a funding transaction; returns a checkout URL the app opens.
-
-    MOCK mode returns a sentinel URL so funding is testable offline (the tester
-    'completes' it by calling the verify endpoint).
-    """
-    if not payments_live():
-        return {
-            "success": True, "mock": True, "reference": reference,
-            "authorization_url": f"mock://monnify/checkout/{reference}",
-        }
-    try:
-        token = _monnify_token()
-        if not token:
-            log.warning("monnify_auth_failed base=%s", settings.MONNIFY["BASE_URL"])
-            return {"success": False, "message": (
-                "Payment gateway authentication failed — verify MONNIFY_API_KEY/SECRET_KEY and "
-                "that MONNIFY_BASE_URL matches them (live: https://api.monnify.com, "
-                "test: https://sandbox.monnify.com)."
-            )}
-        m = settings.MONNIFY
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v1/merchant/transactions/init-transaction",
-            json={
-                "amount": float(amount_naira),  # Monnify amounts are in naira
-                "customerName": (email or "Zitch user").split("@")[0],
-                "customerEmail": email,
-                "paymentReference": reference,
-                "contractCode": m["CONTRACT_CODE"],
-                "currencyCode": "NGN",
-                "redirectUrl": m.get("REDIRECT_URL", ""),
-                "paymentMethods": ["CARD", "ACCOUNT_TRANSFER"],
-            },
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        success = bool(data.get("requestSuccessful")) and bool(rb.get("checkoutUrl"))
-        if not success:
-            # Surface Monnify's actual reason (bad contract code, inactive merchant,
-            # live/sandbox mismatch) instead of a generic failure, and log it so ops
-            # can see why funding is failing.
-            log.warning("monnify_init_failed ref=%s code=%s msg=%s",
-                        reference, data.get("responseCode"), data.get("responseMessage"))
-        return {
-            "success": success,
-            "reference": rb.get("paymentReference", reference),
-            "authorization_url": rb.get("checkoutUrl", ""),
-            "message": data.get("responseMessage") or "Could not start payment",
-            "raw": data,
-        }
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
-
-
-def payment_verify(reference: str) -> dict:
-    """Confirm a transaction with Monnify (source of truth for crediting).
-
-    MOCK mode treats any reference as paid so funding works without real money.
-    """
-    if not payments_live():
-        return {"success": True, "mock": True, "amount_naira": None, "reference": reference}
-    try:
-        token = _monnify_token()
-        m = settings.MONNIFY
-        resp = requests.get(
-            f"{m['BASE_URL']}/api/v1/merchant/transactions/query",
-            params={"paymentReference": reference},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        paid = bool(data.get("requestSuccessful")) and rb.get("paymentStatus") == "PAID"
-        return {
-            "success": paid,
-            "amount_naira": rb.get("amountPaid"),
-            "reference": rb.get("paymentReference", reference),
-            "raw": data,
-        }
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
-
-
-def payment_verify_signature(body: bytes, signature: str) -> bool:
-    """Validate a Monnify webhook via the `monnify-signature` header
-    (SHA-512 HMAC of the raw body with the secret key)."""
-    if not payments_live():
-        # No keys = mock mode. Accept ONLY in dev/test so local webhook testing
-        # works. In production this MUST fail closed: a Monnify webhook moves
-        # money (credits a wallet on funding; refunds a payout on disbursement
-        # failure), so an unsigned/forged callback in a keyless prod deploy would
-        # otherwise mint free credit or reverse a real transfer. (CRITICAL.)
-        return not mock_disabled_in_prod()
-    if not signature:
-        return False
-    digest = hmac.new(settings.MONNIFY["SECRET_KEY"].encode(), body, hashlib.sha512).hexdigest()
-    return hmac.compare_digest(digest, signature)
-
-
-# ---------------------------------------------------------------------------
-# Reserved (dedicated) virtual accounts — Monnify Bank Transfer
-#
-# Mints a permanent NUBAN per user that funds the wallet by bank transfer (no
-# checkout page). Monnify requires the customer's BVN/NIN for a dedicated
-# account (CBN compliance), so reservation is driven from the KYC step where the
-# raw number is still in hand. Inbound funding arrives as a SUCCESSFUL_TRANSACTION
-# webhook whose eventData.product.type is RESERVED_ACCOUNT — credited by
-# wallet.services.credit_reserved_account_funding. Blank Monnify keys => MOCK.
-# ---------------------------------------------------------------------------
-def _parse_reserved(data: dict) -> dict:
-    """Normalise a reserve/get-reserved-account response into our shape.
-
-    V2 with getAllAvailableBanks returns the issued accounts under ``accounts``;
-    the single-bank shape carries accountNumber/bankName at the top level. We
-    surface both: a flat primary (account_number/bank_name) plus the full list.
-    """
-    rb = data.get("responseBody", {}) or {}
-    accounts = [
-        {"bank_name": a.get("bankName", ""), "account_number": a.get("accountNumber", ""),
-         "bank_code": a.get("bankCode", "")}
-        for a in (rb.get("accounts") or []) if a.get("accountNumber")
-    ]
-    primary_num = accounts[0]["account_number"] if accounts else rb.get("accountNumber", "")
-    primary_bank = accounts[0]["bank_name"] if accounts else rb.get("bankName", "")
-    return {
-        "success": bool(data.get("requestSuccessful")) and bool(primary_num),
-        "account_number": primary_num,
-        "bank_name": primary_bank,
-        "account_name": rb.get("accountName", ""),
-        "reference": rb.get("accountReference", ""),
-        "reservation_reference": rb.get("reservationReference", ""),
-        "accounts": accounts,
-        "message": data.get("responseMessage", "Could not reserve account"),
-        "raw": data,
-    }
-
-
-def reserve_account(account_reference: str, account_name: str, customer_email: str,
-                    customer_name: str, bvn: str = "", nin: str = "") -> dict:
-    """Reserve a dedicated virtual account for a customer.
-
-    POST /api/v2/bank-transfer/reserved-accounts. ``account_reference`` is our
-    stable per-user key (Monnify rejects a duplicate, so reuse it). MOCK mode
-    fabricates a deterministic NUBAN so the funding flow is testable offline.
-    """
-    if not payments_live():
-        # Never fabricate an account in production. A mock NUBAN looks real in the
-        # app, so a user would transfer real money to a number Monnify never
-        # issued — funds that vanish with no webhook to credit them. Fail closed
-        # so the wallet stays numberless and the UI shows "not available yet"
-        # instead of a dead account. (Dev/test still get a deterministic mock.)
-        if mock_disabled_in_prod():
-            return {"success": False, "message": "Reserved accounts are not configured"}
-        seed = int(hashlib.sha256(account_reference.encode()).hexdigest(), 16)
-        num = "99" + f"{seed % 10**8:08d}"
-        return {
-            "success": True, "mock": True,
-            "account_number": num, "bank_name": "Moniepoint MFB",
-            "account_name": account_name, "reference": account_reference,
-            "reservation_reference": "MOCK-" + secrets.token_hex(6).upper(),
-            "accounts": [{"bank_name": "Moniepoint MFB", "account_number": num, "bank_code": "50515"}],
-        }
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        body = {
-            "accountReference": account_reference,
-            "accountName": account_name,
-            "currencyCode": "NGN",
-            "contractCode": m["CONTRACT_CODE"],
-            "customerEmail": customer_email,
-            "customerName": customer_name,
-            "getAllAvailableBanks": True,
-        }
-        # Monnify accepts either; supply whichever KYC value we hold.
-        if bvn:
-            body["bvn"] = bvn
-        if nin:
-            body["nin"] = nin
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts",
-            json=body, headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
-        )
-        out = _parse_reserved(resp.json())
-        if not out["success"]:
-            log.warning("monnify_reserve_failed ref=%s msg=%s", account_reference, out.get("message"))
-        return out
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
-
-
-def get_reserved_account(account_reference: str) -> dict:
-    """Fetch an existing reserved account by our accountReference.
-
-    GET /api/v2/bank-transfer/reserved-accounts/{accountReference}. Used to
-    recover the account details when a prior reserve_account succeeded at Monnify
-    but we failed to persist it (a re-create would be rejected as a duplicate).
-    """
-    if not payments_live():
-        return {"success": False, "message": "mock"}
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        resp = requests.get(
-            f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts/{account_reference}",
-            headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
-        )
-        return _parse_reserved(resp.json())
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Payment gateway unreachable: {exc}"}
-
-
-# ---------------------------------------------------------------------------
-# Bank transfers / payouts — Monnify disbursements
-#
-# Draws from your Monnify wallet (MONNIFY_SOURCE_ACCOUNT) to any NIBSS bank.
-# Name enquiry is mandatory: Monnify rejects a single transfer whose
-# destinationAccountName doesn't match the enquiry result, so callers resolve
-# server-side and pass the authoritative name.
-# ---------------------------------------------------------------------------
-def disbursement_resolve_account(account_number: str, bank_code: str) -> dict:
-    """Name enquiry: account number + NIBSS bank code -> account holder name."""
-    if not payments_live():
-        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
-    try:
-        token = _monnify_token()
-        if not token:
-            # Distinguish an auth/config failure from a genuinely bad account, so
-            # ops don't chase "invalid account" reports that are really a key issue.
-            log.warning("monnify_resolve_auth_failed acct_tail=%s", account_number[-4:])
-            return {"success": False, "message": "Could not verify this account right now — try again shortly"}
-        m = settings.MONNIFY
-        resp = requests.get(
-            f"{m['BASE_URL']}/api/v1/disbursements/account/validate",
-            params={"accountNumber": account_number, "bankCode": bank_code},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        name = rb.get("accountName", "")
-        ok_ = bool(data.get("requestSuccessful")) and bool(name)
-        if not ok_:
-            log.info("monnify_resolve_miss bank=%s acct_tail=%s code=%s",
-                     bank_code, account_number[-4:], data.get("responseCode"))
-        return {"success": ok_, "name": name, "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Payout provider unreachable: {exc}"}
-
-
-def disbursement_send(amount_naira, reference: str, narration: str,
-                      bank_code: str, account_number: str, account_name: str) -> dict:
-    """Initiate a single transfer to a bank account.
-
-    SUCCESS/PENDING means Monnify accepted it (money sent or queued); anything
-    else — including a 2FA OTP-authorization requirement — is treated as
-    not-sent so the caller refunds the wallet.
-    TODO before relying on PENDING: handle the OTP-authorization step and a
-    disbursement webhook (SUCCESSFUL/FAILED_DISBURSEMENT) to reconcile finally.
-    """
-    if not payments_live():
-        return {"success": True, "mock": True, "status": "SUCCESS"}
-    m = settings.MONNIFY
-    if not m.get("SOURCE_ACCOUNT"):
-        return {"success": False, "message": "MONNIFY_SOURCE_ACCOUNT is not configured"}
-    try:
-        token = _monnify_token()
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v2/disbursements/single",
-            json={
-                "amount": float(amount_naira),
-                "reference": reference,
-                "narration": narration or "Zitch transfer",
-                "destinationBankCode": bank_code,
-                "destinationAccountNumber": account_number,
-                "destinationAccountName": account_name,
-                "currency": "NGN",
-                "sourceAccountNumber": m["SOURCE_ACCOUNT"],
-            },
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        status = (data.get("responseBody", {}) or {}).get("status", "")
-        return {
-            "success": bool(data.get("requestSuccessful")) and status in ("SUCCESS", "PENDING", "COMPLETED"),
-            "status": status,
-            "message": data.get("responseMessage", "Transfer not completed"),
-            "raw": data,
-        }
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Payout provider unreachable: {exc}"}
-
-
-def monnify_diagnostics(account: str = "0000000000", bank: str = "058") -> dict:
-    """Structured Monnify connectivity self-test (no secrets) shared by the
-    `monnify_check` command and the web diagnostic endpoint.
-
-    Reports the config (booleans + base URL), whether the OAuth login actually
-    succeeds, and what a sample name-enquiry returns with Monnify's real message —
-    each step short-circuiting with a `status` + `hint` that names the fix.
-    """
-    m = settings.MONNIFY
-    out = {
-        "base_url": m["BASE_URL"],
-        "base_url_kind": "live" if "api.monnify.com" in m["BASE_URL"] else "test/sandbox",
-        "api_key_set": bool(m["API_KEY"]),
-        "secret_key_set": bool(m["SECRET_KEY"]),
-        "contract_code_set": bool(m["CONTRACT_CODE"]),
-        "source_account_set": bool(m["SOURCE_ACCOUNT"]),
-        "payments_live": payments_live(),
-    }
-    if not payments_live():
-        out["status"] = "keys_incomplete"
-        out["hint"] = ("Set MONNIFY_API_KEY, MONNIFY_SECRET_KEY and MONNIFY_CONTRACT_CODE. "
-                       "Until all three are set, every Monnify feature fails.")
-        return out
-    out["auth_ok"] = bool(_monnify_token())
-    if not out["auth_ok"]:
-        out["status"] = "auth_failed"
-        out["hint"] = ("OAuth login failed — this breaks ALL Monnify features at once. "
-                       "Usually a base-URL/keys mismatch (live keys need "
-                       "https://api.monnify.com; test keys need https://sandbox.monnify.com). "
-                       "If the pairing is already correct, the keys are invalid or the live "
-                       "account isn't activated yet — regenerate them / contact Monnify.")
-        return out
-    res = disbursement_resolve_account(account, bank)
-    raw = res.get("raw") or {}
-    out["sample_enquiry"] = {
-        "account": account, "bank_code": bank, "resolved": bool(res.get("success")),
-        "name": res.get("name", ""),
-        "monnify_code": raw.get("responseCode"),
-        "monnify_message": raw.get("responseMessage") or res.get("message"),
-    }
-    if res.get("success"):
-        out["status"] = "ok"
-        out["hint"] = "Auth + name-enquiry both work. If users still hit errors, capture the exact in-app message."
-    else:
-        out["status"] = "auth_ok_enquiry_failed"
-        out["hint"] = ("Auth works but the name-enquiry failed. If the account+bank are valid, "
-                       "the Disbursement/Transfer product is most likely not enabled on your "
-                       "contract (it powers name lookup AND bank transfers). Reserved Accounts "
-                       "(add money) is a separate product — confirm it's enabled too.")
-    return out
-
-
-# ---------------------------------------------------------------------------
-# KYC / identity — Monnify Verification (VAS)
-#
-# An ALTERNATE to the Prembly KYC block below: same BVN/NIN intent, but vended
-# through Monnify's VAS endpoints and authed with the same Monnify OAuth token
-# (payments_live() gate + _monnify_token()). Exposed as standalone monnify_*
-# functions so the app's KYC provider can be switched without disturbing
-# Prembly. Blank Monnify keys => MOCK mode, matching the rest of this file.
-#
-# VERIFY-BEFORE-LIVE: the /api/v1/vas/* paths and field names follow Monnify's
-# published VAS docs but can't be exercised from CI — confirm against the
-# dashboard before go-live. Each VAS call is metered/billed by Monnify.
-# ---------------------------------------------------------------------------
-def monnify_verify_bvn(bvn: str, name: str = "", date_of_birth: str = "",
-                       mobile: str = "") -> dict:
-    """BVN information match: confirm the BVN exists and (optionally) that the
-    supplied name / DOB / mobile match what's linked to it.
-
-    POST /api/v1/vas/bvn-details-match. MOCK accepts any 11-digit BVN. ``match``
-    carries Monnify's per-field result (``bvnInformationMatch``) when live.
-    """
-    if len(bvn) != 11 or not bvn.isdigit():
-        return {"success": False, "message": "BVN must be 11 digits"}
-    if not payments_live():
-        return {"success": True, "mock": True, "match": {}}
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v1/vas/bvn-details-match",
-            json={"bvn": bvn, "name": name, "dateOfBirth": date_of_birth, "mobileNo": mobile},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        return {
-            "success": bool(data.get("requestSuccessful")) and bool(rb),
-            "match": rb.get("bvnInformationMatch", {}),
-            "raw": data,
-        }
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
-
-
-def monnify_match_bvn_account(bvn: str, bank_code: str, account_number: str) -> dict:
-    """Confirm a BVN is linked to a given bank account.
-
-    POST /api/v1/vas/bvn-account-match. MOCK accepts any 11-digit BVN.
-    """
-    if len(bvn) != 11 or not bvn.isdigit():
-        return {"success": False, "message": "BVN must be 11 digits"}
-    if not payments_live():
-        return {"success": True, "mock": True, "matched": True}
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v1/vas/bvn-account-match",
-            json={"bankCode": bank_code, "accountNumber": account_number, "bvn": bvn},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        matched = str(rb.get("matchStatus") or rb.get("accountNameMatch") or "").upper().startswith(
-            ("FULL", "MATCH", "TRUE"))
-        return {"success": bool(data.get("requestSuccessful")), "matched": matched, "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
-
-
-def monnify_verify_nin(nin: str) -> dict:
-    """Verify a NIN against NIMC via Monnify VAS.
-
-    POST /api/v1/vas/nin-details. MOCK accepts any 11-digit NIN.
-    VERIFY-BEFORE-LIVE: confirm the exact path/field ('nin') on the dashboard.
-    """
-    if len(nin) != 11 or not nin.isdigit():
-        return {"success": False, "message": "NIN must be 11 digits"}
-    if not payments_live():
-        return {"success": True, "mock": True}
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        resp = requests.post(
-            f"{m['BASE_URL']}/api/v1/vas/nin-details",
-            json={"nin": nin},
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        return {"success": bool(data.get("requestSuccessful")) and bool(rb), "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
-
-
-# ---------------------------------------------------------------------------
-# Bills payment — Monnify Biller Service (airtime / data / electricity / cable)
-#
-# An ALTERNATE to the VTU.ng VTU block: Monnify's unified Biller Service.
-# Flow is Discovery (categories -> billers -> products) -> Validate (customer)
-# -> Vend (pay) -> requery. Same Monnify OAuth token + payments_live() gate.
-# Blank Monnify keys => MOCK mode.
-#
-# VERIFY-BEFORE-LIVE: the bills endpoint paths are centralised in _MONNIFY_BILLS
-# below and follow Monnify's bills docs, but couldn't be exercised from CI —
-# confirm each path/field against the dashboard before go-live.
-# ---------------------------------------------------------------------------
-_MONNIFY_BILLS = "/api/v1/bill-payment"  # VERIFY-BEFORE-LIVE: Biller Service base path
-
-
-def _monnify_bills_get(path: str, params: dict | None = None) -> dict:
-    """Shared GET for the bills discovery / requery endpoints."""
-    token = _monnify_token()
-    if not token:
-        return {"success": False, "message": "Monnify authentication failed"}
-    m = settings.MONNIFY
-    resp = requests.get(
-        f"{m['BASE_URL']}{path}", params=params or {},
-        headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
-    )
-    data = resp.json()
-    return {"success": bool(data.get("requestSuccessful")),
-            "responseBody": data.get("responseBody"), "raw": data}
-
-
-def monnify_bill_categories() -> dict:
-    """List biller categories (AIRTIME, DATA, ELECTRICITY, CABLE_TV, ...)."""
-    if not payments_live():
-        return {"success": True, "mock": True,
-                "responseBody": ["AIRTIME", "DATA", "ELECTRICITY", "CABLE_TV"]}
-    try:
-        return _monnify_bills_get(f"{_MONNIFY_BILLS}/biller-categories")
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
-
-
-def monnify_billers(category_code: str) -> dict:
-    """List active billers for a category (filtered by categoryCode)."""
-    if not payments_live():
-        return {"success": True, "mock": True,
-                "responseBody": [{"billerCode": "MOCK-BILLER", "name": f"Mock {category_code} biller"}]}
-    try:
-        return _monnify_bills_get(f"{_MONNIFY_BILLS}/billers", {"categoryCode": category_code})
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
-
-
-def monnify_biller_products(biller_code: str) -> dict:
-    """List products offered by a biller (filtered by billerCode)."""
-    if not payments_live():
-        return {"success": True, "mock": True,
-                "responseBody": [{"productCode": "MOCK-PROD", "name": "Mock product", "amount": 1000}]}
-    try:
-        return _monnify_bills_get(f"{_MONNIFY_BILLS}/billers/products", {"billerCode": biller_code})
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
-
-
-def monnify_validate_customer(product_code: str, customer_id: str) -> dict:
-    """Validate a customer (meter / smartcard / phone) for a product.
-
-    Surfaces the resolved customer name and whether a validationReference must
-    be threaded into the vend (Monnify's vendInstruction.requireValidationRef).
-    """
-    if not payments_live():
-        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM",
-                "requires_validation_ref": False, "validation_reference": ""}
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        resp = requests.post(
-            f"{m['BASE_URL']}{_MONNIFY_BILLS}/validate-customer",
-            json={"productCode": product_code, "customerId": customer_id},
-            headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        vi = rb.get("vendInstruction", {}) or {}
-        return {
-            "success": bool(data.get("requestSuccessful")),
-            "customer_name": rb.get("customerName") or rb.get("name", ""),
-            "requires_validation_ref": bool(vi.get("requireValidationRef")),
-            "validation_reference": vi.get("validationReference", ""),
-            "raw": data,
-        }
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"Bills provider unreachable: {exc}"}
-
-
-def monnify_pay_bill(product_code: str, customer_id: str, amount_naira,
-                     reference: str, validation_reference: str = "") -> dict:
-    """Vend a bill (airtime / data / electricity / cable / ...).
-
-    Pass ``reference`` as the idempotency key (the wallet ledger reference) and
-    the ``validation_reference`` from monnify_validate_customer when the product
-    requires one. On a network error returns ``pending=True`` so the caller does
-    NOT refund — reconcile via monnify_bill_status instead. ``token`` carries a
-    prepaid-meter token where the biller returns one.
-    """
-    if not payments_live():
-        return {"success": True, "mock": True, "status": "SUCCESS",
-                "provider_reference": "MOCK-" + secrets.token_hex(6).upper(), "token": ""}
-    try:
-        token = _monnify_token()
-        if not token:
-            return {"success": False, "message": "Monnify authentication failed"}
-        m = settings.MONNIFY
-        body = {
-            "productCode": product_code,
-            "customerId": customer_id,
-            "amount": float(amount_naira),
-            "reference": reference,
-        }
-        if validation_reference:
-            body["validationReference"] = validation_reference
-        resp = requests.post(
-            f"{m['BASE_URL']}{_MONNIFY_BILLS}/process-bill",
-            json=body, headers={"Authorization": f"Bearer {token}"}, timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        rb = data.get("responseBody", {}) or {}
-        status = str(rb.get("status") or rb.get("transactionStatus", "")).upper()
-        out = {
-            "status": status,
-            "provider_reference": str(rb.get("transactionReference") or rb.get("reference", "")),
-            "token": rb.get("token", ""),
-            "raw": data,
-        }
-        accepted = bool(data.get("requestSuccessful"))
-        # A vend Monnify ACCEPTS but has not yet delivered (PENDING/PROCESSING, or
-        # an accepted call with no terminal status yet) is NOT a success: returning
-        # success here would let settle_or_refund mark the debit Successful and clear
-        # the reconcile flag, so the requery job would never run — money debited,
-        # never delivered, never refunded. Mirror monnify_bill_status: pending stays
-        # pending so the caller reconciles via monnify_bill_status rather than either
-        # claiming delivery or blind-refunding a vend that may still land.
-        # An outright rejection (requestSuccessful=False, or a terminal failure
-        # status) refunds, since the vend did not enter Monnify's queue.
-        if accepted and status in ("SUCCESS", "SUCCESSFUL", "DELIVERED"):
-            return {"success": True, **out}
-        if accepted and status in ("PENDING", "PROCESSING", ""):
-            return {"success": False, "pending": True, **out}
-        return {"success": False, **out}
-    except requests.RequestException as exc:
-        return {"success": False, "pending": True, "message": f"Bills provider unreachable: {exc}"}
-
-
-def monnify_bill_status(reference: str) -> dict:
-    """Requery a vend by our reference to settle a PENDING bill.
-
-    Returns the {"success", "pending", ...} shape settle_or_refund expects:
-    success => delivered; pending => still unknown (retry later); neither =>
-    a definitive failure the caller refunds.
-    """
-    if not payments_live():
-        return {"success": True, "mock": True, "status": "SUCCESS"}
-    try:
-        out = _monnify_bills_get(f"{_MONNIFY_BILLS}/transaction-status", {"reference": reference})
-        rb = out.get("responseBody", {}) or {}
-        status = str(rb.get("status") or rb.get("transactionStatus", "")).upper()
-        if status in ("SUCCESS", "SUCCESSFUL", "DELIVERED"):
-            return {"success": True, "status": status, "raw": out.get("raw")}
-        if status in ("PENDING", "PROCESSING", ""):
-            return {"success": False, "pending": True, "status": status or "PENDING", "raw": out.get("raw")}
-        return {"success": False, "status": status, "raw": out.get("raw")}
-    except requests.RequestException:
-        return {"success": False, "pending": True, "message": "Requery failed; will retry"}
-
 
 # ---------------------------------------------------------------------------
 # VTU (airtime / data / cable / electricity / betting) — VTU.ng
@@ -912,14 +232,14 @@ def kyc_verify_face(selfie: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC provider selection — Monnify VAS (default) or Prembly
+# KYC — Kora Identity (BVN / NIN / vNIN)
 #
-# BVN/NIN verification has two interchangeable backends in this file: Monnify's
-# VAS (monnify_verify_*) and Prembly (kyc_verify_*). verify_bvn / verify_nin are
-# the provider-agnostic entry points the rest of the app calls; they route to
-# whichever provider kyc_provider() selects so the backend can be switched
-# (KYC_PROVIDER) without touching the views. Monnify is preferred because the
-# same BVN it verifies also mints the user's dedicated funding account.
+# verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points
+# the rest of the app calls; they delegate to Kora (utility.kora). The selfie /
+# liveness step (kyc_verify_face, in the Prembly block above) stays on Prembly —
+# Kora has no liveness check. Each fails closed in production when Kora has no
+# keys, so a money app never mock-passes identity on a misconfigured deploy;
+# dev/tests keep the offline mock.
 # ---------------------------------------------------------------------------
 def _kora_kyc_live() -> bool:
     from . import kora
@@ -927,68 +247,27 @@ def _kora_kyc_live() -> bool:
 
 
 def kyc_provider() -> str:
-    """'monnify', 'prembly' or 'kora' — the backend for BVN/NIN checks.
-
-    An explicit KYC_PROVIDER setting wins; otherwise prefer whichever has live
-    keys (Monnify first, then Prembly, then Kora), falling back to Monnify's mock
-    path when none is configured (so dev/test still verifies offline)."""
-    choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "prembly", "kora"):
-        return choice
-    if payments_live():
-        return "monnify"
-    if _prembly_live():
-        return "prembly"
-    if _kora_kyc_live():
-        return "kora"
-    return "monnify"
-
-
-def _kyc_provider_live(provider: str) -> bool:
-    """Whether the selected KYC backend has live keys."""
-    if provider == "prembly":
-        return _prembly_live()
-    if provider == "kora":
-        return _kora_kyc_live()
-    return payments_live()
+    """The BVN/NIN/vNIN backend — always 'kora'."""
+    return "kora"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via the configured KYC provider.
+    """Verify a BVN via Kora Identity.
 
-    Normalises both backends to the ``{success, message, ...}`` contract the
-    views expect; the optional name/DOB/mobile are passed to Monnify's
-    information-match (ignored by Prembly's number-only check).
-
-    Fails closed in production when the selected provider has no keys: a money
-    app must never mock-pass identity checks on a misconfigured deploy, which
-    would otherwise hand out free BVN "verification" and the tier upgrade that
-    rides on it. Dev/tests keep the offline mock."""
-    provider = kyc_provider()
-    if not _kyc_provider_live(provider) and mock_disabled_in_prod():
+    name/DOB/mobile are accepted for call-site compatibility; Kora's lookup is
+    number-based. Fails closed in production without Kora keys; dev/tests mock."""
+    from . import kora
+    if not kora.kora_live() and mock_disabled_in_prod():
         return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    if provider == "prembly":
-        return kyc_verify_bvn(bvn)
-    if provider == "kora":
-        from . import kora
-        return kora.verify_bvn(bvn)
-    return monnify_verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
+    return kora.verify_bvn(bvn)
 
 
 def verify_nin(nin: str) -> dict:
-    """Verify a NIN via the configured KYC provider (Monnify VAS or Prembly).
-
-    Fails closed in production when the selected provider has no keys (see
-    verify_bvn); dev/tests keep the offline mock."""
-    provider = kyc_provider()
-    if not _kyc_provider_live(provider) and mock_disabled_in_prod():
+    """Verify a NIN via Kora Identity. Fails closed in prod without keys."""
+    from . import kora
+    if not kora.kora_live() and mock_disabled_in_prod():
         return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    if provider == "prembly":
-        return kyc_verify_nin(nin)
-    if provider == "kora":
-        from . import kora
-        return kora.verify_nin(nin)
-    return monnify_verify_nin(nin)
+    return kora.verify_nin(nin)
 
 
 def verify_vnin(vnin: str) -> dict:
@@ -1170,23 +449,13 @@ def fx_execute(quote_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Provider selection — payments (funding) / payouts / cards
+# Money-movement rail — Kora (funding / virtual accounts / payouts)
 #
-# Like kyc_provider(), these pick the rail for money movement so the app can run
-# Kora alongside (or instead of) Monnify without the views/services knowing which
-# is active. Each honours an explicit *_PROVIDER setting; blank => auto (prefer
-# whichever has live keys, Monnify/issuer first). The funding_* / payout_* /
-# card_* wrappers below are the provider-agnostic entry points the views call;
-# they route to the Monnify/issuer functions above or the Kora client
-# (utility.kora). Defaulting to Monnify keeps existing behaviour byte-identical
-# whenever no provider is explicitly selected.
-#
-# Provider stickiness: selection is a deploy-level setting, not per-transaction.
-# A funding/payout reference is OURS (same value sent to either rail), so a
-# verify/webhook resolves correctly as long as the setting isn't flipped while
-# transactions are mid-flight. Kora funding/payout webhooks land on their own
-# endpoints (see wallet/transfers views), so a provider switch never crosses
-# webhook wires.
+# The funding_* / payout_* wrappers are the provider-agnostic contract the views
+# and services call; they delegate to the Kora client (utility.kora). Kora is the
+# sole rail. The *_provider() selectors are retained (returning "kora") so any
+# remaining callers keep working. Kora pay-in/payout webhooks land on the
+# wallet/transfers webhook routes.
 # ---------------------------------------------------------------------------
 def _kora_live() -> bool:
     from . import kora
@@ -1194,32 +463,18 @@ def _kora_live() -> bool:
 
 
 def payment_provider() -> str:
-    """'monnify' or 'kora' — the rail for wallet funding (checkout + accounts)."""
-    choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "kora"):
-        return choice
-    if payments_live():
-        return "monnify"
-    if _kora_live():
-        return "kora"
-    return "monnify"
+    """The wallet-funding rail — always 'kora'."""
+    return "kora"
 
 
 def payout_provider() -> str:
-    """'monnify' or 'kora' — the rail for bank payouts."""
-    choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "kora"):
-        return choice
-    if payments_live():
-        return "monnify"
-    if _kora_live():
-        return "kora"
-    return "monnify"
+    """The bank-payout rail — always 'kora'."""
+    return "kora"
 
 
 def payout_live() -> bool:
-    """Whether the selected payout rail has live keys (else MOCK)."""
-    return payments_live() if payout_provider() == "monnify" else _kora_live()
+    """Whether the payout rail has live keys (else MOCK)."""
+    return _kora_live()
 
 
 def card_provider() -> str:
@@ -1237,69 +492,51 @@ def card_provider() -> str:
 # --- Funding (wallet top-up) dispatch ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
-    """Start a funding charge via the selected rail -> {success, authorization_url}."""
-    if payment_provider() == "kora":
-        from . import kora
-        return kora.payment_initialize(email, amount_naira, reference,
-                                       name=name, redirect_url=redirect_url)
-    return payment_initialize(email, amount_naira, reference)
+    """Start a funding charge via Kora -> {success, authorization_url}."""
+    from . import kora
+    return kora.payment_initialize(email, amount_naira, reference,
+                                   name=name, redirect_url=redirect_url)
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
-    """Verify a funding charge via the selected (or explicitly named) rail."""
-    prov = (provider or payment_provider()).lower()
-    if prov == "kora":
-        from . import kora
-        return kora.payment_verify(reference)
-    return payment_verify(reference)
+    """Verify a funding charge via Kora."""
+    from . import kora
+    return kora.payment_verify(reference)
 
 
 def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
                             customer_name: str, bvn: str = "", nin: str = "") -> dict:
-    """Provision a dedicated funding account via the selected rail.
+    """Provision a dedicated funding (virtual) account via Kora.
 
-    Both backends normalise to {success, account_number, bank_name, account_name,
-    reference, accounts?} so wallet.services.ensure_reserved_account is agnostic.
+    Returns {success, account_number, bank_name, account_name, reference} so
+    wallet.services.ensure_reserved_account stays agnostic.
     """
-    if payment_provider() == "kora":
-        from . import kora
-        return kora.create_virtual_account(account_reference, account_name, customer_email,
-                                           customer_name, bvn=bvn, nin=nin)
-    return reserve_account(account_reference, account_name, customer_email, customer_name,
-                           bvn=bvn, nin=nin)
+    from . import kora
+    return kora.create_virtual_account(account_reference, account_name, customer_email,
+                                       customer_name, bvn=bvn, nin=nin)
 
 
 def funding_account_get(account_reference: str) -> dict:
-    """Fetch an existing funding account via the selected rail (duplicate recovery)."""
-    if payment_provider() == "kora":
-        from . import kora
-        return kora.get_virtual_account(account_reference)
-    return get_reserved_account(account_reference)
+    """Fetch an existing Kora virtual account (duplicate recovery)."""
+    from . import kora
+    return kora.get_virtual_account(account_reference)
 
 
 # --- Payout (bank transfer) dispatch ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
-    """Name enquiry via the selected payout rail."""
-    if payout_provider() == "kora":
-        from . import kora
-        return kora.resolve_account(account_number, bank_code)
-    return disbursement_resolve_account(account_number, bank_code)
+    """Name enquiry via Kora."""
+    from . import kora
+    return kora.resolve_account(account_number, bank_code)
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
                 account_number: str, account_name: str) -> dict:
-    """Single bank payout via the selected rail.
-
-    Both normalise to {success, status, ...}. Monnify yields SUCCESS/PENDING/
-    COMPLETED; Kora yields success/processing/pending — execute_payout treats
-    PENDING/PROCESSING as not-yet-confirmed.
-    """
-    if payout_provider() == "kora":
-        from . import kora
-        return kora.disburse(amount_naira, reference, narration, bank_code,
-                             account_number, account_name)
-    return disbursement_send(amount_naira, reference, narration, bank_code,
-                             account_number, account_name)
+    """Single bank payout via Kora. Returns {success, status, ...}; Kora yields
+    success/processing/pending — execute_payout treats PROCESSING/PENDING as
+    not-yet-confirmed."""
+    from . import kora
+    return kora.disburse(amount_naira, reference, narration, bank_code,
+                         account_number, account_name)
 
 
 # --- Virtual card dispatch ---

@@ -25,7 +25,7 @@ def wa_live() -> bool:
 def verify_signature(raw_body: bytes, header: str) -> bool:
     """Validate Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body).
 
-    With no APP_SECRET configured (mock mode) we accept, matching how the Monnify
+    With no APP_SECRET configured (mock mode) we accept, matching how the Kora
     webhook behaves without keys — so tests and local runs work unsigned.
     """
     secret = _cfg().get("APP_SECRET", "")

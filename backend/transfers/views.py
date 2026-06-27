@@ -1,6 +1,6 @@
 """Bank transfer (payout) endpoints + saved beneficiaries.
 
-Payout to external banks needs a provider (Monnify disbursements / NIBSS); until
+Payout to external banks needs a provider (Kora disbursements / NIBSS); until
 keys are set this runs in MOCK mode and resolves/settles automatically so the
 flow is testable. Money still moves correctly out of the wallet ledger.
 """
@@ -13,8 +13,8 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility import kora as kora_provider
-from utility.providers import payment_verify_signature, payout_resolve_account
+from utility import kora as kora_provider  # noqa: F401  (kept for webhook signature verify)
+from utility.providers import payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key, reverse_transfer, settle_payout
 
@@ -121,7 +121,7 @@ def bank_transfer(request):
         return daily_err
 
     note = data.get("note", "")
-    # Resolve server-side for the authoritative account name — Monnify rejects a
+    # Resolve server-side for the authoritative account name — Kora rejects a
     # payout whose name doesn't match the enquiry, and we don't trust the client.
     resolved = payout_resolve_account(acct, bank.bank_code)
     if not resolved.get("success"):
@@ -148,44 +148,12 @@ def bank_transfer(request):
 
 @csrf_exempt
 def disbursement_webhook(request):
-    """POST /api/transfers/webhook/ — Monnify disbursement (payout) callback.
+    """POST /api/transfers/webhook/ — Kora payout (transfer) callback.
 
-    The terminal-state safety net: a success/completed event settles a payout we
-    left PENDING on send; a failed/reversed event refunds the wallet. HMAC-verified,
-    idempotent (status-guarded), and always 200 on accepted events so Monnify stops
-    retrying.
-    """
-    if request.method != "POST":
-        return fail("Method not allowed", status=405)
-    if not payment_verify_signature(request.body, request.headers.get("monnify-signature", "")):
-        return fail("Invalid signature", status=401)
-    try:
-        event = json.loads(request.body or b"{}")
-    except (ValueError, TypeError):
-        return fail("Invalid payload", status=400)
-
-    data = event.get("eventData", {}) or {}
-    reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
-    etype = event.get("eventType", "")
-    if etype in ("FAILED_DISBURSEMENT", "REVERSED_DISBURSEMENT") and reference:
-        reverse_transfer(reference)
-    elif etype in ("SUCCESSFUL_DISBURSEMENT", "COMPLETED_DISBURSEMENT") and reference:
-        # Confirm a previously-PENDING payout (we no longer settle on send).
-        settle_payout(reference)
-    from whatsapp.ops import record_audit
-    record_audit("webhook.monnify_disbursement", actor_type="system", target=reference,
-                 after={"event": event.get("eventType", ""), "signature": "verified"})
-    return ok(status=True)
-
-
-@csrf_exempt
-def kora_disbursement_webhook(request):
-    """POST /api/transfers/kora-webhook/ — Kora payout (transfer) callback.
-
-    Mirrors the Monnify disbursement webhook on a separate route (Kora signs the
-    payload `data` object with HMAC-SHA256). ``transfer.success`` settles a
-    PENDING payout; ``transfer.failed``/``reversed`` refunds the wallet. Keyed on
-    our reference, status-guarded (idempotent), always 200 on accepted events.
+    The terminal-state safety net (Kora signs the payload `data` object with
+    HMAC-SHA256): ``transfer.success`` settles a payout left PENDING on send;
+    ``transfer.failed``/``reversed`` refunds the wallet. Keyed on our reference,
+    status-guarded (idempotent), always 200 on accepted events.
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
