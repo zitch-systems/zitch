@@ -1,0 +1,114 @@
+{
+  "info": {
+    "name": "Mono APIs (Zitch)",
+    "_postman_id": "b7c2e0a1-7d3a-4e2c-9a10-zitchmono0001",
+    "description": "Mono open-banking endpoints used by Zitch (banklink app + utility/mono.py): link a bank, read balance/transactions, and fund the wallet via DirectPay.\n\nAuth: collection-level API key sends the `mono-sec-key: {{sec_key}}` header on every request. Set `sec_key` (and `pub_key`) in the **Mono — Test** environment (both are SECRET-typed; never hardcode keys in requests). `baseurl` defaults to https://api.withmono.com.\n\nNOTE: paths/fields follow Mono's published docs (https://docs.mono.co) and are VERIFY-BEFORE-LIVE — confirm against your dashboard before relying on them.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      { "key": "key", "value": "mono-sec-key", "type": "string" },
+      { "key": "value", "value": "{{sec_key}}", "type": "string" },
+      { "key": "in", "value": "header", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "baseurl", "value": "https://api.withmono.com" }
+  ],
+  "item": [
+    {
+      "name": "Accounts",
+      "item": [
+        {
+          "name": "Exchange auth code -> account id",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"<connect_auth_code>\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseurl}}/v2/accounts/auth", "host": ["{{baseurl}}"], "path": ["v2", "accounts", "auth"] },
+            "description": "Exchange the short-lived Mono Connect auth code for a permanent account id. Used by /api/banklink/connect/."
+          }
+        },
+        {
+          "name": "Get account details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseurl}}/v2/accounts/:id", "host": ["{{baseurl}}"], "path": ["v2", "accounts", ":id"], "variable": [ { "key": "id", "value": "<account_id>" } ] }
+          }
+        },
+        {
+          "name": "Get balance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseurl}}/v2/accounts/:id/balance", "host": ["{{baseurl}}"], "path": ["v2", "accounts", ":id", "balance"], "variable": [ { "key": "id", "value": "<account_id>" } ] },
+            "description": "Balance is returned in KOBO; Zitch converts to naira."
+          }
+        },
+        {
+          "name": "Get transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseurl}}/v2/accounts/:id/transactions?page=1", "host": ["{{baseurl}}"], "path": ["v2", "accounts", ":id", "transactions"], "query": [ { "key": "page", "value": "1" } ], "variable": [ { "key": "id", "value": "<account_id>" } ] }
+          }
+        },
+        {
+          "name": "Get identity",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseurl}}/v2/accounts/:id/identity", "host": ["{{baseurl}}"], "path": ["v2", "accounts", ":id", "identity"], "variable": [ { "key": "id", "value": "<account_id>" } ] }
+          }
+        },
+        {
+          "name": "Unlink account",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseurl}}/v2/accounts/:id/unlink", "host": ["{{baseurl}}"], "path": ["v2", "accounts", ":id", "unlink"], "variable": [ { "key": "id", "value": "<account_id>" } ] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "DirectPay (fund wallet)",
+      "item": [
+        {
+          "name": "Initiate payment",
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{\n  \"amount\": 500000,\n  \"type\": \"onetime-debit\",\n  \"description\": \"Zitch wallet funding\",\n  \"reference\": \"ZMONO-<unique>\",\n  \"redirect_url\": \"https://api.zitch.ng/api/banklink/webhook/\",\n  \"customer\": { \"email\": \"ada@example.com\", \"name\": \"Ada Eze\" }\n}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseurl}}/v1/payments/initiate", "host": ["{{baseurl}}"], "path": ["v1", "payments", "initiate"] },
+            "description": "Start a DirectPay debit to fund the Zitch wallet. amount is in KOBO. Returns data.mono_url for the user to authorize. Used by /api/banklink/fund/; the wallet is credited via the Mono webhook (settle_funding, idempotent)."
+          }
+        },
+        {
+          "name": "Verify payment",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseurl}}/v1/payments/verify/:reference", "host": ["{{baseurl}}"], "path": ["v1", "payments", "verify", ":reference"], "variable": [ { "key": "reference", "value": "ZMONO-<unique>" } ] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Misc",
+      "item": [
+        {
+          "name": "List institutions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseurl}}/v3/institutions", "host": ["{{baseurl}}"], "path": ["v3", "institutions"] }
+          }
+        }
+      ]
+    }
+  ]
+}
