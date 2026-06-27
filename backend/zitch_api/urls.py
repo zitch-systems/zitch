@@ -114,6 +114,7 @@ urlpatterns = [
     path("api/betting/", include("betting.urls")),
     path("api/transfers/", include("transfers.urls")),
     path("api/cards/", include("cards.urls")),
+    path("api/banklink/", include("banklink.urls")),
     path("api/convert/", include("convert.urls")),
     # Parallel "console" build (kept alongside main's portal): landing "/console/",
     # app prototype "/console/app/", operator portal "/console/portal/" — distinct
