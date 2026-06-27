@@ -1,0 +1,19 @@
+[project]
+name = "zitch-mcp"
+version = "0.1.0"
+description = "Zitch MCP server — operate a Zitch wallet from an AI assistant (read + PIN-gated money tools)."
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.2.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+zitch-mcp = "server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+include = ["server.py"]
