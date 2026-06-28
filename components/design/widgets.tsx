@@ -92,15 +92,15 @@ export const ServiceTile = ({
       <View>
         <View
           style={{
-            width: 54,
-            height: 54,
-            borderRadius: round ? 27 : 18,
+            width: 48,
+            height: 48,
+            borderRadius: round ? 24 : 16,
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: iconTint(accent, theme === 'dark'),
           }}
         >
-          <ZIcon name={icon} size={27} color={accent} stroke={2} />
+          <ZIcon name={icon} size={24} color={accent} stroke={2} />
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>
