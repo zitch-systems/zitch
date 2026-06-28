@@ -48,6 +48,10 @@ workflows:
       branch_patterns:
         - pattern: main
           include: true
+        # Build the v2 design branch too, so the redesign produces a sideloadable
+        # APK before it merges to main.
+        - pattern: new-design-files-v2
+          include: true
     # `when` is a workflow-level key (sibling of `triggering`, not a child of
     # it). With a changeset filter it skips webhook-triggered builds whose
     # changes don't touch any of these paths, so landing/docs/backend-only
