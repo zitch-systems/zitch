@@ -153,6 +153,20 @@ const Me = () => {
         </NText>
       </View>
 
+      {/* Bank on WhatsApp — design v2 places this card near the top of Me */}
+      <Pressable onPress={() => router.push('/linkwhatsapp')} style={{ marginHorizontal: 16, marginTop: 14 }}>
+        <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
+          <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: '#25D366', alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="chat" size={22} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>Bank on WhatsApp</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Balance, transfers & bills in your chats</Text>
+          </View>
+          {chev}
+        </Card>
+      </Pressable>
+
       {/* safety tips */}
       <Pressable onPress={() => router.push('/safetytips')} style={{ marginHorizontal: 16, marginTop: 12 }}>
         <Hero style={{ padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }} watermark={0}>

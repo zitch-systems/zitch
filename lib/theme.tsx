@@ -123,24 +123,26 @@ export const dark: ThemeTokens = {
 // Per-icon accent colours so each service/transaction reads as its own
 // colourful tile instead of one flat brand tint. Keyed by ZIcon name; anything
 // unlisted falls back to the brand colour so new icons still look intentional.
+// Service tile colours below mirror the design v2 SVC_COLOR map exactly
+// (docs/design_handoff_v2/README.md → "Design tokens" + tabs.jsx).
 export const ICON_COLORS: Record<string, string> = {
   airtime: '#0FA295',
   data: '#2D7FF9',
   dice: '#F5A623',     // betting
   tv: '#7A5CFF',       // cable
-  fixed: '#16A34A',    // save
-  loan: '#FF3B3B',
-  jamb: '#5B6CFF',     // exams
-  bills: '#FB8C00',    // electricity
+  fixed: '#1EA05E',    // save
+  loan: '#E8590C',
+  jamb: '#F5760A',     // exams
+  bills: '#F59E0B',    // electricity
   send: '#0FA295',     // transfer
   withdraw: '#16A34A',
-  insurance: '#00B8D4',
-  remita: '#7A5CFF',
-  movie: '#FF4D8D',
-  convert: '#00B8D4',
-  invite: '#F5A623',
+  insurance: '#16A34A',
+  remita: '#2D7FF9',
+  movie: '#D6336C',
+  convert: '#0CA5B8',
+  invite: '#7A5CFF',
   spark: '#00B51D',
-  more: '#64748B',
+  more: '#6E8B86',
   // List-row icons (profile, settings, savings, loan, cards screens).
   history: '#0FA295',
   chart: '#2D7FF9',
@@ -161,7 +163,7 @@ export const ICON_COLORS: Record<string, string> = {
   download: '#2D7FF9',
   share: '#0FA295',
   deposit: '#16A34A',
-  save: '#16A34A',
+  save: '#1EA05E',
   phone: '#0FA295',
   faceid: '#7A5CFF',
   fingerprint: '#2D7FF9',
