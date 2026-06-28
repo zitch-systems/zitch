@@ -3,6 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Screen, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
+import { ConnectedAccounts } from '@/components/design/ConnectedAccounts';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -54,6 +55,9 @@ const Wallet = () => {
           </View>
         ))}
       </View>
+
+      {/* Connected external bank accounts (Mono open-banking) */}
+      <ConnectedAccounts />
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel action="Filter">Recent activity</SectionLabel>

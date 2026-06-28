@@ -93,6 +93,18 @@ class BanklinkEndpointTests(TestCase):
         return self.client.post(path, data=json.dumps({**body, "access_token": self.token}),
                                 content_type="application/json")
 
+    def test_connect_init_returns_mono_url(self):
+        r = self._post("/api/banklink/connect-init/", {"redirect_url": "Zitch://linkbank"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["success"])
+        # MOCK mode echoes the redirect back pre-filled with a code the app exchanges.
+        self.assertIn("Zitch://linkbank", body["mono_url"])
+        self.assertIn("code=", body["mono_url"])
+
+    def test_connect_init_requires_redirect(self):
+        self.assertFalse(self._post("/api/banklink/connect-init/", {}).json().get("success"))
+
     def test_connect_list_refresh_unlink(self):
         r = self._post("/api/banklink/connect/", {"code": "mono-code"})
         self.assertEqual(r.status_code, 200)

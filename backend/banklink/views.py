@@ -35,6 +35,30 @@ def _serialize(a: LinkedBankAccount) -> dict:
 
 @api
 @require_user
+def connect_init(request):
+    """POST /api/banklink/connect-init/ {access_token, redirect_url}
+    -> {success, mono_url} — start a hosted Mono Connect session.
+
+    The app opens ``mono_url`` in an auth session; Mono redirects to
+    ``redirect_url`` with a ``code`` the app then posts to /connect/.
+    """
+    user = request.user_obj
+    redirect_url = (request.data.get("redirect_url") or "").strip()
+    if not redirect_url:
+        return fail("Missing redirect_url")
+    res = mono.initiate_connect(
+        redirect_url,
+        name=(user.get_full_name() or user.username or "").strip(),
+        email=getattr(user, "email", "") or "",
+        ref=make_reference(),
+    )
+    if not res.get("success"):
+        return fail(res.get("message", "Could not start bank linking"), status=502)
+    return ok(success=True, mono_url=res["mono_url"])
+
+
+@api
+@require_user
 def connect(request):
     """POST /api/banklink/connect/ {access_token, code}
     -> {success, account} — exchange a Mono Connect auth code and link the account.

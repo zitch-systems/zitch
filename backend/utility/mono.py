@@ -78,6 +78,39 @@ def _naira(kobo) -> Decimal | None:
 # ---------------------------------------------------------------------------
 # Account linking
 # ---------------------------------------------------------------------------
+def initiate_connect(redirect_url: str, *, name: str = "", email: str = "", ref: str = "") -> dict:
+    """Start a hosted Mono Connect session and return the URL to open.
+
+    POST /v2/accounts/initiate {customer, scope:'auth', redirect_url, meta} ->
+    {data: {mono_url}}. The app opens ``mono_url`` in a browser/auth session; on
+    success Mono redirects to ``redirect_url`` with a ``code`` query param the app
+    posts to /api/banklink/connect/. MOCK returns the redirect_url pre-filled with
+    a fake code so the link flow is testable offline.
+    """
+    if not mono_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Bank linking is not configured"}
+        sep = "&" if "?" in redirect_url else "?"
+        return {"success": True, "mock": True,
+                "mono_url": f"{redirect_url}{sep}code=mock_code_{(ref or 'dev')[:12]}"}
+    try:
+        body = {
+            "scope": "auth",
+            "redirect_url": redirect_url,
+            "customer": {"name": name or "Zitch user", "email": email or "user@zitch.app"},
+            "meta": {"ref": ref},
+        }
+        data = _post("/v2/accounts/initiate", body).json()
+        d = data.get("data", {}) or {}
+        url = d.get("mono_url", "")
+        if not (_ok(data) and url):
+            log.warning("mono_initiate_failed msg=%s", data.get("message"))
+        return {"success": _ok(data) and bool(url), "mono_url": url,
+                "message": data.get("message", "Could not start bank linking"), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
 def exchange_token(code: str) -> dict:
     """Exchange a Mono Connect auth code for a permanent account id.
 
