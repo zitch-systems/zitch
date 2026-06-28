@@ -39,9 +39,10 @@ const MORE = [
 
 const Home = () => {
   const { c, theme } = useTheme();
-  const { balance, firstName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, fullName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Refresh balance & activity whenever Home regains focus — after sign-in and
   // after returning from a transfer/purchase — so the dashboard never shows a
@@ -55,11 +56,18 @@ const Home = () => {
     try { await reload(); } finally { setRefreshing(false); }
   }, [reload]);
 
+  // Copy ONLY the bare 10-digit account number (not the "· bank" suffix) and pop
+  // a small local "copied" bubble above the chip for ~1.3s, per the v2 design —
+  // not a global toast.
   const copyAccount = async () => {
     if (!accountNumber) return;
     await Clipboard.setStringAsync(accountNumber);
-    notify('Copied', 'Account number copied to clipboard');
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1300);
   };
+
+  // NUBAN account numbers display grouped 4-3-3 ("9012 345 678").
+  const groupedAccount = accountNumber.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
   return (
     <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
@@ -112,16 +120,29 @@ const Home = () => {
               wallet is provisioned with one — never a hardcoded placeholder (it
               could be mistaken for a real account and shared). Tap to copy. */}
           {accountNumber ? (
-            <Pressable
-              onPress={copyAccount}
-              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}
-            >
-              <ZIcon name="bank" size={14} color="#fff" />
-              <NText numberOfLines={1} style={{ flex: 1, color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
-                {accountNumber}{bankName ? ` · ${bankName}` : ''}
-              </NText>
-              <ZIcon name="copy" size={14} color="rgba(255,255,255,.85)" />
-            </Pressable>
+            <View style={{ flex: 1 }}>
+              {/* local "copied" confirmation bubble — sits just above the chip */}
+              {copied && (
+                <View style={{ position: 'absolute', top: -30, left: 0, flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 999, backgroundColor: c.ink1 }}>
+                  <ZIcon name="check" size={12} color={c.cyan} stroke={2.6} />
+                  <Text style={{ color: '#fff', fontSize: 11.5, fontFamily: font.semibold }}>Account number copied</Text>
+                </View>
+              )}
+              <Pressable
+                onPress={copyAccount}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 12, borderRadius: 16, backgroundColor: 'rgba(255,255,255,.16)' }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text numberOfLines={1} style={{ color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
+                    {fullName || firstName || 'Your account'}
+                  </Text>
+                  <NText numberOfLines={1} style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.medium, marginTop: 1 }}>
+                    {groupedAccount}{bankName ? ` · ${bankName}` : ''}
+                  </NText>
+                </View>
+                <ZIcon name="copy" size={15} color="rgba(255,255,255,.85)" />
+              </Pressable>
+            </View>
           ) : (
             <View style={{ flex: 1 }} />
           )}

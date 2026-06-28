@@ -21,8 +21,14 @@ const Wallet = () => {
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Wallet</Text>
 
       <Hero style={{ margin: 16 }} watermark={140}>
-        <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Total balance</Text>
-        <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={{ fontSize: 11, color: 'rgba(255,255,255,.82)', fontFamily: font.bold, letterSpacing: 1.5 }}>ZITCH WALLET</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 3, paddingHorizontal: 9, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}>
+            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c.cyan }} />
+            <Text style={{ fontSize: 10, color: '#fff', fontFamily: font.bold }}>Primary</Text>
+          </View>
+        </View>
+        <NText style={{ fontSize: 27, fontFamily: font.extrabold, color: '#fff', marginTop: 8, fontVariant: ['tabular-nums'] }}>
           {showBal ? money(balance) : '₦ ••••••'}
         </NText>
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
