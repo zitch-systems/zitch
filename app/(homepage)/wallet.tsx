@@ -50,7 +50,7 @@ const Wallet = () => {
       </View>
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
-        <SectionLabel action="Filter">Transactions</SectionLabel>
+        <SectionLabel action="Filter">Recent activity</SectionLabel>
         {txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
         ) : (
