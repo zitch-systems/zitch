@@ -16,6 +16,10 @@ const PROVIDERS = [
   { id: '1', name: 'GoTV', color: '#92C020', logo: require('@/assets/images/providers/gotv.png') },
   { id: '2', name: 'DSTV', color: '#0A66C2', logo: require('@/assets/images/providers/dstv.png') },
   { id: '3', name: 'StarTimes', color: '#F47B20', logo: require('@/assets/images/providers/startimes.png') },
+  // Showmax has no raster logo asset yet; ProviderGrid renders an initials tile
+  // in its brand colour as a fallback. id '4' follows the sequential cablenetwork
+  // codes used by the backend (1=GoTV, 2=DSTV, 3=StarTimes).
+  { id: '4', name: 'Showmax', color: '#1A1A2E' },
 ];
 
 type Step = null | 'confirm' | 'pin';
@@ -83,6 +87,19 @@ const BuyCable = () => {
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
   const valid = iuc.length >= 8 && !!plan && amount > 0 && amount <= balance;
+
+  // Auto-resolve the customer name once the smartcard reaches a plausible length
+  // (most NUBAN-style IUCs are 10-11 digits). The manual button stays as a
+  // fallback. attemptedRef stops the effect from re-firing the API on every
+  // keystroke or while a request is already in flight.
+  const attemptedRef = useRef('');
+  useEffect(() => {
+    if (iuc.length >= 10 && !validatedName && !validating && attemptedRef.current !== `${prov}:${iuc}`) {
+      attemptedRef.current = `${prov}:${iuc}`;
+      validateIuc();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iuc, prov, validatedName, validating]);
 
   const validateIuc = async () => {
     if (iuc.trim().length < 8) { notify('Error', 'Enter a valid IUC / smartcard number.'); return; }
@@ -154,7 +171,7 @@ const BuyCable = () => {
       <Header title="Cable TV" onBack={() => router.back()} />
 
       <Label>Select provider</Label>
-      <ProviderGrid items={PROVIDERS} value={prov} onPick={setProv} cols={3} />
+      <ProviderGrid items={PROVIDERS} value={prov} onPick={setProv} cols={4} />
 
       <Field
         label="Smartcard / IUC number"

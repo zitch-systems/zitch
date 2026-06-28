@@ -105,7 +105,7 @@ const Signin = () => {
   return (
     <Screen>
       <View style={{ alignItems: 'center', marginTop: 18, marginBottom: 26 }}>
-        <ZMark size={56} />
+        <ZMark size={56} badge glow />
         <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Welcome back</Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular, textAlign: 'center' }}>
           Sign in to continue to Zitch

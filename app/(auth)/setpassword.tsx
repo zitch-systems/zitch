@@ -29,11 +29,11 @@ const SetPassword = () => {
   const [form, setForm] = useState({ password1: '', password2: '' });
 
   const p1 = form.password1;
-  const eight = p1.length >= 8;
-  const hasAlpha = /[A-Za-z]/.test(p1);
-  const hasNum = /[0-9]/.test(p1);
+  const eight = /.{8,}/.test(p1);
+  const hasUpper = /[A-Z]/.test(p1);
+  const hasNum = /\d/.test(p1);
   const tally = p1 !== '' && p1 === form.password2;
-  const canSubmit = eight && hasAlpha && hasNum && tally;
+  const canSubmit = eight && hasUpper && hasNum && tally;
 
   useEffect(() => {
     getToken().then((t) => t && setToken(t));
@@ -79,20 +79,27 @@ const SetPassword = () => {
           placeholder="Enter password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
-        <Field
-          label="Confirm password"
-          value={form.password2}
-          onChangeText={(e) => setForm({ ...form, password2: e })}
-          secureTextEntry
-          placeholder="Re-enter password"
-          prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
-        />
+        <View>
+          <Field
+            label="Confirm password"
+            value={form.password2}
+            onChangeText={(e) => setForm({ ...form, password2: e })}
+            secureTextEntry
+            placeholder="Re-enter password"
+            prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+          />
+          {form.password2.length > 0 && (
+            <Text style={{ fontSize: 12, color: tally ? c.lime : c.red, marginTop: 6, marginLeft: 2, fontFamily: font.semibold }}>
+              {tally ? 'Passwords match' : 'Passwords do not match'}
+            </Text>
+          )}
+        </View>
       </View>
 
       <View style={{ marginTop: 16 }}>
-        <Rule ok={eight} text="Must be at least 8 characters" />
-        <Rule ok={hasAlpha} text="Must include an alphabet (Aa-Zz)" />
-        <Rule ok={hasNum} text="Must include a number (0-9)" />
+        <Rule ok={eight} text="8+ characters" />
+        <Rule ok={hasUpper} text="1 uppercase" />
+        <Rule ok={hasNum} text="1 number" />
       </View>
 
       <View style={{ marginTop: 26 }}>

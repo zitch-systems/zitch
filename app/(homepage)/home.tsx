@@ -3,6 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
+import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
@@ -43,11 +44,30 @@ const Home = () => {
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Count of Mono-linked external bank accounts, for the "Linked banks" summary.
+  const [linkedCount, setLinkedCount] = useState<number | null>(null);
 
   // Refresh balance & activity whenever Home regains focus — after sign-in and
   // after returning from a transfer/purchase — so the dashboard never shows a
   // stale figure.
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  // Fetch the number of connected (Mono-linked) bank accounts so the summary
+  // block can show a live count and route to the wallet (or link flow if none).
+  useFocusEffect(
+    useCallback(() => {
+      let alive = true;
+      (async () => {
+        try {
+          const res = await apiJson<{ accounts?: unknown[] }>('/api/banklink/list/');
+          if (alive) setLinkedCount(Array.isArray(res.accounts) ? res.accounts.length : 0);
+        } catch {
+          // leave last-known count
+        }
+      })();
+      return () => { alive = false; };
+    }, []),
+  );
 
   // Pull-to-refresh: re-fetch balance + activity (e.g. after a bank-transfer
   // top-up the webhook just credited).
@@ -153,19 +173,6 @@ const Home = () => {
         </View>
       </Hero>
 
-      {/* daily interest strip */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: -4 }}>
-        <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16 }}>
-          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="spark" size={16} color={c.lime} />
-          </View>
-          <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, fontFamily: font.regular }}>
-            Act now — start earning <Text style={{ color: c.brand, fontFamily: font.bold }}>daily interest</Text>
-          </Text>
-          <ZIcon name="right" size={16} color={c.ink3} />
-        </Card>
-      </Pressable>
-
       {/* quick actions */}
       <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
         {[
@@ -204,6 +211,28 @@ const Home = () => {
         </View>
       </Pressable>
 
+      {/* linked banks summary — live count of Mono-connected accounts; tap to the
+          wallet (where they're managed) or the link flow when none are connected */}
+      <Pressable
+        onPress={() => router.push(linkedCount && linkedCount > 0 ? '/wallet' : '/linkbank')}
+        style={{ marginHorizontal: 16, marginTop: 14 }}
+      >
+        <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="bank" size={22} color={c.brand} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Linked banks</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, marginTop: 1 }}>
+              {linkedCount && linkedCount > 0
+                ? `${linkedCount} ${linkedCount === 1 ? 'account' : 'accounts'} connected`
+                : 'Connect a bank to see all your balances'}
+            </Text>
+          </View>
+          <ZIcon name="right" size={18} color={c.ink3} />
+        </Card>
+      </Pressable>
+
       {/* recent */}
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
@@ -213,6 +242,19 @@ const Home = () => {
           txns.slice(0, 4).map((x, i) => <TxnRow key={x.id} txn={x} last={i === Math.min(3, txns.length - 1)} />)
         )}
       </View>
+
+      {/* daily interest strip — pinned as the last element on the screen per design */}
+      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: 16 }}>
+        <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16 }}>
+          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="spark" size={16} color={c.lime} />
+          </View>
+          <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, fontFamily: font.regular }}>
+            Act now — start earning <Text style={{ color: c.brand, fontFamily: font.bold }}>daily interest</Text>
+          </Text>
+          <ZIcon name="right" size={16} color={c.ink3} />
+        </Card>
+      </Pressable>
 
       {/* more services sheet */}
       <Sheet open={more} onClose={() => setMore(false)} title="All services">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   RefreshControl,
   Modal,
+  Animated,
   StyleSheet,
   ViewStyle,
   TextStyle,
@@ -25,6 +26,55 @@ import { getTransactionPin } from '@/lib/secureStore';
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
 export { Naira, NText };
+
+// ---- Tap: shared 3D spring press wrapper (design `Tap`) ----
+// The design wraps EVERY interactive element in a 3D push-in: on press it scales
+// to .96 with a perspective tilt and fades to .92, then springs back with an
+// overshoot (cubic-bezier(.34,1.56,.64,1) analogue). Built on RN Animated
+// (the project has no reanimated babel plugin) so it works in the APK as-is.
+export const Tap = ({
+  children,
+  onPress,
+  onLongPress,
+  disabled,
+  style,
+  hitSlop,
+  accessibilityLabel,
+}: {
+  children: React.ReactNode;
+  onPress?: () => void;
+  onLongPress?: () => void;
+  disabled?: boolean;
+  style?: ViewStyle;
+  hitSlop?: number;
+  accessibilityLabel?: string;
+}) => {
+  const v = useRef(new Animated.Value(0)).current;
+  const animate = (to: number, bounce = false) =>
+    Animated.spring(v, {
+      toValue: to,
+      useNativeDriver: true,
+      speed: 50,
+      bounciness: bounce ? 12 : 0,
+    }).start();
+  const scale = v.interpolate({ inputRange: [0, 1], outputRange: [1, 0.96] });
+  const opacity = v.interpolate({ inputRange: [0, 1], outputRange: [1, 0.92] });
+  return (
+    <Pressable
+      onPress={disabled ? undefined : onPress}
+      onLongPress={disabled ? undefined : onLongPress}
+      onPressIn={() => !disabled && animate(1)}
+      onPressOut={() => animate(0, true)}
+      hitSlop={hitSlop}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+    >
+      <Animated.View style={[{ transform: [{ perspective: 150 }, { scale }], opacity }, style]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+};
 
 const cardShadow = {
   shadowColor: '#063731',
@@ -154,7 +204,7 @@ export const Card = ({
     ...cardShadow,
     ...style,
   };
-  if (onPress) return <Pressable onPress={onPress} style={({ pressed }) => [base, pressed && { opacity: 0.9 }]}>{children}</Pressable>;
+  if (onPress) return <Tap onPress={onPress} style={base}>{children}</Tap>;
   return <View style={base}>{children}</View>;
 };
 
@@ -168,6 +218,8 @@ const btnSizes: Record<BtnSize, ViewStyle> = {
   sm: { height: 40, paddingHorizontal: 16 },
 };
 const btnFont: Record<BtnSize, number> = { lg: 16, md: 15, sm: 14 };
+// Design button radii (ui.jsx PrimaryButton = 18; README buttons 16/14), not pill.
+const btnRadius: Record<BtnSize, number> = { lg: 18, md: 16, sm: 14 };
 
 export const Btn = ({
   label,
@@ -199,28 +251,29 @@ export const Btn = ({
   };
   const v = variants[variant];
   return (
-    <Pressable
-      onPress={disabled ? undefined : onPress}
-      style={({ pressed }) => [
-        {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 9,
-          borderRadius: radius.pill,
-          width: full ? '100%' : undefined,
-          backgroundColor: v.bg,
-          borderWidth: v.border ? 1.5 : 0,
-          borderColor: v.border,
-          opacity: disabled ? 0.5 : pressed ? 0.92 : 1,
-          ...btnSizes[size],
-        },
-        style,
-      ]}
-    >
-      {icon && <ZIcon name={icon} size={size === 'lg' ? 20 : 18} color={v.fg} stroke={2.2} />}
-      <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</NText>
-    </Pressable>
+    <Tap onPress={onPress} disabled={disabled} style={full ? { width: '100%' } : undefined}>
+      <View
+        style={[
+          {
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 9,
+            borderRadius: btnRadius[size],
+            width: full ? '100%' : undefined,
+            backgroundColor: v.bg,
+            borderWidth: v.border ? 1.5 : 0,
+            borderColor: v.border,
+            opacity: disabled ? 0.5 : 1,
+            ...btnSizes[size],
+          },
+          style,
+        ]}
+      >
+        {icon && <ZIcon name={icon} size={size === 'lg' ? 20 : 18} color={v.fg} stroke={2.2} />}
+        <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</NText>
+      </View>
+    </Tap>
   );
 };
 
@@ -273,7 +326,7 @@ export const ZItem = ({
   last?: boolean;
 }) => {
   const { c, theme } = useTheme();
-  const Wrap: any = onPress ? Pressable : View;
+  const Wrap: any = onPress ? Tap : View;
   // Per-icon accent so list rows (profile, settings, savings, loan…) read
   // colourful — unless the caller overrides, or the icon isn't mapped.
   const mapped = icon ? ICON_COLORS[icon] : undefined;
@@ -348,7 +401,7 @@ export const Field = ({
           backgroundColor: c.surface,
           borderWidth: 1,
           borderColor: c.line,
-          borderRadius: radius.md,
+          borderRadius: 13,
           paddingHorizontal: 16,
           height: 56,
         }}
@@ -393,10 +446,19 @@ export const Sheet = ({
   // On fold/tablet, cap the sheet width and centre it so it reads as a card
   // rather than stretching across the whole display. Full-width on phones.
   const maxW = width >= 600 ? 560 : undefined;
+  // Spring slide-up (design uses var(--ease-spring) on sheets). RN's built-in
+  // Modal "slide" is linear, so we drive translateY ourselves with a spring.
+  const ty = useRef(new Animated.Value(700)).current;
+  useEffect(() => {
+    if (open) {
+      ty.setValue(700);
+      Animated.spring(ty, { toValue: 0, useNativeDriver: true, bounciness: 7, speed: 13 }).start();
+    }
+  }, [open]);
   return (
-    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={open} transparent animationType="none" onRequestClose={onClose}>
       <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)' }} />
-      <View
+      <Animated.View
         style={{
           width: '100%',
           maxWidth: maxW,
@@ -408,12 +470,13 @@ export const Sheet = ({
           paddingTop: 10,
           paddingBottom: 26,
           maxHeight: '88%',
+          transform: [{ translateY: ty }],
         }}
       >
         <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
         {title && <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginBottom: 14 }}>{title}</Text>}
         <ScrollView showsVerticalScrollIndicator={false}>{children}</ScrollView>
-      </View>
+      </Animated.View>
     </Modal>
   );
 };
@@ -480,35 +543,31 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
           k === '' ? (
             bioKind ? (
               <View key={i} style={{ width: '33.33%', padding: 7 }}>
-                <Pressable
+                <Tap
                   onPress={useBiometric}
                   disabled={busy}
                   style={{
-                    height: 64,
-                    borderRadius: 18,
-                    backgroundColor: c.surface,
-                    borderWidth: 1,
-                    borderColor: c.line,
+                    height: 56,
+                    borderRadius: 14,
+                    backgroundColor: 'transparent',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
                   <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={26} color={c.brand} />
-                </Pressable>
+                </Tap>
               </View>
             ) : (
-              <View key={i} style={{ width: '33.33%', height: 64 }} />
+              <View key={i} style={{ width: '33.33%', height: 56 }} />
             )
           ) : (
             <View key={i} style={{ width: '33.33%', padding: 7 }}>
-              <Pressable
+              <Tap
                 onPress={() => (k === 'del' ? del() : press(k))}
                 style={{
-                  height: 64,
-                  borderRadius: 18,
-                  backgroundColor: c.surface,
-                  borderWidth: 1,
-                  borderColor: c.line,
+                  height: 56,
+                  borderRadius: 14,
+                  backgroundColor: 'transparent',
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}
@@ -518,7 +577,7 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
                 ) : (
                   <Text style={{ fontSize: 24, fontFamily: font.bold, color: c.ink1 }}>{k}</Text>
                 )}
-              </Pressable>
+              </Tap>
             </View>
           )
         )}
@@ -559,13 +618,13 @@ export const PinSheet = ({
 
 // ---- Translucent pill (hero actions) ----
 export const StatPill = ({ icon, label, onPress }: { icon: string; label: string; onPress?: () => void }) => (
-  <Pressable
+  <Tap
     onPress={onPress}
     style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 9, paddingHorizontal: 14, backgroundColor: 'rgba(255,255,255,.16)', borderRadius: 999 }}
   >
     <ZIcon name={icon} size={16} color="#fff" stroke={2.2} />
     <Text style={{ color: '#fff', fontSize: 13, fontFamily: font.semibold }}>{label}</Text>
-  </Pressable>
+  </Tap>
 );
 
 // ---- Transaction row ----
@@ -581,19 +640,26 @@ export type Txn = {
   reference?: string;
 };
 
+// Two-letter monogram from a transaction's label (design renders txns/banks as
+// monograms on a solid colour tile, never raster logos / service icons).
+const txnMono = (s: string) => {
+  const w = (s || '').trim().split(/\s+/).filter(Boolean);
+  const code = ((w[0]?.[0] || '') + (w[1]?.[0] || w[0]?.[1] || '')).toUpperCase();
+  return code || 'ZT';
+};
+
 export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPress?: () => void }) => {
-  const { c, theme } = useTheme();
+  const { c } = useTheme();
   const inflow = txn.dir === 'in';
-  // Credits stay green; debits take their service's accent colour (airtime
-  // teal, data blue, …) so transaction lists read colourful instead of flat
-  // grey. Unmapped icons fall back to the neutral ink tone.
-  const accent = inflow ? c.lime : (ICON_COLORS[txn.icon] ?? c.ink2);
-  const tint = inflow ? 'rgba(0,181,29,.12)' : (ICON_COLORS[txn.icon] ? iconTint(ICON_COLORS[txn.icon], theme === 'dark') : c.surface3);
-  const Wrap: any = onPress ? Pressable : View;
+  // Credits read green; debits take their service's accent colour (airtime
+  // teal, data blue, …) so transaction lists stay colourful. The tile is the
+  // SOLID accent with a 2-letter white monogram, per the design's TxnRow.
+  const accent = inflow ? c.lime : (ICON_COLORS[txn.icon] ?? c.brand);
+  const Wrap: any = onPress ? Tap : View;
   return (
     <Wrap onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
-      <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
-        <ZIcon name={txn.icon} size={20} color={accent} stroke={2} />
+      <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: accent, alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 14.5, fontFamily: font.extrabold, color: '#fff' }}>{txnMono(txn.type)}</Text>
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>

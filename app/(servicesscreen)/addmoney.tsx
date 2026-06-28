@@ -84,23 +84,21 @@ const AddMoney = () => {
               Transfer any amount to this account from any bank app — your Zitch wallet is credited
               automatically, usually within seconds.
             </Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16 }}>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5, fontVariant: ['tabular-nums'] }}>
-                  {grouped(account.account_number)}
-                </Text>
-                <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.medium, marginTop: 4 }}>
-                  {account.bank_name}{account.account_name ? ` · ${account.account_name}` : ''}
-                </Text>
-              </View>
-              <Pressable
-                onPress={copyAccount}
-                hitSlop={10}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(15,162,149,.12)', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14 }}
-              >
-                <ZIcon name="copy" size={15} color={c.brand} />
-                <Text style={{ fontSize: 13.5, color: c.brand, fontFamily: font.bold }}>Copy</Text>
-              </Pressable>
+            <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
+            {/* Design order top-to-bottom: bank name, grouped number, account name */}
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
+              {account.bank_name}
+            </Text>
+            <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5, marginTop: 6, marginBottom: 2, fontVariant: ['tabular-nums'] }}>
+              {grouped(account.account_number)}
+            </Text>
+            {account.account_name ? (
+              <Text style={{ fontSize: 13, color: c.ink2, fontFamily: font.semibold }}>
+                {account.account_name}
+              </Text>
+            ) : null}
+            <View style={{ marginTop: 14 }}>
+              <Btn label="Copy account number" icon="copy" variant="ghost" onPress={copyAccount} />
             </View>
           </View>
 

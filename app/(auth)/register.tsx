@@ -12,9 +12,12 @@ import { useTheme, font } from '@/lib/theme';
 const Register = () => {
   const { c } = useTheme();
   const [isRegistering, setIsRegistering] = useState(false);
-  const [form, setForm] = useState({ email: '', phone: '' });
+  const [form, setForm] = useState({ name: '', email: '', phone: '' });
 
-  const valid = form.phone.trim().length >= 10;
+  const nameOk = form.name.trim().length >= 3;
+  const phoneOk = /^0\d{10}$/.test(form.phone);
+  const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
+  const valid = nameOk && phoneOk && emailOk;
 
   const handleSignup = async () => {
     if (form.phone.trim() === '') {
@@ -59,26 +62,50 @@ const Register = () => {
       <Header onBack={() => router.replace('/signin')} />
       <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Create your account</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 26, fontFamily: font.regular }}>
-        Open your free account in minutes
+        Join 5,000,000+ Nigerians on Zitch
       </Text>
 
       <View style={{ gap: 16 }}>
-        <Field
-          label="Phone number"
-          value={form.phone}
-          onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })}
-          keyboardType="number-pad"
-          placeholder="0801 234 5678"
-          prefix={<ZIcon name="airtime" size={18} color={c.ink3} />}
-        />
-        <Field
-          label="Email (optional)"
-          value={form.email}
-          onChangeText={(e) => setForm({ ...form, email: e })}
-          keyboardType="email-address"
-          placeholder="you@email.com"
-          prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
-        />
+        <View>
+          <Field
+            label="Full name"
+            value={form.name}
+            onChangeText={(e) => setForm({ ...form, name: e })}
+            placeholder="William Adeyemi"
+            autoCapitalize="words"
+            prefix={<ZIcon name="user" size={18} color={c.ink3} />}
+          />
+          {form.name.length > 0 && !nameOk && (
+            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter your full name</Text>
+          )}
+        </View>
+        <View>
+          <Field
+            label="Phone number"
+            value={form.phone}
+            onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })}
+            keyboardType="number-pad"
+            placeholder="0801 234 5678"
+            prefix={<ZIcon name="airtime" size={18} color={c.ink3} />}
+          />
+          {form.phone.length > 0 && !phoneOk && (
+            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter a valid 11-digit number (e.g. 0801 234 5678)</Text>
+          )}
+        </View>
+        <View>
+          <Field
+            label="Email (optional)"
+            value={form.email}
+            onChangeText={(e) => setForm({ ...form, email: e })}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            placeholder="you@email.com"
+            prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
+          />
+          {form.email.length > 0 && !emailOk && (
+            <Text style={{ fontSize: 12, color: c.red, marginTop: 6, marginLeft: 2, fontFamily: font.regular }}>Enter a valid email address</Text>
+          )}
+        </View>
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
         By continuing you agree to Zitch's <Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text> &{' '}

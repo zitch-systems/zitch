@@ -5,12 +5,22 @@ import Svg, { Circle, Path } from 'react-native-svg';
 import { font } from '@/lib/theme';
 
 // Ribbon mark / circular badge — uses the brand PNGs from the design handoff.
-export const ZMark = ({ size = 40, badge = false }: { size?: number; badge?: boolean }) => {
+// `glow` adds the cyan halo the design uses on the splash + receipt lockups.
+export const ZMark = ({ size = 40, badge = false, glow = false }: { size?: number; badge?: boolean; glow?: boolean }) => {
+  const glowStyle = glow
+    ? {
+        shadowColor: '#5CF5EB',
+        shadowOpacity: 0.7,
+        shadowRadius: size * 0.34,
+        shadowOffset: { width: 0, height: 0 },
+        elevation: 12,
+      }
+    : null;
   if (badge) {
     return (
       <Image
         source={require('@/assets/images/zitch-badge.png')}
-        style={{ width: size, height: size, borderRadius: size / 2 }}
+        style={{ width: size, height: size, borderRadius: size / 2, ...(glowStyle || {}) }}
         resizeMode="cover"
       />
     );
@@ -18,7 +28,7 @@ export const ZMark = ({ size = 40, badge = false }: { size?: number; badge?: boo
   return (
     <Image
       source={require('@/assets/images/zitch-mark.png')}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, ...(glowStyle || {}) }}
       resizeMode="contain"
     />
   );

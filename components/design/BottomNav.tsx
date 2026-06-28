@@ -1,12 +1,11 @@
 import React from 'react';
-import { View, Text, Pressable, Linking } from 'react-native';
+import { View, Text, Pressable } from 'react-native';
+import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import ZIcon from '@/components/design/ZIcon';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
-import { notify } from '@/components/design/Notify';
-import { BANK_WHATSAPP } from '@/components/configFiles/links';
 
 // Tab order + presentation. Only these routes appear in the bar; any other route
 // in the group (convert, loan, history, notifications, …) is reachable but hidden
@@ -20,14 +19,6 @@ const RIGHT: { name: string; icon: string; label: string }[] = [
   { name: 'cards', icon: 'card', label: 'Cards' },
   { name: 'me', icon: 'user', label: 'Me' },
 ];
-
-// Open the Zitch banking bot on WhatsApp, prefilled so the bot greets the user.
-const openWhatsApp = () => {
-  const url = `https://wa.me/${BANK_WHATSAPP}?text=${encodeURIComponent('Hi Zitch 👋')}`;
-  Linking.openURL(url).catch(() =>
-    notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.'),
-  );
-};
 
 const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
   const { c } = useTheme();
@@ -76,9 +67,9 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 10, paddingBottom: 6, paddingHorizontal: 8 }}>
         {LEFT.map((it) => <Tab key={it.name} it={it} />)}
 
-        {/* Raised WhatsApp button — the channel's hero action, dead centre. */}
+        {/* Raised WhatsApp button — opens the in-app Bank-on-WhatsApp screen, dead centre. */}
         <Pressable
-          onPress={openWhatsApp}
+          onPress={() => router.push('/linkwhatsapp')}
           accessibilityRole="button"
           accessibilityLabel="Bank on WhatsApp"
           style={({ pressed }) => ({
@@ -110,7 +101,7 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
           >
             <WhatsAppGlyph size={30} color="#fff" />
           </View>
-          <Text style={{ fontSize: 10.5, marginTop: -2, fontFamily: font.semibold, color: '#0FA295' }}>WhatsApp</Text>
+          <Text style={{ fontSize: 10.5, marginTop: -2, fontFamily: font.semibold, color: c.brand }}>WhatsApp</Text>
         </Pressable>
 
         {RIGHT.map((it) => <Tab key={it.name} it={it} />)}

@@ -63,6 +63,14 @@
           "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
           "recordAudioAndroid": false
         }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Zitch to save transaction receipts to your photos.",
+          "savePhotosPermission": "Allow Zitch to save transaction receipts to your photos.",
+          "isAccessMediaLocationEnabled": false
+        }
       ]
     ],
     "experiments": {

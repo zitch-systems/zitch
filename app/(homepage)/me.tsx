@@ -6,6 +6,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
+import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -87,6 +88,8 @@ const Me = () => {
 
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
   const grp1: any[] = [
+    { icon: 'user', title: 'Account Details', sub: 'Name, email, phone & photo', go: () => router.push('/accountdetails') },
+    { icon: 'insurance', title: 'Identity Verification', sub: 'BVN, NIN or selfie · raise limits', badge: 'Verify', go: () => router.push('/kyc') },
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
     { icon: 'card', title: 'Bank Card / Account', sub: 'Add a payment option', go: () => router.push('/accountdetails') },
@@ -157,7 +160,7 @@ const Me = () => {
       <Pressable onPress={() => router.push('/linkwhatsapp')} style={{ marginHorizontal: 16, marginTop: 14 }}>
         <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
           <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: '#25D366', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="chat" size={22} color="#fff" />
+            <WhatsAppGlyph size={24} color="#fff" />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>Bank on WhatsApp</Text>

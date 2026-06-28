@@ -10,7 +10,7 @@ import { apiPost } from '@/lib/api';
 import { useWallet } from '@/lib/wallet';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
 const AccountDetails = () => {
@@ -110,7 +110,7 @@ const AccountDetails = () => {
       if (response.ok) {
         if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
         if (form.phone) await AsyncStorage.setItem('UserPhone', form.phone);
-        notify('Success', 'Account updated');
+        notify('Profile updated');
       } else {
         notify('Error', result.message || 'Failed to update account');
       }
@@ -125,15 +125,18 @@ const AccountDetails = () => {
     <Screen>
       <Header title="Account Details" sub="Your account profile details" onBack={() => router.back()} />
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20 }}>
-        <Avatar size={64} ring={c.brand} surface={c.surface} uri={avatar} />
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 16 }}>
-            {current.firstName} {current.lastName}
-          </Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{current.phone}</Text>
+      <View style={{ alignItems: 'center', marginBottom: 18 }}>
+        <View style={{ position: 'relative' }}>
+          <Avatar size={84} ring={c.brand} surface={c.surface} uri={avatar} />
+          <View style={{ position: 'absolute', right: -2, bottom: -2, width: 30, height: 30, borderRadius: 15, backgroundColor: c.brand, borderWidth: 3, borderColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="plus" size={15} color="#fff" stroke={2.6} />
+          </View>
         </View>
-        <Btn label={uploadingPhoto ? 'Uploading…' : 'Update photo'} variant="outline" size="sm" full={false} disabled={uploadingPhoto} onPress={updatePhoto} />
+        <Tap onPress={updatePhoto} disabled={uploadingPhoto}>
+          <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand, marginTop: 10 }}>
+            {uploadingPhoto ? 'Uploading…' : 'Change photo'}
+          </Text>
+        </Tap>
       </View>
 
       <View style={{ gap: 16 }}>

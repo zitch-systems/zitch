@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text, Pressable, Image } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
-import { Sheet, Btn, Money, money } from '@/components/design/ui';
+import { Sheet, Btn, Money, money, Tap } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius } from '@/lib/theme';
 
@@ -37,11 +37,11 @@ export const Segmented = ({
       {options.map((o) => {
         const on = value === o.v;
         return (
-          <Pressable key={o.v} onPress={() => onChange(o.v)} style={{ flex: 1 }}>
+          <Tap key={o.v} onPress={() => onChange(o.v)} style={{ flex: 1 }}>
             <View style={{ alignItems: 'center', paddingVertical: 10, borderRadius: 11, backgroundColor: on ? c.surface : 'transparent' }}>
               <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? c.brand : c.ink3 }}>{o.label}</Text>
             </View>
-          </Pressable>
+          </Tap>
         );
       })}
     </View>
@@ -57,12 +57,12 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
         const on = String(value) === String(a);
         return (
           <View key={a} style={{ width: '33.33%', padding: 5 }}>
-            <Pressable
+            <Tap
               onPress={() => onPick(String(a))}
               style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
             >
               <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{a.toLocaleString()}</Text>
-            </Pressable>
+            </Tap>
           </View>
         );
       })}
@@ -97,7 +97,7 @@ export const ProviderGrid = ({
         const initials = (it.name || '').replace(/[^A-Za-z0-9 ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
         return (
           <View key={it.id} style={{ width: `${100 / cols}%`, padding: 5 }}>
-            <Pressable
+            <Tap
               onPress={() => onPick(it.id)}
               style={{ alignItems: 'center', gap: 7, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
             >
@@ -116,7 +116,7 @@ export const ProviderGrid = ({
                   <ZIcon name="check" size={10} color="#fff" stroke={3} />
                 </View>
               )}
-            </Pressable>
+            </Tap>
           </View>
         );
       })}
@@ -140,7 +140,7 @@ export const PlanList = ({
       {plans.map((p) => {
         const on = value === p.id;
         return (
-          <Pressable
+          <Tap
             key={p.id}
             onPress={() => onPick(p.id)}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 15, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
@@ -150,7 +150,7 @@ export const PlanList = ({
               {p.sub ? <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{p.sub}</Text> : null}
             </View>
             <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? c.brand : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{p.price.toLocaleString()}</Text>
-          </Pressable>
+          </Tap>
         );
       })}
     </View>

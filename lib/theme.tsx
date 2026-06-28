@@ -171,7 +171,8 @@ export const ICON_COLORS: Record<string, string> = {
 
 // A soft translucent tint of an accent (hex + alpha) that sits cleanly on both
 // light and dark surfaces, so we don't need a separate colour per theme.
-export const iconTint = (hex: string, dark: boolean) => hex + (dark ? '33' : '1F');
+// ~14% tint in light (0x24/0xFF ≈ 14%), per the design's "own colour at ~14%".
+export const iconTint = (hex: string, dark: boolean) => hex + (dark ? '33' : '24');
 
 // ---- Radii ----
 export const radius = { sm: 12, md: 18, lg: 24, xl: 30, pill: 999 };

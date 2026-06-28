@@ -123,7 +123,11 @@ const GetLoan = () => {
         })}
       </View>
 
-      {/* arbitrary amount — pick any value up to the approved limit */}
+      {/* Design uses a range slider (min 10000, max 500000, step 5000). The native
+          @react-native-community/slider package is NOT installed and we must not
+          add a new native dependency here, so the documented fallback is used:
+          the quick-amount chips above + this free-text amount field, both honoring
+          the same 10000–available range. Swap to <Slider/> once the dep is added. */}
       <Field
         label={`Or enter an amount (up to ${money(available)})`}
         value={amount ? String(amount) : ''}

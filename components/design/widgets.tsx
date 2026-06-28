@@ -1,8 +1,9 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Image } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
+import { Tap } from '@/components/design/ui';
 import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 
 // Section label with optional right-aligned action (e.g. "See all").
@@ -12,9 +13,9 @@ export const SectionLabel = ({ children, action, onAction }: { children: string;
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
       <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>{children}</Text>
       {action && (
-        <Pressable onPress={onAction}>
+        <Tap onPress={onAction}>
           <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.brand }}>{action}</Text>
-        </Pressable>
+        </Tap>
       )}
     </View>
   );
@@ -88,7 +89,7 @@ export const ServiceTile = ({
   const { c, theme } = useTheme();
   const accent = ICON_COLORS[icon] ?? c.brand;
   return (
-    <Pressable onPress={onPress} style={{ alignItems: 'center', gap: 7 }}>
+    <Tap onPress={onPress} style={{ alignItems: 'center', gap: 7 }}>
       <View>
         <View
           style={{
@@ -105,6 +106,6 @@ export const ServiceTile = ({
         {badge && <Badge label={badge} hot={hot} />}
       </View>
       <Text style={{ fontSize: 12, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
-    </Pressable>
+    </Tap>
   );
 };
