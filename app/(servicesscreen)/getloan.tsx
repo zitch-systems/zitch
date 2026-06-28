@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
-import { Screen, Header, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Screen, Header, Btn, Sheet, PinPad, Field, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
 import Receipt from '@/components/design/Receipt';
@@ -123,6 +123,20 @@ const GetLoan = () => {
         })}
       </View>
 
+      {/* arbitrary amount — pick any value up to the approved limit */}
+      <Field
+        label={`Or enter an amount (up to ${money(available)})`}
+        value={amount ? String(amount) : ''}
+        onChangeText={(v) => setAmount(Number(v.replace(/\D/g, '')) || 0)}
+        keyboardType="number-pad"
+        placeholder="e.g. 75000"
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontFamily: font.bold }} />}
+      />
+      {amount > 0 && amount < 10000 ? (
+        <Text style={{ fontSize: 12, color: c.amber, fontFamily: font.medium, marginTop: 6 }}>Minimum loan is {money(10000)}.</Text>
+      ) : null}
+      <View style={{ height: 18 }} />
+
       <Label>Repayment period</Label>
       <View style={{ flexDirection: 'row', gap: 10, marginBottom: 18 }}>
         {TENURES.map((t) => {
@@ -141,7 +155,7 @@ const GetLoan = () => {
         <Row2 k="Total repayment" v={money(repay)} strong />
       </View>
 
-      <Btn label={`Get ${money(amount)}`} disabled={overLimit} onPress={() => setStep('confirm')} />
+      <Btn label={`Get ${money(amount)}`} disabled={overLimit || amount < 10000} onPress={() => setStep('confirm')} />
       {overLimit && (
         <Text style={{ fontSize: 12.5, color: c.red, marginTop: 10, textAlign: 'center', fontFamily: font.semibold }}>
           Amount exceeds your available credit

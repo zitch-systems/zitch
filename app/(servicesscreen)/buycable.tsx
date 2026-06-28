@@ -6,7 +6,7 @@ import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
-import { Label, ProviderGrid, PlanList, ConfirmSheet } from '@/components/design/flowkit';
+import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -82,7 +82,7 @@ const BuyCable = () => {
   const provider = PROVIDERS.find((p) => p.id === prov)!;
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
-  const valid = iuc.length >= 8 && !!plan && amount > 0;
+  const valid = iuc.length >= 8 && !!plan && amount > 0 && amount <= balance;
 
   const validateIuc = async () => {
     if (iuc.trim().length < 8) { notify('Error', 'Enter a valid IUC / smartcard number.'); return; }
@@ -179,7 +179,8 @@ const BuyCable = () => {
       ) : (
         <PlanList plans={plans} value={plan} onPick={setPlan} />
       )}
-      <View style={{ height: 18 }} />
+      <View style={{ height: 14 }} />
+      {amount > 0 ? <BalanceHint amount={amount} balance={balance} /> : null}
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 

@@ -43,6 +43,9 @@ const AddMoney = () => {
     notify('Copied', 'Account number copied to clipboard');
   };
 
+  // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
+  const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
+
   const createAccount = async () => {
     if (bvn.length !== 11) return;
     setCreating(true);
@@ -83,8 +86,8 @@ const AddMoney = () => {
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16 }}>
               <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5 }}>
-                  {account.account_number}
+                <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5, fontVariant: ['tabular-nums'] }}>
+                  {grouped(account.account_number)}
                 </Text>
                 <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.medium, marginTop: 4 }}>
                   {account.bank_name}{account.account_name ? ` · ${account.account_name}` : ''}
@@ -107,6 +110,26 @@ const AddMoney = () => {
               Save this account — it's permanently yours. Transfers reflect automatically, no need to confirm anything here.
             </Text>
           </View>
+
+          {/* other ways to fund */}
+          <Label>Other ways to add money</Label>
+          {[
+            { icon: 'bank', title: 'Cash Deposit', sub: 'Deposit cash at a nearby Zitch agent', msg: 'Agent cash deposit is rolling out soon.' },
+            { icon: 'qr', title: 'Show my QR code', sub: 'Let someone scan to pay you', msg: 'Your receive-QR is coming soon.' },
+          ].map((m) => (
+            <Pressable key={m.title} onPress={() => notify('Coming soon', m.msg)}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.surface, borderRadius: 16, borderWidth: 1, borderColor: c.line, padding: 14, marginBottom: 10 }}>
+                <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+                  <ZIcon name={m.icon} size={20} color={c.brand} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>{m.title}</Text>
+                  <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{m.sub}</Text>
+                </View>
+                <ZIcon name="right" size={18} color={c.ink3} />
+              </View>
+            </Pressable>
+          ))}
         </>
       ) : (
         <View style={{ paddingTop: 12 }}>

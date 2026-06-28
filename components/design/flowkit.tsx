@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, Pressable, Image } from 'react-native';
+import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
@@ -164,7 +165,9 @@ export const BalanceHint = ({ amount, balance }: { amount: number; balance: numb
     return (
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, marginBottom: 14 }}>
         <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.red }}>Insufficient balance</Text>
-        <Text style={{ fontSize: 12, fontFamily: font.bold, color: c.brand }}>+ Add money</Text>
+        <Pressable onPress={() => router.push('/addmoney')} hitSlop={8}>
+          <Text style={{ fontSize: 12, fontFamily: font.bold, color: c.brand }}>+ Add money</Text>
+        </Pressable>
       </View>
     );
   }
