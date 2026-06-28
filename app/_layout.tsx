@@ -12,7 +12,7 @@ import { NotifyHost } from "@/components/design/Notify";
 import { enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
 
-// Default every Text/TextInput to Inter so nothing can fall back to the
+// Default every Text/TextInput to Manrope so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
 // component's own style is merged after this default. On Android we also drop
 // the extra font padding the OS adds above/below glyphs — gives noticeably
@@ -45,7 +45,7 @@ const RootStack = () => {
 };
 
 const _layout = () => {
-  // The whole app uses Inter (see lib/theme `font`). Only these are loaded.
+  // The whole app uses Manrope (see lib/theme `font`). Only these are loaded.
   const [fontsLoaded, error] = useFonts(appFonts);
 
   useEffect(() => {

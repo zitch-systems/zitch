@@ -1,29 +1,31 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
-  Inter_800ExtraBold,
-} from '@expo-google-fonts/inter';
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
+} from '@expo-google-fonts/manrope';
 
-// ---- App font map (Inter; loaded in app/_layout.tsx) ----
+// ---- App font map (Manrope; loaded in app/_layout.tsx) ----
+// The design system (tokens.css) specifies Manrope with a default body weight
+// of 500 — see lib base text default in app/_layout.tsx.
 export const appFonts = {
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
-  Inter_800ExtraBold,
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
 };
 
 // font-family by weight — RN needs the exact variant, not a numeric weight
 export const font = {
-  regular: 'Inter_400Regular',
-  medium: 'Inter_500Medium',
-  semibold: 'Inter_600SemiBold',
-  bold: 'Inter_700Bold',
-  extrabold: 'Inter_800ExtraBold',
+  regular: 'Manrope_400Regular',
+  medium: 'Manrope_500Medium',
+  semibold: 'Manrope_600SemiBold',
+  bold: 'Manrope_700Bold',
+  extrabold: 'Manrope_800ExtraBold',
 };
 
 // ---- Brand ramp (from docs/design_handoff_zitch_revamp/assets/tokens.css) ----
@@ -83,9 +85,9 @@ export const light: ThemeTokens = {
   surface2: '#F4F9F8',
   surface3: '#EAF3F1',
   line: '#E2EEEB',
-  ink1: '#0A0A0B',
-  ink2: '#3A434A',
-  ink3: '#737B83',
+  ink1: '#06231F',
+  ink2: '#3C4F4C',
+  ink3: '#6B7A77',
   inkOnBrand: '#FFFFFF',
   brand: palette.teal500,
   brandDeep: palette.teal600,
