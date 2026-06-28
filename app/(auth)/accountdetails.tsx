@@ -82,6 +82,13 @@ const AccountDetails = () => {
     }
   };
 
+  // Gate "Save changes": only enable once something changed and what's entered
+  // is valid (email well-formed, phone 11 digits).
+  const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
+  const phoneOk = !form.phone || form.phone.length === 11;
+  const dirty = !!(form.firstName || form.lastName || form.email || form.phone);
+  const canSave = dirty && emailOk && phoneOk;
+
   const handleUpdate = async () => {
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
       notify('Invalid email', 'Enter a valid email address.');
@@ -137,7 +144,7 @@ const AccountDetails = () => {
       </View>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label="Update Profile" onPress={handleUpdate} disabled={isUpdating} />
+        <Btn label="Save changes" onPress={handleUpdate} disabled={isUpdating || !canSave} />
       </View>
     </Screen>
   );

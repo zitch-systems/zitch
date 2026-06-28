@@ -7,14 +7,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import ZIcon from '@/components/design/ZIcon';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { Loading } from '@/components/design/Loading';
+import { ZWordmark } from '@/components/design/Brand';
 import { NText } from '@/components/design/Naira';
 import { getToken } from '@/lib/secureStore';
 import { font } from '@/lib/theme';
 
 const SLIDES = [
-  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to any Nigerian bank in seconds — with saved beneficiaries.' },
-  { wa: true, t: 'Bank on WhatsApp', d: 'Check your balance, send money and pay bills right from your chats — no download needed.' },
-  { icon: 'wallet', t: 'Everything in one app', d: 'Airtime, data, bills, dollar cards, savings and loans — all in one place.' },
+  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to Zitch and any Nigerian bank, with saved beneficiaries.' },
+  { wa: true, t: 'Bank on WhatsApp', d: 'Check your balance, send money and pay bills right inside your WhatsApp chats.' },
+  { icon: 'more', t: 'Everything in one app', d: 'Airtime, data, bills, cards, savings & loans — all in one place.' },
 ];
 
 const GRADIENT = ['#DDF3EF', '#EFF7F5', '#F5FAF9'] as const;
@@ -43,8 +44,12 @@ const Index = () => {
   // Animated brand loader on open (instead of a blank flash) while we decide.
   if (!ready) {
     return (
-      <LinearGradient colors={GRADIENT} style={{ flex: 1 }}>
-        <Loading />
+      <LinearGradient colors={GRADIENT} style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <Loading full={false} />
+        <View style={{ height: 22 }} />
+        <ZWordmark size={30} color="#06231F" />
+        <Text style={{ fontSize: 14, color: '#6E8B86', marginTop: 8, fontFamily: font.semibold }}>Pay. Send. Grow.</Text>
+        <Text style={{ position: 'absolute', bottom: 36, fontSize: 11.5, color: '#6E8B86', fontFamily: font.regular }}>Secured by Zitch · NDIC insured</Text>
       </LinearGradient>
     );
   }

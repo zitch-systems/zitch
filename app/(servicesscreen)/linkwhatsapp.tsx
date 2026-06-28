@@ -97,7 +97,7 @@ const LinkWhatsApp = () => {
 
   return (
     <Screen>
-      <Header title="Link WhatsApp" onBack={() => router.back()} />
+      <Header title="Bank on WhatsApp" onBack={() => router.back()} />
 
       {/* Hero badge */}
       <View style={{ alignItems: 'center', marginTop: 6, marginBottom: 22 }}>

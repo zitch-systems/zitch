@@ -523,6 +523,10 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
           )
         )}
       </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 14 }}>
+        <ZIcon name="lock" size={13} color={c.ink3} />
+        <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.medium }}>Secured by Zitch</Text>
+      </View>
     </View>
   );
 };

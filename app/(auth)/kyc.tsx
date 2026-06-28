@@ -15,16 +15,23 @@ type Status = {
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
 };
 
-const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: string; sub: string; done: boolean; children?: React.ReactNode }) => {
+const KycRow = ({ icon, title, sub, done, color, badge, children }: { icon: string; title: string; sub: string; done: boolean; color: string; badge?: string; children?: React.ReactNode }) => {
   const { c } = useTheme();
   return (
-    <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 16, marginTop: 12 }}>
+    <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: done ? c.line : color + '40', borderRadius: 18, padding: 16, marginTop: 12 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: done ? 'rgba(0,181,29,.14)' : 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name={done ? 'check' : icon} size={20} color={done ? c.lime : c.brand} stroke={done ? 2.6 : 1.9} />
+        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: done ? 'rgba(0,181,29,.14)' : color + '22', alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name={done ? 'check' : icon} size={20} color={done ? c.lime : color} stroke={done ? 2.6 : 1.9} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15 }}>{title}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15 }}>{title}</Text>
+            {badge && !done ? (
+              <View style={{ paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999, backgroundColor: color + '22' }}>
+                <Text style={{ fontSize: 10, fontFamily: font.bold, color }}>{badge}</Text>
+              </View>
+            ) : null}
+          </View>
           <Text style={{ fontSize: 12.5, color: done ? c.lime : c.ink3, marginTop: 2, fontFamily: font.regular }}>{done ? 'Verified' : sub}</Text>
         </View>
       </View>
@@ -132,7 +139,7 @@ const Kyc = () => {
         </View>
       )}
 
-      <KycRow icon="bank" title="BVN" sub="We'll send a code to verify it's yours" done={!!status?.bvn_verified}>
+      <KycRow icon="bank" title="BVN" sub="We'll send a code to verify it's yours" done={!!status?.bvn_verified} color="#0FA295" badge="Recommended">
         {!bvnSent ? (
           <>
             <Field value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit BVN" />
@@ -150,7 +157,7 @@ const Kyc = () => {
         )}
       </KycRow>
 
-      <KycRow icon="user" title="NIN" sub="Number + a photo of your NIN slip" done={!!status?.nin_verified}>
+      <KycRow icon="user" title="NIN" sub="Number + a photo of your NIN slip" done={!!status?.nin_verified} color="#2D7FF9">
         <Field value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit NIN" />
         <View style={{ height: 10 }} />
         <Btn label={ninImage ? 'NIN slip added ✓' : 'Upload your NIN slip'} icon="copy" size="md" variant="outline" disabled={busy} onPress={pickNinSlip} />
@@ -158,7 +165,7 @@ const Kyc = () => {
         <Btn label="Verify NIN" size="md" disabled={busy || nin.length !== 11 || !ninImage} onPress={() => submit('/api/kyc/nin/', { nin, nin_image: ninImage }, 'NIN')} />
       </KycRow>
 
-      <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — required for large transfers" done={!!status?.face_verified}>
+      <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — required for large transfers" done={!!status?.face_verified} color="#7A5CFF">
         <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
       </KycRow>
 
