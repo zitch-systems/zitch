@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from utility import mono
+from transfers.models import Bank
 from wallet.models import FundingIntent, Wallet
 from wallet.tests import make_user
 
@@ -129,3 +130,47 @@ class BanklinkEndpointTests(TestCase):
         self.client.post("/api/banklink/webhook/", data=json.dumps(event),
                          content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
+
+
+class BanklinkPayoutTests(TestCase):
+    """Money OUT: wallet debit -> linked bank, PIN-verified, via the transfers rail."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08044400002", "payout@zitch.app", balance="50000")
+        # One active bank so the linked account number can be routed (mock detect).
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
+
+    def _post(self, path, body):
+        return self.client.post(path, data=json.dumps({**body, "access_token": self.token}),
+                                content_type="application/json")
+
+    def _link(self):
+        return self._post("/api/banklink/connect/", {"code": "c"}).json()["account"]["id"]
+
+    def test_payout_debits_wallet(self):
+        lid = self._link()
+        r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "10000", "pin": "1234"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body.get("success") or body.get("pending"))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("40000"))
+
+    def test_payout_wrong_pin_does_not_debit(self):
+        lid = self._link()
+        r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "10000", "pin": "9999"})
+        self.assertIn(r.json().get("code"), ("pin_incorrect", "pin_locked"))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
+
+    def test_payout_below_minimum_rejected(self):
+        lid = self._link()
+        r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "50", "pin": "1234"})
+        self.assertFalse(r.json().get("success"))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
+
+    def test_payout_idempotent_on_retry(self):
+        lid = self._link()
+        body = {"linked_id": lid, "amount": "10000", "pin": "1234", "idempotency_key": "payout-key-1"}
+        self._post("/api/banklink/payout/", body)
+        self._post("/api/banklink/payout/", body)  # replay — must not debit twice
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("40000"))

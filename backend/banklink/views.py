@@ -11,10 +11,16 @@ import logging
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, fail, ok, parse_amount, require_user
+from common.http import (
+    api, fail, ok, parse_amount, require_user,
+    verify_transaction_pin, check_send_limits, check_daily_limit,
+    spend_key, idempotent_replay,
+)
 from utility import mono
-from wallet.models import FundingIntent
-from wallet.services import make_reference, settle_funding
+from wallet.models import FundingIntent, Transaction
+from wallet.services import make_reference, settle_funding, existing_for_key, get_or_create_wallet
+from transfers.models import Bank
+from transfers.services import detect_account_banks, execute_payout, PayoutError
 
 from .models import LinkedBankAccount
 
@@ -133,6 +139,75 @@ def fund(request):
         return fail(res.get("message", "Could not start bank funding"), status=502)
     return ok(success=True, reference=res.get("reference", reference),
               authorization_url=res.get("authorization_url", ""), mock=res.get("mock", False))
+
+
+@api
+@require_user
+def payout(request):
+    """POST /api/banklink/payout/ {access_token, linked_id, amount, pin, idempotency_key}
+    -> {success, wallet, reference}
+
+    Move money OUT of the Zitch wallet to the user's own linked bank account
+    (PIN-verified). Reuses the transfers payout rail (detect bank -> execute_payout),
+    so balance/limit/idempotency guards and the Kora settlement webhook all apply.
+    """
+    user, data = request.user_obj, request.data
+
+    pin_err = verify_transaction_pin(user, data.get("pin") or data.get("transaction_pin"))
+    if pin_err:
+        return pin_err
+
+    acct_obj = user.linked_banks.filter(
+        id=data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
+    if acct_obj is None:
+        return fail("Linked account not found", status=404)
+    acct = (acct_obj.account_number or "").strip()
+    if len(acct) != 10:
+        return fail("This linked account can't receive a payout.", status=400)
+
+    amount = parse_amount(data.get("amount"))
+    if amount is None:
+        return fail("Enter a valid amount")
+    if amount < 100:
+        return fail("Minimum payout is ₦100")
+
+    limit_err = check_send_limits(user, amount)
+    if limit_err:
+        return limit_err
+
+    key = spend_key(data.get("idempotency_key"), user, "mono_payout", str(acct_obj.id), amount)
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
+    daily_err = check_daily_limit(user, amount, "transfer")
+    if daily_err:
+        return daily_err
+
+    # Route the payout by detecting the bank for the linked account number (the
+    # linked account stores the bank name, not a routable code).
+    matches = detect_account_banks(acct)
+    bank = Bank.objects.filter(code=matches[0]["bank"]).first() if matches else None
+    if bank is None:
+        return fail("Couldn't route a payout to this bank. Please try a normal transfer.", status=400)
+    name = (matches[0].get("name") or acct_obj.account_name or "Bank recipient").strip()
+
+    try:
+        txn = execute_payout(user, amount, acct, bank, name,
+                             note=f"To {acct_obj.bank_name}".strip(), idempotency_key=key)
+    except PayoutError as exc:
+        if exc.kind == "duplicate":
+            return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
+        if exc.kind == "insufficient":
+            return fail("Insufficient wallet balance", status=402)
+        return fail(exc.message, status=502)
+
+    wallet = get_or_create_wallet(user)
+    if txn.transaction_status == Transaction.PENDING:
+        return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference,
+                  message="Your payout is processing and will be confirmed shortly.")
+    return ok(success=True, wallet=str(wallet.balance), reference=txn.reference,
+              message=f"{name} funded")
 
 
 @csrf_exempt
