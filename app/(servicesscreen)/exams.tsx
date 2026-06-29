@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
@@ -48,7 +49,7 @@ const Exams = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/exams/buy/', { exam: selected, quantity: qty, phone, transaction_pin: pin, idempotency_key: idemKey.current });
+      const res = await apiJson(EP.exams.buy, { exam: selected, quantity: qty, phone, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) {
         idemKey.current = '';
         setStep(null);

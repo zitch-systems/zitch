@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, Field, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { QuickAmounts } from '@/components/design/flowkit';
@@ -35,7 +36,7 @@ const Cards = () => {
     if (!t) return;
     setToken(t);
     try {
-      const res = await apiJson('/api/cards/list/');
+      const res = await apiJson(EP.cards.list);
       setCard(res.cards?.[0] ?? null);
     } catch { /* keep last state */ }
   }, []);
@@ -45,7 +46,7 @@ const Cards = () => {
   const createCard = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/cards/create/');
+      const res = await apiJson(EP.cards.create);
       if (res.success) setCard(res.card);
       else notify('Error', res.message || 'Could not create card');
     } catch { notify('Error', 'Something went wrong.'); }
@@ -55,7 +56,7 @@ const Cards = () => {
   const toggleFreeze = async () => {
     if (!card) return;
     try {
-      const res = await apiJson('/api/cards/freeze/', { card_id: card.id });
+      const res = await apiJson(EP.cards.freeze, { card_id: card.id });
       if (res.success) setCard(res.card);
     } catch { notify('Error', 'Something went wrong.'); }
   };
@@ -67,7 +68,7 @@ const Cards = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/cards/fund/', { card_id: card.id, amount: fundAmt, transaction_pin: pin, idempotency_key: idemKey.current });
+      const res = await apiJson(EP.cards.fund, { card_id: card.id, amount: fundAmt, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) { idemKey.current = ''; setFundPin(false); setPinError(''); setCard(res.card); setFundAmt(''); reloadWallet(); notify('Success', 'Card funded'); }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
       else { idemKey.current = ''; setFundPin(false); notify('Error', res.message || 'Funding failed'); }
@@ -79,7 +80,7 @@ const Cards = () => {
     if (!card) return;
     setBusy(true);
     try {
-      const res = await apiJson('/api/cards/details/', { card_id: card.id, transaction_pin: pin });
+      const res = await apiJson(EP.cards.details, { card_id: card.id, transaction_pin: pin });
       if (res.success) { setDetailsPin(false); setPinError(''); setReveal({ pan: res.pan, cvv: res.cvv, expiry: res.expiry, holder: res.holder }); }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
       else { setDetailsPin(false); notify('Error', res.message || 'Could not fetch details'); }

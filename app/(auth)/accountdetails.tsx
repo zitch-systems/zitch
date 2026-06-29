@@ -7,6 +7,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { useWallet } from '@/lib/wallet';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
@@ -29,7 +30,7 @@ const AccountDetails = () => {
 
   useEffect(() => {
     if (!token) return;
-    apiPost('/api/wallet_balance/')
+    apiPost(EP.wallet.balance)
       .then((r) => r.json())
       .then((data) => {
         if (data.success) {
@@ -67,7 +68,7 @@ const AccountDetails = () => {
     setAvatar(asset.uri); // optimistic local preview
     setUploadingPhoto(true);
     try {
-      const r = await apiPost('/api/profile/avatar/', { image: `data:image/jpeg;base64,${asset.base64}` });
+      const r = await apiPost(EP.auth.avatar, { image: `data:image/jpeg;base64,${asset.base64}` });
       const body = await r.json();
       if (r.ok && body.success) {
         setAvatar(body.avatar);
@@ -100,7 +101,7 @@ const AccountDetails = () => {
     }
     setIsUpdating(true);
     try {
-      const response = await apiPost('/api/update_info/', {
+      const response = await apiPost(EP.auth.updateInfo, {
         email: form.email || current.email,
         phone: form.phone || current.phone,
         first_name: form.firstName || current.firstName,

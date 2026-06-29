@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -46,7 +47,7 @@ const Betting = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/betting/fund/', { platform: selected, user_id: userId, amount: amt, transaction_pin: pin, idempotency_key: idemKey.current });
+      const res = await apiJson(EP.betting.fund, { platform: selected, user_id: userId, amount: amt, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) {
         idemKey.current = '';
         setStep(null);

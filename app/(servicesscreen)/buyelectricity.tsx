@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -53,7 +54,7 @@ const BuyElectricity = () => {
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
     setValidating(true);
     try {
-      const response = await apiPost('/api/utility/validate_meter/', { meter, disco, meter_type: meterType });
+      const response = await apiPost(EP.utility.validateMeter, { meter, disco, meter_type: meterType });
       const result = await response.json();
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
@@ -73,7 +74,7 @@ const BuyElectricity = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const response = await apiPost('/api/utility/buyelectricity/', {
+      const response = await apiPost(EP.utility.buyElectricity, {
         disco,
         meter,
         meter_type: meterType,

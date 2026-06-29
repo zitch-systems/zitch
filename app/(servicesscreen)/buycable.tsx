@@ -5,6 +5,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -105,7 +106,7 @@ const BuyCable = () => {
     if (iuc.trim().length < 8) { notify('Error', 'Enter a valid IUC / smartcard number.'); return; }
     setValidating(true);
     try {
-      const response = await apiPost('/api/utility/validate_iuc/', { iuc, cablenetwork: prov });
+      const response = await apiPost(EP.utility.validateIuc, { iuc, cablenetwork: prov });
       const result = await response.json();
       if (response.ok) {
         setValidatedName(result.customer_name || result.name || 'Verified');
@@ -125,7 +126,7 @@ const BuyCable = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const response = await apiPost('/api/utility/buycable/', {
+      const response = await apiPost(EP.utility.buyCable, {
         iuc,
         cablenetwork: prov,
         selectedcablePlan: plan,

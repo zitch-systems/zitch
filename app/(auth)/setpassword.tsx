@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { router, Link } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
 import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
@@ -46,7 +47,7 @@ const SetPassword = () => {
     }
     setIsUpdating(true);
     try {
-      const response = await apiPost('/api/set-password/', { password: p1 });
+      const response = await apiPost(EP.auth.setPassword, { password: p1 });
       const result = await response.json();
       if (response.ok) {
         router.replace('/setpin');

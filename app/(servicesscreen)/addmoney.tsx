@@ -4,6 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Label } from '@/components/design/flowkit';
@@ -30,7 +31,7 @@ const AddMoney = () => {
     // stuck on the spinner: show the screen within a few seconds no matter what.
     // If the account lookup resolves later, it still fills in (account state).
     const guard = setTimeout(() => { if (alive) setLoading(false); }, 8000);
-    apiJson('/api/wallet/account/')
+    apiJson(EP.wallet.account)
       .then((r) => { if (alive && r?.success && r.account_number) setAccount(r as DediAccount); })
       .catch(() => {})
       .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
@@ -50,7 +51,7 @@ const AddMoney = () => {
     if (bvn.length !== 11) return;
     setCreating(true);
     try {
-      const r = await apiJson('/api/wallet/account/create/', { bvn });
+      const r = await apiJson(EP.wallet.createAccount, { bvn });
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
       } else {

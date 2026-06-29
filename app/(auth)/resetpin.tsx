@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { saveTransactionPin } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
@@ -27,7 +28,7 @@ const ResetPin = () => {
     }
     setBusy(true);
     try {
-      const response = await apiPost('/api/set-transaction-pin/', { pin, password });
+      const response = await apiPost(EP.auth.setTransactionPin, { pin, password });
       const result = await response.json();
       if (response.ok) {
         await saveTransactionPin(pin); // keep the keychain copy (biometric pay) in sync

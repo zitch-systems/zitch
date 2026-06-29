@@ -9,6 +9,7 @@ import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
 import { clearSession } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 
@@ -49,7 +50,7 @@ const Settings = () => {
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
 
   const handleLogout = async () => {
-    try { await apiPost('/api/logout/'); } catch { /* fall through */ }
+    try { await apiPost(EP.auth.logout); } catch { /* fall through */ }
     await clearSession();
     router.replace('/signin');
   };

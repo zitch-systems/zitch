@@ -4,6 +4,7 @@ import { Loading } from '@/components/design/Loading';
 import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { apiJson } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { Screen, Card, Field, Naira, NText } from '@/components/design/ui';
 import { Label, QuickAmounts } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
@@ -35,7 +36,7 @@ const Convert = () => {
     setLoading(true);
     setError('');
     try {
-      const res = await apiJson('/api/convert/fx/');
+      const res = await apiJson(EP.convert.fx);
       if (res?.success && Array.isArray(res.currencies) && res.currencies.length) {
         setCurrencies(res.currencies.map((r: any) => ({ ...r, rate: Number(r.rate) })));
         setUpdated(typeof res.updated === 'string' ? res.updated : '');

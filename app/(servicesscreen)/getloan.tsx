@@ -3,6 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { Screen, Header, Btn, Sheet, PinPad, Field, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
@@ -42,7 +43,7 @@ const GetLoan = () => {
     getToken().then((t) => {
       if (!t) return;
       setToken(t);
-      apiPost('/api/loans/status/')
+      apiPost(EP.loans.status)
         .then((r) => r.json())
         .then((res) => {
           if (res.available != null) setAvailable(Number(res.available));
@@ -62,7 +63,7 @@ const GetLoan = () => {
   const request = async (pin: string) => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/loans/request/', { amount: String(amount), tenure_days: tenure, transaction_pin: pin });
+      const res = await apiJson(EP.loans.request, { amount: String(amount), tenure_days: tenure, transaction_pin: pin });
       if (res.success) {
         setStep(null);
         setDone(true);

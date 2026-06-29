@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken, saveTransactionPin } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
@@ -28,7 +29,7 @@ const SetPin = () => {
   const submit = async (finalPin: string) => {
     setSubmitting(true);
     try {
-      const response = await apiPost('/api/set-transaction-pin/', { pin: finalPin });
+      const response = await apiPost(EP.auth.setTransactionPin, { pin: finalPin });
       const result = await response.json().catch(() => ({}));
       if (response.ok) {
         await saveTransactionPin(finalPin); // cached (keychain) for biometric pay

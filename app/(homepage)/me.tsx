@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { apiJson, apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
@@ -50,7 +51,7 @@ const Me = () => {
         const t = await getToken();
         if (!t) return;
         try {
-          const res = await apiJson('/api/kyc/status/');
+          const res = await apiJson(EP.kyc.status);
           if (res?.tier) setTier(Number(res.tier));
         } catch {
           // keep last-known tier
@@ -81,7 +82,7 @@ const Me = () => {
   const handleLogout = async () => {
     // Revoke the token server-side first so a leaked copy can't be replayed;
     // best-effort — a network error must not block signing out locally.
-    try { await apiPost('/api/logout/'); } catch { /* fall through to local clear */ }
+    try { await apiPost(EP.auth.logout); } catch { /* fall through to local clear */ }
     await clearSession();
     router.replace('/signin');
   };
