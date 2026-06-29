@@ -82,8 +82,14 @@ The following fixes were applied in the same PR as this report:
 - **C2 — keystore `requireAuthentication` on the access token** remains deferred (would prompt on the
   hot `getToken()` path / break non‑keyguard devices); the token alone can't move money (server
   re‑verifies the PIN per spend).
-- **C1 — token TTL / refresh model**, **D1 — certificate pinning**, **E1 — preview‑build API host**:
-  config/infra changes that belong to a deploy decision.
+- **◐ C1 — lost‑device session window (partially addressed).** A client‑side absolute idle cap now
+  fully clears the token + money PIN after `HARD_EXPIRE_MS` (12h) of inactivity and forces a password
+  sign‑in, cutting the lost/stolen‑device exposure below the server's 24h TTL — no backend change, no
+  impact on active users or deployed clients. **Still deferred:** shortening the *server* access‑token
+  TTL and adding refresh‑token rotation (would log out already‑deployed clients → needs a coordinated
+  rollout + your policy call on the access/refresh lifetimes).
+- **D1 — certificate pinning**, **E1 — preview‑build API host**: config/infra changes that need your
+  input (SPKI pin set + rotation plan for D1; a staging API URL for E1).
 
 ---
 
