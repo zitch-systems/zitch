@@ -10,7 +10,7 @@ import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
-import { enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
+import { enforceIdleTimeout, enforceHardExpiry, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
 import { reconcileCachedPin } from "@/lib/biometrics";
 
@@ -78,6 +78,9 @@ const _layout = () => {
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
     const check = async () => {
+      // A session idle past the absolute cap is cleared outright (token dropped),
+      // forcing a password sign-in — checked before the softer idle lock.
+      if (await enforceHardExpiry()) { router.replace("/signin"); return; }
       await lockIfAwayTooLong(); // re-lock only if backgrounded >= 1 min
       await enforceIdleTimeout();
       if (await isSessionLocked()) router.replace("/signin");
