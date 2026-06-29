@@ -4,12 +4,12 @@ import { router, useFocusEffect } from 'expo-router';
 import { apiJson, apiPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, ZItem, money, NText } from '@/components/design/ui';
+import { Screen, Card, ZItem, money, NText, PinSheet } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
-import { clearSession, getToken } from '@/lib/secureStore';
+import { clearSession, getToken, saveTransactionPin } from '@/lib/secureStore';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 
 const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
@@ -34,6 +34,7 @@ const Me = () => {
   const { c, theme, setTheme } = useTheme();
   const { balance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
   const [tier, setTier] = useState(1);
 
   useEffect(() => {
@@ -72,9 +73,18 @@ const Me = () => {
     }
     const ok = await authenticate('Enable biometric sign-in');
     if (ok) {
+      // Sign-in is on now; offer to also enable "pay with biometrics" — the only
+      // path that caches the money PIN. Skipping leaves sign-in on, no PIN stored.
       await setBiometricEnabled(true);
       setBiometrics(true);
+      setPinOpen(true);
     }
+  };
+
+  const enablePay = async (pin: string) => {
+    setPinOpen(false);
+    await saveTransactionPin(pin);
+    notify('Done', 'You can now approve payments with biometrics.');
   };
 
   const handleLogout = async () => {
@@ -197,6 +207,14 @@ const Me = () => {
           <Text style={{ color: c.red, fontFamily: font.bold }}>Log out</Text>
         </Pressable>
       </View>
+
+      <PinSheet
+        open={pinOpen}
+        onClose={() => setPinOpen(false)}
+        onComplete={enablePay}
+        title="Pay with biometrics?"
+        subtitle="Enter your 4-digit PIN to approve payments with biometrics too. Skip to use it for sign-in only."
+      />
     </Screen>
   );
 };

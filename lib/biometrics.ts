@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { clearTransactionPin } from '@/lib/secureStore';
 
 const ENABLED_KEY = 'z-biometrics';
 const CRED_KEY = 'z-bio-cred'; // web: stored WebAuthn credential id (base64url)
@@ -150,9 +151,25 @@ export async function isBiometricEnabled(): Promise<boolean> {
   return (await AsyncStorage.getItem(ENABLED_KEY)) === '1';
 }
 
+/**
+ * Legacy cleanup: older builds cached the money PIN for every user at PIN setup,
+ * even those who never used biometric pay. If biometrics are disabled, there is
+ * no reason for a cached spending PIN to sit at rest — drop it. Safe to call on
+ * every launch; it's a no-op once the keychain is clean.
+ */
+export async function reconcileCachedPin(): Promise<void> {
+  if (isWeb) return;
+  if (!(await isBiometricEnabled())) await clearTransactionPin();
+}
+
 export async function setBiometricEnabled(on: boolean): Promise<void> {
   await AsyncStorage.setItem(ENABLED_KEY, on ? '1' : '0');
-  // On the web, forget the platform credential when disabling so re-enabling
-  // re-enrols cleanly.
-  if (isWeb && !on) await AsyncStorage.removeItem(CRED_KEY);
+  if (!on) {
+    // Turning biometrics off also turns off "pay with biometrics", so the cached
+    // money PIN is no longer needed — drop it from the keychain rather than leave
+    // the spending secret at rest for a feature that's now disabled.
+    await clearTransactionPin();
+    // On the web, forget the platform credential too so re-enabling re-enrols cleanly.
+    if (isWeb) await AsyncStorage.removeItem(CRED_KEY);
+  }
 }
