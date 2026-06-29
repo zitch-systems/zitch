@@ -21,7 +21,7 @@ const LinkBank = () => {
     launch({
       reference: 'zitch-link-' + Date.now(),
       onSuccess: async (code) => {
-        const r = await apiJson('/api/banklink/connect/', { code });
+        const r = await apiJson<{ success?: boolean; account?: { bank_name?: string }; message?: string }>('/api/banklink/connect/', { code });
         if (r?.success) {
           notify('Bank connected', `${r.account?.bank_name || 'Your bank'} is now linked to your wallet.`);
           reloadLinked();

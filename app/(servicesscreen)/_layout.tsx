@@ -17,6 +17,7 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="getloan" />
         <Stack.Screen name="exams" />
         <Stack.Screen name="addmoney" />
+        <Stack.Screen name="linkbank" />
         <Stack.Screen name="fixedsave" />
         <Stack.Screen name="savings" />
         <Stack.Screen name="betting" />
