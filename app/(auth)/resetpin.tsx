@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
-import { saveTransactionPin } from '@/lib/secureStore';
+import { saveTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
@@ -35,7 +35,9 @@ const ResetPin = () => {
       const response = await apiPost('/api/set-transaction-pin/', { pin, password });
       const result = await response.json();
       if (response.ok) {
-        await saveTransactionPin(pin); // keep the keychain copy (biometric pay) in sync
+        // Only refresh the cached keychain copy if the user already uses biometric
+        // pay; otherwise changing the PIN must NOT start caching the spending secret.
+        if (await hasTransactionPin()) await saveTransactionPin(pin);
         notify('Done', 'Your transaction PIN has been changed.');
         router.back();
       } else {

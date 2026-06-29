@@ -71,11 +71,17 @@ The following fixes were applied in the same PR as this report:
 
 **Deliberately deferred (need a product decision, not silent shipping):**
 
-- **A1 / C2 — keystore `requireAuthentication` on the PIN/token.** On Android this is the only lever
-  that binds keystore *retrieval* to OS auth, but it (a) throws on devices with no enrolled
-  keyguard, which would break PIN setup for those users, and (b) would prompt on the hot `getToken()`
-  path. It needs a guarded design (opt‑in, keyguard‑present check, avoid double prompts) — A2+A3
-  already remove the JS‑boolean bypass and the passcode collapse in the meantime.
+- **✅ A1 — money PIN cached at rest (addressed via lifecycle, not `requireAuthentication`).** On
+  Android `requireAuthentication` is the only lever that binds keystore *retrieval* to OS auth, but
+  it throws on devices with no enrolled keyguard, prompts on every read, and (with expo‑secure‑store)
+  can't enforce biometric‑only — so it would have regressed A3. Instead the cached PIN is now tied to
+  the biometric‑pay **opt‑in**: it is no longer cached at PIN setup, is captured only when the user
+  explicitly enables "pay with biometrics" (confirming their PIN), is cleared when biometric pay is
+  disabled or on sign‑out, and a launch reconciliation drops any PIN left by older builds when
+  biometric pay is off. Result: the spending secret is at rest only for users who chose the shortcut.
+- **C2 — keystore `requireAuthentication` on the access token** remains deferred (would prompt on the
+  hot `getToken()` path / break non‑keyguard devices); the token alone can't move money (server
+  re‑verifies the PIN per spend).
 - **C1 — token TTL / refresh model**, **D1 — certificate pinning**, **E1 — preview‑build API host**:
   config/infra changes that belong to a deploy decision.
 

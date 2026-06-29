@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { getToken, saveTransactionPin } from '@/lib/secureStore';
+import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
@@ -33,7 +33,9 @@ const SetPin = () => {
       const response = await apiPost('/api/set-transaction-pin/', { pin: finalPin });
       const result = await response.json().catch(() => ({}));
       if (response.ok) {
-        await saveTransactionPin(finalPin); // cached (keychain) for biometric pay
+        // The money PIN is NOT cached here. It is only cached if the user later
+        // opts into "pay with biometrics" (Security → Biometrics), so the
+        // spending secret never sits at rest for users who don't use that shortcut.
         router.replace('/completed');
       } else if (response.status === 403 || result.code === 'password_required') {
         // This account already has a PIN (e.g. re-onboarding the same number);

@@ -3,14 +3,16 @@ import { View, Text, Alert } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
-import { Screen, Header, Btn } from '@/components/design/ui';
+import { Screen, Header, Btn, PinSheet } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { isBiometricAvailable, biometricLabel, authenticate, setBiometricEnabled } from '@/lib/biometrics';
+import { saveTransactionPin } from '@/lib/secureStore';
 
 const SetThumbprint = () => {
   const { c } = useTheme();
   const [available, setAvailable] = useState<boolean | null>(null);
   const [kind, setKind] = useState<'face' | 'fingerprint' | 'biometrics'>('biometrics');
+  const [pinOpen, setPinOpen] = useState(false);
 
   useEffect(() => {
     isBiometricAvailable().then(setAvailable);
@@ -25,10 +27,23 @@ const SetThumbprint = () => {
       return;
     }
     const ok = await authenticate(`Enable ${label}`);
-    if (ok) {
-      await setBiometricEnabled(true);
-      Alert.alert('Enabled', `${label} sign-in is now on.`, [{ text: 'Done', onPress: () => router.back() }]);
-    }
+    if (!ok) return;
+    // Biometric sign-in is on immediately. Then offer "pay with biometrics",
+    // which is the only thing that caches the money PIN — and only if the user
+    // confirms it here. Skipping leaves sign-in on with no PIN stored.
+    await setBiometricEnabled(true);
+    setPinOpen(true);
+  };
+
+  const enablePay = async (pin: string) => {
+    setPinOpen(false);
+    await saveTransactionPin(pin);
+    Alert.alert('All set', `${label} sign-in and payments are on.`, [{ text: 'Done', onPress: () => router.back() }]);
+  };
+
+  const skipPay = () => {
+    setPinOpen(false);
+    Alert.alert('Enabled', `${label} sign-in is now on.`, [{ text: 'Done', onPress: () => router.back() }]);
   };
 
   return (
@@ -53,6 +68,14 @@ const SetThumbprint = () => {
           <Text onPress={() => router.back()} style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink3 }}>Maybe later</Text>
         </View>
       </View>
+
+      <PinSheet
+        open={pinOpen}
+        onClose={skipPay}
+        onComplete={enablePay}
+        title="Pay with biometrics?"
+        subtitle={`Enter your 4-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
+      />
     </Screen>
   );
 };

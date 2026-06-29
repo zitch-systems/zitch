@@ -537,6 +537,7 @@ export const PinSheet = ({
   onClose,
   onComplete,
   title = 'Enter your PIN',
+  subtitle = 'Confirm this transaction with your 4-digit PIN',
   busy = false,
   error,
 }: {
@@ -544,6 +545,7 @@ export const PinSheet = ({
   onClose: () => void;
   onComplete?: (pin: string) => void;
   title?: string;
+  subtitle?: string;
   busy?: boolean;
   error?: string;
 }) => {
@@ -551,7 +553,7 @@ export const PinSheet = ({
   return (
     <Sheet open={open} onClose={onClose} title={title}>
       <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
-        Confirm this transaction with your 4-digit PIN
+        {subtitle}
       </Text>
       <PinPad onComplete={onComplete} busy={busy} error={error} />
     </Sheet>

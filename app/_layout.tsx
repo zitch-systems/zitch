@@ -12,6 +12,7 @@ import { WalletProvider } from "@/lib/wallet";
 import { NotifyHost } from "@/components/design/Notify";
 import { enforceIdleTimeout, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
+import { reconcileCachedPin } from "@/lib/biometrics";
 
 // Default every Text/TextInput to Inter so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
@@ -63,6 +64,8 @@ const _layout = () => {
   // the OS task switcher. No-op on web.
   useEffect(() => {
     ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    // Drop any money PIN left cached by older builds when biometric pay is off.
+    reconcileCachedPin().catch(() => {});
   }, []);
 
   // Inactivity timeout: lock a session idle past the limit and bounce to the

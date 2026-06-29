@@ -2,12 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, Linking } from 'react-native';
 import { router } from 'expo-router';
 import Constants from 'expo-constants';
-import { Screen, Header, Card, ZItem } from '@/components/design/ui';
+import { Screen, Header, Card, ZItem, PinSheet } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
-import { clearSession } from '@/lib/secureStore';
+import { clearSession, saveTransactionPin } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
@@ -24,6 +24,7 @@ const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 const Settings = () => {
   const { c, theme, setTheme } = useTheme();
   const [biometrics, setBiometrics] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
 
   useEffect(() => {
@@ -41,9 +42,18 @@ const Settings = () => {
       return;
     }
     if (await authenticate('Enable biometric sign-in')) {
+      // Sign-in is on now; offer to also enable "pay with biometrics" — the only
+      // path that caches the money PIN. Skipping leaves sign-in on, no PIN stored.
       await setBiometricEnabled(true);
       setBiometrics(true);
+      setPinOpen(true);
     }
+  };
+
+  const enablePay = async (pin: string) => {
+    setPinOpen(false);
+    await saveTransactionPin(pin);
+    notify('Done', 'You can now approve payments with biometrics.');
   };
 
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
@@ -123,6 +133,14 @@ const Settings = () => {
 
         <Text style={{ textAlign: 'center', color: c.ink3, fontSize: 12, marginTop: 16, fontFamily: font.regular }}>Zitch v{version}</Text>
       </View>
+
+      <PinSheet
+        open={pinOpen}
+        onClose={() => setPinOpen(false)}
+        onComplete={enablePay}
+        title="Pay with biometrics?"
+        subtitle="Enter your 4-digit PIN to approve payments with biometrics too. Skip to use it for sign-in only."
+      />
     </Screen>
   );
 };
