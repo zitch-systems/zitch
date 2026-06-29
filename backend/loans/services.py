@@ -36,7 +36,7 @@ def credit_limit(user) -> Decimal:
 
 
 @db_transaction.atomic
-def disburse(user, principal, tenure_days: int) -> Loan:
+def disburse(user, principal, tenure_days: int, idempotency_key: str = "") -> Loan:
     """Create an active loan and credit the principal to the wallet.
 
     The view's eligibility checks (one-active-loan, credit limit) run outside any
@@ -44,6 +44,12 @@ def disburse(user, principal, tenure_days: int) -> Loan:
     lock on the user to serialise concurrent disbursements and RE-ASSERT
     eligibility inside the lock; a partial unique constraint on the Loan table
     (one active loan per user) is the final DB-level backstop.
+
+    The one-active-loan constraint blocks a fast retry, but once a loan is repaid
+    a stale retry of the same request would pass the active-loan check and disburse
+    a SECOND principal. With an `idempotency_key`, the principal credit raises
+    DuplicateTransaction on a reused key and the whole disbursement (loan row +
+    credit) rolls back, so a replayed request never double-disburses.
     """
     principal = Decimal(str(principal))
     # Serialise concurrent loan_requests for this user on the user row.
@@ -63,7 +69,8 @@ def disburse(user, principal, tenure_days: int) -> Loan:
         reference=ref,
         due_date=timezone.now() + timedelta(days=tenure_days),
     )
-    credit(user, principal, "Loan disbursed", meta={"loan": ref}, reference=ref)
+    credit(user, principal, "Loan disbursed", meta={"loan": ref}, reference=ref,
+           idempotency_key=idempotency_key)
     return loan
 
 

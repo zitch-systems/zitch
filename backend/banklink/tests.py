@@ -131,6 +131,23 @@ class BanklinkEndpointTests(TestCase):
                          content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
 
+    def test_webhook_credits_settled_amount_not_requested_amount(self):
+        # Mono reports a SMALLER settled amount (kobo) than the user requested —
+        # credit what actually moved, not the requested intent amount.
+        lid = self._post("/api/banklink/connect/", {"code": "c"}).json()["account"]["id"]
+        ref = self._post("/api/banklink/fund/", {"linked_id": lid, "amount": "5000"}).json()["reference"]
+        event = {"event": "mono.events.payment_received", "data": {"reference": ref, "amount": 300000}}
+        self.client.post("/api/banklink/webhook/", data=json.dumps(event), content_type="application/json")
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("3000"))
+
+    def test_webhook_never_credits_more_than_requested(self):
+        # An over-reported (or forged) settled amount can't credit above the intent.
+        lid = self._post("/api/banklink/connect/", {"code": "c"}).json()["account"]["id"]
+        ref = self._post("/api/banklink/fund/", {"linked_id": lid, "amount": "5000"}).json()["reference"]
+        event = {"event": "mono.events.payment_received", "data": {"reference": ref, "amount": 900000}}
+        self.client.post("/api/banklink/webhook/", data=json.dumps(event), content_type="application/json")
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
+
 
 class BanklinkPayoutTests(TestCase):
     """Money OUT: wallet debit -> linked bank, PIN-verified, via the transfers rail."""
@@ -174,3 +191,14 @@ class BanklinkPayoutTests(TestCase):
         self._post("/api/banklink/payout/", body)
         self._post("/api/banklink/payout/", body)  # replay — must not debit twice
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("40000"))
+
+    def test_payout_rejected_when_account_maps_to_multiple_banks(self):
+        # An ambiguous NUBAN (valid at two banks, possibly different holders) must
+        # not be routed by guessing matches[0] — reject and keep the wallet whole.
+        lid = self._link()
+        two = [{"bank": "gtb", "bank_name": "GTBank", "name": "ADA EZE"},
+               {"bank": "access", "bank_name": "Access Bank", "name": "JOHN DOE"}]
+        with patch("banklink.views.detect_account_banks", return_value=two):
+            r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "10000", "pin": "1234"})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))

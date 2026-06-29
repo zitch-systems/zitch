@@ -104,8 +104,18 @@ def loan_request(request):
     if tenure is None:
         return fail("Tenure must be 15, 30 or 60 days")
 
+    # Dedupe the disbursement: a retried/replayed request (esp. after the prior
+    # loan was repaid, which clears the one-active-loan guard) must not disburse a
+    # second principal. Mirrors loan_repay.
+    key = spend_key(data.get("idempotency_key"), user, "loan-request", principal, tenure)
+    replay = idempotent_replay(existing_for_key(user, key))
+    if replay:
+        return replay
+
     try:
-        loan = disburse(user, principal, tenure)
+        loan = disburse(user, principal, tenure, idempotency_key=key)
+    except DuplicateTransaction:
+        return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except LoanError as e:
         # Eligibility re-check inside the lock caught a race past the checks above.
         return fail(str(e), status=409)

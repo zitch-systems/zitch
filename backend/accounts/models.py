@@ -13,13 +13,20 @@ from django.utils import timezone
 
 
 def hash_identifier(value: str) -> str:
-    """Keyed HMAC-SHA256 of a sensitive government ID (BVN/NIN). Keyed with
-    SECRET_KEY (which is not in the database) so the small 11-digit space can't be
+    """Keyed HMAC-SHA256 of a sensitive government ID (BVN/NIN). Keyed with a
+    secret that is not in the database, so the small 11-digit space can't be
     brute-forced from a DB leak the way a plain SHA-256 could. Deterministic, so
-    it still supports audit / duplicate-detection."""
+    it still supports audit / duplicate-detection.
+
+    The key is KYC_HASH_KEY, which DEFAULTS to SECRET_KEY for backward
+    compatibility (existing hashes — including those written by migration 0009 —
+    keep verifying). Set KYC_HASH_KEY explicitly and pin it: unlike SECRET_KEY
+    (which may be rotated), it must NEVER change, or every stored BVN/NIN hash
+    becomes unverifiable since the raw value is not retained."""
     if not value:
         return ""
-    return hmac.new(settings.SECRET_KEY.encode(), value.encode(), hashlib.sha256).hexdigest()
+    key = getattr(settings, "KYC_HASH_KEY", "") or settings.SECRET_KEY
+    return hmac.new(key.encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
 class User(AbstractUser):

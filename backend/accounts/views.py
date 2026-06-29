@@ -156,10 +156,17 @@ def verify_otp(request):
     otp.used = True
     otp.save(update_fields=["used"])
 
-    user, _ = User.objects.get_or_create(
+    user, created = User.objects.get_or_create(
         phone=phone,
         defaults={"username": phone, "email": otp.email or ""},
     )
+    # Defense in depth: a SIGNUP OTP must never sign anyone into an already
+    # established account. A genuine new signup has no usable password at this
+    # point (set-password runs AFTER verify), so an existing user that already has
+    # a password is a pre-existing account — refuse rather than issue its session.
+    if not created and user.has_usable_password():
+        log.warning("signup_otp_for_existing_account phone=%r ip=%s", phone, client_ip(request))
+        return fail("Invalid OTP", status=400)
     get_or_create_wallet(user)
     token = AccessToken.issue(user)
     return ok(access_token=token.key, message="Verified")
@@ -179,10 +186,24 @@ def resend_verify_otp(request):
         return fail("Phone is required")
     if _otp_on_cooldown(phone):
         return fail("Please wait a moment before requesting another code", status=429)
-    email = (request.data.get("email") or "").strip()
-    if not email:
-        prior = OTP.objects.filter(phone=phone).order_by("-created").first()
-        email = prior.email if prior else ""
+    # A SIGNUP OTP authenticates into the matching account (verify_otp resolves the
+    # phone to the existing user), so minting one here and DELIVERING it to a
+    # client-supplied email would be a full, password-less account takeover from
+    # just a phone number. Guard exactly like phone_verification:
+    #   * an established account (has a usable password) is never sent a fresh
+    #     signup OTP — reply with the same generic message, no enumeration;
+    #   * a mid-signup account (created but no password yet) may still resend, but
+    #     only to its OWN email on file — never a client-supplied address.
+    existing = User.objects.filter(phone=phone).first()
+    if existing is not None and existing.has_usable_password():
+        return ok(message="OTP resent")
+    if existing is not None:
+        email = existing.email or ""
+    else:
+        email = (request.data.get("email") or "").strip()
+        if not email:
+            prior = OTP.objects.filter(phone=phone).order_by("-created").first()
+            email = prior.email if prior else ""
     code = _otp_code()
     OTP.objects.create(phone=phone, email=email, code=code)
     message = f"Your Zitch verification code is {code}"
