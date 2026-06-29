@@ -6,7 +6,8 @@ import type { Txn } from '@/components/design/ui';
 
 // Picks an icon from the service label. Direction comes from the backend's
 // authoritative `direction` field; the label regex is only a fallback.
-const mapTxn = (raw: any, i: number): Txn => {
+// Exported for unit testing of the mapping logic.
+export const mapTxn = (raw: any, i: number): Txn => {
   const service = String(raw?.service ?? raw?.type ?? 'Transaction');
   const s = service.toLowerCase();
   const inflow = /fund|deposit|refund|cashback|credit|received/.test(
