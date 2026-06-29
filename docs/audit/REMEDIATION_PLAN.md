@@ -42,11 +42,17 @@ PCI-DSS scope for `cards`, NDPA for BVN/NIN handling, immutable audit logs, serv
 
 ---
 
-## Recommended next increments (all safe, in place)
-1. **SEC-05 dependency triage** — `npx expo install --fix`, re-run `tsc`/jest, commit.
-2. **A1/A3/A4** — `lib/services/` + `endpoints.ts` + typed DTOs (no tree move).
-3. **Phase 5** — unit tests for `lib/session`, `lib/secureStore`, transfer validation.
-4. **Phase 6** — CI quality gates + Dependabot.
+## Increment log — safe batch (done)
+1. ✅ **SEC-05 dependency triage** — `npx expo install --fix` aligned deps to SDK 51 (vulns 64→58). `tsc`/jest green. (`d40630b`)
+2. ✅ **A1/A3/A4 services layer** — `lib/endpoints.ts` central path map + `lib/services/{kyc,wallet,transfers}.ts` typed wrappers + DTOs; migrated `kyc.tsx` and `wallet.tsx` (no tree move). Surfaced a real inconsistency: `/api/transfer/*` vs `/api/transfers/*` (documented in `endpoints.ts`, left as-used pending backend confirmation).
+3. ✅ **Phase 5 tests** — added `lib/__tests__/session.test.ts`, `secureStore.test.ts`, `lib/services/__tests__/services.test.ts`. Suite 12 → **31 tests**, all green.
+4. ✅ **Phase 6 CI** — `.github/dependabot.yml` (npm/pip/actions), `.github/workflows/codeql.yml` (JS-TS + Python, security-extended), non-blocking lint step added to the app job. The CI already ran `tsc` + jest + Metro bundle.
+
+## Open follow-ups (safe, next)
+- 🟢 **Fix eslint config** — the flat/legacy config flags ~1.1k `no-undef` false positives (`React`, `__dirname` not defined → RN/TS env not declared). Repair `eslint.config`/env, then flip the CI lint step to blocking.
+- 🟢 Reconcile the `transfer`/`transfers` endpoint duplication with the backend; drop the legacy aliases from `endpoints.ts`.
+- 🟢 Migrate remaining screens (bill flows, cards, savings, loans) onto their domain services.
+- 🟢 Expand tests toward the >80% `lib/` target (api 401/timeout paths, wallet `mapTxn`).
 
 ## Items requiring your go-ahead before starting
 - Create and work the `security/native-hardening` branch (Phase 2 🟡) — needs an EAS/Codemagic build + device test loop.

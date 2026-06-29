@@ -6,7 +6,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { apiJson } from '@/lib/api';
+import { kycService, type KycStatus } from '@/lib/services/kyc';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -50,7 +50,7 @@ const Kyc = () => {
     if (!t) return;
     setToken(t);
     try {
-      const res = await apiJson('/api/kyc/status/');
+      const res = await kycService.getStatus();
       if (res.success) setStatus(res);
     } catch { /* keep */ }
   }, []);
@@ -68,10 +68,10 @@ const Kyc = () => {
 
   // Shared submit: on success update tier status, toast the design copy, reset
   // the sub-flow fields and bounce back to the menu.
-  const submit = async (path: string, body: object, successTitle: string) => {
+  const submit = async (call: () => Promise<KycStatus>, successTitle: string) => {
     setBusy(true);
     try {
-      const res = await apiJson(path, body);
+      const res = await call();
       if (res.success) {
         setStatus(res);
         notify(successTitle, undefined, 'success');
@@ -87,13 +87,13 @@ const Kyc = () => {
   const startBvn = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/kyc/bvn/start/', { bvn });
+      const res = await kycService.startBvn(bvn);
       if (res.success) { setBvnSent(true); notify('Code sent to your BVN phone', undefined, 'success'); }
       else notify('Error', res.message || 'Could not start BVN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
-  const confirmBvn = () => submit('/api/kyc/bvn/confirm/', { otp: bvnOtp }, 'BVN verified — tier upgraded');
+  const confirmBvn = () => submit(() => kycService.confirmBvn(bvnOtp), 'BVN verified — tier upgraded');
 
   // --- NIN: number + a photo of the NIN slip ---
   const pickNinSlip = async () => {
@@ -108,7 +108,7 @@ const Kyc = () => {
       setNinImage(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
-  const verifyNin = () => submit('/api/kyc/nin/', { nin, nin_image: ninImage }, 'NIN submitted for review');
+  const verifyNin = () => submit(() => kycService.verifyNin(nin, ninImage), 'NIN submitted for review');
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove). ---
@@ -123,7 +123,8 @@ const Kyc = () => {
       });
     } finally { endExternalActivity(); }
     if (shot.canceled || !shot.assets?.[0]?.base64) return;
-    submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Selfie verified — liveness passed');
+    const selfie = shot.assets[0].base64;
+    submit(() => kycService.verifyFace(selfie), 'Selfie verified — liveness passed');
   };
   // Show a visible liveness ring (~2.3s spin) THEN open the front camera.
   const runSelfie = () => {

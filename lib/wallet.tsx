@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import type { Txn } from '@/components/design/ui';
 
 // Picks an icon from the service label. Direction comes from the backend's
@@ -78,8 +79,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         return;
       }
       const [balRes, txRes] = await Promise.allSettled([
-        apiPost('/api/wallet_balance/').then((r) => r.json()),
-        apiPost('/api/user-transaction-history/').then((r) => r.json()),
+        apiPost(EP.wallet.balance).then((r) => r.json()),
+        apiPost(EP.wallet.history).then((r) => r.json()),
       ]);
 
       if (balRes.status === 'fulfilled' && balRes.value?.success) {
