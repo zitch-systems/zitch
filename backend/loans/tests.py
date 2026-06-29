@@ -48,6 +48,24 @@ class LoanTests(TestCase):
         self.assertEqual(self.balance(), Decimal("120000"))  # 20k + 100k disbursed
         self.assertEqual(Loan.objects.filter(user=self.user, status=Loan.ACTIVE).count(), 1)
 
+    def test_request_idempotent_across_repay_does_not_double_disburse(self):
+        # The one-active-loan guard blocks a fast retry, but once the loan is
+        # repaid a replayed request (same idempotency_key) must NOT disburse again.
+        body = {"access_token": self.token, "amount": "100000", "tenure_days": 30,
+                "transaction_pin": "1234", "idempotency_key": "loan-key-1"}
+        r1, _ = self.post("/api/loans/request/", body)
+        self.assertEqual(r1.status_code, 200)
+        # Fully repay so the active-loan guard no longer blocks a retry.
+        self.post("/api/loans/repay/", {"access_token": self.token, "amount": "300000", "transaction_pin": "1234"})
+        self.assertFalse(Loan.objects.filter(user=self.user, status=Loan.ACTIVE).exists())
+        bal_after_repay = self.balance()
+        # Replay the ORIGINAL request: deduped, no second principal credited.
+        r2, b2 = self.post("/api/loans/request/", body)
+        self.assertEqual(r2.status_code, 200)
+        self.assertTrue(b2.get("duplicate"))
+        self.assertEqual(Loan.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(self.balance(), bal_after_repay)  # no extra +100k
+
     def test_only_one_active_loan(self):
         self.post("/api/loans/request/", {"access_token": self.token, "amount": "100000", "tenure_days": 30, "transaction_pin": "1234"})
         res, _ = self.post("/api/loans/request/", {"access_token": self.token, "amount": "20000", "tenure_days": 30, "transaction_pin": "1234"})

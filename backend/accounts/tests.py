@@ -63,6 +63,52 @@ class OnboardingOtpTests(TestCase):
         self.assertEqual(res.status_code, 200)
 
 
+class OtpTakeoverTests(TestCase):
+    """Regression for the password-less account-takeover chain: resend_verify_otp
+    must not mint a SIGNUP OTP for an established account (let alone deliver it to a
+    client-supplied email), and verify_otp must never sign a SIGNUP OTP into an
+    account that already has a password."""
+
+    def setUp(self):
+        self.client = Client()
+        cache.clear()  # fresh otp_send rate-limit budget
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def _established_victim(self, phone, email):
+        victim, _ = make_user(phone, email)
+        victim.set_password("Passw0rd123")  # a real account has a usable password
+        victim.save(update_fields=["password"])
+        return victim
+
+    def test_resend_will_not_mint_signup_otp_for_established_account(self):
+        self._established_victim("08099990001", "victim@zitch.test")
+        # Attacker tries to have the victim's signup OTP delivered to their own inbox.
+        res, body = self.post("/api/resend_verify_otp/",
+                              {"phone": "08099990001", "email": "attacker@evil.test"})
+        self.assertEqual(res.status_code, 200)  # generic, non-enumerating reply
+        # Crucially, no SIGNUP OTP was created — so there is nothing to verify with.
+        self.assertFalse(OTP.objects.filter(phone="08099990001", purpose=OTP.SIGNUP).exists())
+
+    def test_verify_otp_cannot_authenticate_into_established_account(self):
+        self._established_victim("08099990002", "victim2@zitch.test")
+        # Even if a SIGNUP OTP somehow exists for the phone, it must not log in.
+        OTP.objects.create(phone="08099990002", email="attacker@evil.test", code="55555")
+        res, body = self.post("/api/verify_otp/", {"phone": "08099990002", "otp": "55555"})
+        self.assertEqual(res.status_code, 400)
+        self.assertNotIn("access_token", body)
+
+    def test_genuine_new_signup_still_works(self):
+        # The guards must not break a real first-time signup.
+        self.post("/api/phone_verification/", {"phone": "08099990003", "email": "new@zitch.test"})
+        otp = OTP.objects.filter(phone="08099990003").latest("created")
+        res, body = self.post("/api/verify_otp/", {"phone": "08099990003", "otp": otp.code})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+
+
 class CredentialSecurityTests(TestCase):
     """The set-password / set-PIN endpoints must act on the authenticated user
     only — never on an arbitrary account identified by a body field."""

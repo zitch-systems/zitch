@@ -187,10 +187,20 @@ def payout(request):
     # Route the payout by detecting the bank for the linked account number (the
     # linked account stores the bank name, not a routable code).
     matches = detect_account_banks(acct)
-    bank = Bank.objects.filter(code=matches[0]["bank"]).first() if matches else None
+    if not matches:
+        return fail("Couldn't route a payout to this bank. Please try a normal transfer.", status=400)
+    if len(matches) > 1:
+        # A NUBAN can be a valid account at more than one bank — for DIFFERENT
+        # holders (see detect_account_banks). For a "fund your OWN linked account"
+        # flow we must never guess matches[0], which could disburse to a stranger;
+        # send the user to a normal transfer where they pick the bank explicitly.
+        return fail("This account number maps to more than one bank. Please use a normal transfer.",
+                    status=400)
+    chosen = matches[0]
+    bank = Bank.objects.filter(code=chosen["bank"]).first()
     if bank is None:
         return fail("Couldn't route a payout to this bank. Please try a normal transfer.", status=400)
-    name = (matches[0].get("name") or acct_obj.account_name or "Bank recipient").strip()
+    name = (chosen.get("name") or acct_obj.account_name or "Bank recipient").strip()
 
     try:
         txn = execute_payout(user, amount, acct, bank, name,
@@ -234,8 +244,20 @@ def webhook(request):
     if "payment" in etype and ("success" in etype or "received" in etype):
         reference = data.get("reference", "") or data.get("merchant_ref", "")
         if reference:
-            settle_funding(reference)  # idempotent; uses the FundingIntent amount
-            log.info("mono_funding_settled ref=%s", reference)
+            # Credit what Mono actually settled, never the user-requested intent
+            # amount: a partial debit (or a replayed/forged event, given the
+            # shared-secret webhook model) must not be able to credit more than was
+            # really paid. Clamp to the requested amount so we also never over-credit
+            # above the intent; a missing/garbled amount falls back to the intent
+            # amount (settle_funding default).
+            raw_amount = data.get("amount")
+            paid = mono._naira(raw_amount) if raw_amount is not None else None
+            intent = FundingIntent.objects.filter(reference=reference).first()
+            if paid and paid > 0 and intent is not None:
+                settle_funding(reference, verified_amount=min(intent.amount, paid))
+            else:
+                settle_funding(reference)  # idempotent; uses the FundingIntent amount
+            log.info("mono_funding_settled ref=%s paid=%s", reference, paid)
     elif "account" in etype and ("connected" in etype or "updated" in etype):
         account_id = data.get("id", "") or data.get("account", "")
         LinkedBankAccount.objects.filter(mono_account_id=account_id).update(

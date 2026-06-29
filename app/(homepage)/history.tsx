@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { View, Text, Pressable, ScrollView } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Screen, Header, TxnRow } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -9,8 +9,13 @@ const FILTERS = ['All', 'Money in', 'Money out', 'Airtime', 'Bills', 'Transfers'
 
 const History = () => {
   const { c } = useTheme();
-  const { txns } = useWallet();
+  const { txns, reload } = useWallet();
   const [active, setActive] = useState('All');
+
+  // Pull the latest ledger on focus — otherwise History shows only whatever was
+  // cached when the wallet last loaded (a transfer made elsewhere wouldn't appear
+  // until some other screen happened to refresh).
+  useFocusEffect(useCallback(() => { reload(); }, [reload]));
 
   const filtered = txns.filter((t) => {
     if (active === 'All') return true;

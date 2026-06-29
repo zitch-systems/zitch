@@ -69,9 +69,13 @@ def _unreachable(exc: Exception) -> dict:
 
 
 def _naira(kobo) -> Decimal | None:
+    from decimal import InvalidOperation
     try:
         return (Decimal(str(kobo)) / 100).quantize(Decimal("0.01"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, InvalidOperation):
+        # None / non-numeric (e.g. a missing or garbage webhook amount) -> no value,
+        # never a 500. InvalidOperation is an ArithmeticError, not a ValueError, so
+        # it must be listed explicitly.
         return None
 
 

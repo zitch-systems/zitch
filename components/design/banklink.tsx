@@ -101,8 +101,11 @@ export const ConnectedAccounts = () => {
 
   const refreshOne = async (b: LinkedAccount) => {
     setBusyId(b.id);
-    try { await apiJson('/api/banklink/refresh/', { linked_id: b.id }); await reloadLinked(); }
-    catch { /* keep cached */ }
+    try {
+      const r = await apiJson<{ success?: boolean; message?: string }>('/api/banklink/refresh/', { linked_id: b.id });
+      if (r?.success === false) notify('Could not refresh', r.message || 'Please try again in a moment.');
+      await reloadLinked();
+    } catch { /* keep cached */ }
     finally { setBusyId(null); }
   };
 

@@ -20,12 +20,25 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
+# Key for hashing government IDs (BVN/NIN) at rest — see accounts.hash_identifier.
+# Defaults to SECRET_KEY (so existing hashes keep verifying), but should be set to
+# its own value and PINNED: unlike SECRET_KEY it must never rotate, or every stored
+# BVN/NIN hash becomes unverifiable (the raw value is intentionally not retained).
+KYC_HASH_KEY = os.environ.get("DJANGO_KYC_HASH_KEY", "") or SECRET_KEY
 # Secure by default: a real deploy must never accidentally run in debug (which
 # would disable the HTTPS redirect, secure cookies, and the fail-closed provider
 # mock guards below). Local dev opts in with DJANGO_DEBUG=true (see .env.example).
 DEBUG = env_bool("DJANGO_DEBUG", False)
 
-ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "*").split(",") if h.strip()]
+# Fail closed: an unset host list allows everything ONLY in debug (convenient for
+# LAN/device testing). In production (DEBUG off) an unset DJANGO_ALLOWED_HOSTS
+# yields an empty list so Django rejects unknown Host headers instead of silently
+# trusting them. Render sets the env explicitly (and RENDER_HOST is appended).
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "*" if DEBUG else "").split(",")
+    if h.strip()
+]
 RENDER_HOST = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 if RENDER_HOST:
     ALLOWED_HOSTS.append(RENDER_HOST)
