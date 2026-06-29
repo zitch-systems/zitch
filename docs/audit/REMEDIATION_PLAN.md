@@ -53,10 +53,13 @@ PCI-DSS scope for `cards`, NDPA for BVN/NIN handling, immutable audit logs, serv
 6. ✅ **EP migration** — all 18 remaining screens route through `EP.<domain>.<name>`; no hardcoded `/api/...` literals remain in `app/`. (`6c4afd2`)
 7. ✅ **Tests** — added `api.test.ts` (apiJson degradation + idempotency key) and `walletMap.test.ts` (mapTxn). Suite **31 → 41 tests**, 8 suites. (`9cdff2c`)
 
+## Increment log — safe batch 3 (done)
+8. ✅ **Service-layer migration (lighter Phase 3)** — added typed services for cards, loans, savings, betting/exams/convert (`bills.ts`), extended `wallet` (virtual account) and reconciled `transfers` to the real body keys. Migrated 11 `apiJson` screens onto the services (bodies byte-identical; `apiPost`/`.ok` sites left as-is). Chose this over the `src/domains` restructure. (`1b1732b`) — jest **42/42**, eslint 0 errors.
+
 ## Open follow-ups (safe, next)
 - 🟢 Reconcile the `transfer`/`transfers` endpoint duplication with the backend; drop the legacy aliases from `endpoints.ts` once confirmed.
-- 🟢 Burn down the 33 eslint warnings (unused vars, exhaustive-deps) incrementally.
-- 🟢 Continue migrating screens onto the typed domain *services* (not just EP constants) where response DTOs add value.
+- 🟢 Optionally fold the `apiPost`/`.ok` sites (utility buy*, auth) into services that return the `Response` (a second service flavour), if a uniform call surface is wanted.
+- 🟢 Burn down the ~35 eslint warnings (unused vars, exhaustive-deps) incrementally.
 - 🟢 Push `lib/` coverage further (api 401/timeout abort path, biometrics web/native branches).
 
 ## Items requiring your go-ahead before starting
