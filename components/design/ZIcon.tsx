@@ -222,6 +222,21 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Path key="c" d="M9.3 15a3.6 3.6 0 0 0 5.4 0" />,
   ],
   x: () => [<Path key="a" d="M18 6 6 18M6 6l12 12" />],
+  link: () => [
+    <Path key="a" d="M9 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1" />,
+    <Path key="b" d="M15 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" />,
+  ],
+  unlink: () => [
+    <Path key="a" d="M9 13a5 5 0 0 0 7 0l1-1M15 11a5 5 0 0 0-7 0l-1 1" />,
+    <Path key="b" d="m3 3 18 18" />,
+  ],
+  shield: () => [
+    <Path key="a" d="M12 3 4 6v6c0 5 3.5 7.5 8 9 4.5-1.5 8-4 8-9V6l-8-3Z" />,
+    <Path key="b" d="m9 12 2 2 4-4" />,
+  ],
+  refresh: () => [
+    <Path key="a" d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5" />,
+  ],
 };
 
 export type IconName = keyof typeof P;

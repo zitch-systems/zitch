@@ -9,6 +9,7 @@ import * as ScreenCapture from "expo-screen-capture";
 import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
+import { MonoLauncherProvider } from "@/lib/mono";
 import { NotifyHost } from "@/components/design/Notify";
 import { enforceIdleTimeout, enforceHardExpiry, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
 import { getToken } from "@/lib/secureStore";
@@ -118,9 +119,11 @@ const _layout = () => {
               previously the provider only wrapped the tabs, so service screens got
               a no-op default context and the balance never refreshed. */}
           <WalletProvider>
-            <RootStack />
-            {/* Branded success/error popups, overlaid above all routes. */}
-            <NotifyHost />
+            <MonoLauncherProvider>
+              <RootStack />
+              {/* Branded success/error popups, overlaid above all routes. */}
+              <NotifyHost />
+            </MonoLauncherProvider>
           </WalletProvider>
         </ThemeProvider>
       </SafeAreaProvider>

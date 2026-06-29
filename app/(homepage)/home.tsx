@@ -8,6 +8,7 @@ import { Avatar } from '@/components/design/Brand';
 import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
+import { LinkedBanksSummary } from '@/components/design/banklink';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -131,6 +132,9 @@ const Home = () => {
           </Pressable>
         </View>
       </Hero>
+
+      {/* total across connected banks */}
+      <LinkedBanksSummary />
 
       {/* daily interest strip */}
       <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: -4 }}>

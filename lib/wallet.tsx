@@ -1,7 +1,20 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { getToken } from '@/lib/secureStore';
-import { apiPost } from '@/lib/api';
+import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
+
+// An external bank account the user linked via Mono open banking. Mirrors the
+// backend banklink.views._serialize shape (balance is display-only/cached).
+export type LinkedAccount = {
+  id: number;
+  bank_name: string;
+  account_number: string; // masked by the backend (****1234)
+  account_name: string;
+  balance: number | null;
+  balance_updated: string | null;
+  status: string; // 'active' | 'reauth' | ...
+  mono_account_id?: string;
+};
 
 // Picks an icon from the service label. Direction comes from the backend's
 // authoritative `direction` field; the label regex is only a fallback.
@@ -41,6 +54,8 @@ type WalletValue = {
   showBal: boolean;
   setShowBal: (v: boolean) => void;
   reload: () => void;
+  linked: LinkedAccount[];
+  reloadLinked: () => void;
 };
 
 const WalletContext = createContext<WalletValue>({
@@ -54,6 +69,8 @@ const WalletContext = createContext<WalletValue>({
   showBal: true,
   setShowBal: () => {},
   reload: () => {},
+  linked: [],
+  reloadLinked: () => {},
 });
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
@@ -65,6 +82,30 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
   const [showBal, setShowBal] = useState(true);
+  const [linked, setLinked] = useState<LinkedAccount[]>([]);
+
+  // The user's Mono-linked external bank accounts (display + funding source).
+  // Loaded alongside the wallet and refreshable on demand (reloadLinked).
+  const reloadLinked = useCallback(async () => {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const r = await apiJson<{ accounts?: any[] }>('/api/banklink/list/');
+      const list = Array.isArray(r?.accounts) ? r.accounts : [];
+      setLinked(list.map((a) => ({
+        id: Number(a.id),
+        bank_name: String(a.bank_name ?? ''),
+        account_number: String(a.account_number ?? ''),
+        account_name: String(a.account_name ?? ''),
+        balance: a.balance == null || a.balance === '' ? null : Number(a.balance),
+        balance_updated: a.balance_updated ?? null,
+        status: String(a.status ?? 'active'),
+        mono_account_id: a.mono_account_id ? String(a.mono_account_id) : undefined,
+      })));
+    } catch {
+      // keep last-known list; transient failures shouldn't blank the UI
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,14 +140,15 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     load();
-  }, [load]);
+    reloadLinked();
+  }, [load, reloadLinked]);
 
   // Memoize so the context value is stable between renders — otherwise every
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance, firstName, avatar, accountNumber, bankName, txns, loading, showBal, setShowBal, reload: load }),
-    [balance, firstName, avatar, accountNumber, bankName, txns, loading, showBal, load],
+    () => ({ balance, firstName, avatar, accountNumber, bankName, txns, loading, showBal, setShowBal, reload: load, linked, reloadLinked }),
+    [balance, firstName, avatar, accountNumber, bankName, txns, loading, showBal, load, linked, reloadLinked],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
