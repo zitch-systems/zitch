@@ -8,5 +8,6 @@ urlpatterns = [
     path("refresh/", views.refresh),
     path("unlink/", views.unlink),
     path("fund/", views.fund),
+    path("payout/", views.payout),
     path("webhook/", views.webhook),
 ]
