@@ -48,11 +48,16 @@ PCI-DSS scope for `cards`, NDPA for BVN/NIN handling, immutable audit logs, serv
 3. ✅ **Phase 5 tests** — added `lib/__tests__/session.test.ts`, `secureStore.test.ts`, `lib/services/__tests__/services.test.ts`. Suite 12 → **31 tests**, all green.
 4. ✅ **Phase 6 CI** — `.github/dependabot.yml` (npm/pip/actions), `.github/workflows/codeql.yml` (JS-TS + Python, security-extended), non-blocking lint step added to the app job. The CI already ran `tsc` + jest + Metro bundle.
 
+## Increment log — safe batch 2 (done)
+5. ✅ **Fixed eslint config** — TS parser + RN/Jest/Node envs + new-JSX-runtime + `__DEV__` global; `no-undef` off (TS-checked). Errors **1171 → 0** (33 warnings). Ignored `docs/`/`landing/`/`mcp-server/`. Renamed the `useResult` non-hook helper. **CI lint step is now blocking.** (`c9b77da`)
+6. ✅ **EP migration** — all 18 remaining screens route through `EP.<domain>.<name>`; no hardcoded `/api/...` literals remain in `app/`. (`6c4afd2`)
+7. ✅ **Tests** — added `api.test.ts` (apiJson degradation + idempotency key) and `walletMap.test.ts` (mapTxn). Suite **31 → 41 tests**, 8 suites. (`9cdff2c`)
+
 ## Open follow-ups (safe, next)
-- 🟢 **Fix eslint config** — the flat/legacy config flags ~1.1k `no-undef` false positives (`React`, `__dirname` not defined → RN/TS env not declared). Repair `eslint.config`/env, then flip the CI lint step to blocking.
-- 🟢 Reconcile the `transfer`/`transfers` endpoint duplication with the backend; drop the legacy aliases from `endpoints.ts`.
-- 🟢 Migrate remaining screens (bill flows, cards, savings, loans) onto their domain services.
-- 🟢 Expand tests toward the >80% `lib/` target (api 401/timeout paths, wallet `mapTxn`).
+- 🟢 Reconcile the `transfer`/`transfers` endpoint duplication with the backend; drop the legacy aliases from `endpoints.ts` once confirmed.
+- 🟢 Burn down the 33 eslint warnings (unused vars, exhaustive-deps) incrementally.
+- 🟢 Continue migrating screens onto the typed domain *services* (not just EP constants) where response DTOs add value.
+- 🟢 Push `lib/` coverage further (api 401/timeout abort path, biometrics web/native branches).
 
 ## Items requiring your go-ahead before starting
 - Create and work the `security/native-hardening` branch (Phase 2 🟡) — needs an EAS/Codemagic build + device test loop.
