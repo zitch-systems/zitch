@@ -20,7 +20,7 @@ import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 import { isBiometricEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
-import { getTransactionPin } from '@/lib/secureStore';
+import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
@@ -428,10 +428,12 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [enabled, available, storedPin] = await Promise.all([
-        isBiometricEnabled(), isBiometricAvailable(), getTransactionPin(),
+      // Gate the biometric shortcut on a NON-secret "has a cached PIN" flag — we
+      // never read the actual PIN here just to decide whether to show a button.
+      const [enabled, available, hasPin] = await Promise.all([
+        isBiometricEnabled(), isBiometricAvailable(), hasTransactionPin(),
       ]);
-      const kind = enabled && available && storedPin ? await biometricLabel() : null;
+      const kind = enabled && available && hasPin ? await biometricLabel() : null;
       if (alive) setBioKind(kind);
     })();
     return () => { alive = false; };
@@ -447,7 +449,10 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComp
   const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
   const useBiometric = async () => {
     if (busy) return;
-    const ok = await authenticate('Approve payment');
+    // biometricOnly: the device passcode must NOT be able to release the cached
+    // money PIN — only the account owner's enrolled fingerprint/face. The typed
+    // PIN on this same pad remains the fallback if the scan fails.
+    const ok = await authenticate('Approve payment', true);
     if (!ok) return;
     const storedPin = await getTransactionPin();
     if (storedPin) onComplete && onComplete(storedPin);

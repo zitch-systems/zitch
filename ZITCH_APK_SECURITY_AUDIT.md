@@ -51,6 +51,34 @@ models — and for a fintech holding card PANs, money PINs and BVN/NIN, several 
 (5) give the preview/CI APK a non‑production API URL. Items 1–2 and 4–5 are small, high‑leverage
 changes.
 
+### Remediation status (this PR)
+
+The following fixes were applied in the same PR as this report:
+
+- **✅ A2** — `PinPad` no longer reads the PIN into memory on mount; it gates the biometric button
+  on a new non‑secret `hasTransactionPin()` flag (`lib/secureStore.ts`, `components/design/ui.tsx`).
+- **✅ A3** — money‑approval prompts are now **biometric‑only** (`disableDeviceFallback: true`) — the
+  device passcode can no longer release the cached PIN (`lib/biometrics.ts` + `ui.tsx` /
+  `sendmoney.tsx`).
+- **✅ A5** — trivial/sequential/repeated PINs are rejected at setup (`lib/format.ts isTrivialPin`,
+  wired into `setpin.tsx` / `resetpin.tsx`, with unit tests).
+- **✅ B1** — app‑wide `FLAG_SECURE` via `expo-screen-capture.preventScreenCaptureAsync()` in the
+  root layout — screenshots, screen‑recording and the recents thumbnail are now blocked.
+- **✅ B2** — revealed card PAN/CVV are cleared when the app backgrounds and auto‑hide after 60 s
+  (`app/(homepage)/cards.tsx`).
+- **✅ D5** — the access token is no longer mirrored into request bodies (header‑only, `lib/api.ts`).
+- **✅ F1** — the unused `ACCESS_FINE_LOCATION` permission was removed (`app.json`).
+
+**Deliberately deferred (need a product decision, not silent shipping):**
+
+- **A1 / C2 — keystore `requireAuthentication` on the PIN/token.** On Android this is the only lever
+  that binds keystore *retrieval* to OS auth, but it (a) throws on devices with no enrolled
+  keyguard, which would break PIN setup for those users, and (b) would prompt on the hot `getToken()`
+  path. It needs a guarded design (opt‑in, keyguard‑present check, avoid double prompts) — A2+A3
+  already remove the JS‑boolean bypass and the passcode collapse in the meantime.
+- **C1 — token TTL / refresh model**, **D1 — certificate pinning**, **E1 — preview‑build API host**:
+  config/infra changes that belong to a deploy decision.
+
 ---
 
 ## What the client already does right

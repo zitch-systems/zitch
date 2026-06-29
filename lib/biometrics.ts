@@ -121,14 +121,23 @@ export async function biometricLabel(): Promise<'face' | 'fingerprint' | 'biomet
   return 'biometrics';
 }
 
-/** Prompts the OS biometric sheet. Resolves true only on a successful scan. */
-export async function authenticate(prompt = 'Authenticate'): Promise<boolean> {
+/**
+ * Prompts the OS biometric sheet. Resolves true only on a successful scan.
+ *
+ * `biometricOnly` (default false) controls whether the device passcode/pattern
+ * may substitute for a fingerprint/face. For money-authorizing prompts (paying
+ * with the cached PIN, large-transfer step-up) pass `true` so the device-unlock
+ * secret — which a thief may have shoulder-surfed — cannot stand in for the
+ * account owner's biometric; the typed transaction PIN remains the fallback.
+ * Convenience flows (e.g. app unlock) can keep the passcode fallback.
+ */
+export async function authenticate(prompt = 'Authenticate', biometricOnly = false): Promise<boolean> {
   if (isWeb) return webAuthenticate();
   try {
     const result = await LocalAuthentication.authenticateAsync({
       promptMessage: prompt,
       fallbackLabel: 'Use PIN',
-      disableDeviceFallback: false,
+      disableDeviceFallback: biometricOnly,
     });
     return result.success;
   } catch {

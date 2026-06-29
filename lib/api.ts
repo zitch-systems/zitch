@@ -18,10 +18,13 @@ async function onSessionExpired(): Promise<void> {
 /**
  * Authenticated POST to the Zitch API.
  *
- * Sends the access token as `Authorization: Bearer <token>` (the preferred
- * scheme) and, for backwards compatibility while screens migrate, still mirrors
- * it into the JSON body as `access_token` — the backend accepts either. Returns
- * the raw Response so callers keep using `res.ok` and `await res.json()`.
+ * Sends the access token only as `Authorization: Bearer <token>`. The token is
+ * deliberately NOT mirrored into the JSON body: request bodies are far more
+ * likely than auth headers to be captured by crash/analytics reporters, gateway
+ * and WAF logs, so keeping the live session token out of the body shrinks its
+ * leak surface. The backend resolves the bearer from the header (see
+ * `common.http.resolve_token`). Returns the raw Response so callers keep using
+ * `res.ok` and `await res.json()`.
  */
 export async function apiPost(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<Response> {
   const token = await getToken();
@@ -36,7 +39,7 @@ export async function apiPost(path: string, body: Record<string, any> = {}, time
     const res = await fetch(`${baseUrl}${path}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(token ? { access_token: token, ...body } : body),
+      body: JSON.stringify(body),
       signal: ctrl.signal,
     });
     // A 401 on a request we authenticated means the token expired or was revoked.
