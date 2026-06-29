@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import * as ScreenCapture from "expo-screen-capture";
 import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
@@ -54,6 +55,15 @@ const _layout = () => {
       SplashScreen.hideAsync();
     }
   }, [fontsLoaded, error]);
+
+  // Block screenshots, screen recording, and the recents/app-switcher thumbnail
+  // app-wide (Android FLAG_SECURE / iOS screenshot prevention). The app routinely
+  // renders the full card PAN/CVV, the money-PIN pad, balances and BVN/NIN — none
+  // of which should be captureable by a screenshot, a screen-recording app, or
+  // the OS task switcher. No-op on web.
+  useEffect(() => {
+    ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+  }, []);
 
   // Inactivity timeout: lock a session idle past the limit and bounce to the
   // sign-in / unlock screen. Checked on launch, whenever the app returns to the

@@ -7,6 +7,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import { isTrivialPin } from '@/lib/format';
 
 // Change the transaction PIN for a signed-in user. The backend requires the
 // account password to change an existing PIN, so a stolen session token alone
@@ -23,6 +24,10 @@ const ResetPin = () => {
   const submit = async () => {
     if (pin !== pin2) {
       notify('Error', 'PINs do not match');
+      return;
+    }
+    if (isTrivialPin(pin)) {
+      notify('Error', 'Choose a less guessable PIN (avoid 0000, 1234, repeated or sequential digits).');
       return;
     }
     setBusy(true);

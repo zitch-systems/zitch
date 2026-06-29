@@ -8,6 +8,7 @@ import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
+import { isTrivialPin } from '@/lib/format';
 
 const PIN_LEN = 4;
 
@@ -16,6 +17,7 @@ const SetPin = () => {
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState<string | null>(null);
   const [err, setErr] = useState(false);
+  const [errMsg, setErrMsg] = useState("PINs don't match, try again");
   const [submitting, setSubmitting] = useState(false);
   const [token, setToken] = useState('');
 
@@ -53,6 +55,12 @@ const SetPin = () => {
   // Drive the create → confirm → submit flow.
   useEffect(() => {
     if (confirm === null && pin.length === PIN_LEN) {
+      if (isTrivialPin(pin)) {
+        setErrMsg('Avoid an easy-to-guess PIN');
+        setErr(true);
+        const t = setTimeout(() => { setErr(false); setPin(''); }, 900);
+        return () => clearTimeout(t);
+      }
       const t = setTimeout(() => setConfirm(''), 180);
       return () => clearTimeout(t);
     }
@@ -61,6 +69,7 @@ const SetPin = () => {
         const t = setTimeout(() => submit(pin), 220);
         return () => clearTimeout(t);
       }
+      setErrMsg("PINs don't match, try again");
       setErr(true);
       const t = setTimeout(() => { setErr(false); setConfirm(''); }, 700);
       return () => clearTimeout(t);
@@ -86,7 +95,7 @@ const SetPin = () => {
           {confirm === null ? 'Create a 4-digit PIN' : 'Confirm your PIN'}
         </Text>
         <Text style={{ fontSize: 14, color: err ? c.red : c.ink3, marginTop: 6, textAlign: 'center', fontFamily: err ? font.bold : font.regular }}>
-          {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
+          {err ? errMsg : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
         </Text>
 
         <View style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>

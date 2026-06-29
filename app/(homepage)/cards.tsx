@@ -1,5 +1,5 @@
-import React, { useCallback, useRef, useState } from 'react';
-import { View, Text, Pressable, Image } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View, Text, Pressable, Image, AppState } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -41,6 +41,16 @@ const Cards = () => {
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  // Once the full PAN/CVV are revealed, never leave them on screen unattended:
+  // clear them the moment the app backgrounds (so they can't be caught in the
+  // recents thumbnail) and auto-hide after a short window even if it stays open.
+  useEffect(() => {
+    if (!reveal) return;
+    const sub = AppState.addEventListener('change', (s) => { if (s !== 'active') setReveal(null); });
+    const t = setTimeout(() => setReveal(null), 60 * 1000);
+    return () => { sub.remove(); clearTimeout(t); };
+  }, [reveal]);
 
   const createCard = async () => {
     setBusy(true);

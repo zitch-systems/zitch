@@ -158,7 +158,9 @@ const SendMoney = () => {
       // of the transaction PIN and the server-side face_verified gate. If the
       // device has no enrolled biometrics, the PIN + server checks still apply.
       if (amount >= LARGE_TXN && (await isBiometricAvailable())) {
-        const okScan = await authenticate(`Authorize ${money(amount)} transfer`);
+        // biometricOnly: don't let the device passcode stand in for the owner's
+        // biometric on a large-transfer authorization.
+        const okScan = await authenticate(`Authorize ${money(amount)} transfer`, true);
         if (!okScan) { setStep(null); return; }
       }
       const res = await postSend(pin);
