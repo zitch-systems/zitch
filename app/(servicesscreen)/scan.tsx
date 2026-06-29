@@ -24,7 +24,7 @@ const Scan = () => {
   const [manual, setManual] = useState('');
   const handled = useRef(false); // guard against the camera firing repeatedly
 
-  const useResult = (raw: string) => {
+  const applyResult = (raw: string) => {
     const id = extractIdentifier(raw);
     if (id) {
       router.replace({ pathname: '/sendmoney', params: { identifier: id } });
@@ -37,12 +37,12 @@ const Scan = () => {
   const onScan = ({ data }: { data: string }) => {
     if (handled.current) return;
     handled.current = true;
-    useResult(data);
+    applyResult(data);
   };
 
   const submitManual = () => {
     if (!manual.trim()) return;
-    useResult(manual);
+    applyResult(manual);
   };
 
   // Web (and any platform without camera support) → manual entry fallback.

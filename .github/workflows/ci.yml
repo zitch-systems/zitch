@@ -123,12 +123,10 @@ jobs:
       - run: npm ci
       - name: Typecheck
         run: npx tsc --noEmit
-      # Non-blocking until the eslint config is fixed for the RN/TS globals
-      # (currently ~1.1k pre-existing no-undef false positives — tracked in
-      # docs/audit/REMEDIATION_PLAN.md). Surfaces the report without gating merges.
+      # Blocking on errors (warnings are allowed through). Run eslint directly so
+      # CI is deterministic and non-interactive (avoids `expo lint`'s setup path).
       - name: Lint
-        run: npm run lint
-        continue-on-error: true
+        run: npx eslint .
       - name: Unit tests
         run: npm test -- --ci
       # The full Metro/iOS bundle is the most minute-heavy step and rarely catches
