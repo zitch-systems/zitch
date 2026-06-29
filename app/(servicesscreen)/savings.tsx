@@ -3,8 +3,7 @@ import { View, Text, Pressable, RefreshControl, ScrollView } from 'react-native'
 import { Loading } from '@/components/design/Loading';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiJson } from '@/lib/api';
-import { EP } from '@/lib/endpoints';
+import { savingsService } from '@/lib/services/savings';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
@@ -96,7 +95,7 @@ const MySavings = () => {
       return;
     }
     try {
-      const res = await apiJson(EP.savings.list);
+      const res = await savingsService.list();
       if (Array.isArray(res?.plans)) {
         setPlans(res.plans);
         setTotalLocked(Number(res.total_locked ?? 0));

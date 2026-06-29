@@ -2,8 +2,8 @@ import React, { useCallback, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
-import { EP } from '@/lib/endpoints';
+import { newIdempotencyKey } from '@/lib/api';
+import { loansService } from '@/lib/services/loans';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
@@ -40,7 +40,7 @@ const Loans = () => {
     if (!t) return;
     setToken(t);
     try {
-      const res = await apiJson(EP.loans.status);
+      const res = await loansService.getStatus();
       if (res.limit != null) setLimit(Number(res.limit));
       if (res.available != null) setAvailable(Number(res.available));
       setActive(res.active_loan ?? null);
@@ -58,9 +58,7 @@ const Loans = () => {
     setBusy(true);
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     try {
-      const res = await apiJson(EP.loans.repay, {
-        amount: active.outstanding, transaction_pin: pin, idempotency_key: idemKey.current,
-      });
+      const res = await loansService.repay(active.outstanding, pin, idemKey.current);
       if (res.success) {
         setPinOpen(false);
         setPinError('');

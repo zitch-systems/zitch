@@ -9,4 +9,5 @@ export type ApiResult<T = {}> = {
   success?: boolean;
   status?: boolean; // some legacy endpoints use `status` instead of `success`
   message?: string;
+  code?: string; // standard error envelope code (e.g. pin_incorrect, face_required)
 } & T;

@@ -2,8 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, apiJson } from '@/lib/api';
+import { apiPost } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
+import { loansService } from '@/lib/services/loans';
 import { Screen, Header, Btn, Sheet, PinPad, Field, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
@@ -63,7 +64,7 @@ const GetLoan = () => {
   const request = async (pin: string) => {
     setBusy(true);
     try {
-      const res = await apiJson(EP.loans.request, { amount: String(amount), tenure_days: tenure, transaction_pin: pin });
+      const res = await loansService.request(amount, tenure, pin);
       if (res.success) {
         setStep(null);
         setDone(true);

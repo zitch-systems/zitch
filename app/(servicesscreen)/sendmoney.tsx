@@ -3,8 +3,9 @@ import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiPost, newIdempotencyKey } from '@/lib/api';
 import { EP } from '@/lib/endpoints';
+import { transfersService } from '@/lib/services/transfers';
 import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
@@ -90,7 +91,7 @@ const SendMoney = () => {
     setResolvingBank(true);
     const t = setTimeout(async () => {
       try {
-        const res = await apiJson(EP.transfers.resolve, { account_number: acct }); // no bank -> auto-detect
+        const res = await transfersService.resolve(acct); // no bank -> auto-detect
         if (cancelled) return;
         if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
         else if (res.success && res.matches?.length) setMatches(res.matches);
@@ -110,7 +111,7 @@ const SendMoney = () => {
     if (acct.length !== 10) return;
     setResolvingBank(true);
     try {
-      const res = await apiJson(EP.transfers.resolve, { account_number: acct, bank: b.code });
+      const res = await transfersService.resolve(acct, b.code);
       if (res.success && res.name) setBankName(res.name);
       else setBankErr(res.message || "Couldn't verify this account at that bank.");
     } catch { setBankErr("Couldn't verify this account. Please try again."); }
@@ -125,7 +126,7 @@ const SendMoney = () => {
     if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
     setResolving(true);
     try {
-      const res = await apiJson(EP.transfers.resolveLegacy, { identifier });
+      const res = await transfersService.resolveLegacy(identifier);
       if (res.success) setResolvedName(res.name);
       else notify('Not found', res.message || 'No Zitch user with that detail.');
     } catch { notify('Error', 'Something went wrong.'); }
@@ -138,13 +139,13 @@ const SendMoney = () => {
       const accountNumber = picked ? picked.account_number : acct;
       const bankNameFinal = picked ? picked.bank_name : bank?.name;
       const bankCode = picked ? banks.find((b) => b.name === bankNameFinal)?.code : bank?.code;
-      return apiJson(EP.transfers.send, {
+      return transfersService.send({
         account_number: accountNumber, bank: bankCode, name: recipientName, amount: amt,
         transaction_pin: pin, note, idempotency_key: idemKey.current,
       });
     }
     const id = picked ? picked.account_number : identifier;
-    return apiJson(EP.transfers.sendLegacy, {
+    return transfersService.sendLegacy({
       identifier: id, amount: amt, transaction_pin: pin, note, idempotency_key: idemKey.current,
     });
   };

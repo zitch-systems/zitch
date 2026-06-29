@@ -36,12 +36,17 @@ describe('walletService', () => {
 });
 
 describe('transfersService', () => {
-  it('resolve posts account number + bank code', async () => {
+  it('resolve scopes to a bank when a code is given (key is `bank`)', async () => {
     await transfersService.resolve('0123456789', '058');
-    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789', bank_code: '058' });
+    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789', bank: '058' });
   });
-  it('send always includes the idempotency key', async () => {
-    await transfersService.send({ amount: 5000 }, 'idem-key-1');
-    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.send, { amount: 5000, idempotency_key: 'idem-key-1' });
+  it('resolve omits the bank for auto-detect', async () => {
+    await transfersService.resolve('0123456789');
+    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.resolve, { account_number: '0123456789' });
+  });
+  it('send passes the body through (incl. idempotency key)', async () => {
+    const body = { account_number: '0123456789', bank: '058', amount: 5000, transaction_pin: '1234', idempotency_key: 'idem-key-1' };
+    await transfersService.send(body);
+    expect(mockApiJson).toHaveBeenCalledWith(EP.transfers.send, body);
   });
 });
