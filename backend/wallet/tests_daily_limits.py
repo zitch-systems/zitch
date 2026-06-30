@@ -71,6 +71,14 @@ class DailyLimitHelperTests(TestCase):
         self.assertIsNone(daily_limit_error(u, Decimal("50000"), "bill"))
         self.assertIsNotNone(daily_limit_error(u, Decimal("1"), "transfer"))
 
+    def test_fx_ngn_conversion_counts_toward_transfer_cap(self):
+        # An NGN→foreign conversion moves value out of the NGN ledger, so it
+        # consumes the daily transfer headroom (and can't exceed that cap).
+        u, _ = make_user("08070000014", "dfx@zitch.test", tier=2)
+        _seed_out(u, "Convert NGN→USD", "900000")  # transfer cap is 1M at tier 2
+        self.assertIsNone(daily_limit_error(u, Decimal("50000"), "transfer"))       # 950k <= 1M
+        self.assertIsNotNone(daily_limit_error(u, Decimal("200000"), "transfer"))   # 1.1M > 1M
+
     def test_failed_txns_dont_count(self):
         u, _ = make_user("08070000012", "df@zitch.test", tier=2)
         t = _seed_out(u, "Transfer to X", "900000")

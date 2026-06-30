@@ -357,10 +357,12 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
         _clear_onboarding(msisdn)
         return reply(msisdn, "This number already has a Zitch account — open the app to link it.")
-    # WhatsApp onboarding -> Tier 2 caps (₦1,000,000/day transfers, ₦100,000/day
-    # bills); full KYC in the app raises to Tier 3. The caps are enforced by the
-    # shared daily-limit checks in the money flows, identically to the app.
-    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln, tier=2)
+    # WhatsApp onboarding creates an UNVERIFIED account at Tier 1 (₦50,000 caps),
+    # identically to the app: no BVN/NIN is collected here, and the app's tier
+    # ladder (recompute_tier) never grants Tier 2 without a verified ID. The user
+    # raises their tier by verifying BVN/NIN in the app. (Previously this granted
+    # Tier 2 — ₦1,000,000/day — to a name-only signup, an AML/mule gap.)
+    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln, tier=1)
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
     user.set_transaction_pin(pin)
     user.save()
