@@ -73,7 +73,12 @@ def check_send_limits(user, amount):
 # them. The caps live on the user (per tier), so they apply identically whether
 # the user transacts in the app or on WhatsApp.
 _TRANSFER_PREFIXES = ("Transfer to",)
-_BILL_PREFIXES = ("Airtime", "Data", "Cable", "Electricity")
+# The "bill" bucket is really "non-transfer spend": airtime/data/cable/electricity
+# plus the other spendable-cash outflows (betting funding, exam PINs, card funding).
+# All of them already enforce the per-txn tier ceiling + face gate; folding them
+# into one daily aggregate closes the gap where they escaped the daily cap entirely.
+# The ledger labels these flows write must start with one of these prefixes.
+_BILL_PREFIXES = ("Airtime", "Data", "Cable", "Electricity", "Betting", "Exam", "Card funding")
 
 
 def _daily_spent(user, prefixes) -> Decimal:

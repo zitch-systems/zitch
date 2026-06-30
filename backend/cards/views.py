@@ -7,6 +7,7 @@ from django.db.models import F
 
 from common.http import (
     api,
+    check_daily_limit,
     check_send_limits,
     fail,
     idempotent_replay,
@@ -161,6 +162,12 @@ def fund_card(request):
     replay = idempotent_replay(existing_for_key(user, key))
     if replay:
         return replay
+
+    # Daily aggregate cap (shared "non-transfer spend" bucket) — after the replay
+    # check. The "Card funding" label is what _daily_spent matches on.
+    daily_err = check_daily_limit(user, amount, "bill")
+    if daily_err:
+        return daily_err
 
     try:
         txn = debit(user, amount, "Card funding", meta={"card": card.id}, idempotency_key=key)

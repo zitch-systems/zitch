@@ -4,8 +4,8 @@ Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
 from common.http import (
-    api, check_send_limits, fail, idempotent_replay, ok, parse_amount, provider_purchase_response,
-    require_user, spend_key, verify_transaction_pin,
+    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
+    provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
 from utility.providers import vtu_purchase
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
@@ -63,9 +63,16 @@ def fund_betting(request):
     if replay:
         return replay
 
+    # Daily aggregate cap (shared "non-transfer spend" bucket) — after the replay
+    # check so a deduped retry isn't re-counted. The "Betting" label prefix is what
+    # _daily_spent matches on.
+    daily_err = check_daily_limit(user, amount, "bill")
+    if daily_err:
+        return daily_err
+
     try:
         status, txn, result = run_provider_purchase(
-            user, amount, f"{platform.name} funding",
+            user, amount, f"Betting funding · {platform.name}",
             {"platform": platform.code, "user_id": user_id},
             lambda ref: vtu_purchase(platform.service_id or f"{platform.code}-betting",
                                      {"billersCode": user_id, "amount": str(amount)}, reference=ref),

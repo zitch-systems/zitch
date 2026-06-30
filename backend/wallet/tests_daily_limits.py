@@ -51,6 +51,19 @@ class DailyLimitHelperTests(TestCase):
         self.assertIsNone(daily_limit_error(u, Decimal("5000"), "bill"))
         self.assertIsNotNone(daily_limit_error(u, Decimal("20000"), "bill"))
 
+    def test_spend_categories_count_toward_bill_cap(self):
+        # Betting funding, exam PINs and card funding are non-transfer spends that
+        # share the daily bill aggregate — their ledger labels start with a counted
+        # "bill" prefix, so a prior such spend reduces the remaining headroom.
+        cases = [("08071010001", "Betting funding · Bet9ja"),
+                 ("08071010002", "Exam PIN · WAEC x2"),
+                 ("08071010003", "Card funding")]
+        for phone, label in cases:
+            u, _ = make_user(phone, f"{phone}@zitch.test", tier=2)
+            _seed_out(u, label, "95000")  # bill cap is 100k at tier 2
+            self.assertIsNone(daily_limit_error(u, Decimal("3000"), "bill"), label)      # 98k <= 100k
+            self.assertIsNotNone(daily_limit_error(u, Decimal("10000"), "bill"), label)  # 105k > 100k
+
     def test_categories_are_separate(self):
         # A day of transfers must not eat into the bill allowance.
         u, _ = make_user("08070000013", "dc@zitch.test", tier=2)
