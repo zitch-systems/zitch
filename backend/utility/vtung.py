@@ -30,11 +30,14 @@ customer-verification endpoint path, the prepaid-meter token field, the 9mobile
 service_id, and that your data/cable variation_id codes match VTU.ng's. All are
 isolated in the maps/constants below.
 """
+import logging
 import secrets
 
 import requests
 from django.conf import settings
 from django.core.cache import cache
+
+log = logging.getLogger("zitch")
 
 VT_TIMEOUT = 30
 _TOKEN_CACHE_KEY = "vtung_jwt_token"
@@ -88,11 +91,19 @@ def _login() -> str:
         resp = requests.post(f"{_base()}/{_TOKEN_PATH}",
                              json={"username": cfg["USERNAME"], "password": cfg["PASSWORD"]},
                              timeout=VT_TIMEOUT)
-        token = (resp.json() or {}).get("token", "")
+        body = resp.json() or {}
+        # Accept the token at the top level or nested under "data" (provider JSON
+        # shapes vary); without this a nested token reads as "" and every call goes
+        # out unauthenticated -> 401 -> the purchase looks like a provider failure.
+        token = body.get("token", "") or (body.get("data") or {}).get("token", "")
     except (requests.RequestException, ValueError):
         return ""
     if token:
         cache.set(_TOKEN_CACHE_KEY, token, _TOKEN_TTL)
+    else:
+        # Surface a silent auth failure instead of letting it masquerade as a VTU
+        # failure (which would refund the user but never explain why).
+        log.warning("vtung_login_no_token status=%s", getattr(resp, "status_code", "?"))
     return token
 
 

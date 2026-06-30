@@ -25,6 +25,33 @@ class BankTransferTests(TestCase):
     def balance(self):
         return get_or_create_wallet(self.user).balance
 
+    def test_live_resolution_blocks_name_mismatch(self):
+        # With a LIVE name enquiry, an account whose real holder differs from the
+        # name the user confirmed must be BLOCKED — no debit. (Guards the reported
+        # "account mismatch but the transfer went through".)
+        with patch("transfers.views.payout_resolve_account",
+                   return_value={"success": True, "name": "JANE SMITH"}):
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 409)
+        self.assertEqual(body.get("code"), "account_mismatch")
+        self.assertEqual(body.get("resolved_name"), "JANE SMITH")
+        self.assertEqual(self.balance(), Decimal("50000"))  # untouched
+
+    def test_live_resolution_allows_matching_name(self):
+        # The same holder (tolerant of word order) goes through and debits.
+        with patch("transfers.views.payout_resolve_account",
+                   return_value={"success": True, "name": "DOE JOHN"}):
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success") or body.get("pending"))
+        self.assertEqual(self.balance(), Decimal("40000"))
+
     def test_banks_listed(self):
         res, body = self.post("/api/transfers/banks/", {})
         self.assertEqual(res.status_code, 200)
