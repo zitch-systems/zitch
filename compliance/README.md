@@ -14,6 +14,22 @@ to the Nigerian framework: **MLPPA 2022, TPPA 2022, CBN AML/CFT/CPF Regulations,
 | `ZITCH_CODE_OF_CONDUCT_AML_ATTESTATION_v1.0.docx` | One‑page Code of Conduct AML/ABC staff acknowledgement (Q9). |
 | `ZITCH_KYC_CDD_OPERATING_PROCEDURE_v1.0.docx` | Step‑by‑step KYC / CDD SOP that sits under the AML policy; matches the in‑app 4‑tier model. |
 
+### Governance & operational policies
+
+| File | Purpose |
+|---|---|
+| `ZITCH_CUSTOMER_SERVICE_AND_COMPLAINT_POLICY_v1.0.docx` | Service standards + complaint handling, escalation and reporting (CBN consumer protection). |
+| `ZITCH_BUSINESS_CONTINUITY_PLAN_v1.0.docx` | BCP: critical services, RTO/RPO, dependencies, disruption scenarios, testing. |
+| `ZITCH_RISK_ASSESSMENT_AND_INCIDENT_RESPONSE_PLAN_v1.0.docx` | Enterprise risk assessment + incident response lifecycle and breach notification. |
+| `ZITCH_DATA_PROTECTION_POLICY_v1.0.docx` | Internal NDPA 2023 data‑protection policy (complements the customer‑facing Privacy Policy). |
+| `ZITCH_ACCESS_MANAGEMENT_AND_MFA_POLICY_v1.0.docx` | Least‑privilege access lifecycle + mandatory MFA for privileged/remote access. |
+| `ZITCH_ATTESTATION_THIRD_PARTY_VENDORS_v1.0.docx` | Attestation letter — Zitch **does** engage third‑party vendors (with vendor categories). |
+| `ZITCH_ATTESTATION_NO_SECURITY_BREACH_12_MONTHS_v1.0.docx` | Attestation letter — no security breach in the preceding 12 months (management representation). |
+
+The customer‑facing **Privacy Policy v2.1** and **Terms of Use v2.1** (updated for the
+4‑tier KYC model and current security controls) live at the repository root alongside the
+prior v2.0 versions.
+
 The policies embed Zitch's actual in‑app controls: a server‑derived 4‑tier KYC model
 and per‑tier limits —
 
