@@ -52,6 +52,19 @@ class BankTransferTests(TestCase):
         self.assertEqual(body["bank"], "gtb")
         self.assertEqual(len(body["matches"]), 1)
 
+    def test_resolve_flags_mock_when_name_enquiry_not_live(self):
+        # Without a live Kora name-enquiry rail the detection is a placeholder, so
+        # the response must carry `mock: true` and the app won't auto-fill it as a
+        # verified bank/holder (which looked like "mis-detection").
+        from django.core.cache import cache
+        cache.clear()
+        res, body = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("mock"))
+        # An explicit-bank resolve is mock too in this mode.
+        res2, body2 = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "0123456789", "bank": "gtb"})
+        self.assertTrue(body2.get("mock"))
+
     def test_send_debits_and_saves_beneficiary(self):
         res, body = self.post("/api/transfers/send/", {
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",

@@ -193,7 +193,14 @@ const Home = () => {
         {txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
         ) : (
-          txns.slice(0, 4).map((x, i) => <TxnRow key={x.id} txn={x} last={i === Math.min(3, txns.length - 1)} />)
+          txns.slice(0, 4).map((x, i) => (
+            <TxnRow
+              key={x.id}
+              txn={x}
+              last={i === Math.min(3, txns.length - 1)}
+              onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+            />
+          ))
         )}
       </View>
 

@@ -44,7 +44,10 @@ def detect_account_banks(account_number: str) -> list[dict]:
 
     banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
     if not payout_live():
-        matches = ([{"bank": banks[0].code, "bank_name": banks[0].name, "name": "ADEYEMI WILLIAM"}]
+        # No live name-enquiry rail: this is a placeholder, NOT a real detection.
+        # Flag it `mock` so callers don't present the stub bank/name as verified.
+        matches = ([{"bank": banks[0].code, "bank_name": banks[0].name,
+                     "name": "ADEYEMI WILLIAM", "mock": True}]
                    if banks else [])
         cache.set(ckey, matches, 60)
         return matches
