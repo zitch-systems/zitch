@@ -221,11 +221,26 @@ class KycTierTests(TestCase):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
-    def test_bvn_plus_nin_promote_to_tier_3(self):
-        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+    def test_bvn_plus_nin_promote_to_tier_1(self):
+        # New ladder: BVN + NIN together = Tier 1 (BVN alone stays Tier 0).
+        r, b0 = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        self.assertEqual(b0["tier"], 0)  # BVN only -> still Tier 0
         res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["tier"], 3)
+        self.assertEqual(body["tier"], 1)
+
+    def test_full_kyc_ladder_to_tier_3(self):
+        # BVN+NIN -> Tier 1; + face + address -> Tier 2; + government ID -> Tier 3.
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
+        self.assertEqual(b1["tier"], 1)
+        self.post("/api/kyc/face/", {"access_token": self.token})
+        b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos"})[1]
+        self.assertEqual(b2["tier"], 2)
+        self.assertTrue(b2["address_verified"] and b2["face_verified"])
+        b3 = self.post("/api/kyc/id/", {"access_token": self.token, "image": "ZmFrZQ==", "doc_type": "passport"})[1]
+        self.assertEqual(b3["tier"], 3)
+        self.assertTrue(b3["id_document_verified"])
 
     def test_bvn_nin_stored_hashed_not_raw(self):
         # Defence in depth: the raw government IDs must not be recoverable at rest —
@@ -248,7 +263,7 @@ class KycTierTests(TestCase):
         code = cache.get(f"kyc_bvn:{self.user.id}")["code"]
         r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": code})
         self.assertEqual(r2.status_code, 200)
-        self.assertEqual(body["tier"], 2)  # BVN verified -> tier 2
+        self.assertEqual(body["tier"], 0)  # BVN alone (NIN still pending) -> Tier 0
         self.assertTrue(User.objects.get(pk=self.user.pk).bvn_verified)
 
     def test_bvn_otp_rejects_wrong_code(self):
@@ -356,14 +371,19 @@ class FullJourneyE2ETests(TestCase):
                                    amount="5000", transaction_pin="1234")[0], 200)
         self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
 
-        # --- KYC tiers + large-transfer face gate ---
+        # --- KYC tiers + limits ---
         self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
-        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 3)
+        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 1)  # BVN+NIN -> Tier 1
         ref2 = self.post("/api/fund/initialize/", access_token=tok, amount="200000")[1]["reference"]
         self.post("/api/fund/verify/", access_token=tok, reference=ref2)
-        s, b = self.post("/api/transfer/send/", access_token=tok, identifier=R, amount="150000", transaction_pin="1234")
-        self.assertEqual((s, b.get("code")), (403, "face_required"))
+        # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
+        self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
+                                   amount="150000", transaction_pin="1234")[0], 403)
+        # ...face + address raise the user to Tier 2 (₦200k), which also satisfies
+        # the >=₦100k face step-up, so the same transfer now goes through.
         self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
+        self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
+                                   address="12 Allen Avenue", city="Ikeja", state="Lagos")[1]["tier"], 2)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="1234")[0], 200)
 

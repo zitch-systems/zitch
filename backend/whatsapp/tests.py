@@ -100,7 +100,7 @@ class ChannelTests(TestCase):
         self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
 
     # --- onboarding (create an account from WhatsApp) ---
-    def test_onboarding_creates_tier1_account_and_links(self):
+    def test_onboarding_creates_tier0_account_and_links(self):
         m = "2349090000002"  # -> local 09090000002, no existing user
         self.inbound("1", "o1", msisdn=m)
         self.assertIn("first name", self.last_reply(m).lower())
@@ -111,7 +111,7 @@ class ChannelTests(TestCase):
         self.inbound("1357", "o4", msisdn=m)   # set PIN
         self.inbound("1357", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
-        self.assertEqual(u.tier, 1)            # unverified chat signup -> Tier 1 (₦50k) caps
+        self.assertEqual(u.tier, 0)            # unverified chat signup (no BVN/NIN) -> Tier 0
         self.assertTrue(u.check_transaction_pin("1357"))
         self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
         self.assertIn("Welcome to Zitch", self.last_reply(m))

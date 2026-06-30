@@ -11,8 +11,9 @@ import { Screen, Header, Field, Btn, money, NText } from '@/components/design/ui
 import { useTheme, font } from '@/lib/theme';
 
 type Status = {
-  tier: number; transaction_limit: string;
+  tier: number; tier_name?: string; transaction_limit: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
+  address_verified?: boolean; id_document_verified?: boolean;
 };
 
 const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: string; sub: string; done: boolean; children?: React.ReactNode }) => {
@@ -42,6 +43,10 @@ const Kyc = () => {
   const [bvnSent, setBvnSent] = useState(false);
   const [nin, setNin] = useState('');
   const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
+  const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
+  const [stateName, setStateName] = useState('');
+  const [idImage, setIdImage] = useState(''); // base64 of the government ID
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -85,19 +90,20 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
 
-  // --- NIN: number + a photo of the NIN slip ---
-  const pickNinSlip = async () => {
+  // --- Generic photo picker (NIN slip / ID document) ---
+  const pickImage = async (set: (b64: string) => void) => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your NIN slip.'); return; }
+    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your document.'); return; }
     beginExternalActivity(); // don't let the app-lock fire while the picker is up
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
       });
       if (res.canceled || !res.assets?.[0]?.base64) return;
-      setNinImage(res.assets[0].base64);
+      set(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
+  const pickNinSlip = () => pickImage(setNinImage);
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove). ---
@@ -123,7 +129,7 @@ const Kyc = () => {
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginBottom: 4 }}>
           <View>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
-            <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}</Text>
+            <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}{status.tier_name ? ` · ${status.tier_name}` : ''}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
@@ -158,12 +164,31 @@ const Kyc = () => {
         <Btn label="Verify NIN" size="md" disabled={busy || nin.length !== 11 || !ninImage} onPress={() => submit('/api/kyc/nin/', { nin, nin_image: ninImage }, 'NIN')} />
       </KycRow>
 
-      <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — required for large transfers" done={!!status?.face_verified}>
+      <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>
         <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
       </KycRow>
 
+      <KycRow icon="home" title="Residential address" sub="Your home address — unlocks Tier 2" done={!!status?.address_verified}>
+        <Field value={address} onChangeText={setAddress} placeholder="Street address" />
+        <View style={{ height: 10 }} />
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          <View style={{ flex: 1 }}><Field value={city} onChangeText={setCity} placeholder="City / LGA" /></View>
+          <View style={{ flex: 1 }}><Field value={stateName} onChangeText={setStateName} placeholder="State" /></View>
+        </View>
+        <View style={{ height: 10 }} />
+        <Btn label="Verify address" size="md" disabled={busy || address.trim().length < 6}
+          onPress={() => submit('/api/kyc/address/', { address, city, state: stateName }, 'Address')} />
+      </KycRow>
+
+      <KycRow icon="shield" title="Government ID" sub="Passport, driver's licence or voter's card — unlocks Tier 3" done={!!status?.id_document_verified}>
+        <Btn label={idImage ? 'ID added ✓' : 'Upload your government ID'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => pickImage(setIdImage)} />
+        <View style={{ height: 10 }} />
+        <Btn label="Verify ID document" size="md" disabled={busy || !idImage}
+          onPress={() => submit('/api/kyc/id/', { image: idImage, doc_type: 'government_id' }, 'ID document')} />
+      </KycRow>
+
       <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
-        Tier 1: ₦50,000 · Tier 2 (BVN or NIN): ₦200,000 · Tier 3 (BVN + NIN): ₦5,000,000 per transaction. Your BVN/NIN are never stored in full.
+        Tier 0: ₦20,000 · Tier 1 (BVN + NIN): ₦50,000 · Tier 2 (+ selfie + address): ₦200,000 · Tier 3 (+ government ID): ₦5,000,000 per transaction. Your BVN, NIN and ID images are never stored in full.
       </NText>
     </Screen>
   );

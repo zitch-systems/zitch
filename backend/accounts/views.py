@@ -11,7 +11,8 @@ from common.ratelimit import client_ip, ratelimit
 
 log = logging.getLogger("zitch.security")
 from utility.providers import (
-    kyc_verify_face, kyc_verify_nin_document, send_email, send_sms, verify_bvn, verify_nin,
+    kyc_verify_address, kyc_verify_face, kyc_verify_id_document, kyc_verify_nin_document,
+    send_email, send_sms, verify_bvn, verify_nin,
 )
 from wallet.services import get_or_create_wallet
 
@@ -448,13 +449,21 @@ def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
         log.warning("reserve_account_failed user=%s", user.id, exc_info=True)
 
 
+_TIER_NAMES = {0: "Unverified", 1: "Verified", 2: "Enhanced", 3: "Premium"}
+
+
 def _kyc_state(user) -> dict:
     return {
         "tier": user.tier,
+        "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
         "transaction_limit": str(user.transaction_limit),
+        "daily_transfer_limit": str(user.daily_transfer_limit),
+        "daily_bill_limit": str(user.daily_bill_limit),
         "bvn_verified": user.bvn_verified,
         "nin_verified": user.nin_verified,
         "face_verified": user.face_verified,
+        "address_verified": user.address_verified,
+        "id_document_verified": user.id_document_verified,
         "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
     }
 
@@ -570,5 +579,56 @@ def kyc_face(request):
     if not result.get("success"):
         return fail(result.get("message", "Face verification failed"), status=400)
     user.face_verified = True
-    user.save(update_fields=["face_verified"])
+    user.recompute_tier()  # face is a Tier 2 requirement
+    user.save(update_fields=["face_verified", "tier"])
     return ok(success=True, message="Face verification recorded", **_kyc_state(user))
+
+
+@api
+@require_user
+def kyc_address(request):
+    """POST /api/kyc/address/ {access_token, address, city?, state?, document?}
+
+    Verifies a residential address (Tier 2, together with face). Accepts an
+    address (optionally city/state and a proof-of-address document); marks the
+    address verified on success and recomputes the tier.
+    """
+    user = request.user_obj
+    address = (request.data.get("address") or "").strip()
+    if len(address) < 6:
+        return fail("Enter your full residential address")
+    city = (request.data.get("city") or "").strip()
+    state = (request.data.get("state") or "").strip()
+    full = ", ".join(p for p in [address, city, state] if p)
+    result = kyc_verify_address(full, document=request.data.get("document") or "")
+    if not result.get("success"):
+        return fail(result.get("message", "Couldn't verify your address"), status=400)
+    user.set_address(full)
+    user.address_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["address", "address_verified", "tier"])
+    return ok(success=True, message="Address verified", **_kyc_state(user))
+
+
+@api
+@require_user
+def kyc_id_document(request):
+    """POST /api/kyc/id/ {access_token, image, doc_type?}
+
+    Verifies a government-issued ID document (Tier 3): passport / driver's
+    licence / voter's card / NIN slip. Only the verified flag and the document
+    type are retained — never the raw image.
+    """
+    user = request.user_obj
+    image = request.data.get("image") or request.data.get("document") or ""
+    doc_type = (request.data.get("doc_type") or "").strip()[:32]
+    if not image:
+        return fail("Upload a clear photo of your government ID")
+    result = kyc_verify_id_document(image, doc_type=doc_type)
+    if not result.get("success"):
+        return fail(result.get("message", "Couldn't verify your ID document"), status=400)
+    user.id_document_type = doc_type or "generic"
+    user.id_document_verified = True
+    user.recompute_tier()
+    user.save(update_fields=["id_document_type", "id_document_verified", "tier"])
+    return ok(success=True, message="ID document verified", **_kyc_state(user))

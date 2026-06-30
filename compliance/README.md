@@ -12,11 +12,20 @@ to the Nigerian framework: **MLPPA 2022, TPPA 2022, CBN AML/CFT/CPF Regulations,
 | `ZITCH_AML_ABC_QUESTIONNAIRE_RESPONSE_v1.0.docx` | Completed partner due‑diligence questionnaire (Q1–32), cross‑referenced to the policies. |
 | `ZITCH_MLRO_APPOINTMENT_LETTER_v1.0.docx` | Board appointment of the Compliance Officer / MLRO (Q2). |
 | `ZITCH_CODE_OF_CONDUCT_AML_ATTESTATION_v1.0.docx` | One‑page Code of Conduct AML/ABC staff acknowledgement (Q9). |
+| `ZITCH_KYC_CDD_OPERATING_PROCEDURE_v1.0.docx` | Step‑by‑step KYC / CDD SOP that sits under the AML policy; matches the in‑app 4‑tier model. |
 
-The policies embed Zitch's actual in‑app controls: tiered KYC tied to BVN/NIN
-(Tier 1/2/3 → ₦50k / ₦200k / ₦5m per‑txn; daily transfer ₦50k / ₦1m / ₦5m; daily
-bill ₦20k / ₦100k / ₦500k), a ₦100,000 facial‑verification step‑up, the transaction
-PIN with lockout, and BVN/NIN hashing at rest.
+The policies embed Zitch's actual in‑app controls: a server‑derived 4‑tier KYC model
+and per‑tier limits —
+
+| Tier | Requirements (cumulative) | Per‑txn | Daily transfer | Daily bill/VTU |
+|---|---|---|---|---|
+| 0 — Unverified | email + phone | ₦20,000 | ₦20,000 | ₦10,000 |
+| 1 — Verified | + BVN + NIN | ₦50,000 | ₦50,000 | ₦20,000 |
+| 2 — Enhanced | + face + address | ₦200,000 | ₦1,000,000 | ₦100,000 |
+| 3 — Premium | + government ID document | ₦5,000,000 | ₦5,000,000 | ₦500,000 |
+
+— a ₦100,000 facial step‑up (a Tier 2 requirement), the transaction PIN with lockout,
+and BVN/NIN hashing at rest.
 
 ## Before use — required steps
 1. **Complete every `[ ]` placeholder**: MLRO / ABC‑officer names + contacts, effective
