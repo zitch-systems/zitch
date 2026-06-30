@@ -226,6 +226,15 @@ def vt_purchase(service_id: str, payload: dict, reference: str | None = None) ->
     endpoint, json_body = _build(service_id, payload, ref)
     if endpoint is None:
         return {"success": False, "message": f"Unsupported service: {service_id}"}
+    if not _token():
+        # Configured (_live) but no usable token — the JWT login failed (wrong
+        # VTUNG_USERNAME/PASSWORD, or the account's JWT auth isn't enabled). Don't
+        # send a guaranteed-bad "Bearer " header (VTU.ng answers the cryptic
+        # "Authorization header malformed"); fail clearly so the wallet refunds and
+        # ops can see the cause (also logged in _login as vtung_login_no_token).
+        log.warning("vtung_purchase_no_token service=%s", service_id)
+        return {"success": False,
+                "message": "Airtime provider sign-in failed — please try again shortly."}
     try:
         return _parse(_request("POST", endpoint, json_body=json_body))
     except requests.RequestException as exc:
