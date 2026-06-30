@@ -80,11 +80,17 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     # the tier limit is denominated in NGN and the control concern is value
     # leaving naira (NGN -> foreign currency).
     if frm == "NGN":
-        from common.http import send_limit_error
+        from common.http import daily_limit_error, send_limit_error
 
         reason = send_limit_error(user, sell)
         if reason:
             raise FxError(reason)
+        # Daily aggregate too: an NGN→foreign conversion counts against the same
+        # daily "transfer" ceiling as a bank transfer (both move value out of the
+        # NGN ledger), so FX can't be used to move more per day than that cap.
+        daily = daily_limit_error(user, sell, "transfer")
+        if daily:
+            raise FxError(daily)
 
     q = fx_quote(frm, to, sell)
     if not q.get("success"):

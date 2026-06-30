@@ -103,6 +103,17 @@ class MutationTests(PortalTestCase):
                                         first_name="Kemi", tier=1)
         get_or_create_wallet(self.user)
 
+    def test_kyc_queue_lists_pending_item_without_crashing(self):
+        # Regression: the queue row-builder read non-existent u.bvn/u.nin and 500'd
+        # on exactly the rows the queue selects (a submitted-but-unverified ID).
+        self.user.bvn_hash = "deadbeefhash"
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_hash", "bvn_verified"])
+        res = self.post("kyc-queue", token=self.admin)
+        self.assertEqual(res.status_code, 200, res.content[:200])
+        rows = res.json()["rows"]
+        self.assertTrue(any(r["id"] == self.user.id and r["type"] == "bvn" for r in rows))
+
     def test_freeze_revokes_sessions_and_audits(self):
         token = AccessToken.issue(self.user).key
         res = self.post("user-action", {"user_id": self.user.id, "action": "freeze"}, token=self.admin)

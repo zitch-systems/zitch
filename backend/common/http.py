@@ -72,7 +72,11 @@ def check_send_limits(user, amount):
 # at ₦1,000,000 transfers / ₦100,000 bills a day; full app KYC (Tier 3) raises
 # them. The caps live on the user (per tier), so they apply identically whether
 # the user transacts in the app or on WhatsApp.
-_TRANSFER_PREFIXES = ("Transfer to",)
+# NGN→foreign FX conversions ("Convert NGN→…") move value out of the regulated
+# NGN ledger just like a transfer, and the FX OUT row is written currency="NGN",
+# so it's counted here (the non-NGN-source Convert rows carry a foreign currency
+# and are excluded by _daily_spent's currency="NGN" filter).
+_TRANSFER_PREFIXES = ("Transfer to", "Convert NGN")
 # The "bill" bucket is really "non-transfer spend": airtime/data/cable/electricity
 # plus the other spendable-cash outflows (betting funding, exam PINs, card funding).
 # All of them already enforce the per-txn tier ceiling + face gate; folding them

@@ -100,7 +100,7 @@ class ChannelTests(TestCase):
         self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
 
     # --- onboarding (create an account from WhatsApp) ---
-    def test_onboarding_creates_tier2_account_and_links(self):
+    def test_onboarding_creates_tier1_account_and_links(self):
         m = "2349090000002"  # -> local 09090000002, no existing user
         self.inbound("1", "o1", msisdn=m)
         self.assertIn("first name", self.last_reply(m).lower())
@@ -111,7 +111,7 @@ class ChannelTests(TestCase):
         self.inbound("1357", "o4", msisdn=m)   # set PIN
         self.inbound("1357", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
-        self.assertEqual(u.tier, 2)            # WhatsApp onboarding -> ₦1m/day caps
+        self.assertEqual(u.tier, 1)            # unverified chat signup -> Tier 1 (₦50k) caps
         self.assertTrue(u.check_transaction_pin("1357"))
         self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
         self.assertIn("Welcome to Zitch", self.last_reply(m))
@@ -134,7 +134,7 @@ class ChannelTests(TestCase):
         self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
 
     def test_whatsapp_user_can_send_without_bvn(self):
-        # WhatsApp accounts transact immediately (capped at the ₦1m/day tier-2
+        # WhatsApp accounts transact immediately (capped at the unverified Tier-1
         # limits) — no BVN gate before sending.
         self.user.bvn_verified = False
         self.user.save(update_fields=["bvn_verified"])
@@ -457,6 +457,24 @@ class AiIntentTests(TestCase):
             self.inbound("load 200 mtn airtime for 08099998888", "a1")
         self.assertIn("Confirm airtime", self.last_reply())
 
+    def test_freeform_airtime_fast_path_enforces_face_gate(self):
+        # Regression: the AI-prefilled airtime fast-path skipped the >=₦100k face
+        # step-up that the guided flow enforces. _run_vtu now gates every path, so a
+        # Tier-3-without-face user can't buy >=₦100k airtime by going through the AI.
+        self.user.tier = 3
+        self.user.face_verified = False
+        self.user.save(update_fields=["tier", "face_verified"])
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("300000")
+        w.save(update_fields=["balance"])
+        with self._stub({"name": "buy_airtime",
+                         "input": {"amount": 120000, "phone": "08099998888", "network": "MTN"}}):
+            self.inbound("load 120k mtn airtime for 08099998888", "fg1")
+        self.assertIn("Confirm airtime", self.last_reply())  # fast-path jumps to confirm
+        self.inbound("1234", "fg2")                          # PIN -> reaches _run_vtu
+        self.assertIn("Face verification", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("300000"))  # not debited
+
     def test_clarify_shows_menu(self):
         with self._stub({"name": "clarify", "input": {"reason": "unsupported"}}):
             self.inbound("tell me a joke", "c1")
@@ -554,7 +572,27 @@ class ForexServiceTests(TestCase):
         with self.assertRaises(FxError) as cm:
             execute_fx(self.user, q.quote_ref)
         self.assertIn("expired", cm.exception.message.lower())
-        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))  # untouched
+
+    def test_fx_blocked_over_daily_transfer_cap(self):
+        # An NGN→foreign conversion counts against the daily transfer ceiling, so a
+        # conversion that would push the day's NGN outflow past the cap is refused
+        # (amount kept under ₦100k to isolate the daily cap from the face gate).
+        from wallet.forex import FxError, create_fx_quote
+        from wallet.models import Transaction
+        from wallet.services import get_or_create_wallet
+        self.user.tier = 2  # per-txn ₦200k, daily transfer ₦1,000,000
+        self.user.save(update_fields=["tier"])
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("2000000")
+        w.save(update_fields=["balance"])
+        Transaction.objects.create(
+            user=self.user, service="Transfer to Seed", amount=Decimal("950000"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="SEED-FXCAP", currency="NGN")
+        with self.assertRaises(FxError) as cm:  # 950k + 90k > 1M
+            create_fx_quote(self.user, "NGN", "USD", "90000")
+        self.assertIn("daily", cm.exception.message.lower())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("2000000"))  # quote never debits
 
     def test_used_quote_not_resettled(self):
         from wallet.forex import FxError, create_fx_quote, currency_balance, execute_fx

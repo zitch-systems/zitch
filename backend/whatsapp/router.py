@@ -357,10 +357,12 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
         _clear_onboarding(msisdn)
         return reply(msisdn, "This number already has a Zitch account — open the app to link it.")
-    # WhatsApp onboarding -> Tier 2 caps (₦1,000,000/day transfers, ₦100,000/day
-    # bills); full KYC in the app raises to Tier 3. The caps are enforced by the
-    # shared daily-limit checks in the money flows, identically to the app.
-    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln, tier=2)
+    # WhatsApp onboarding creates an UNVERIFIED account at Tier 1 (₦50,000 caps),
+    # identically to the app: no BVN/NIN is collected here, and the app's tier
+    # ladder (recompute_tier) never grants Tier 2 without a verified ID. The user
+    # raises their tier by verifying BVN/NIN in the app. (Previously this granted
+    # Tier 2 — ₦1,000,000/day — to a name-only signup, an AML/mule gap.)
+    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln, tier=1)
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
     user.set_transaction_pin(pin)
     user.save()
@@ -710,6 +712,14 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     """Debit -> provider -> settle via the shared run_provider_purchase, then
     reply with the receipt / processing / failure line. On success the receipt
     carries the biller logo (or the Zitch mark) when `logo_url` is given."""
+    # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
+    # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
+    # this without the guided flow's own send_limit_error check, which would
+    # otherwise let a Tier-3-without-face user skip the >=₦100k face requirement).
+    send_msg = send_limit_error(user, amount)
+    if send_msg:
+        _clear_actions(msisdn)
+        return reply(msisdn, send_msg)
     bill_limit_msg = daily_limit_error(user, amount, "bill")
     if bill_limit_msg:
         _clear_actions(msisdn)
