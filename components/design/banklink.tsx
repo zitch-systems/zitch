@@ -257,6 +257,7 @@ export const ConnectedAccounts = () => {
         onComplete={fundOut}
         busy={busy}
         error={pinErr}
+        autoBiometric
         title={`Send ${money(Number(amount) || 0)}`}
         subtitle={`Enter your PIN to send to ${target?.bank_name || 'your bank'}`}
       />

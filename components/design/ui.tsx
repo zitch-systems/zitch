@@ -10,6 +10,7 @@ import {
   StyleSheet,
   ViewStyle,
   TextStyle,
+  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -419,45 +420,116 @@ export const Sheet = ({
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComplete?: (pin: string) => void; length?: number; busy?: boolean; error?: string }) => {
+export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   // Biometric "pay" shortcut: shown only when the user enabled biometrics, the
   // device has them, and a PIN is cached in the keychain to submit on success.
   const [bioKind, setBioKind] = useState<'face' | 'fingerprint' | 'biometrics' | null>(null);
+  // Until we've checked whether biometric pay is set up we don't know which screen
+  // to show; `resolved` avoids flashing the keypad before switching to biometrics.
+  const [resolved, setResolved] = useState(false);
+  // When biometric pay is set up we open straight onto a biometric screen (not the
+  // keypad); the user can tap ✕ to fall back to the PIN.
+  const [showBio, setShowBio] = useState(false);
+  // Fire the biometric prompt at most once per mount (each time the sheet opens),
+  // so the OS sheet doesn't reappear after a manual cancel or a wrong-PIN retry.
+  const autoTried = React.useRef(false);
+  const useBiometric = React.useCallback(async () => {
+    if (busy) return;
+    // biometricOnly: the device passcode must NOT be able to release the cached
+    // money PIN — only the account owner's enrolled fingerprint/face. The typed
+    // PIN remains the fallback (✕ → keypad) if the scan is cancelled.
+    const ok = await authenticate('Approve payment', true);
+    if (!ok) return;
+    const storedPin = await getTransactionPin();
+    if (storedPin) onComplete && onComplete(storedPin, true);
+  }, [busy, onComplete]);
   useEffect(() => {
     let alive = true;
     (async () => {
-      // Gate the biometric shortcut on a NON-secret "has a cached PIN" flag — we
-      // never read the actual PIN here just to decide whether to show a button.
+      // Gate the biometric path on a NON-secret "has a cached PIN" flag — we never
+      // read the actual PIN here just to decide which screen to show.
       const [enabled, available, hasPin] = await Promise.all([
         isBiometricEnabled(), isBiometricAvailable(), hasTransactionPin(),
       ]);
       const kind = enabled && available && hasPin ? await biometricLabel() : null;
-      if (alive) setBioKind(kind);
+      if (!alive) return;
+      setBioKind(kind);
+      // Biometric pay set up → open on the biometric screen and prompt Face ID /
+      // fingerprint straight away. Runs once per mount; this component mounts only
+      // when the sheet actually opens.
+      const useBio = !!(kind && autoBiometric);
+      setShowBio(useBio);
+      setResolved(true);
+      if (useBio && !autoTried.current && !busy) {
+        autoTried.current = true;
+        useBiometric();
+      }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [autoBiometric, busy, useBiometric]);
   const press = (d: string) => {
     if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
       const np = pin + d;
       setPin(np);
-      if (np.length === length) setTimeout(() => { onComplete && onComplete(np); setPin(''); }, 120);
+      if (np.length === length) setTimeout(() => { onComplete && onComplete(np, false); setPin(''); }, 120);
     }
   };
   const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
-  const useBiometric = async () => {
-    if (busy) return;
-    // biometricOnly: the device passcode must NOT be able to release the cached
-    // money PIN — only the account owner's enrolled fingerprint/face. The typed
-    // PIN on this same pad remains the fallback if the scan fails.
-    const ok = await authenticate('Approve payment', true);
-    if (!ok) return;
-    const storedPin = await getTransactionPin();
-    if (storedPin) onComplete && onComplete(storedPin);
-  };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
+  // While a submission is in flight, replace the keypad with a loading animation
+  // so the moment the PIN is entered (or the biometric clears) the sheet shows
+  // clear progress instead of sitting on a full keypad.
+  if (busy) {
+    return (
+      <View style={{ alignItems: 'center', paddingVertical: 38 }}>
+        <ActivityIndicator size="large" color={c.brand} />
+        <Text style={{ marginTop: 16, fontSize: 14.5, fontFamily: font.semibold, color: c.ink2 }}>Processing…</Text>
+      </View>
+    );
+  }
+  // Brief check-in-progress hold (only when biometrics may take over) so the
+  // keypad doesn't flash before the biometric screen appears.
+  if (!resolved && autoBiometric) {
+    return (
+      <View style={{ alignItems: 'center', paddingVertical: 48 }}>
+        <ActivityIndicator color={c.brand} />
+      </View>
+    );
+  }
+  // Biometric-first screen: a big tap-to-scan icon (the OS prompt also auto-fires
+  // on open) with a small ✕ underneath to cancel and use the PIN instead.
+  if (showBio) {
+    return (
+      <View style={{ alignItems: 'center', paddingVertical: 16 }}>
+        <Pressable
+          onPress={useBiometric}
+          style={{ width: 104, height: 104, borderRadius: 52, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={52} color={c.brand} />
+        </Pressable>
+        <Text style={{ marginTop: 18, fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>
+          {bioKind === 'face' ? 'Approve with Face ID' : 'Approve with fingerprint'}
+        </Text>
+        <Text style={{ marginTop: 6, fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>
+          Tap the icon to scan again
+        </Text>
+        {error ? (
+          <Text style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginTop: 10 }}>{error}</Text>
+        ) : null}
+        <Pressable
+          onPress={() => setShowBio(false)}
+          hitSlop={12}
+          style={{ marginTop: 24, width: 46, height: 46, borderRadius: 23, borderWidth: 1.5, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <ZIcon name="x" size={20} color={c.ink2} />
+        </Pressable>
+        <Text style={{ marginTop: 9, fontSize: 12.5, color: c.ink3, fontFamily: font.medium }}>Use PIN instead</Text>
+      </View>
+    );
+  }
   return (
     <View>
       <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 8, marginBottom: error ? 10 : 26 }}>
@@ -540,22 +612,29 @@ export const PinSheet = ({
   subtitle = 'Confirm this transaction with your 4-digit PIN',
   busy = false,
   error,
+  autoBiometric = false,
 }: {
   open: boolean;
   onClose: () => void;
-  onComplete?: (pin: string) => void;
+  onComplete?: (pin: string, viaBiometric?: boolean) => void;
   title?: string;
   subtitle?: string;
   busy?: boolean;
   error?: string;
+  // Default OFF: PinSheet backs setup flows (capturing a PIN to enable biometric
+  // pay) where auto-prompting biometrics would be wrong. Money-approval callers
+  // pass autoBiometric so Face ID / fingerprint is offered on open.
+  autoBiometric?: boolean;
 }) => {
   const { c } = useTheme();
   return (
     <Sheet open={open} onClose={onClose} title={title}>
-      <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
-        {subtitle}
-      </Text>
-      <PinPad onComplete={onComplete} busy={busy} error={error} />
+      {!busy && (
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          {subtitle}
+        </Text>
+      )}
+      <PinPad onComplete={onComplete} busy={busy} error={error} autoBiometric={autoBiometric} />
     </Sheet>
   );
 };
