@@ -70,13 +70,17 @@ def resolve_account(request):
         if not res.get("success"):
             return fail(res.get("message", "Could not verify this account number"), status=400)
         return ok(success=True, name=res.get("name", ""), bank=bank.code, bank_name=bank.name,
+                  mock=bool(res.get("mock")),
                   matches=[{"bank": bank.code, "bank_name": bank.name, "name": res.get("name", "")}])
 
     matches = detect_account_banks(acct)  # auto-detect across banks
     if not matches:
         return fail("Couldn't detect the bank for this account number — pick the bank manually.", status=404)
     top = matches[0]
-    return ok(success=True, name=top["name"], bank=top["bank"], bank_name=top["bank_name"], matches=matches)
+    # `mock` => the name-enquiry rail isn't configured and `top` is a placeholder,
+    # not a real detection. The app must not silently auto-fill it as verified.
+    return ok(success=True, name=top["name"], bank=top["bank"], bank_name=top["bank_name"],
+              mock=bool(top.get("mock")), matches=matches)
 
 
 @api

@@ -98,8 +98,21 @@ export async function clearTransactionPin(): Promise<void> {
   await AsyncStorage.removeItem(HAS_TXN_PIN_KEY);
 }
 
+// Non-secret marker: whether we've already nudged the user (once) to turn on
+// biometric pay after a successful transfer. Keeps the in-context offer one-time
+// so it never nags — they can always enable it later from Me / Settings.
+const BIOPAY_OFFERED_KEY = 'z-biopay-offered';
+
+export async function hasOfferedBiometricPay(): Promise<boolean> {
+  return (await AsyncStorage.getItem(BIOPAY_OFFERED_KEY)) === '1';
+}
+
+export async function markBiometricPayOffered(): Promise<void> {
+  await AsyncStorage.setItem(BIOPAY_OFFERED_KEY, '1');
+}
+
 export async function clearSession(): Promise<void> {
   await clearToken();
   await clearTransactionPin();
-  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin']);
+  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', BIOPAY_OFFERED_KEY]);
 }

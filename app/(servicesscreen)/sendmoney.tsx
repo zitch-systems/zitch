@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
+import { getToken, hasTransactionPin, saveTransactionPin, hasOfferedBiometricPay, markBiometricPayOffered } from '@/lib/secureStore';
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
-import { isBiometricAvailable, authenticate } from '@/lib/biometrics';
+import { isBiometricAvailable, authenticate, biometricLabel, setBiometricEnabled } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
@@ -44,6 +44,7 @@ const SendMoney = () => {
   const [amt, setAmt] = useState('');
   const [note, setNote] = useState('');
   const [bankSheet, setBankSheet] = useState(false);
+  const [bankQuery, setBankQuery] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -91,7 +92,12 @@ const SendMoney = () => {
       try {
         const res = await apiJson('/api/transfers/resolve/', { account_number: acct }); // no bank -> auto-detect
         if (cancelled) return;
-        if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
+        // `mock` => the server has no live name-enquiry rail, so the match is a
+        // placeholder, not a real detection. Don't auto-fill it as a verified
+        // bank/holder (that's what looked like "mis-detection") — ask the user to
+        // pick the bank instead (the picker is searchable).
+        if (res.success && res.mock) setBankErr("Couldn't auto-detect — tap “Bank” to choose it.");
+        else if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
         else if (res.success && res.matches?.length) setMatches(res.matches);
         else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
       } catch {
@@ -105,7 +111,7 @@ const SendMoney = () => {
 
   // Manual override: resolve at the specific bank the user picks from the sheet.
   const chooseBank = async (b: Bank) => {
-    setBank(b); setBankSheet(false); setMatches([]); setBankName(''); setBankErr('');
+    setBank(b); setBankSheet(false); setBankQuery(''); setMatches([]); setBankName(''); setBankErr('');
     if (acct.length !== 10) return;
     setResolvingBank(true);
     try {
@@ -150,6 +156,40 @@ const SendMoney = () => {
 
   const idemKey = useRef('');  // stable across retries of one transfer attempt
 
+  // After a PIN-approved transfer, offer (once) to approve future payments with
+  // Face ID / fingerprint instead of the PIN. The money PIN is cached only after
+  // a fresh biometric scan, so the PinPad's biometric shortcut then appears. This
+  // is the only in-flow path that enables "pay with biometrics".
+  const offerBiometricPay = async (pin: string) => {
+    try {
+      if (!(await isBiometricAvailable())) return;        // no hardware / not enrolled
+      if (await hasTransactionPin()) return;              // already set up
+      if (await hasOfferedBiometricPay()) return;         // asked once already — don't nag
+      await markBiometricPayOffered();
+      const kind = await biometricLabel();
+      const label = kind === 'face' ? 'Face ID' : kind === 'fingerprint' ? 'fingerprint' : 'biometrics';
+      Alert.alert(
+        `Approve with ${label}?`,
+        `Use your ${label} to approve payments instead of typing your PIN every time.`,
+        [
+          { text: 'Not now', style: 'cancel' },
+          {
+            text: 'Enable',
+            onPress: async () => {
+              // biometricOnly: tie the cached PIN to the owner's biometric, not the
+              // device passcode.
+              const okScan = await authenticate(`Enable ${label} approval`, true);
+              if (!okScan) return;
+              await setBiometricEnabled(true);
+              await saveTransactionPin(pin);
+              notify('Enabled', `You can now approve payments with ${label}.`);
+            },
+          },
+        ],
+      );
+    } catch { /* offering biometrics must never block the receipt */ }
+  };
+
   const send = async (pin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
@@ -179,7 +219,15 @@ const SendMoney = () => {
         return;
       }
 
-      if (res.success) { idemKey.current = ''; setStep(null); setDone(true); reload(); }
+      if (res.success) {
+        idemKey.current = '';
+        setStep(null);   // close the PIN sheet FIRST…
+        reload();
+        // …then show the receipt once the sheet has animated out. Switching to the
+        // receipt while the modal was still visible left the PIN sheet lingering on
+        // screen on Android. Offer biometric pay over the receipt.
+        setTimeout(() => { setDone(true); offerBiometricPay(pin); }, 300);
+      }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
       else { idemKey.current = ''; notify('Error', res.message || 'Transfer failed'); setStep(null); }
     } catch {
@@ -203,6 +251,7 @@ const SendMoney = () => {
   }
 
   const filteredBens = beneficiaries.filter((b) => (b.name + ' ' + b.account_number).toLowerCase().includes(query.toLowerCase()));
+  const filteredBanks = banks.filter((b) => b.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
 
   return (
     <Screen>
@@ -301,16 +350,22 @@ const SendMoney = () => {
       )}
 
       {/* Bank picker */}
-      <Sheet open={bankSheet} onClose={() => setBankSheet(false)} title="Select bank">
-        {banks.map((b, i) => (
-          <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
-            <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
-            </View>
-            <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
-            {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
-          </Pressable>
-        ))}
+      <Sheet open={bankSheet} onClose={() => { setBankSheet(false); setBankQuery(''); }} title="Select bank">
+        <Field value={bankQuery} onChangeText={setBankQuery} placeholder="Search bank" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
+        <View style={{ height: 6 }} />
+        {filteredBanks.length === 0 ? (
+          <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 16, textAlign: 'center' }}>No bank matches “{bankQuery.trim()}”.</Text>
+        ) : (
+          filteredBanks.map((b, i) => (
+            <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
+              <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
+              </View>
+              <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
+              {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
+            </Pressable>
+          ))
+        )}
       </Sheet>
 
       <ConfirmSheet
