@@ -201,6 +201,11 @@ MONO = {
     "SECRET_KEY": os.environ.get("MONO_SECRET_KEY", ""),
     "PUBLIC_KEY": os.environ.get("MONO_PUBLIC_KEY", ""),
     "WEBHOOK_SECRET": os.environ.get("MONO_WEBHOOK_SECRET", ""),
+    # Bank-linking SIMULATION: when on, the Mono mock flow runs even in production
+    # (DEBUG off) so the link/fund flow is fully testable in a real build without
+    # real Mono keys. No real bank is contacted and no real money moves. Keep it
+    # OFF for a live deployment; set MONO_SIMULATION=true to demo/test.
+    "SIMULATION": env_bool("MONO_SIMULATION", False),
 }
 # SMS / OTP — Sendchamp.
 SENDCHAMP = {

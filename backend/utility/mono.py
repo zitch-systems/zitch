@@ -42,6 +42,24 @@ def mono_live() -> bool:
     return bool(settings.MONO.get("SECRET_KEY"))
 
 
+def mono_simulation() -> bool:
+    """Whether bank-linking SIMULATION is explicitly enabled (MONO_SIMULATION).
+
+    When on, the mock flow is served even in production (so a real build can test
+    the full link/fund flow without Mono keys) — no real bank is contacted and no
+    real money moves. Off by default; never auto-fakes a link on a misconfigured
+    live deploy.
+    """
+    return bool(settings.MONO.get("SIMULATION"))
+
+
+def _mock_blocked() -> bool:
+    """True when a mock response must NOT be served: production, and simulation
+    is not explicitly enabled. (In dev/tests, or with MONO_SIMULATION on, mock is
+    allowed.)"""
+    return mock_disabled_in_prod() and not mono_simulation()
+
+
 def _headers() -> dict:
     return {"mono-sec-key": settings.MONO["SECRET_KEY"], "Content-Type": "application/json"}
 
@@ -89,7 +107,7 @@ def exchange_token(code: str) -> dict:
     link flow is testable offline.
     """
     if not mono_live():
-        if mock_disabled_in_prod():
+        if _mock_blocked():
             return {"success": False, "message": "Bank linking is not configured"}
         seed = hashlib.sha256((code or "x").encode()).hexdigest()[:16]
         return {"success": True, "mock": True, "account_id": f"mock_acct_{seed}"}
@@ -124,7 +142,7 @@ def _parse_account(d: dict) -> dict:
 def get_account(account_id: str) -> dict:
     """Fetch a linked account's details. GET /v2/accounts/{id}."""
     if not mono_live():
-        if mock_disabled_in_prod():
+        if _mock_blocked():
             return {"success": False, "message": "Bank linking is not configured"}
         return {"success": True, "mock": True, "account_id": account_id,
                 "bank_name": "GTBank (mock)", "account_number": "0123456789",
@@ -142,7 +160,7 @@ def get_account(account_id: str) -> dict:
 def get_balance(account_id: str) -> dict:
     """Fetch a linked account's balance. GET /v2/accounts/{id}/balance."""
     if not mono_live():
-        if mock_disabled_in_prod():
+        if _mock_blocked():
             return {"success": False, "message": "Bank linking is not configured"}
         return {"success": True, "mock": True, "balance_naira": Decimal("84200.10")}
     try:
@@ -175,7 +193,7 @@ def initiate_directpay(amount_naira, reference: str, *, email: str = "", name: s
     kobo. MOCK returns a sentinel URL so funding is testable offline.
     """
     if not mono_live():
-        if mock_disabled_in_prod():
+        if _mock_blocked():
             return {"success": False, "message": "Bank funding is not configured"}
         return {"success": True, "mock": True, "reference": reference,
                 "authorization_url": f"mock://mono/directpay/{reference}"}
@@ -225,10 +243,18 @@ def mono_diagnostics() -> dict:
     m = settings.MONO
     out = {"base_url": m["BASE_URL"], "secret_key_set": bool(m.get("SECRET_KEY")),
            "public_key_set": bool(m.get("PUBLIC_KEY")),
-           "webhook_secret_set": bool(m.get("WEBHOOK_SECRET")), "mono_live": mono_live()}
+           "webhook_secret_set": bool(m.get("WEBHOOK_SECRET")), "mono_live": mono_live(),
+           "simulation": mono_simulation()}
     if not mono_live():
+        if mono_simulation():
+            out["status"] = "simulation"
+            out["hint"] = ("MONO_SIMULATION is ON — the mock link/fund flow is served even in "
+                           "production. No real bank is contacted and no real money moves. Set "
+                           "MONO_SECRET_KEY and turn MONO_SIMULATION off to go live.")
+            return out
         out["status"] = "keys_incomplete"
-        out["hint"] = "Set MONO_SECRET_KEY (test key first). Until then bank linking runs in mock mode."
+        out["hint"] = ("Set MONO_SECRET_KEY (test key first), or set MONO_SIMULATION=true to test the "
+                       "flow with the mock provider. Until then bank linking fails closed in production.")
         return out
     out["status"] = "configured"
     out["hint"] = ("Keys present. Verify exchange/balance/DirectPay/webhook field names against the "

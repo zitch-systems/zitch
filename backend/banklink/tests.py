@@ -85,6 +85,46 @@ class MonoLiveTests(SimpleTestCase):
         self.assertFalse(mono.verify_webhook({"event": "x"}, ""))
 
 
+@override_settings(DEBUG=False, TESTING=False)
+class MonoSimulationTests(SimpleTestCase):
+    """In production with no keys the flow fails closed; MONO_SIMULATION=true lets
+    the mock link/fund flow run anyway so a real build can test it (no real money)."""
+
+    NOKEY = {**MONO_LIVE, "SECRET_KEY": ""}
+
+    def test_prod_without_keys_fails_closed(self):
+        with override_settings(MONO={**self.NOKEY, "SIMULATION": False}):
+            self.assertFalse(mono.mono_simulation())
+            r = mono.exchange_token("MONO-SIM-1")
+            self.assertFalse(r["success"])
+            self.assertIn("not configured", r["message"].lower())
+
+    def test_simulation_serves_mock_in_prod(self):
+        with override_settings(MONO={**self.NOKEY, "SIMULATION": True}):
+            self.assertTrue(mono.mono_simulation())
+            r = mono.exchange_token("MONO-SIM-1")
+            self.assertTrue(r["success"])
+            self.assertTrue(r["account_id"].startswith("mock_acct_"))
+            self.assertTrue(mono.get_account(r["account_id"])["success"])
+            self.assertTrue(mono.initiate_directpay(5000, "ZMONO-1", email="a@b.com")["success"])
+            self.assertEqual(mono.mono_diagnostics()["status"], "simulation")
+
+
+@override_settings(DEBUG=False, TESTING=False,
+                   MONO={**MONO_LIVE, "SECRET_KEY": "", "SIMULATION": True})
+class BanklinkSimulationEndpointTests(TestCase):
+    """The Connect endpoint links a demo bank under simulation, even in prod."""
+
+    def test_connect_links_demo_bank_under_simulation(self):
+        client = Client()
+        _, token = make_user("08055500001", "sim@zitch.app")
+        r = client.post("/api/banklink/connect/",
+                        data=json.dumps({"code": "MONO-SIM-1", "access_token": token}),
+                        content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["account"]["bank_name"])
+
+
 class BanklinkEndpointTests(TestCase):
     def setUp(self):
         self.client = Client()

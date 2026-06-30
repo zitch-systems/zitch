@@ -52,6 +52,25 @@ https://<your-api-host>/api/banklink/webhook/
 This settles **Fund Zitch** (DirectPay debit-in) credits idempotently and marks
 accounts active/reauth on connect events.
 
+### Simulate without Mono keys (testing / demo in a real build)
+
+In production (`DJANGO_DEBUG` off) the Mono flow **fails closed** when no
+`MONO_SECRET_KEY` is set — so the app shows *“Bank linking is not configured”*,
+and the app's **Simulate** button is rejected by the server. To test the whole
+link/fund flow in a live build **without** real Mono keys, turn on simulation:
+
+```bash
+MONO_SIMULATION=true     # serve the mock link/fund flow even in production
+```
+
+With it on, tapping **Connect a bank → Simulate** links a **demo** bank account
+(mock balance, masked number) so the Connected-accounts UI is fully testable. No
+real bank is contacted and **no real money moves** (funding shows “test mode” and
+is not credited — there is no webhook). Leave `MONO_SIMULATION` **off** (the
+default) for a live deployment, and set `MONO_SECRET_KEY` to link real banks.
+`GET/POST /api/utility/mono-diagnose` (or `utility.mono.mono_diagnostics()`)
+reports whether simulation is on.
+
 ## 3. Endpoints (all live)
 
 | Endpoint | Purpose |
