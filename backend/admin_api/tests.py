@@ -399,6 +399,23 @@ class AdminApiFeatureTests(TestCase):
         self.assertEqual(body2["reference"], body1["reference"])
         self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))  # once
 
+    def test_wallet_credit_without_key_dedups_double_submit(self):
+        # No client idempotency_key -> a server-side fallback key still dedups a
+        # double-submit (the unique constraint skips blank keys, so without the
+        # fallback an empty key would credit twice).
+        body = {"uid": self.customer.id, "amount": "500", "reason": "Goodwill no-key"}
+        self.post("wallet/credit", self.finance_token, body)
+        self.post("wallet/credit", self.finance_token, body)
+        self.assertEqual(Wallet.objects.get(user=self.customer).balance, Decimal("1500"))  # 1000 + 500 once
+
+    def test_wallet_credit_rejects_staff_target(self):
+        # Operators can't credit a staff account (incl. their own): _get_user is
+        # scoped to customers, so a staff uid is "not found".
+        res, _ = self.post("wallet/credit", self.finance_token,
+                           {"uid": self.finance.id, "amount": "500", "reason": "self credit attempt"})
+        self.assertEqual(res.status_code, 404)
+        self.assertEqual(Wallet.objects.filter(user=self.finance).count(), 0)  # nothing credited
+
     def test_wallet_credit_validation_and_rbac(self):
         res, _ = self.post("wallet/credit", self.finance_token,
                            {"uid": self.customer.id, "amount": "-5", "reason": "valid reason"})

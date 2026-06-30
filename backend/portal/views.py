@@ -271,7 +271,7 @@ def kyc_queue(request):
         {
             "user": (f"{u.first_name} {u.last_name}".strip() or u.username),
             "id": u.id,
-            "type": "nin" if (u.nin and not u.nin_verified) else ("bvn" if u.bvn else "pending"),
+            "type": "nin" if (u.nin_hash and not u.nin_verified) else ("bvn" if u.bvn_hash else "pending"),
             "submitted": u.date_joined.isoformat(),
             "note": f"BVN {'✓' if u.bvn_verified else '—'} · NIN {'✓' if u.nin_verified else '—'} · Face {'✓' if u.face_verified else '—'}",
             "tier": f"{u.tier} → {min(u.tier + 1, 3)}",

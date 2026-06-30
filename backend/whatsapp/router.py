@@ -710,6 +710,14 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     """Debit -> provider -> settle via the shared run_provider_purchase, then
     reply with the receipt / processing / failure line. On success the receipt
     carries the biller logo (or the Zitch mark) when `logo_url` is given."""
+    # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
+    # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
+    # this without the guided flow's own send_limit_error check, which would
+    # otherwise let a Tier-3-without-face user skip the >=₦100k face requirement).
+    send_msg = send_limit_error(user, amount)
+    if send_msg:
+        _clear_actions(msisdn)
+        return reply(msisdn, send_msg)
     bill_limit_msg = daily_limit_error(user, amount, "bill")
     if bill_limit_msg:
         _clear_actions(msisdn)

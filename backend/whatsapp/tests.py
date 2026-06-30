@@ -457,6 +457,24 @@ class AiIntentTests(TestCase):
             self.inbound("load 200 mtn airtime for 08099998888", "a1")
         self.assertIn("Confirm airtime", self.last_reply())
 
+    def test_freeform_airtime_fast_path_enforces_face_gate(self):
+        # Regression: the AI-prefilled airtime fast-path skipped the >=₦100k face
+        # step-up that the guided flow enforces. _run_vtu now gates every path, so a
+        # Tier-3-without-face user can't buy >=₦100k airtime by going through the AI.
+        self.user.tier = 3
+        self.user.face_verified = False
+        self.user.save(update_fields=["tier", "face_verified"])
+        w = get_or_create_wallet(self.user)
+        w.balance = Decimal("300000")
+        w.save(update_fields=["balance"])
+        with self._stub({"name": "buy_airtime",
+                         "input": {"amount": 120000, "phone": "08099998888", "network": "MTN"}}):
+            self.inbound("load 120k mtn airtime for 08099998888", "fg1")
+        self.assertIn("Confirm airtime", self.last_reply())  # fast-path jumps to confirm
+        self.inbound("1234", "fg2")                          # PIN -> reaches _run_vtu
+        self.assertIn("Face verification", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("300000"))  # not debited
+
     def test_clarify_shows_menu(self):
         with self._stub({"name": "clarify", "input": {"reason": "unsupported"}}):
             self.inbound("tell me a joke", "c1")

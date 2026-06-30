@@ -463,10 +463,16 @@ def bootstrap(request):
 # Write actions — each enforces a capability and appends to the AuditLog.
 # --------------------------------------------------------------------------- #
 def _get_user(uid):
+    """Resolve a CUSTOMER (non-staff) user for an operations write action.
+
+    Scoped to is_staff=False (mirroring the portal app) so a back-office operator
+    can't freeze/credit/KYC-flip another operator — or their OWN account, since
+    operators are staff. Keeps these endpoints to the customer base they target.
+    """
     from accounts.models import User
 
     try:
-        return User.objects.get(pk=int(uid))
+        return User.objects.get(pk=int(uid), is_staff=False)
     except (User.DoesNotExist, TypeError, ValueError):
         return None
 
@@ -926,7 +932,7 @@ def wallet_credit(request):
     (wallet.services.credit): atomic, row-locked, and idempotent under the
     client key, so an operator double-click can never credit twice. A reason is
     mandatory and lands in both the ledger row's meta and the audit log."""
-    from common.http import idempotent_replay, parse_amount
+    from common.http import idempotent_replay, parse_amount, spend_key
     from wallet.services import DuplicateTransaction, credit, existing_for_key, get_or_create_wallet
 
     u = _get_user(request.data.get("uid"))
@@ -938,7 +944,11 @@ def wallet_credit(request):
     reason = (request.data.get("reason") or "").strip()
     if len(reason) < 5:
         return fail("A reason (min 5 characters) is required for manual credits")
-    key = (request.data.get("idempotency_key") or "").strip()
+    # Derive a server-side idempotency key when the client omits one: the ledger's
+    # unique (user, idempotency_key) constraint is PARTIAL (excludes ""), so a blank
+    # key would let a double-submit credit twice. spend_key falls back to a
+    # deterministic per-(user, amount, reason) key within a short window.
+    key = spend_key(request.data.get("idempotency_key"), u, "manual_credit", amount, reason)
     replay = idempotent_replay(existing_for_key(u, key))
     if replay is not None:
         return replay
