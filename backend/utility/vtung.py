@@ -30,11 +30,14 @@ customer-verification endpoint path, the prepaid-meter token field, the 9mobile
 service_id, and that your data/cable variation_id codes match VTU.ng's. All are
 isolated in the maps/constants below.
 """
+import logging
 import secrets
 
 import requests
 from django.conf import settings
 from django.core.cache import cache
+
+log = logging.getLogger("zitch")
 
 VT_TIMEOUT = 30
 _TOKEN_CACHE_KEY = "vtung_jwt_token"
@@ -88,11 +91,19 @@ def _login() -> str:
         resp = requests.post(f"{_base()}/{_TOKEN_PATH}",
                              json={"username": cfg["USERNAME"], "password": cfg["PASSWORD"]},
                              timeout=VT_TIMEOUT)
-        token = (resp.json() or {}).get("token", "")
+        body = resp.json() or {}
+        # Accept the token at the top level or nested under "data" (provider JSON
+        # shapes vary); without this a nested token reads as "" and every call goes
+        # out unauthenticated -> 401 -> the purchase looks like a provider failure.
+        token = body.get("token", "") or (body.get("data") or {}).get("token", "")
     except (requests.RequestException, ValueError):
         return ""
     if token:
         cache.set(_TOKEN_CACHE_KEY, token, _TOKEN_TTL)
+    else:
+        # Surface a silent auth failure instead of letting it masquerade as a VTU
+        # failure (which would refund the user but never explain why).
+        log.warning("vtung_login_no_token status=%s", getattr(resp, "status_code", "?"))
     return token
 
 
@@ -215,6 +226,15 @@ def vt_purchase(service_id: str, payload: dict, reference: str | None = None) ->
     endpoint, json_body = _build(service_id, payload, ref)
     if endpoint is None:
         return {"success": False, "message": f"Unsupported service: {service_id}"}
+    if not _token():
+        # Configured (_live) but no usable token — the JWT login failed (wrong
+        # VTUNG_USERNAME/PASSWORD, or the account's JWT auth isn't enabled). Don't
+        # send a guaranteed-bad "Bearer " header (VTU.ng answers the cryptic
+        # "Authorization header malformed"); fail clearly so the wallet refunds and
+        # ops can see the cause (also logged in _login as vtung_login_no_token).
+        log.warning("vtung_purchase_no_token service=%s", service_id)
+        return {"success": False,
+                "message": "Airtime provider sign-in failed — please try again shortly."}
     try:
         return _parse(_request("POST", endpoint, json_body=json_body))
     except requests.RequestException as exc:

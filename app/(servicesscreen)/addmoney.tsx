@@ -13,10 +13,10 @@ import { useTheme, font } from '@/lib/theme';
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
 // Funding is bank-transfer only: the user transfers to their dedicated Zitch
-// (Monnify reserved) account and the wallet is credited automatically by the
-// webhook — no card checkout. The account is minted through Monnify's own
-// onboarding: the user enters their BVN here and Monnify verifies it and issues
-// the NUBAN (no separate in-app KYC step needed first).
+// (Kora reserved) account and the wallet is credited automatically by the
+// webhook — no card checkout. The account is minted through Kora's reserved-
+// account onboarding: the user enters their BVN here and Kora verifies it and
+// issues the NUBAN (no separate in-app KYC step needed first).
 const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);

@@ -48,6 +48,7 @@ const SendMoney = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
 
   useEffect(() => {
@@ -116,7 +117,10 @@ const SendMoney = () => {
     setResolvingBank(true);
     try {
       const res = await apiJson('/api/transfers/resolve/', { account_number: acct, bank: b.code });
-      if (res.success && res.name) setBankName(res.name);
+      // `mock` => no live name-enquiry rail; don't present the stub name as a
+      // verified holder (parity with the auto-detect path).
+      if (res.success && res.mock) setBankErr('Account name check is unavailable right now — double-check the number before sending.');
+      else if (res.success && res.name) setBankName(res.name);
       else setBankErr(res.message || "Couldn't verify this account at that bank.");
     } catch { setBankErr("Couldn't verify this account. Please try again."); }
     finally { setResolvingBank(false); }
@@ -222,6 +226,7 @@ const SendMoney = () => {
 
       if (res.success) {
         idemKey.current = '';
+        if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
         setStep(null);   // close the PIN sheet FIRST…
         reload();
         // …then show the receipt once the sheet has animated out. Switching to the
@@ -239,12 +244,15 @@ const SendMoney = () => {
   if (done) {
     const acctShown = picked ? picked.account_number : mode === 'bank' ? acct : identifier;
     const bankShown = picked ? picked.bank_name : mode === 'bank' ? bank?.name || 'Bank' : 'Zitch';
+    // Prefer the name the bank actually resolved to (returned by the send), so the
+    // receipt reflects who was really paid — not a possibly-stale displayed name.
+    const finalName = sentName || recipientName;
     return (
       <Screen scroll={false}>
         <Receipt
           title="Money sent"
-          message={`${money(amount)} sent to ${recipientName || 'recipient'}.`}
-          rows={[['Recipient', recipientName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
+          message={`${money(amount)} sent to ${finalName || 'recipient'}.`}
+          rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />
       </Screen>

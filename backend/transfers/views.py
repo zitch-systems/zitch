@@ -5,6 +5,7 @@ keys are set this runs in MOCK mode and resolves/settles automatically so the
 flow is testable. Money still moves correctly out of the wallet ledger.
 """
 import json
+import re
 
 from django.views.decorators.csrf import csrf_exempt
 
@@ -20,6 +21,24 @@ from wallet.services import existing_for_key, reverse_transfer, settle_payout
 
 from .models import Bank
 from .services import PayoutError, detect_account_banks, execute_payout
+
+
+def _name_tokens(name: str) -> set:
+    """Significant word tokens of a holder name, lowercased (drops 1-char bits
+    and common prefixes), for tolerant comparison."""
+    drop = {"mr", "mrs", "ms", "dr", "miss"}
+    toks = re.sub(r"[^a-z ]", " ", (name or "").lower()).split()
+    return {t for t in toks if len(t) > 1 and t not in drop}
+
+
+def _names_match(shown: str, resolved: str) -> bool:
+    """Whether the holder name the user confirmed matches the freshly-resolved
+    account holder. Tolerant of word order, middle names and prefixes: matches if
+    they share >=2 tokens, or one name's tokens are a subset of the other's."""
+    a, b = _name_tokens(shown), _name_tokens(resolved)
+    if not a or not b:
+        return False
+    return len(a & b) >= 2 or a <= b or b <= a
 
 
 @api
@@ -125,12 +144,26 @@ def bank_transfer(request):
         return daily_err
 
     note = data.get("note", "")
-    # Resolve server-side for the authoritative account name — Kora rejects a
-    # payout whose name doesn't match the enquiry, and we don't trust the client.
+    # Resolve server-side for the authoritative account name (name enquiry at the
+    # submitted bank), then ENFORCE that it matches the holder the user confirmed
+    # in the app. Routing is purely by {account_number, bank_code}, so without this
+    # a stale/auto-detected/wrong bank could send to a different real person while
+    # the app showed the expected name — money leaves to the wrong account.
     resolved = payout_resolve_account(acct, bank.bank_code)
     if not resolved.get("success"):
         return fail(resolved.get("message", "Could not verify this account number"), status=400)
-    name = resolved.get("name") or (data.get("name") or "Bank recipient").strip()
+    resolved_name = (resolved.get("name") or "").strip()
+    shown_name = (data.get("name") or "").strip()
+    # Only enforce on a LIVE enquiry. In mock mode (no Kora name-enquiry) the
+    # resolved name is a fixed stub, so comparing it would false-block.
+    if (not resolved.get("mock") and shown_name and resolved_name
+            and not _names_match(shown_name, resolved_name)):
+        # Block: the account resolves to someone other than who the user confirmed.
+        return fail(
+            f"This account belongs to {resolved_name}, not {shown_name}. "
+            "Re-check the account number and bank before sending.",
+            status=409, code="account_mismatch", resolved_name=resolved_name)
+    name = resolved_name or shown_name or "Bank recipient"
 
     try:
         txn = execute_payout(user, amount, acct, bank, name, note=note, idempotency_key=key)
@@ -145,9 +178,10 @@ def bank_transfer(request):
     wallet = get_or_create_wallet(user)
     if txn.transaction_status == Transaction.PENDING:
         # Rail queued it but hasn't confirmed — don't claim "sent".
-        return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference,
+        return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
                   message="Your transfer is processing and will be confirmed shortly.")
-    return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, message="Money sent")
+    return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
+              message="Money sent")
 
 
 @csrf_exempt
