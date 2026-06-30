@@ -8,9 +8,10 @@ import { useTheme, font } from '@/lib/theme';
 // (v2: <MonoProvider> + useMonoConnect().init()). That native module only exists
 // in a custom dev build / EAS build — NOT in Expo Go or Node (jest). We load it
 // with an optional require() so the JS bundle never crashes when it's absent;
-// there we fall back to a SIMULATED "Connecting…" sheet that returns an
-// obviously-fake `MONO-SIM-…` code the backend rejects, so the whole flow is
-// testable everywhere while only real builds can actually link a bank.
+// there we fall back to a SIMULATED "Connecting…" sheet that returns a
+// `MONO-SIM-…` code. The backend links a demo bank for it only when the server
+// has MONO_SIMULATION enabled (or is in dev) — otherwise it fails closed — so the
+// flow is testable in any build while a live deploy never fakes a real link.
 const PUBLIC_KEY = process.env.EXPO_PUBLIC_MONO_PUBLIC_KEY ?? '';
 
 let SDK: any = null;
@@ -84,7 +85,7 @@ export const MonoLauncherProvider = ({ children }: { children: React.ReactNode }
             <ActivityIndicator color={c.brand} />
             <Text style={{ fontSize: 16, fontFamily: font.extrabold, color: c.ink1, marginTop: 16 }}>Connecting your bank…</Text>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, textAlign: 'center', marginTop: 8, lineHeight: 19 }}>
-              Dev preview — the real Mono widget needs the native build. Simulate a result to test the flow.
+              Test mode — real bank linking needs the native Mono build. Tap Simulate to link a demo bank and test the flow.
             </Text>
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 20, alignSelf: 'stretch' }}>
               <Pressable
