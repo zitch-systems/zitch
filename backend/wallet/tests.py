@@ -143,13 +143,13 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["success"])
         self.assertTrue(body["account_number"])
-        # The one BVN step both provisions the account AND records KYC: the user is
-        # marked BVN-verified and lifted to tier 2 (BVN-or-NIN).
+        # The one BVN step provisions the account AND records BVN verification, but
+        # the user stays Tier 0 until NIN is also verified (Tier 1 = BVN + NIN).
         self.assertTrue(body["bvn_verified"])
-        self.assertEqual(body["tier"], 2)
+        self.assertEqual(body["tier"], 0)
         u = User.objects.get(pk=self.user.pk)
         self.assertTrue(u.bvn_verified)
-        self.assertEqual(u.tier, 2)
+        self.assertEqual(u.tier, 0)
         self.assertEqual(u.bvn_last4, "0099")          # stored hashed, last-4 only
         self.assertFalse(hasattr(u, "bvn"))            # never the raw number
         # Idempotent: a second call returns the same account, never a second mint.
@@ -254,7 +254,13 @@ class WalletTests(TestCase):
         self.assertEqual(res.json()["code"], "limit_exceeded")
 
     def test_large_transfer_requires_server_side_face_verification(self):
-        _, token = make_user("08030000003", "rich@zitch.test", balance="500000", tier=3)
+        u, token = make_user("08030000003", "rich@zitch.test", balance="500000", tier=2)
+        # Tier 2 (₦200k cap) allows ₦150k, but a >=₦100k transfer still needs the
+        # server-side face flag. Construct the (now-rare) Tier-2-without-face state
+        # directly — face is normally a Tier-2 requirement, so set flags explicitly.
+        User.objects.filter(pk=u.pk).update(
+            bvn_verified=True, nin_verified=True, address_verified=True,
+            face_verified=False, tier=2)
         make_user("08040000004", "x@zitch.test")
         body = {"access_token": token, "identifier": "08040000004",
                 "amount": "150000", "transaction_pin": "1234"}
@@ -265,8 +271,9 @@ class WalletTests(TestCase):
         # A client-asserted face_confirmed must NOT bypass the gate.
         res, _ = self.post("/api/transfer/send/", {**body, "face_confirmed": True})
         self.assertEqual(res.status_code, 403)
-        # Durable, server-side face verification (mock-accepted) clears it.
-        self.post("/api/kyc/face/", {"access_token": token})
+        # Durable, server-side face verification clears it (set directly so the
+        # tier stays 2 — going through /kyc/face/ would recompute it).
+        User.objects.filter(pk=u.pk).update(face_verified=True)
         res, b = self.post("/api/transfer/send/", body)
         self.assertEqual(res.status_code, 200)
         self.assertTrue(b["success"])

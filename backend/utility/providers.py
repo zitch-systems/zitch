@@ -231,6 +231,46 @@ def kyc_verify_face(selfie: str = "") -> dict:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
 
 
+def kyc_verify_address(address: str, document: str = "") -> dict:
+    """Verify a residential address (Tier 2). MOCK accepts offline; LIVE should
+    call the KYC provider's address / proof-of-address endpoint and fail closed
+    without a real pass. VERIFY-BEFORE-LIVE: confirm the endpoint/fields first."""
+    if not _prembly_live():
+        return {"success": True, "mock": True}
+    if not (address or document):
+        return {"success": False, "message": "Enter your residential address"}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/address",
+            json={"address": address, "document": document},
+            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("status")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
+def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
+    """Verify a government-issued ID document (Tier 3): passport / driver's
+    licence / voter's card / NIN slip. MOCK accepts offline; LIVE must call the
+    provider's document-analysis endpoint and fail closed. VERIFY-BEFORE-LIVE."""
+    if not _prembly_live():
+        return {"success": True, "mock": True}
+    if not image:
+        return {"success": False, "message": "Upload a clear photo of your ID document"}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/document/analysis",
+            json={"doc_type": doc_type or "generic", "image": image},
+            headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        return {"success": bool(data.get("status")), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
 # ---------------------------------------------------------------------------
 # KYC — Kora Identity (BVN / NIN / vNIN)
 #

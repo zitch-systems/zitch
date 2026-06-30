@@ -35,15 +35,22 @@ class User(AbstractUser):
     `username` is kept (Django requires it) but we authenticate by phone/email.
     """
 
-    # KYC tier -> per-transaction limit (CBN-style; adjust to your licence).
-    TIER_LIMITS = {1: Decimal("50000"), 2: Decimal("200000"), 3: Decimal("5000000")}
+    # KYC tiers (CBN-style; adjust to your licence). Tier requirements ascend:
+    #   Tier 0 — Unverified: email + phone only (sign-up).
+    #   Tier 1 — Verified:   + BVN AND NIN verified.
+    #   Tier 2 — Enhanced:   + facial (liveness) AND residential-address verified.
+    #   Tier 3 — Premium:    + a government-issued ID document verified.
+    # See recompute_tier(). The per-tier caps below live on the user, so they apply
+    # identically in the app and on WhatsApp.
+    TIER_LIMITS = {0: Decimal("20000"), 1: Decimal("50000"),
+                   2: Decimal("200000"), 3: Decimal("5000000")}
     # Per-day aggregate caps by tier, on top of the per-transaction limit.
-    # WhatsApp onboarding (BVN -> Tier 2) caps at ₦1,000,000 transfers /
-    # ₦100,000 bills a day; full app KYC (Tier 3) raises them. The caps live on
-    # the user, so they apply identically in the app and on WhatsApp.
-    DAILY_TRANSFER_LIMITS = {1: Decimal("50000"), 2: Decimal("1000000"), 3: Decimal("5000000")}
-    DAILY_BILL_LIMITS = {1: Decimal("20000"), 2: Decimal("100000"), 3: Decimal("500000")}
-    # Single transfers at/above this require step-up (face) verification.
+    DAILY_TRANSFER_LIMITS = {0: Decimal("20000"), 1: Decimal("50000"),
+                             2: Decimal("1000000"), 3: Decimal("5000000")}
+    DAILY_BILL_LIMITS = {0: Decimal("10000"), 1: Decimal("20000"),
+                         2: Decimal("100000"), 3: Decimal("500000")}
+    # Single transfers at/above this require step-up (face) verification, which is
+    # a Tier 2 attribute — so a Tier 0/1 customer cannot move >= this in one go.
     LARGE_TXN_THRESHOLD = Decimal("100000")
 
     # Transaction-PIN brute-force policy: after this many wrong PINs in a row,
@@ -58,7 +65,7 @@ class User(AbstractUser):
     pin_locked_until = models.DateTimeField(null=True, blank=True)
 
     # --- KYC ---
-    tier = models.PositiveSmallIntegerField(default=1)
+    tier = models.PositiveSmallIntegerField(default=0)
     # BVN/NIN are never read back by the app (the provider re-checks the value at
     # submit time; only the *_verified flags are ever returned), so the raw number
     # is NOT kept at rest — a DB leak then can't expose it. Instead store a keyed
@@ -70,6 +77,15 @@ class User(AbstractUser):
     nin_last4 = models.CharField(max_length=4, blank=True, default="")
     nin_verified = models.BooleanField(default=False)
     face_verified = models.BooleanField(default=False)
+    # Tier 2: a verified residential address. We keep the (non-sensitive) address
+    # string for support/records and a verified flag the tier logic reads.
+    address = models.CharField(max_length=255, blank=True, default="")
+    address_verified = models.BooleanField(default=False)
+    # Tier 3: a verified government-issued ID document (passport / driver's licence
+    # / voter's card / NIN slip). Only the verified flag and the document type are
+    # retained — never the raw document image.
+    id_document_type = models.CharField(max_length=32, blank=True, default="")
+    id_document_verified = models.BooleanField(default=False)
 
     # Profile photo: storage-relative path (e.g. "avatars/3-ab12.png"); resolved
     # to an absolute URL via MEDIA_URL when returned to the app.
@@ -101,24 +117,33 @@ class User(AbstractUser):
 
     @property
     def transaction_limit(self) -> Decimal:
-        return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[1])
+        return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[0])
 
     @property
     def daily_transfer_limit(self) -> Decimal:
-        return self.DAILY_TRANSFER_LIMITS.get(self.tier, self.DAILY_TRANSFER_LIMITS[1])
+        return self.DAILY_TRANSFER_LIMITS.get(self.tier, self.DAILY_TRANSFER_LIMITS[0])
 
     @property
     def daily_bill_limit(self) -> Decimal:
-        return self.DAILY_BILL_LIMITS.get(self.tier, self.DAILY_BILL_LIMITS[1])
+        return self.DAILY_BILL_LIMITS.get(self.tier, self.DAILY_BILL_LIMITS[0])
 
     def recompute_tier(self) -> None:
-        """Tier 3 needs BVN + NIN; Tier 2 needs one of them; else Tier 1."""
-        if self.bvn_verified and self.nin_verified:
+        """Derive the KYC tier from the verifications completed (ascending):
+        Tier 1 needs BVN AND NIN; Tier 2 adds face AND address; Tier 3 adds a
+        verified government ID document. Anything less is Tier 0 (unverified)."""
+        if (self.bvn_verified and self.nin_verified and self.face_verified
+                and self.address_verified and self.id_document_verified):
             self.tier = 3
-        elif self.bvn_verified or self.nin_verified:
+        elif (self.bvn_verified and self.nin_verified and self.face_verified
+                and self.address_verified):
             self.tier = 2
-        else:
+        elif self.bvn_verified and self.nin_verified:
             self.tier = 1
+        else:
+            self.tier = 0
+
+    def set_address(self, raw: str) -> None:
+        self.address = (raw or "").strip()[:255]
 
     class Meta(AbstractUser.Meta):
         indexes = [
