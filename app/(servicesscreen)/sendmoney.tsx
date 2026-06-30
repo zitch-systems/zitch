@@ -190,14 +190,15 @@ const SendMoney = () => {
     } catch { /* offering biometrics must never block the receipt */ }
   };
 
-  const send = async (pin: string) => {
+  const send = async (pin: string, viaBiometric = false) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
       // Defense-in-depth: a device biometric step-up for large transfers, on top
       // of the transaction PIN and the server-side face_verified gate. If the
       // device has no enrolled biometrics, the PIN + server checks still apply.
-      if (amount >= LARGE_TXN && (await isBiometricAvailable())) {
+      // Skip it when this approval was ITSELF a biometric scan (don't prompt twice).
+      if (!viaBiometric && amount >= LARGE_TXN && (await isBiometricAvailable())) {
         // biometricOnly: don't let the device passcode stand in for the owner's
         // biometric on a large-transfer authorization.
         const okScan = await authenticate(`Authorize ${money(amount)} transfer`, true);
@@ -379,10 +380,12 @@ const SendMoney = () => {
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
-          {busy ? 'Sending…' : `Confirm transfer of ${money(amount)}`}
-        </Text>
-        <PinPad onComplete={(p) => send(p)} busy={busy} error={pinError} />
+        {!busy && (
+          <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+            {`Confirm transfer of ${money(amount)}`}
+          </Text>
+        )}
+        <PinPad onComplete={(p, bio) => send(p, !!bio)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );
