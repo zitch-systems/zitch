@@ -4,8 +4,8 @@ Same money pattern as the utility flows: verify PIN -> debit wallet (pending) ->
 call the aggregator -> settle the ledger (refund on failure).
 """
 from common.http import (
-    api, check_send_limits, fail, idempotent_replay, ok, provider_purchase_response, require_user,
-    spend_key, verify_transaction_pin,
+    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok,
+    provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
 from utility.providers import vtu_purchase
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
@@ -60,9 +60,15 @@ def buy_exam(request):
     if replay:
         return replay
 
+    # Daily aggregate cap (shared "non-transfer spend" bucket) — after the replay
+    # check. The "Exam" label prefix is what _daily_spent matches on.
+    daily_err = check_daily_limit(user, amount, "bill")
+    if daily_err:
+        return daily_err
+
     try:
         status, txn, result = run_provider_purchase(
-            user, amount, f"{product.name} PIN x{quantity}",
+            user, amount, f"Exam PIN · {product.name} x{quantity}",
             {"exam": product.code, "phone": phone, "quantity": quantity},
             lambda ref: vtu_purchase(product.service_id or f"{product.code}-pin",
                                      {"billersCode": phone, "quantity": quantity, "phone": phone}, reference=ref),
