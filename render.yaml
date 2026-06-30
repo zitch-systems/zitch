@@ -7,7 +7,11 @@ services:
     rootDir: backend
     plan: free   # upgrade to "starter" before handling real money (no sleep)
     buildCommand: "./build.sh"
-    startCommand: "gunicorn zitch_api.wsgi:application"
+    # Bind to 0.0.0.0:$PORT so Render's port scan can detect the service. Without
+    # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
+    # Render can't see -> "no open ports detected" and the deploy times out. Render
+    # injects PORT (default 10000, which the health check targets).
+    startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000}"
     healthCheckPath: /healthz
     envVars:
       - key: DJANGO_SECRET_KEY
