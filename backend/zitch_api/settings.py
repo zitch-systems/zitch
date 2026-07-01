@@ -196,6 +196,12 @@ CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
 # only selects the funding rail (hosted checkout + dedicated virtual account).
 # See utility.providers.payment_provider.
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
+# The bank-PAYOUT + recipient name-enquiry rail — "wema" or "kora"; blank => kora
+# (payouts stay on Kora until Wema is explicitly opted in). Set PAYOUT_PROVIDER=wema
+# once WEMA_CHANNEL_ID + WEMA_WALLET_KEY + WEMA_SOURCE_ACCOUNT are configured (or
+# WEMA_SIMULATION=true to test the flow without live keys). See
+# utility.providers.payout_provider.
+PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-account
 # collections need NO IP whitelisting. Blank keys => MOCK; MONNIFY_SIMULATION=true
 # serves the mock fund-in flow even in production (test a real build without live
@@ -228,6 +234,9 @@ WEMA = {
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # Bills Payment (subscribe to enable)
         "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
     },
+    # Our own Wema pool/settlement NUBAN that funds outbound transfers (the
+    # sourceAccountNumber on ProcessClientTransfer). Required for Wema payouts.
+    "SOURCE_ACCOUNT": os.environ.get("WEMA_SOURCE_ACCOUNT", ""),
     "SECURITY_INFO": os.environ.get("WEMA_SECURITY_INFO", ""),
     "SIMULATION": env_bool("WEMA_SIMULATION", False),
 }

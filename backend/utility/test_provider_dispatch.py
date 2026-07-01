@@ -19,14 +19,25 @@ from wallet.models import FundingIntent, Transaction, Wallet
 from wallet.tests import make_user
 
 KORA_LIVE = {"BASE_URL": "https://api.korapay.com/merchant", "SECRET_KEY": "sk_test_x", "PUBLIC_KEY": ""}
+WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
+             "KEYS": {"wallet": "subkey"}, "SOURCE_ACCOUNT": "0100000001",
+             "SECURITY_INFO": "sec", "SIMULATION": False}
 
 
 class ProviderSelectionTests(SimpleTestCase):
-    """Kora is the sole money-movement rail; cards keep the issuer/kora choice."""
+    """Kora is the default payout rail; Wema is opt-in via PAYOUT_PROVIDER."""
 
-    def test_money_rail_is_kora(self):
+    def test_money_rail_defaults_to_kora(self):
         self.assertEqual(P.payment_provider(), "kora")
         self.assertEqual(P.payout_provider(), "kora")
+
+    @override_settings(PAYOUT_PROVIDER="wema")
+    def test_payout_provider_explicit_wema(self):
+        self.assertEqual(P.payout_provider(), "wema")
+
+    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
+    def test_payout_live_tracks_wema_keys_when_selected(self):
+        self.assertTrue(P.payout_live())
 
     def test_card_provider_defaults_to_issuer(self):
         self.assertEqual(P.card_provider(), "issuer")
@@ -69,6 +80,26 @@ class PayoutDispatchTests(SimpleTestCase):
         with patch("utility.kora.resolve_account", return_value={"success": True, "name": "ADA"}) as m:
             P.payout_resolve_account("0123456789", "058")
         m.assert_called_once()
+
+    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
+    def test_payout_send_routes_to_wema_with_source_and_bank_name(self):
+        with patch("utility.wema.transfer",
+                   return_value={"success": True, "status": "SUCCESS"}) as m:
+            P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="Wema Bank")
+        m.assert_called_once()
+        kw = m.call_args.kwargs
+        self.assertEqual(kw["source_account"], "0100000001")       # from WEMA_SOURCE_ACCOUNT
+        self.assertEqual(kw["destination_account"], "0123456789")
+        self.assertEqual(kw["destination_bank_code"], "035")
+        self.assertEqual(kw["destination_bank_name"], "Wema Bank")
+        self.assertEqual(kw["destination_name"], "ADA EZE")
+
+    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
+    def test_payout_resolve_routes_to_wema(self):
+        with patch("utility.wema.resolve_account",
+                   return_value={"success": True, "name": "ADA EZE"}) as m:
+            P.payout_resolve_account("0123456789", "035")
+        m.assert_called_once_with("0123456789", "035")
 
 
 class CardDispatchTests(SimpleTestCase):

@@ -101,7 +101,7 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         raise PayoutError("insufficient", "Insufficient wallet balance.")
 
     result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
-                         bank.bank_code, account_number, name)
+                         bank.bank_code, account_number, name, bank_name=bank.name)
     if not result.get("success"):
         refund(txn)
         raise PayoutError("provider", result.get("message", "Transfer failed"))

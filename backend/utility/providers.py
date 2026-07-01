@@ -502,6 +502,23 @@ def _kora_live() -> bool:
     return kora.kora_live()
 
 
+def _wema_live() -> bool:
+    from . import wema
+    return wema.wema_live()
+
+
+def _wema_payout_ready() -> bool:
+    """Wema can send payouts only with a source (pool) account to debit — live
+    keys or simulation, plus WEMA_SOURCE_ACCOUNT set. In simulation the source
+    account is not enforced (the mock never touches a real pool)."""
+    from . import wema
+    if not (wema.wema_live() or wema.wema_simulation()):
+        return False
+    if wema.wema_simulation():
+        return True
+    return bool(settings.WEMA.get("SOURCE_ACCOUNT"))
+
+
 def payment_provider() -> str:
     """The wallet FUND-IN rail — 'monnify' or 'kora'. Explicit PAYMENT_PROVIDER
     wins; blank => auto (Monnify if its keys/simulation are set, else Kora).
@@ -516,12 +533,20 @@ def payment_provider() -> str:
 
 
 def payout_provider() -> str:
-    """The bank-payout rail — always 'kora'."""
+    """The bank-payout + recipient name-enquiry rail — 'wema' or 'kora'.
+
+    Explicit PAYOUT_PROVIDER wins; blank => 'kora' (payouts stay on Kora until
+    Wema is opted in, so this changes nothing until you flip the env var)."""
+    choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
+    if choice in ("wema", "kora"):
+        return choice
     return "kora"
 
 
 def payout_live() -> bool:
-    """Whether the payout rail has live keys (else MOCK)."""
+    """Whether the selected payout rail has live keys (else MOCK)."""
+    if payout_provider() == "wema":
+        return _wema_live()
     return _kora_live()
 
 
@@ -587,18 +612,36 @@ def funding_account_get(account_reference: str) -> dict:
     return kora.get_virtual_account(account_reference)
 
 
-# --- Payout (bank transfer) dispatch ---
+# --- Payout (bank transfer) dispatch — Wema or Kora, per payout_provider() ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
-    """Name enquiry via Kora."""
+    """Recipient name enquiry via the selected payout rail.
+
+    Returns {success, name, ...}. Both Kora and Wema resolve by
+    (account_number, bank_code); no securityInfo is needed for enquiry."""
+    if payout_provider() == "wema":
+        from . import wema
+        return wema.resolve_account(account_number, bank_code)
     from . import kora
     return kora.resolve_account(account_number, bank_code)
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
-                account_number: str, account_name: str) -> dict:
-    """Single bank payout via Kora. Returns {success, status, ...}; Kora yields
-    success/processing/pending — execute_payout treats PROCESSING/PENDING as
-    not-yet-confirmed."""
+                account_number: str, account_name: str, bank_name: str = "") -> dict:
+    """Single bank payout via the selected rail. Returns {success, status, ...};
+    both rails yield success/processing/pending — execute_payout treats
+    PROCESSING/PENDING as not-yet-confirmed.
+
+    `bank_name` is optional for Kora (routes by code) but sent to Wema, whose
+    ProcessClientTransfer takes destinationBankName alongside the code."""
+    if payout_provider() == "wema":
+        from . import wema
+        source = settings.WEMA.get("SOURCE_ACCOUNT", "")
+        return wema.transfer(
+            amount_naira, reference, narration,
+            source_account=source, destination_account=account_number,
+            destination_bank_code=bank_code, destination_bank_name=bank_name,
+            destination_name=account_name,
+        )
     from . import kora
     return kora.disburse(amount_naira, reference, narration, bank_code,
                          account_number, account_name)
