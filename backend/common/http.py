@@ -47,9 +47,37 @@ def send_limit_error(user, amount) -> str | None:
     return None
 
 
+def check_velocity(user):
+    """Fraud velocity guard: too many outbound money movements in a short window
+    is the signature of a compromised account/PIN being drained. Counts the
+    user's OUT ledger rows in the last 10 minutes against VELOCITY_MAX_OUT_10MIN
+    (settings; default 20 — far above any legitimate human pace). Returns an
+    error JsonResponse to surface, or None. Disabled when the cap is 0."""
+    from django.conf import settings as dj_settings
+
+    cap = int(getattr(dj_settings, "VELOCITY_MAX_OUT_10MIN", 20) or 0)
+    if cap <= 0:
+        return None
+    from wallet.models import Transaction
+
+    recent = Transaction.objects.filter(
+        user=user, direction=Transaction.OUT,
+        created__gte=timezone.now() - timedelta(minutes=10),
+    ).count()
+    if recent >= cap:
+        log.warning("velocity_blocked user=%s recent_out=%s cap=%s", user.id, recent, cap)
+        return fail("Too many transactions in a short time. Please wait a few minutes and try again.",
+                    status=429, code="velocity")
+    return None
+
+
 def check_send_limits(user, amount):
     """HTTP wrapper around `send_limit_error`: returns an error JsonResponse if
-    `amount` breaks a limit, otherwise None."""
+    `amount` breaks a limit, otherwise None. Also applies the fraud velocity
+    guard (check_velocity) — every money-send path funnels through here."""
+    velocity = check_velocity(user)
+    if velocity is not None:
+        return velocity
     if amount > user.transaction_limit:
         return fail(
             send_limit_error(user, amount),
