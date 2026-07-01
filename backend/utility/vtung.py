@@ -159,7 +159,7 @@ def vtu_probe() -> dict:
                                "long-lived VTUNG_API_KEY instead.")
         return out
     try:
-        body = _request("GET", "balance")
+        body = _request("GET", f"{_V2}/balance")
         bal = (body.get("data") or {}).get("balance", body.get("balance"))
         out["balance"] = {"ok": bal is not None, "balance": str(bal) if bal is not None else "",
                           "raw": str(body)[:300]}
