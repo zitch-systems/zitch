@@ -53,9 +53,11 @@ _PATH = {
     "acct_mgt": "/ws-acct-mgt",              # balance + transaction history
     "credit": "/credit-wallet",              # fund a wallet from the channel account
     "debit": "/debit-wallet",                # payout / name enquiry / banks
+    "airtime": "/airtime-data",              # airtime + data (VAS)
+    "bills": "/bills-payment",               # bills payment (VAS)
 }
 # Products whose channel-id header is `access` (not `x-api-key`).
-_ACCESS_PRODUCTS = {"credit", "debit"}
+_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills"}
 
 
 def wema_live() -> bool:
@@ -423,6 +425,170 @@ def credit_wallet(amount_naira, reference: str, narration: str, *, destination_a
         return _parse_transfer(data, reference)
     except requests.RequestException as exc:
         return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# VAS — airtime / data / bills (opt-in; VTU.ng stays the default)
+#
+# The Client (single-account) variants debit the user's own NUBAN
+# (accountNumber / customerAccount) — matching the per-user-balance model — so
+# `source_account` is the sender's wallet.account_number (falls back to the pool
+# WEMA_SOURCE_ACCOUNT). Money-movement calls carry securityInfo (nullable in
+# sandbox). Purchases mirror the VTU contract: success => delivered; a network
+# error returns pending=True so the caller never refunds a maybe-delivered buy.
+# Data/bills need Wema's own packageCode/packageId catalog (differs from our
+# stored VTU.ng codes) — see docs/wema-migration.md.
+# ---------------------------------------------------------------------------
+def _vas_live(product: str) -> bool:
+    """Whether the VAS product (airtime/bills) has its subscription key + channel."""
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key(product))
+
+
+def _vas_source() -> str:
+    return settings.WEMA.get("SOURCE_ACCOUNT", "")
+
+
+def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
+                     source_account: str = "") -> dict:
+    """Airtime purchase debiting the user's NUBAN (Client single-account variant)."""
+    if not _vas_live("airtime"):
+        if _mock_blocked():
+            return {"success": False, "message": "Airtime is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Airtime is temporarily unavailable"}
+    try:
+        body = {"transactionReference": reference, "accountNumber": src, "network": network,
+                "phoneNumber": phone, "amount": float(amount_naira),
+                "securityInfo": _security_info(op="airtime", reference=reference, amount=amount_naira),
+                "clientId": settings.WEMA.get("CHANNEL_ID", "")}
+        data = _post("airtime", "/api/Airtime/Client/PurchaseAirtime", body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def get_data_plans(network: str = "") -> dict:
+    """Wema's own data-plan catalog (packageCode differs from our stored codes)."""
+    if not _vas_live("airtime"):
+        if _mock_blocked():
+            return {"success": False, "message": "Data is not configured"}
+        return {"success": True, "mock": True, "plans": []}
+    try:
+        data = _get("airtime", "/api/Data/GetDataPlans", {"network": network} if network else None).json()
+        raw = data.get("result", []) or []
+        return {"success": _ok(data) or bool(data.get("successful")),
+                "plans": raw if isinstance(raw, list) else [raw], "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def purchase_data(amount_naira, reference: str, phone: str, network: str, package_code: str, *,
+                  source_account: str = "") -> dict:
+    """Data purchase (Client single-account). `package_code` is Wema's plan code."""
+    if not _vas_live("airtime"):
+        if _mock_blocked():
+            return {"success": False, "message": "Data is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Data is temporarily unavailable"}
+    try:
+        body = {"transactionReference": reference, "accountNumber": src, "phoneNumber": phone,
+                "packageCode": package_code, "amount": float(amount_naira), "network": network,
+                "securityInfo": _security_info(op="data", reference=reference, amount=amount_naira),
+                "clientId": settings.WEMA.get("CHANNEL_ID", "")}
+        data = _post("airtime", "/api/Data/Client/PurchaseData", body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def get_bills() -> dict:
+    """Wema biller catalog (packageId differs from our VTU.ng service ids)."""
+    if not _vas_live("bills"):
+        if _mock_blocked():
+            return {"success": False, "message": "Bills are not configured"}
+        return {"success": True, "mock": True, "bills": []}
+    try:
+        data = _get("bills", "/api/BillsPayment/GetAllBills").json()
+        raw = data.get("result", []) or []
+        return {"success": _ok(data) or bool(data.get("successful")),
+                "bills": raw if isinstance(raw, list) else [raw], "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def validate_bill_customer(identifier: str, package_id: str) -> dict:
+    """Validate a bill customer identifier (meter/smartcard) -> customer name."""
+    if not _vas_live("bills"):
+        if _mock_blocked():
+            return {"success": False, "message": "Bills are not configured"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
+    try:
+        body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "identifier": identifier,
+                "packageId": package_id}
+        data = _post("bills", "/api/BillsPayment/ValidateCustomer", body).json()
+        r = data.get("result", {}) or {}
+        return {"success": _ok(data) or bool(data.get("successful")),
+                "name": r.get("customerName") or r.get("name", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, source_account: str = "",
+             email: str = "", phone: str = "", name: str = "", charge=0) -> dict:
+    """Pay a bill debiting the user's NUBAN (Client PayBill variant)."""
+    if not _vas_live("bills"):
+        if _mock_blocked():
+            return {"success": False, "message": "Bills are not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Bill payment is temporarily unavailable"}
+    try:
+        body = {"clientId": settings.WEMA.get("CHANNEL_ID", ""), "customerAccount": src,
+                "amount": float(amount_naira), "charge": float(charge),
+                "transactionReference": reference, "packageId": package_id,
+                "customerIdentifier": identifier, "customerEmail": email,
+                "customerPhoneNumber": phone, "customerName": name,
+                "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
+        data = _post("bills", "/api/Shared/PayBill", body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def vas_status(reference: str, txn_type: str = "") -> dict:
+    """Requery a VAS purchase by our transactionReference (settle/refund helper)."""
+    product = "bills" if txn_type == "bill" else "airtime"
+    if not _vas_live(product):
+        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
+    try:
+        path = ("/api/PartnerPayment/checktransactionstatus" if product == "bills"
+                else "/api/PartnerPayment/CheckTransactionStatus")
+        body = {"transactionReference": reference}
+        if product != "bills":
+            body["transactionType"] = txn_type or "airtime"
+        data = _post(product, path, body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def _parse_vas(data: dict, reference: str) -> dict:
+    """Normalise a VAS response to the {success, pending, status, reference} shape
+    settle_or_refund expects. A recognisably-processing status maps to pending."""
+    r = data.get("result", {}) or {}
+    if not isinstance(r, dict):
+        r = {}
+    status = str(r.get("status") or data.get("status") or "").upper()
+    ok = _ok(data) or bool(data.get("successful"))
+    pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS")
+    return {"success": ok and not pending, "pending": pending, "status": status,
+            "reference": r.get("transactionReference", reference),
+            "message": r.get("message") or _msg(data), "raw": data}
 
 
 # ---------------------------------------------------------------------------

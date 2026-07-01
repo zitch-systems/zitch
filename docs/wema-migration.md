@@ -14,7 +14,26 @@ verified sandbox → live.
 | Payout settlement (no webhook) | — | polled by `reconcile_wema` |
 | Wallet funding account (NUBAN) | `PAYMENT_PROVIDER=wema` | built (OTP flow), opt-in |
 | Inbound deposit crediting (no webhook) | — | polled by `reconcile_wema` |
-| VAS / cards / KYC | — | not yet |
+| VAS — **airtime** | `VAS_PROVIDER=wema` | built, opt-in (debits user NUBAN) |
+| VAS — data / bills | `VAS_PROVIDER=wema` | client built; **routing deferred** (catalog) |
+| Cards / KYC | — | not yet |
+
+## VAS (airtime / data / bills)
+
+`VAS_PROVIDER=wema` routes **airtime** through Wema's `Client/PurchaseAirtime`,
+debiting the sender's own NUBAN (`accountNumber`) — per-user model. Routing is
+**per-service**: data, cable and electricity stay on VTU.ng regardless, so turning
+Wema VAS on never breaks a service whose catalog isn't mapped.
+
+**Data & bills are deferred** because Wema uses its own `packageCode` (data plans via
+`GetDataPlans`) and `packageId` (billers via `GetAllBills`), which differ from the
+VTU.ng codes stored in our `DataPlan` table / service ids. Before routing data/bills
+through Wema, sync Wema's catalog into the app (a plan/biller mapping step). The Wema
+client functions (`purchase_data`, `get_data_plans`, `get_bills`, `validate_bill_customer`,
+`pay_bill`, `vas_status`) are built and tested, ready for that wiring.
+
+Requires `WEMA_AIRTIME_KEY` (and `WEMA_BILLS_KEY` later). VERIFY-BEFORE-LIVE: the Wema
+network code for airtime (name vs code) and the `clientId` field value.
 
 ## Environment variables
 

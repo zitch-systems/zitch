@@ -202,6 +202,11 @@ PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
 # WEMA_SIMULATION=true to test the flow without live keys). See
 # utility.providers.payout_provider.
 PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
+# The VAS (airtime/data/bills) rail — "wema" or "vtung"; blank => vtung (default).
+# Opt-in: VAS_PROVIDER=wema routes AIRTIME through Wema (debited from the user's own
+# NUBAN); data & bills stay on VTU.ng until Wema's plan/biller catalog is synced.
+# See utility.providers.vas_provider and docs/wema-migration.md.
+VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
 # Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-account
 # collections need NO IP whitelisting. Blank keys => MOCK; MONNIFY_SIMULATION=true
 # serves the mock fund-in flow even in production (test a real build without live
