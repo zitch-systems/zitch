@@ -311,15 +311,30 @@ def _kora_kyc_live() -> bool:
 
 
 def kyc_provider() -> str:
-    """The BVN/NIN/vNIN backend — always 'kora'."""
+    """The BVN/NIN backend — 'monnify' or 'kora'. Explicit KYC_PROVIDER wins;
+    blank => Monnify when its keys/simulation are set (identity stays on the same
+    rail that mints the funding account), else Kora. vNIN always stays on Kora
+    (Monnify has no vNIN product)."""
+    choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
+    if choice in ("monnify", "kora"):
+        return choice
+    from . import monnify
+    # LIVE keys only — MONNIFY_SIMULATION must never move identity checks off a
+    # live-keyed Kora rail onto a mock (simulation exists for the fund-in demo;
+    # identity always fails closed in production without real keys).
+    if monnify.monnify_live():
+        return "monnify"
     return "kora"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via Kora Identity.
+    """Verify a BVN via the selected KYC rail.
 
-    name/DOB/mobile are accepted for call-site compatibility; Kora's lookup is
-    number-based. Fails closed in production without Kora keys; dev/tests mock."""
+    Monnify runs a details-MATCH (uses the supplied name/DOB/phone); Kora's lookup
+    is number-based. Each fails closed in production without keys; dev/tests mock."""
+    if kyc_provider() == "monnify":
+        from . import monnify
+        return monnify.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
     from . import kora
     if not kora.kora_live() and mock_disabled_in_prod():
         return {"success": False, "message": "Identity verification is temporarily unavailable"}
@@ -327,7 +342,10 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
 
 
 def verify_nin(nin: str) -> dict:
-    """Verify a NIN via Kora Identity. Fails closed in prod without keys."""
+    """Verify a NIN via the selected KYC rail. Fails closed in prod without keys."""
+    if kyc_provider() == "monnify":
+        from . import monnify
+        return monnify.verify_nin(nin)
     from . import kora
     if not kora.kora_live() and mock_disabled_in_prod():
         return {"success": False, "message": "Identity verification is temporarily unavailable"}

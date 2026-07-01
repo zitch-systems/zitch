@@ -119,6 +119,54 @@ class PayoutDispatchTests(SimpleTestCase):
         self.assertEqual(m.call_args.kwargs["source_account"], "0199999999")  # sender NUBAN wins over pool
 
 
+MONNIFY_LIVE_KYC = {"BASE_URL": "https://sandbox.monnify.com", "API_KEY": "MK_TEST_x",
+                    "SECRET_KEY": "sk_test_x", "CONTRACT_CODE": "123", "REDIRECT_URL": "",
+                    "SIMULATION": False}
+
+
+class KycDispatchTests(SimpleTestCase):
+    """Production rails: KYC on Monnify (when keyed), Kora as fallback; vNIN Kora."""
+
+    def test_kyc_defaults_to_kora_without_monnify_keys(self):
+        self.assertEqual(P.kyc_provider(), "kora")
+
+    @override_settings(MONNIFY=MONNIFY_LIVE_KYC)
+    def test_kyc_auto_selects_monnify_when_keyed(self):
+        self.assertEqual(P.kyc_provider(), "monnify")
+
+    @override_settings(MONNIFY=MONNIFY_LIVE_KYC, KYC_PROVIDER="kora")
+    def test_explicit_kyc_provider_wins(self):
+        self.assertEqual(P.kyc_provider(), "kora")
+
+    @override_settings(MONNIFY={**MONNIFY_LIVE_KYC, "API_KEY": "", "SECRET_KEY": "",
+                                "CONTRACT_CODE": "", "SIMULATION": True})
+    def test_simulation_alone_does_not_capture_kyc(self):
+        # MONNIFY_SIMULATION (fund-in demo) must not move identity checks off a
+        # live Kora rail onto a mock — auto-select requires LIVE Monnify keys.
+        self.assertEqual(P.kyc_provider(), "kora")
+
+    @override_settings(MONNIFY=MONNIFY_LIVE_KYC)
+    def test_verify_bvn_routes_to_monnify(self):
+        with patch("utility.monnify.verify_bvn", return_value={"success": True}) as mm, \
+             patch("utility.kora.verify_bvn") as mk:
+            P.verify_bvn("22222222222", name="Ada Eze", mobile="080")
+        mm.assert_called_once()
+        self.assertEqual(mm.call_args.kwargs["name"], "Ada Eze")
+        mk.assert_not_called()
+
+    @override_settings(MONNIFY=MONNIFY_LIVE_KYC)
+    def test_verify_nin_routes_to_monnify(self):
+        with patch("utility.monnify.verify_nin", return_value={"success": True}) as mm:
+            P.verify_nin("12345678901")
+        mm.assert_called_once_with("12345678901")
+
+    @override_settings(MONNIFY=MONNIFY_LIVE_KYC)
+    def test_vnin_always_stays_on_kora(self):
+        with patch("utility.kora.verify_vnin", return_value={"success": True}) as mk:
+            P.verify_vnin("AB123456789CDEFG")
+        mk.assert_called_once()
+
+
 class VasDispatchTests(SimpleTestCase):
     def test_vas_provider_defaults_to_vtung(self):
         self.assertEqual(P.vas_provider(), "vtung")

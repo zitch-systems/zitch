@@ -207,6 +207,9 @@ PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # NUBAN); data & bills stay on VTU.ng until Wema's plan/biller catalog is synced.
 # See utility.providers.vas_provider and docs/wema-migration.md.
 VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
+# The BVN/NIN KYC rail — "monnify" or "kora"; blank => auto (Monnify when its keys
+# are set, else Kora). vNIN always stays on Kora. See utility.providers.kyc_provider.
+KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 # Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-account
 # collections need NO IP whitelisting. Blank keys => MOCK; MONNIFY_SIMULATION=true
 # serves the mock fund-in flow even in production (test a real build without live

@@ -278,6 +278,72 @@ def get_virtual_account(account_reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# KYC — BVN details-match + NIN lookup (Monnify VAS)
+#
+# The production KYC rail: Monnify validates the BVN against the holder's name /
+# DOB / phone (details-match) and looks up NIN records, keeping identity on the
+# same provider that mints the funding account. vNIN stays on Kora (Monnify has
+# no vNIN product). Mock when unkeyed; fails closed in prod via _mock_blocked.
+# ---------------------------------------------------------------------------
+def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
+    """Verify a BVN via Monnify's details-match (POST /api/v1/vas/bvn-details-match).
+
+    Monnify doesn't return the holder's data — it MATCHES what we supply, so pass
+    the user's name (and phone/DOB when available). Success requires the request
+    to succeed AND the name (when supplied) not to be a NO_MATCH."""
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if not monnify_live():
+        # Identity NEVER mock-passes in production — deliberately stricter than
+        # _mock_blocked(): MONNIFY_SIMULATION covers the fund-in demo only, and a
+        # simulated KYC pass would upgrade a real tier on a fabricated identity.
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Identity verification is temporarily unavailable"}
+        return {"success": True, "mock": True}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    body = {"bvn": bvn, "name": name, "dateOfBirth": date_of_birth, "mobileNo": mobile}
+    try:
+        resp = requests.post(f"{m['BASE_URL']}/api/v1/vas/bvn-details-match",
+                             json=body, headers=headers, timeout=REQUEST_TIMEOUT)
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        ok = bool(data.get("requestSuccessful"))
+        name_match = ((rb.get("name") or {}).get("matchStatus") or "").upper()
+        if ok and name and name_match == "NO_MATCH":
+            return {"success": False, "message": "This BVN does not match your name", "raw": data}
+        return {"success": ok, "match": name_match, "raw": data,
+                "message": data.get("responseMessage", "")}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def verify_nin(nin: str) -> dict:
+    """Verify a NIN via Monnify (POST /api/v1/vas/nin-details) -> holder details."""
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    if not monnify_live():
+        # Same fail-closed rule as verify_bvn: simulation never mocks identity.
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Identity verification is temporarily unavailable"}
+        return {"success": True, "mock": True}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    try:
+        resp = requests.post(f"{m['BASE_URL']}/api/v1/vas/nin-details",
+                             json={"nin": nin}, headers=headers, timeout=REQUEST_TIMEOUT)
+        data = resp.json()
+        return {"success": bool(data.get("requestSuccessful")), "raw": data,
+                "message": data.get("responseMessage", "")}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
 # Webhooks
 # ---------------------------------------------------------------------------
 def verify_webhook(body: bytes, signature: str) -> bool:
