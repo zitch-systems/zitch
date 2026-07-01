@@ -210,6 +210,11 @@ VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
 # The BVN/NIN KYC rail — "monnify" or "kora"; blank => auto (Monnify when its keys
 # are set, else Kora). vNIN always stays on Kora. See utility.providers.kyc_provider.
 KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
+# Fraud velocity guard: max outbound money movements per user per 10 minutes
+# (common.http.check_velocity, applied on every send path). 0 disables. Off in
+# tests (suites legitimately hammer one user far faster than any human).
+VELOCITY_MAX_OUT_10MIN = 0 if TESTING else int(os.environ.get("VELOCITY_MAX_OUT_10MIN", "20"))
+# (Observability: the Sentry init lives at the bottom of this file — already wired.)
 # Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-account
 # collections need NO IP whitelisting. Blank keys => MOCK; MONNIFY_SIMULATION=true
 # serves the mock fund-in flow even in production (test a real build without live
