@@ -395,6 +395,42 @@ def credit_kora_virtual_account_funding(data: dict) -> Transaction | None:
     return txn
 
 
+# Account-reference prefix that marks a wallet as provisioned on Wema/ALAT (vs
+# Kora/Monnify's "ZITCH-WALLET-"). Wema has no inbound-credit webhook, so these
+# wallets are the ones the reconcile_wema poller sweeps for deposits.
+WEMA_ACCOUNT_REF_PREFIX = "WEMA-WALLET-"
+
+
+def wema_account_reference(user) -> str:
+    return f"{WEMA_ACCOUNT_REF_PREFIX}{user.id}"
+
+
+def wema_provisioned_wallets():
+    """Wallets whose funding account lives on Wema (have a NUBAN + our Wema ref).
+
+    These are polled for inbound credits because ALAT exposes no funding webhook."""
+    return (Wallet.objects
+            .filter(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
+            .exclude(account_number=""))
+
+
+def apply_wema_credit(wallet, tx: dict) -> Transaction | None:
+    """Credit `wallet` for one inbound Wema transaction-history row, exactly once.
+
+    Skips non-credit / zero rows. Idempotent on Wema's per-transaction referenceId
+    (the ledger's unique `reference`), so re-polling the same window never
+    double-credits. Returns the credit row if this call applied it, else None.
+    """
+    from utility import wema
+
+    norm = wema.normalize_transaction(tx)
+    if not norm["is_credit"] or not norm["reference"] or not norm["amount_naira"]:
+        return None
+    if norm["amount_naira"] <= Decimal("0"):
+        return None
+    return settle_reserved_funding(norm["reference"], norm["amount_naira"], wallet.user)
+
+
 @db_transaction.atomic
 def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "") -> tuple[Transaction, Transaction]:
     """Move funds between two Zitch wallets atomically.

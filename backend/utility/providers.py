@@ -520,11 +520,13 @@ def _wema_payout_ready() -> bool:
 
 
 def payment_provider() -> str:
-    """The wallet FUND-IN rail — 'monnify' or 'kora'. Explicit PAYMENT_PROVIDER
-    wins; blank => auto (Monnify if its keys/simulation are set, else Kora).
-    Payouts + recipient name-enquiry always stay on Kora regardless."""
+    """The wallet FUND-IN rail — 'wema', 'monnify' or 'kora'. Explicit
+    PAYMENT_PROVIDER wins; blank => auto (Monnify if its keys/simulation are set,
+    else Kora). Wema funds by bank transfer to an OTP-provisioned NUBAN (no hosted
+    checkout, no webhook — deposits are reconciled by the reconcile_wema poller),
+    so it is opt-in only (never auto-selected)."""
     choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "kora"):
+    if choice in ("wema", "monnify", "kora"):
         return choice
     from . import monnify
     if monnify.monnify_live() or monnify.monnify_simulation():
@@ -566,7 +568,13 @@ def card_provider() -> str:
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
     """Start a hosted-checkout funding charge -> {success, authorization_url}."""
-    if payment_provider() == "monnify":
+    prov = payment_provider()
+    if prov == "wema":
+        # Wema/ALAT has no hosted checkout — funding is by bank transfer to the
+        # user's NUBAN (credited by the reconcile_wema poller). Fail gracefully.
+        return {"success": False,
+                "message": "Top up by bank transfer to your account number."}
+    if prov == "monnify":
         from . import monnify
         return monnify.payment_initialize(email, amount_naira, reference,
                                           name=name, redirect_url=redirect_url)
@@ -580,6 +588,9 @@ def funding_verify(reference: str, provider: str = "") -> dict:
     (so a charge started on one rail verifies against that same rail even if the
     default flips), falling back to the current default."""
     prov = (provider or payment_provider()).strip().lower()
+    if prov == "wema":
+        # Wema deposits are credited by the reconcile poller, not a verify call.
+        return {"success": False, "message": "Wema funding is credited automatically on receipt."}
     if prov == "monnify":
         from . import monnify
         return monnify.payment_verify(reference)
@@ -594,7 +605,15 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
     Returns {success, account_number, bank_name, account_name, reference} so
     wallet.services.ensure_reserved_account stays agnostic.
     """
-    if payment_provider() == "monnify":
+    prov = payment_provider()
+    if prov == "wema":
+        # Wema can't mint an account synchronously — it needs a BVN/NIN + OTP
+        # round-trip driven by the /api/wallet/wema/* endpoints. Signal that so
+        # ensure_reserved_account leaves the wallet numberless (the OTP flow fills
+        # it) rather than surfacing a hard error.
+        return {"success": False, "otp_required": True,
+                "message": "Verify the OTP to finish setting up your account."}
+    if prov == "monnify":
         from . import monnify
         return monnify.create_virtual_account(account_reference, account_name, customer_email,
                                               customer_name, bvn=bvn, nin=nin)

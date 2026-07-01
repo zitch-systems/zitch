@@ -265,9 +265,27 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
         data = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                      {"accountNumber": account_number, "from": date_from, "to": date_to,
                       "keyWord": keyword}).json()
-        return {"success": _ok(data), "transactions": data.get("result", []) or [], "raw": data}
+        # This envelope uses {successful, result[], message} rather than status/hasError.
+        ok = bool(data.get("successful")) or _ok(data)
+        return {"success": ok, "transactions": data.get("result", []) or [], "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+
+
+def normalize_transaction(tx: dict) -> dict:
+    """Flatten one ALAT TransactionHistoryModel row to the fields reconciliation
+    needs: {reference, amount_naira, is_credit, narration, sender}.
+
+    `referenceId` (fallback `tranId`) is the unique per-transaction key used as
+    the ledger idempotency guard; `creditType == "Credit"` marks an inbound
+    deposit (the only rows funding applies)."""
+    if not isinstance(tx, dict):
+        return {"reference": "", "amount_naira": None, "is_credit": False, "narration": "", "sender": ""}
+    ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
+    is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
+    return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
+            "is_credit": is_credit, "narration": tx.get("narration") or "",
+            "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
 
 
 # ---------------------------------------------------------------------------
