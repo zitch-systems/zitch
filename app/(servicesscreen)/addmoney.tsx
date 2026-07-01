@@ -1,34 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
+import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Btn, Field } from '@/components/design/ui';
+import { Screen, Header, Btn, Field, Naira } from '@/components/design/ui';
 import { Label } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
-// Funding is bank-transfer only: the user transfers to their dedicated Zitch
-// (Kora reserved) account and the wallet is credited automatically by the
-// webhook — no card checkout. The account is minted through Kora's reserved-
-// account onboarding: the user enters their BVN here and Kora verifies it and
-// issues the NUBAN (no separate in-app KYC step needed first).
+// Two ways to fund:
+//  1. Instant checkout (Kora hosted card/bank page) — works without a dedicated
+//     account, credited by the pay-in webhook / verify. Always available.
+//  2. A dedicated Zitch (Kora reserved) account for bank transfers — minted via
+//     Kora's reserved-account onboarding (enter BVN; Kora verifies and issues the
+//     NUBAN). Requires the Virtual Bank Account product to be enabled on the Kora
+//     merchant account; until then, use instant checkout above.
 const AddMoney = () => {
   const { c } = useTheme();
+  const { reload } = useWallet();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
 
+  // Instant-checkout funding
+  const [fundAmt, setFundAmt] = useState('');
+  const [funding, setFunding] = useState(false);
+
   useEffect(() => {
     let alive = true;
-    // Never let a slow/hanging backend (e.g. a slow Monnify call) leave the page
-    // stuck on the spinner: show the screen within a few seconds no matter what.
-    // If the account lookup resolves later, it still fills in (account state).
+    // Never let a slow/hanging backend leave the page stuck on the spinner: show
+    // the screen within a few seconds no matter what. If the account lookup
+    // resolves later, it still fills in (account state).
     const guard = setTimeout(() => { if (alive) setLoading(false); }, 8000);
     apiJson('/api/wallet/account/')
       .then((r) => { if (alive && r?.success && r.account_number) setAccount(r as DediAccount); })
@@ -41,6 +50,36 @@ const AddMoney = () => {
     if (!account) return;
     await Clipboard.setStringAsync(account.account_number);
     notify('Copied', 'Account number copied to clipboard');
+  };
+
+  // Instant funding: open Kora's hosted checkout, then confirm + refresh. The
+  // pay-in webhook also credits idempotently, so verify is best-effort.
+  const fundNow = async () => {
+    const amt = Number(fundAmt);
+    if (!Number.isFinite(amt) || amt < 100) { notify('Error', 'Minimum funding amount is ₦100'); return; }
+    setFunding(true);
+    try {
+      const r = await apiJson<{ success?: boolean; reference?: string; authorization_url?: string; mock?: boolean; message?: string }>(
+        '/api/fund/initialize/', { amount: String(amt) });
+      if (!r?.success || !r.authorization_url) {
+        notify('Error', r?.message || "Couldn't start payment. Please try again.");
+        return;
+      }
+      if (r.mock || !/^https?:/.test(r.authorization_url)) {
+        notify('Test mode', 'Funding is in test mode — no real charge was made.');
+        return;
+      }
+      await WebBrowser.openBrowserAsync(r.authorization_url);
+      // Back from checkout: confirm with the rail (idempotent) then refresh.
+      if (r.reference) { try { await apiJson('/api/fund/verify/', { reference: r.reference }); } catch { /* webhook still credits */ } }
+      await reload();
+      setFundAmt('');
+      notify('Funding', 'If your payment went through, your wallet has been credited.');
+    } catch {
+      notify('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setFunding(false);
+    }
   };
 
   const createAccount = async () => {
@@ -73,9 +112,34 @@ const AddMoney = () => {
     <Screen>
       <Header title="Add money" onBack={() => router.back()} />
 
+      {/* 1) Instant funding via Kora hosted checkout (card / bank) */}
+      <Label>Fund instantly</Label>
+      <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
+        <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginBottom: 14 }}>
+          Pay with your debit card or bank on Kora's secure checkout — your wallet is credited automatically.
+        </Text>
+        <Field
+          value={fundAmt}
+          onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))}
+          keyboardType="number-pad"
+          placeholder="Enter amount"
+          prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
+        />
+        <View style={{ height: 14 }} />
+        <Btn
+          label={funding ? 'Starting checkout…' : 'Fund now'}
+          icon="card"
+          disabled={funding || Number(fundAmt) < 100}
+          onPress={fundNow}
+        />
+      </View>
+
+      <View style={{ height: 26 }} />
+
+      {/* 2) Dedicated account for bank transfers (needs Kora VBA enabled) */}
+      <Label>Or use a dedicated account</Label>
       {account ? (
         <>
-          <Label>Fund by bank transfer</Label>
           <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
               Transfer any amount to this account from any bank app — your Zitch wallet is credited
@@ -109,21 +173,21 @@ const AddMoney = () => {
           </View>
         </>
       ) : (
-        <View style={{ paddingTop: 12 }}>
+        <View style={{ paddingTop: 6 }}>
           <View style={{ alignItems: 'center', paddingHorizontal: 16 }}>
-            <View style={{ width: 84, height: 84, borderRadius: 26, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
-              <ZIcon name="bank" size={40} color={c.brand} />
+            <View style={{ width: 72, height: 72, borderRadius: 22, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="bank" size={34} color={c.brand} />
             </View>
-            <Text style={{ fontSize: 19, color: c.ink1, fontFamily: font.extrabold, marginTop: 22, textAlign: 'center' }}>
-              Get your Zitch account number
+            <Text style={{ fontSize: 17, color: c.ink1, fontFamily: font.extrabold, marginTop: 16, textAlign: 'center' }}>
+              Get a dedicated account number
             </Text>
-            <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
-              Enter your BVN to instantly get a dedicated account for funding by bank transfer — no
-              card needed. It's verified securely; we never store it.
+            <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
+              Enter your BVN to get a dedicated account for funding by bank transfer. It's verified
+              securely; we never store it.
             </Text>
           </View>
 
-          <View style={{ height: 22 }} />
+          <View style={{ height: 18 }} />
           <Field
             label="Bank Verification Number (BVN)"
             value={bvn}
@@ -138,7 +202,7 @@ const AddMoney = () => {
             </Text>
           </View>
 
-          <View style={{ height: 22 }} />
+          <View style={{ height: 18 }} />
           <Btn
             label={creating ? 'Creating your account…' : 'Get my account'}
             icon="bank"
