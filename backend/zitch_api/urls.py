@@ -81,13 +81,13 @@ def kora_diagnose(request):
     import hmac
     import os
 
-    diag_token = os.environ.get("KORA_DIAG_TOKEN", "")
+    diag_token = os.environ.get("KORA_DIAG_TOKEN", "").strip()
     if not diag_token:
         return JsonResponse(
             {"detail": "Set KORA_DIAG_TOKEN (any secret value) in the environment to enable this."},
             status=404,
         )
-    if not hmac.compare_digest(request.GET.get("token", ""), diag_token):
+    if not hmac.compare_digest(request.GET.get("token", "").strip(), diag_token):
         return JsonResponse({"detail": "forbidden"}, status=403)
     from utility.kora import kora_diagnostics
 
@@ -111,14 +111,24 @@ def wema_diagnose(request):
     import hmac
     import os
 
-    diag_token = os.environ.get("WEMA_DIAG_TOKEN", "")
+    # Strip surrounding whitespace on both sides: a trailing space/newline pasted
+    # into the env value (or the URL) would otherwise fail the byte-exact compare
+    # with an unexplainable "forbidden".
+    diag_token = os.environ.get("WEMA_DIAG_TOKEN", "").strip()
     if not diag_token:
         return JsonResponse(
             {"detail": "Set WEMA_DIAG_TOKEN (any secret value) in the environment to enable this."},
             status=404,
         )
-    if not hmac.compare_digest(request.GET.get("token", ""), diag_token):
-        return JsonResponse({"detail": "forbidden"}, status=403)
+    supplied = request.GET.get("token", "").strip()
+    if not hmac.compare_digest(supplied, diag_token):
+        # Length-only hint (no token content) — pinpoints paste truncation/typos.
+        return JsonResponse(
+            {"detail": "forbidden",
+             "hint": f"supplied token has {len(supplied)} chars; the configured "
+                     f"WEMA_DIAG_TOKEN has {len(diag_token)}. They must match exactly."},
+            status=403,
+        )
     from utility.wema import wema_probe
 
     account = "".join(c for c in request.GET.get("account", "") if c.isdigit())[:10]
