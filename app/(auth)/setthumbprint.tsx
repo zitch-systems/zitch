@@ -5,7 +5,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Btn, PinSheet } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
-import { isBiometricAvailable, biometricLabel, authenticate, setBiometricEnabled } from '@/lib/biometrics';
+import { isBiometricAvailable, biometricLabel, authenticate, setBiometricEnabled, setBiometricTxnEnabled } from '@/lib/biometrics';
 import { saveTransactionPin } from '@/lib/secureStore';
 
 const SetThumbprint = () => {
@@ -38,6 +38,7 @@ const SetThumbprint = () => {
   const enablePay = async (pin: string) => {
     setPinOpen(false);
     await saveTransactionPin(pin);
+    await setBiometricTxnEnabled(true);
     Alert.alert('All set', `${label} sign-in and payments are on.`, [{ text: 'Done', onPress: () => router.back() }]);
   };
 

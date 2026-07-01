@@ -1,9 +1,10 @@
 import { Platform } from 'react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { clearTransactionPin } from '@/lib/secureStore';
+import { clearTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 
-const ENABLED_KEY = 'z-biometrics';
+const ENABLED_KEY = 'z-biometrics';       // biometric SIGN-IN opt-in
+const BIO_TXN_KEY = 'z-bio-txn';          // biometric TRANSACTION-approval opt-in (separate toggle)
 const CRED_KEY = 'z-bio-cred'; // web: stored WebAuthn credential id (base64url)
 const isWeb = Platform.OS === 'web';
 
@@ -146,9 +147,28 @@ export async function authenticate(prompt = 'Authenticate', biometricOnly = fals
   }
 }
 
-/** Whether the user has opted into biometrics inside the app. */
+/** Whether the user has opted into biometric SIGN-IN inside the app. */
 export async function isBiometricEnabled(): Promise<boolean> {
   return (await AsyncStorage.getItem(ENABLED_KEY)) === '1';
+}
+
+/** Whether the user has opted into approving TRANSACTIONS with biometrics — a
+ *  separate toggle from sign-in. Unset on older builds: fall back to "on" only
+ *  when a pay PIN is already cached (i.e. they'd previously opted into pay), so
+ *  existing users aren't silently broken and new users default off. */
+export async function isBiometricTxnEnabled(): Promise<boolean> {
+  const v = await AsyncStorage.getItem(BIO_TXN_KEY);
+  if (v === '1') return true;
+  if (v === '0') return false;
+  return hasTransactionPin();
+}
+
+/** Turn transaction-biometric approval on/off. Off clears the cached money PIN
+ *  so the biometric shortcut disappears and the spending secret isn't left at
+ *  rest. On is completed by capturing the PIN (saveTransactionPin) at the call site. */
+export async function setBiometricTxnEnabled(on: boolean): Promise<void> {
+  await AsyncStorage.setItem(BIO_TXN_KEY, on ? '1' : '0');
+  if (!on) await clearTransactionPin();
 }
 
 /**
@@ -159,17 +179,16 @@ export async function isBiometricEnabled(): Promise<boolean> {
  */
 export async function reconcileCachedPin(): Promise<void> {
   if (isWeb) return;
-  if (!(await isBiometricEnabled())) await clearTransactionPin();
+  // Drop a cached spending PIN only when transaction-biometrics is explicitly OFF
+  // (not merely because sign-in biometrics is off — the two are separate now).
+  if ((await AsyncStorage.getItem(BIO_TXN_KEY)) === '0') await clearTransactionPin();
 }
 
 export async function setBiometricEnabled(on: boolean): Promise<void> {
+  // Sign-in biometrics only — does NOT touch the transaction PIN (that's governed
+  // by setBiometricTxnEnabled), so turning off biometric sign-in leaves
+  // biometric payment approval intact.
   await AsyncStorage.setItem(ENABLED_KEY, on ? '1' : '0');
-  if (!on) {
-    // Turning biometrics off also turns off "pay with biometrics", so the cached
-    // money PIN is no longer needed — drop it from the keychain rather than leave
-    // the spending secret at rest for a feature that's now disabled.
-    await clearTransactionPin();
-    // On the web, forget the platform credential too so re-enabling re-enrols cleanly.
-    if (isWeb) await AsyncStorage.removeItem(CRED_KEY);
-  }
+  // On the web, forget the platform credential when disabling so re-enabling re-enrols cleanly.
+  if (!on && isWeb) await AsyncStorage.removeItem(CRED_KEY);
 }

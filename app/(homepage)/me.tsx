@@ -10,7 +10,7 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { clearSession, getToken, saveTransactionPin } from '@/lib/secureStore';
-import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
+import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, isBiometricTxnEnabled, setBiometricTxnEnabled, authenticate } from '@/lib/biometrics';
 
 const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
   const { c } = useTheme();
@@ -34,11 +34,13 @@ const Me = () => {
   const { c, theme, setTheme } = useTheme();
   const { balance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
+  const [bioTxn, setBioTxn] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [tier, setTier] = useState(1);
 
   useEffect(() => {
     isBiometricEnabled().then(setBiometrics);
+    isBiometricTxnEnabled().then(setBioTxn);
   }, []);
 
   // Reflect the real KYC tier (was hardcoded "Tier 3"); refresh on focus so it
@@ -59,7 +61,8 @@ const Me = () => {
     }, [reloadWallet])
   );
 
-  // Enabling requires a live biometric scan; disabling is immediate.
+  // Biometric SIGN-IN toggle. Enabling requires a live scan; disabling is
+  // immediate and independent of transaction-biometrics.
   const toggleBio = async (v: boolean) => {
     if (!v) {
       await setBiometricEnabled(false);
@@ -73,17 +76,34 @@ const Me = () => {
     }
     const ok = await authenticate('Enable biometric sign-in');
     if (ok) {
-      // Sign-in is on now; offer to also enable "pay with biometrics" — the only
-      // path that caches the money PIN. Skipping leaves sign-in on, no PIN stored.
       await setBiometricEnabled(true);
       setBiometrics(true);
-      setPinOpen(true);
     }
+  };
+
+  // Biometric TRANSACTION-approval toggle — separate from sign-in. Enabling scans
+  // then captures the PIN to cache (the only path that stores it); disabling drops
+  // the cached PIN so payments fall back to the keypad.
+  const toggleBioTxn = async (v: boolean) => {
+    if (!v) {
+      await setBiometricTxnEnabled(false);
+      setBioTxn(false);
+      return;
+    }
+    const available = await isBiometricAvailable();
+    if (!available) {
+      notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+      return;
+    }
+    const ok = await authenticate('Approve payments with biometrics', true);
+    if (ok) setPinOpen(true);  // capture the PIN to cache
   };
 
   const enablePay = async (pin: string) => {
     setPinOpen(false);
     await saveTransactionPin(pin);
+    await setBiometricTxnEnabled(true);
+    setBioTxn(true);
     notify('Done', 'You can now approve payments with biometrics.');
   };
 
@@ -180,16 +200,28 @@ const Me = () => {
       <Group items={grp1} />
       <Group items={grp2} />
 
-      {/* biometrics */}
+      {/* biometrics — sign-in */}
       <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
         <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name="fingerprint" size={20} color={c.brand} />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Face ID / Fingerprint</Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Sign in & approve payments</Text>
+          <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Biometric sign-in</Text>
+          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Unlock the app with Face ID / fingerprint</Text>
         </View>
         <Toggle on={biometrics} onChange={toggleBio} />
+      </Card>
+
+      {/* biometrics — transaction approval (separate toggle) */}
+      <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
+        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name="faceid" size={20} color={c.brand} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Approve payments with biometrics</Text>
+          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Confirm transfers & bills with Face ID / fingerprint instead of your PIN</Text>
+        </View>
+        <Toggle on={bioTxn} onChange={toggleBioTxn} />
       </Card>
 
       {/* dark mode */}

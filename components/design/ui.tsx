@@ -20,7 +20,7 @@ import AmbientBackground from '@/components/design/AmbientBackground';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
-import { isBiometricEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
+import { isBiometricTxnEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 
 export const money = fmtMoney;
@@ -435,40 +435,57 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
   // Fire the biometric prompt at most once per mount (each time the sheet opens),
   // so the OS sheet doesn't reappear after a manual cancel or a wrong-PIN retry.
   const autoTried = React.useRef(false);
+  // Keep the latest onComplete/busy in refs so the biometric helpers stay STABLE
+  // and the setup effect runs exactly once per mount — not on every render (an
+  // inline onComplete in the parent would otherwise re-run the effect each render,
+  // hammering native biometric calls and destabilising the sheet).
+  const onCompleteRef = React.useRef(onComplete);
+  const busyRef = React.useRef(busy);
+  onCompleteRef.current = onComplete;
+  busyRef.current = busy;
   const useBiometric = React.useCallback(async () => {
-    if (busy) return;
-    // biometricOnly: the device passcode must NOT be able to release the cached
-    // money PIN — only the account owner's enrolled fingerprint/face. The typed
-    // PIN remains the fallback (✕ → keypad) if the scan is cancelled.
-    const ok = await authenticate('Approve payment', true);
-    if (!ok) return;
-    const storedPin = await getTransactionPin();
-    if (storedPin) onComplete && onComplete(storedPin, true);
-  }, [busy, onComplete]);
+    try {
+      if (busyRef.current) return;
+      // biometricOnly: the device passcode must NOT be able to release the cached
+      // money PIN — only the account owner's enrolled fingerprint/face. The typed
+      // PIN remains the fallback (✕ → keypad) if the scan is cancelled.
+      const ok = await authenticate('Approve payment', true);
+      if (!ok) return;
+      const storedPin = await getTransactionPin();
+      if (storedPin) onCompleteRef.current && onCompleteRef.current(storedPin, true);
+    } catch {
+      /* biometrics must never crash the payment sheet — fall back to the keypad */
+    }
+  }, []);
   useEffect(() => {
     let alive = true;
     (async () => {
-      // Gate the biometric path on a NON-secret "has a cached PIN" flag — we never
-      // read the actual PIN here just to decide which screen to show.
-      const [enabled, available, hasPin] = await Promise.all([
-        isBiometricEnabled(), isBiometricAvailable(), hasTransactionPin(),
-      ]);
-      const kind = enabled && available && hasPin ? await biometricLabel() : null;
-      if (!alive) return;
-      setBioKind(kind);
-      // Biometric pay set up → open on the biometric screen and prompt Face ID /
-      // fingerprint straight away. Runs once per mount; this component mounts only
-      // when the sheet actually opens.
-      const useBio = !!(kind && autoBiometric);
-      setShowBio(useBio);
-      setResolved(true);
-      if (useBio && !autoTried.current && !busy) {
-        autoTried.current = true;
-        useBiometric();
+      try {
+        // Show the biometric screen only when the user has turned ON transaction-
+        // biometrics AND has a cached PIN (a NON-secret flag; we never read the PIN
+        // here just to pick a screen).
+        const [txnOn, available, hasPin] = await Promise.all([
+          isBiometricTxnEnabled(), isBiometricAvailable(), hasTransactionPin(),
+        ]);
+        const kind = txnOn && available && hasPin ? await biometricLabel() : null;
+        if (!alive) return;
+        setBioKind(kind);
+        // Biometric approval set up → open on the biometric screen and prompt Face
+        // ID / fingerprint straight away. Runs once per mount (this component mounts
+        // only when the sheet actually opens).
+        const useBio = !!(kind && autoBiometric);
+        setShowBio(useBio);
+        setResolved(true);
+        if (useBio && !autoTried.current && !busyRef.current) {
+          autoTried.current = true;
+          useBiometric();
+        }
+      } catch {
+        if (alive) setResolved(true); // any failure → just show the keypad
       }
     })();
     return () => { alive = false; };
-  }, [autoBiometric, busy, useBiometric]);
+  }, [autoBiometric, useBiometric]);
   const press = (d: string) => {
     if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {

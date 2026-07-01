@@ -9,7 +9,7 @@ import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { useTheme, font } from '@/lib/theme';
 import { clearSession, saveTransactionPin } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
-import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
+import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, isBiometricTxnEnabled, setBiometricTxnEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 
 const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
@@ -24,13 +24,16 @@ const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 const Settings = () => {
   const { c, theme, setTheme } = useTheme();
   const [biometrics, setBiometrics] = useState(false);
+  const [bioTxn, setBioTxn] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const chev = <ZIcon name="right" size={18} color={c.ink3} />;
 
   useEffect(() => {
     isBiometricEnabled().then(setBiometrics);
+    isBiometricTxnEnabled().then(setBioTxn);
   }, []);
 
+  // Biometric SIGN-IN toggle (independent of transaction-biometrics).
   const toggleBio = async (v: boolean) => {
     if (!v) {
       await setBiometricEnabled(false);
@@ -42,17 +45,31 @@ const Settings = () => {
       return;
     }
     if (await authenticate('Enable biometric sign-in')) {
-      // Sign-in is on now; offer to also enable "pay with biometrics" — the only
-      // path that caches the money PIN. Skipping leaves sign-in on, no PIN stored.
       await setBiometricEnabled(true);
       setBiometrics(true);
-      setPinOpen(true);
     }
+  };
+
+  // Biometric TRANSACTION-approval toggle — scan then capture the PIN to cache;
+  // off drops the cached PIN so payments fall back to the keypad.
+  const toggleBioTxn = async (v: boolean) => {
+    if (!v) {
+      await setBiometricTxnEnabled(false);
+      setBioTxn(false);
+      return;
+    }
+    if (!(await isBiometricAvailable())) {
+      notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
+      return;
+    }
+    if (await authenticate('Approve payments with biometrics', true)) setPinOpen(true);
   };
 
   const enablePay = async (pin: string) => {
     setPinOpen(false);
     await saveTransactionPin(pin);
+    await setBiometricTxnEnabled(true);
+    setBioTxn(true);
     notify('Done', 'You can now approve payments with biometrics.');
   };
 
@@ -106,8 +123,12 @@ const Settings = () => {
             right={<Toggle on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />}
           />
           <ZItem
-            icon="faceid" title="Biometric login" sub="Sign in & approve payments" last
+            icon="fingerprint" title="Biometric sign-in" sub="Unlock the app with Face ID / fingerprint"
             right={<Toggle on={biometrics} onChange={toggleBio} />}
+          />
+          <ZItem
+            icon="faceid" title="Approve payments with biometrics" sub="Confirm transfers & bills with Face ID / fingerprint instead of your PIN" last
+            right={<Toggle on={bioTxn} onChange={toggleBioTxn} />}
           />
         </Card>
 

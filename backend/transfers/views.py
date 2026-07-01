@@ -126,8 +126,8 @@ def bank_transfer(request):
     amount = parse_amount(data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
-    if amount < 10:
-        return fail("Minimum transfer is ₦10")
+    if amount < 50:
+        return fail("Minimum transfer is ₦50")
 
     limit_err = check_send_limits(user, amount)
     if limit_err:

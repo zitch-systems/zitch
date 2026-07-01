@@ -37,7 +37,7 @@ const BuyAirtime = () => {
 
   const network = NETWORKS.find((n) => n.id === net)!;
   const amount = Number(amt || 0);
-  const valid = phone.length >= 10 && amount >= 100 && amount <= balance;
+  const valid = phone.length >= 10 && amount >= 50 && amount <= balance;
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
