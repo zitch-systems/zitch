@@ -260,3 +260,15 @@ class MonnifyFundInEndToEndTests(TestCase):
         # Redelivered webhook must not double-credit.
         client.post("/api/fund/monnify/webhook/", data=json.dumps(event), content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=user).balance, Decimal("5000"))
+
+
+class MonnifyDeallocateTests(SimpleTestCase):
+    @override_settings(MONNIFY=MONNIFY_LIVE)
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.delete")
+    def test_deallocate_by_reference(self, mock_del, _auth):
+        mock_del.return_value = _resp({"requestSuccessful": True, "responseMessage": "success"})
+        r = monnify.deallocate_virtual_account("ZITCH-DIAG-ABCD1234")
+        self.assertTrue(r["success"])
+        self.assertIn("/api/v1/bank-transfer/reserved-accounts/reference/ZITCH-DIAG-ABCD1234",
+                      mock_del.call_args[0][0])
