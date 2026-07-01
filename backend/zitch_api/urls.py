@@ -96,6 +96,39 @@ def kora_diagnose(request):
     return JsonResponse({"kora": kora_diagnostics(account, bank)})
 
 
+def wema_diagnose(request):
+    """GET /wema-diagnose?token=<WEMA_DIAG_TOKEN>[&account=&bank=&phone=&bvn=&nin=]
+
+    Browser-accessible Wema/ALAT connectivity self-test for hosts without shell
+    access (e.g. Render). Runs the real calls a deploy needs against the configured
+    (test or live) keys and shows exactly what auth/connectivity error the gateway
+    returns — turning "nothing works" into a precise fix. Returns NO secrets.
+
+    Opt-in + protected: 404 unless WEMA_DIAG_TOKEN is set, and it must be supplied
+    as ?token= (constant-time compared). Optional account+bank probe name enquiry;
+    optional phone+bvn/nin probe wallet creation (sends a real OTP).
+    """
+    import hmac
+    import os
+
+    diag_token = os.environ.get("WEMA_DIAG_TOKEN", "")
+    if not diag_token:
+        return JsonResponse(
+            {"detail": "Set WEMA_DIAG_TOKEN (any secret value) in the environment to enable this."},
+            status=404,
+        )
+    if not hmac.compare_digest(request.GET.get("token", ""), diag_token):
+        return JsonResponse({"detail": "forbidden"}, status=403)
+    from utility.wema import wema_probe
+
+    account = "".join(c for c in request.GET.get("account", "") if c.isdigit())[:10]
+    bank = "".join(c for c in request.GET.get("bank", "") if c.isalnum())[:6]
+    phone = "".join(c for c in request.GET.get("phone", "") if c.isdigit())[:14]
+    bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
+    nin = "".join(c for c in request.GET.get("nin", "") if c.isdigit())[:11]
+    return JsonResponse({"wema": wema_probe(account, bank, phone, bvn=bvn, nin=nin)})
+
+
 urlpatterns = [
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
@@ -107,6 +140,7 @@ urlpatterns = [
     path("healthz", health),
     path("readyz", readyz),
     path("kora-diagnose", kora_diagnose),
+    path("wema-diagnose", wema_diagnose),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).

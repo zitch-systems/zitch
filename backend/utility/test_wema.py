@@ -130,6 +130,26 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(body["destinationAccountNumber"], "02")
 
 
+class WemaProbeTests(SimpleTestCase):
+    def test_probe_without_keys_makes_no_live_call(self):
+        # No keys configured -> config + hint only, never raises.
+        r = wema.wema_probe()
+        self.assertIn("config", r)
+        self.assertIn("hint", r)
+        self.assertNotIn("banks", r)
+
+    @override_settings(WEMA=WEMA_VAS)
+    @patch("utility.wema.requests.get")
+    def test_probe_runs_auth_checks_with_keys(self, mock_get):
+        # GetAllBanks (debit product) uses the {result, hasError} envelope.
+        mock_get.return_value = _resp({"result": [{"bankName": "Wema Bank", "bankCode": "035"}],
+                                       "hasError": False})
+        r = wema.wema_probe()
+        self.assertIn("banks", r)
+        self.assertTrue(r["banks"]["ok"])
+        self.assertIn("airtime_product", r)
+
+
 @override_settings(WEMA=WEMA_VAS)
 class WemaVasLiveTests(SimpleTestCase):
     @patch("utility.wema.requests.post")

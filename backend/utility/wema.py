@@ -594,6 +594,66 @@ def _parse_vas(data: dict, reference: str) -> dict:
 # ---------------------------------------------------------------------------
 # Diagnostics — mirrors kora/mono/monnify diagnostics
 # ---------------------------------------------------------------------------
+def _trim(raw, limit: int = 500):
+    """Short, printable form of a provider response for a diagnostic (no secrets —
+    Wema responses carry status/messages/holder names, never our keys)."""
+    if raw is None:
+        return None
+    s = raw if isinstance(raw, str) else str(raw)
+    return s[:limit]
+
+
+def wema_probe(account_number: str = "", bank_code: str = "", phone: str = "",
+               bvn: str = "", nin: str = "", otp: str = "", tracking_id: str = "") -> dict:
+    """Live self-test against the configured Wema gateway (returns NO secrets).
+
+    Runs the real calls a deploy needs, so ops can see exactly what auth /
+    connectivity error the sandbox returns — without the app, a NUBAN, or a shell.
+    Read-only by default. Two optional provisioning steps let you create a test
+    NUBAN end-to-end from the browser:
+      * phone + bvn/nin              -> step 1: start creation (sends a real OTP)
+      * phone + otp + tracking_id    -> step 2: validate OTP + fetch the NUBAN
+    """
+    out = {"config": wema_diagnostics()}
+    if not (wema_live() or wema_simulation()):
+        out["hint"] = ("Wema keys are not fully configured — set WEMA_CHANNEL_ID + "
+                       "WEMA_WALLET_KEY (and per-product keys). No live call was made.")
+        return out
+
+    # 1) Bank list — the simplest authenticated call (debit product, `access` header).
+    banks = get_banks()
+    out["banks"] = {"ok": banks.get("success"), "count": len(banks.get("banks", []) or []),
+                    "message": banks.get("message", ""), "raw": _trim(banks.get("raw"))}
+
+    # 2) Name enquiry — the read used before every transfer.
+    if account_number and bank_code:
+        enq = resolve_account(account_number, bank_code)
+        out["name_enquiry"] = {"ok": enq.get("success"), "name": enq.get("name", ""),
+                               "message": enq.get("message", ""), "raw": _trim(enq.get("raw"))}
+
+    # 3) Data plans — tests the airtime/VAS product subscription (read-only).
+    plans = get_data_plans()
+    out["airtime_product"] = {"ok": plans.get("success"), "message": plans.get("message", ""),
+                              "raw": _trim(plans.get("raw"))}
+
+    using_bvn = bool(bvn)
+    # 4a) Provision step 2 — validate OTP + fetch the created NUBAN.
+    if phone and otp and tracking_id:
+        val = validate_wallet_otp(phone, otp, tracking_id, bvn=using_bvn)
+        acct = get_account_details(phone, bvn=using_bvn) if val.get("success") else {}
+        out["wallet_verify"] = {"ok": val.get("success") and bool(acct.get("account_number")),
+                                "account_number": acct.get("account_number", ""),
+                                "account_name": acct.get("account_name", ""),
+                                "message": val.get("message", "") or acct.get("message", ""),
+                                "raw": _trim(val.get("raw"))}
+    # 4b) Provision step 1 — start creation (sends a real OTP).
+    elif phone and (bvn or nin):
+        cw = create_wallet_request(phone, f"{phone}@zitch.app", bvn=bvn, nin=nin)
+        out["wallet_create"] = {"ok": cw.get("success"), "tracking_id": cw.get("tracking_id", ""),
+                                "message": cw.get("message", ""), "raw": _trim(cw.get("raw"))}
+    return out
+
+
 def wema_diagnostics() -> dict:
     m = settings.WEMA
     keys = m.get("KEYS") or {}
