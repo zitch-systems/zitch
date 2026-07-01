@@ -1,6 +1,7 @@
 import json
 import logging
 
+from django.db import IntegrityError
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
@@ -229,12 +230,22 @@ def wema_wallet_verify_otp(request):
     if not acct.get("success") or not acct.get("account_number"):
         return fail(acct.get("message", "Your account is being created — try again shortly"),
                     status=502)
+    # Guard the unique account_number/account_reference constraints: if Wema hands
+    # back a NUBAN already owned by another wallet (provider bug / reused sandbox
+    # number), fail cleanly instead of a 500.
+    if Wallet.objects.filter(account_number=acct["account_number"]).exclude(pk=wallet.pk).exists():
+        log.warning("wema_account_number_conflict user=%s account=%s", user.id, acct["account_number"])
+        return fail("We couldn't finish setting up your account. Please contact support.", status=409)
     wallet.account_number = acct["account_number"]
     wallet.account_name = acct.get("account_name", "") or (user.get_full_name() or "").strip()
     wallet.bank_name = acct.get("bank_name", "") or "Wema Bank"
     wallet.account_reference = wema_account_reference(user)
-    wallet.save(update_fields=["account_number", "account_name", "bank_name",
-                               "account_reference", "updated"])
+    try:
+        wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                   "account_reference", "updated"])
+    except IntegrityError:
+        log.warning("wema_account_persist_conflict user=%s account=%s", user.id, acct["account_number"])
+        return fail("We couldn't finish setting up your account. Please contact support.", status=409)
     # Best-effort KYC / tier lift if the client echoed the identifier.
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())

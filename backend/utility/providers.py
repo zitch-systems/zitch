@@ -624,7 +624,13 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
 
 def funding_account_get(account_reference: str) -> dict:
     """Fetch an existing dedicated account (duplicate recovery), per rail."""
-    if payment_provider() == "monnify":
+    prov = payment_provider()
+    if prov == "wema":
+        # Wema accounts are provisioned by the OTP endpoints, not a synchronous
+        # lookup — never fall through to Kora's get_virtual_account (wrong rail).
+        return {"success": False, "otp_required": True,
+                "message": "Verify the OTP to finish setting up your account."}
+    if prov == "monnify":
         from . import monnify
         return monnify.get_virtual_account(account_reference)
     from . import kora
@@ -651,9 +657,21 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
     PROCESSING/PENDING as not-yet-confirmed.
 
     `bank_name` is optional for Kora (routes by code) but sent to Wema, whose
-    ProcessClientTransfer takes destinationBankName alongside the code."""
+    ProcessClientTransfer takes destinationBankName alongside the code.
+
+    MONEY-FLOW ASSUMPTION (verify with Wema before go-live): Wema payouts debit a
+    single shared pool account (WEMA_SOURCE_ACCOUNT). This is correct ONLY if per-
+    user NUBAN deposits settle into that pool (pooled/collection model). If each
+    user's NUBAN instead holds its own balance, payouts must source from the
+    SENDER's NUBAN (thread wallet.account_number through here) — otherwise the pool
+    drains while user NUBANs accumulate. See docs/wema-migration.md."""
     if payout_provider() == "wema":
         from . import wema
+        # Fail closed (and refundable) rather than send a transfer with an empty
+        # sourceAccountNumber: a live Wema payout needs WEMA_SOURCE_ACCOUNT set.
+        if not _wema_payout_ready():
+            return {"success": False,
+                    "message": "Payouts are temporarily unavailable — please try again shortly."}
         source = settings.WEMA.get("SOURCE_ACCOUNT", "")
         return wema.transfer(
             amount_naira, reference, narration,

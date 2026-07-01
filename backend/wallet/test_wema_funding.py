@@ -86,11 +86,28 @@ class WemaReconcileTests(TestCase):
     def test_credits_inbound_deposit_once(self):
         self._run([_tx("WEMA-DEP-1", 2500)])
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("2500.00"))
-        self.assertTrue(Transaction.objects.filter(reference="WEMA-DEP-1",
+        # Ledger key is namespaced (WEMA-CR-) so it can't collide with ZTRF/ZPAY/ZFND.
+        self.assertTrue(Transaction.objects.filter(reference="WEMA-CR-WEMA-DEP-1",
                                                    direction=Transaction.IN).exists())
         # Re-poll the same window: idempotent on referenceId, no double-credit.
         self._run([_tx("WEMA-DEP-1", 2500)])
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("2500.00"))
+
+    def test_reference_namespace_no_collision_with_payout(self):
+        # A prior payout burned ledger reference "ZTRF-CLASH". A Wema inbound whose
+        # referenceId is the same string must STILL credit (namespaced), not be
+        # silently dropped as a duplicate.
+        from wallet.services import make_reference  # noqa: F401
+        Transaction.objects.create(user=self.user, service="Transfer out", amount=Decimal("10"),
+                                   direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+                                   reference="ZTRF-CLASH")
+        self._run([_tx("ZTRF-CLASH", 900)])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("900.00"))
+        self.assertTrue(Transaction.objects.filter(reference="WEMA-CR-ZTRF-CLASH").exists())
+
+    def test_credits_comma_formatted_amount(self):
+        self._run([_tx("WEMA-DEP-C", "12,500.75")])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("12500.75"))
 
     def test_ignores_debits_and_zero_rows(self):
         self._run([_tx("WEMA-OUT-1", 1000, credit=False), _tx("WEMA-ZERO-1", 0)])
@@ -100,3 +117,49 @@ class WemaReconcileTests(TestCase):
         self.assertIsNone(apply_wema_credit(self.wallet, _tx("X", 500, credit=False)))
         self.assertIsNone(apply_wema_credit(self.wallet, {"referenceId": "", "amount": 500,
                                                           "creditType": "Credit"}))
+        # Unparseable amount on a real credit row -> skipped (logged), not credited.
+        self.assertIsNone(apply_wema_credit(self.wallet, {"referenceId": "Y", "amount": "N/A",
+                                                          "creditType": "Credit"}))
+
+
+@override_settings(PAYOUT_PROVIDER="wema")
+class WemaPayoutSettlementTests(TestCase):
+    """Wema has no payout webhook, so reconcile_wema must settle/reverse PENDING
+    bank payouts by polling confirm_transfer_status."""
+
+    def setUp(self):
+        self.user, _ = make_user("08030000777", "p@zitch.app", balance="5000")
+        self.wallet = Wallet.objects.get(user=self.user)
+
+    def _pending_payout(self, ref):
+        # Mirrors execute_payout's PENDING row: OUT + reconcile + a bank in meta.
+        return Transaction.objects.create(
+            user=self.user, service="Transfer to ADA", amount=Decimal("1000"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference=ref, meta={"reconcile": True, "bank": "Wema Bank"})
+
+    def _run(self, status):
+        with patch("utility.wema.confirm_transfer_status",
+                   return_value={"success": True, "status": status}):
+            call_command("reconcile_wema", "--payout-older-than-minutes=0")
+
+    def test_pending_payout_settles_on_success(self):
+        txn = self._pending_payout("ZTRF-PAY-OK")
+        self._run("SUCCESS")
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
+
+    def test_pending_payout_reverses_on_failure(self):
+        txn = self._pending_payout("ZTRF-PAY-BAD")
+        before = Wallet.objects.get(user=self.user).balance
+        self._run("FAILED")
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.FAILED)
+        # Failed payout is refunded to the wallet.
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, before + Decimal("1000"))
+
+    def test_unknown_status_left_pending(self):
+        txn = self._pending_payout("ZTRF-PAY-WAIT")
+        self._run("IN_PROGRESS")
+        txn.refresh_from_db()
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)

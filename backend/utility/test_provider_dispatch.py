@@ -101,6 +101,26 @@ class PayoutDispatchTests(SimpleTestCase):
             P.payout_resolve_account("0123456789", "035")
         m.assert_called_once_with("0123456789", "035")
 
+    @override_settings(PAYOUT_PROVIDER="wema", WEMA={**WEMA_LIVE, "SOURCE_ACCOUNT": ""})
+    def test_payout_send_fails_closed_without_source_account(self):
+        # Live Wema payout with no pool account must refuse (refundable) rather than
+        # send an empty sourceAccountNumber. wema.transfer must NOT be called.
+        with patch("utility.wema.transfer") as m:
+            out = P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="Wema Bank")
+        self.assertFalse(out["success"])
+        m.assert_not_called()
+
+
+class FundingAccountGetDispatchTests(SimpleTestCase):
+    @override_settings(PAYMENT_PROVIDER="wema")
+    def test_funding_account_get_wema_does_not_hit_kora(self):
+        # Must NOT fall through to kora.get_virtual_account for a Wema account.
+        with patch("utility.kora.get_virtual_account") as mk:
+            out = P.funding_account_get("ZITCH-WALLET-1")
+        mk.assert_not_called()
+        self.assertFalse(out["success"])
+        self.assertTrue(out.get("otp_required"))
+
 
 class CardDispatchTests(SimpleTestCase):
     @override_settings(CARD_PROVIDER="kora", KORA=KORA_LIVE)
