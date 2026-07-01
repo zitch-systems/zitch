@@ -29,6 +29,12 @@ const AddMoney = () => {
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
 
+  // Wema/ALAT flow: account creation is a BVN + OTP round-trip. When the backend
+  // answers otp_required, we hold the tracking id and show the OTP step.
+  const [otpFlow, setOtpFlow] = useState<{ trackingId: string; destination: string } | null>(null);
+  const [otp, setOtp] = useState('');
+  const [verifying, setVerifying] = useState(false);
+
   // Instant-checkout funding
   const [fundAmt, setFundAmt] = useState('');
   const [funding, setFunding] = useState(false);
@@ -89,6 +95,11 @@ const AddMoney = () => {
       const r = await apiJson('/api/wallet/account/create/', { bvn });
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
+      } else if (r?.success && r.otp_required) {
+        // Wema flow: an OTP was sent to the user's phone — collect it next.
+        setOtpFlow({ trackingId: String(r.tracking_id || ''), destination: String(r.otp_destination || '') });
+        setOtp('');
+        notify('OTP sent', `Enter the code we sent to ${r.otp_destination || 'your phone'}`);
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -96,6 +107,39 @@ const AddMoney = () => {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const verifyOtp = async () => {
+    if (!otpFlow || otp.length < 4) return;
+    setVerifying(true);
+    try {
+      const r = await apiJson('/api/wallet/wema/verify-otp/', {
+        otp, tracking_id: otpFlow.trackingId, using_bvn: true, bvn,
+      });
+      if (r?.success && r.account_number) {
+        setAccount(r as DediAccount);
+        setOtpFlow(null);
+        notify('Account ready', 'Your Zitch account number is ready — fund it by bank transfer.');
+      } else {
+        notify('Error', r?.message || 'OTP verification failed. Please try again.');
+      }
+    } catch {
+      notify('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const resendOtp = async () => {
+    if (!otpFlow) return;
+    try {
+      const r = await apiJson('/api/wallet/wema/resend-otp/', {
+        tracking_id: otpFlow.trackingId, using_bvn: true,
+      });
+      notify(r?.success ? 'OTP resent' : 'Error', r?.message || (r?.success ? 'Check your phone' : "Couldn't resend the OTP"));
+    } catch {
+      notify('Error', 'Something went wrong. Please try again later.');
     }
   };
 
@@ -172,6 +216,42 @@ const AddMoney = () => {
             </Text>
           </View>
         </>
+      ) : otpFlow ? (
+        <View style={{ paddingTop: 6 }}>
+          <View style={{ alignItems: 'center', paddingHorizontal: 16 }}>
+            <View style={{ width: 72, height: 72, borderRadius: 22, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="lock" size={34} color={c.brand} />
+            </View>
+            <Text style={{ fontSize: 17, color: c.ink1, fontFamily: font.extrabold, marginTop: 16, textAlign: 'center' }}>
+              Enter the OTP
+            </Text>
+            <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
+              We sent a one-time code to {otpFlow.destination || 'your phone'} to confirm your account.
+            </Text>
+          </View>
+
+          <View style={{ height: 18 }} />
+          <Field
+            label="One-time code"
+            value={otp}
+            onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 8))}
+            keyboardType="number-pad"
+            placeholder="Enter the code"
+          />
+          <View style={{ height: 18 }} />
+          <Btn
+            label={verifying ? 'Confirming…' : 'Confirm code'}
+            icon="check"
+            disabled={verifying || otp.length < 4}
+            onPress={verifyOtp}
+          />
+          <Pressable onPress={resendOtp} hitSlop={10} style={{ alignItems: 'center', marginTop: 16 }}>
+            <Text style={{ fontSize: 13.5, color: c.brand, fontFamily: font.bold }}>Resend code</Text>
+          </Pressable>
+          <Pressable onPress={() => { setOtpFlow(null); setOtp(''); }} hitSlop={10} style={{ alignItems: 'center', marginTop: 12 }}>
+            <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.medium }}>Start over</Text>
+          </Pressable>
+        </View>
       ) : (
         <View style={{ paddingTop: 6 }}>
           <View style={{ alignItems: 'center', paddingHorizontal: 16 }}>

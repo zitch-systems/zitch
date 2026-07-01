@@ -123,6 +123,20 @@ def wallet_account_create(request):
         return fail("Enter your 11-digit BVN or NIN")
     using_bvn = len(bvn) == 11
 
+    if payment_provider() == "wema":
+        # Wema mints the NUBAN via a BVN/NIN + OTP round-trip, not a one-step
+        # reserve — start it here so the existing "Get my account" call drives the
+        # flow: the client shows the OTP step and finishes on
+        # /api/wallet/wema/verify-otp/ (which persists the account + lifts KYC).
+        res = wema_provider.create_wallet_request(
+            user.phone or "", user.email or f"{user.phone}@zitch.app", bvn=bvn, nin=nin)
+        if not res.get("success"):
+            return fail(res.get("message", "Couldn't start account creation"), status=502)
+        return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
+                  otp_destination=res.get("otp_destination", user.phone or ""),
+                  using_bvn=using_bvn, mock=res.get("mock", False),
+                  message="Enter the OTP sent to your phone")
+
     wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
     if not wallet.account_number:
         # Surface Kora's actual reason (also logged as kora_vba_failed) so
