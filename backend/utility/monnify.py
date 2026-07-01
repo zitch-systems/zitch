@@ -364,6 +364,55 @@ def verify_webhook(body: bytes, signature: str) -> bool:
 # ---------------------------------------------------------------------------
 # Diagnostics — mirrors kora_diagnostics / mono_diagnostics
 # ---------------------------------------------------------------------------
+def monnify_probe(bvn: str = "", name: str = "", email: str = "") -> dict:
+    """Live self-test against the configured Monnify gateway (returns NO secrets).
+
+    Proves, in order: (1) OAuth login works (keys valid), (2) the reserved-account
+    product is accessible, and — optionally, when ?bvn=&name= are supplied —
+    (3) Monnify can actually MINT a NUBAN end-to-end (creates a real reserved
+    account under a ZITCH-DIAG-* reference; deallocate it in the Monnify
+    dashboard afterwards). Also restates the webhook URL funding depends on.
+    """
+    import secrets as _secrets
+
+    out = {"config": monnify_diagnostics(),
+           "webhook_reminder": "Funding credits arrive via the webhook — set "
+                               "https://<your-api-host>/api/fund/monnify/webhook/ in the "
+                               "Monnify dashboard (Settings > Webhooks) or deposits will NOT credit."}
+    if not monnify_live():
+        out["hint"] = "Monnify keys incomplete — no live call was made."
+        return out
+
+    # 1) Auth: OAuth login (Basic -> bearer). Empty token == bad keys/base URL.
+    token_ok = bool(_monnify_token())
+    out["auth"] = {"ok": token_ok}
+    if not token_ok:
+        out["auth"]["hint"] = ("Login failed — check MONNIFY_API_KEY/MONNIFY_SECRET_KEY and that "
+                               "MONNIFY_BASE_URL matches the key type (live https://api.monnify.com, "
+                               "sandbox https://sandbox.monnify.com).")
+        return out
+
+    # 2) Reserved-account product access: fetch a reference that can't exist. A clean
+    #    Monnify 'not found' proves the product responds; 401/403 or 'not enabled'
+    #    surfaces in the message.
+    lookup = get_virtual_account("ZITCH-DIAG-PROBE")
+    out["reserved_product"] = {"reachable": True,
+                               "message": lookup.get("message", "") or "responded"}
+
+    # 3) Optional REAL mint: prove NUBAN creation end-to-end.
+    if bvn and name:
+        ref = f"ZITCH-DIAG-{_secrets.token_hex(4).upper()}"
+        created = create_virtual_account(ref, name, email or "diag@zitch.ng", name, bvn=bvn)
+        out["nuban_create"] = {"ok": created.get("success"),
+                               "account_number": created.get("account_number", ""),
+                               "bank_name": created.get("bank_name", ""),
+                               "reference": ref if created.get("success") else "",
+                               "message": created.get("message", ""),
+                               "note": "Real reserved account created for diagnosis — deallocate "
+                                       "it in the Monnify dashboard when done."}
+    return out
+
+
 def monnify_diagnostics() -> dict:
     """Structured Monnify connectivity self-test (no secrets)."""
     m = settings.MONNIFY

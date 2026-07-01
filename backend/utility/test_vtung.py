@@ -208,3 +208,30 @@ class VtuNgTokenTests(TestCase):
             with patch("utility.vtung.requests.post") as p:
                 self.assertEqual(_token(), "STATIC")
                 p.assert_not_called()
+
+
+class VtuProbeTests(TestCase):
+    def test_probe_without_creds_makes_no_live_call(self):
+        from utility.vtung import vtu_probe
+        r = vtu_probe()
+        self.assertFalse(r["config"]["live"])
+        self.assertIn("hint", r)
+        self.assertNotIn("auth", r)
+
+    @override_settings(VTUNG=VT_CREDS)
+    def test_probe_reports_auth_and_balance(self):
+        from utility.vtung import vtu_probe
+        with patch("utility.vtung._request",
+                   return_value={"code": "success", "data": {"balance": "1500.00"}}):
+            r = vtu_probe()
+        self.assertTrue(r["auth"]["ok"])          # static API key counts as auth
+        self.assertTrue(r["balance"]["ok"])
+        self.assertEqual(r["balance"]["balance"], "1500.00")
+
+    @override_settings(VTUNG=VT_CREDS)
+    def test_probe_flags_empty_provider_wallet(self):
+        from utility.vtung import vtu_probe
+        with patch("utility.vtung._request",
+                   return_value={"code": "success", "data": {"balance": "0.00"}}):
+            r = vtu_probe()
+        self.assertIn("hint", r["balance"])       # empty wallet => purchases will fail

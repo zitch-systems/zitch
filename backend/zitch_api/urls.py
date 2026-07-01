@@ -145,6 +145,59 @@ def wema_diagnose(request):
                                             otp=otp, tracking_id=tracking_id)})
 
 
+def _diag_denied(request, *env_names):
+    """Shared gate for the browser diagnose endpoints: authorized when ?token=
+    matches ANY of the given env vars (whitespace-stripped, constant-time).
+    Returns None when authorized, else the error response."""
+    import hmac
+    import os
+
+    tokens = [os.environ.get(n, "").strip() for n in env_names]
+    tokens = [t for t in tokens if t]
+    if not tokens:
+        return JsonResponse(
+            {"detail": f"Set {env_names[0]} (any secret value) in the environment to enable this."},
+            status=404)
+    supplied = request.GET.get("token", "").strip()
+    if not any(hmac.compare_digest(supplied, t) for t in tokens):
+        return JsonResponse({"detail": "forbidden"}, status=403)
+    return None
+
+
+def monnify_diagnose(request):
+    """GET /monnify-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&bvn=&name=&email=]
+
+    Browser self-test for the LIVE fund-in rail: proves Monnify auth + the
+    reserved-account product, and (with bvn+name) actually MINTS a NUBAN so
+    'can Monnify create an account?' is answered with a real account number.
+    Token-gated; returns no secrets.
+    """
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    from utility.monnify import monnify_probe
+
+    bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
+    name = request.GET.get("name", "").strip()[:80]
+    email = request.GET.get("email", "").strip()[:120]
+    return JsonResponse({"monnify": monnify_probe(bvn=bvn, name=name, email=email)})
+
+
+def vtu_diagnose(request):
+    """GET /vtu-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
+
+    Browser self-test for the VTU.ng rail: proves the credentials authenticate
+    and shows the VTU.ng wallet balance (purchases fail on an empty provider
+    wallet no matter how correct the code is). Read-only; buys nothing.
+    """
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    from utility.vtung import vtu_probe
+
+    return JsonResponse({"vtu": vtu_probe()})
+
+
 urlpatterns = [
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
@@ -157,6 +210,8 @@ urlpatterns = [
     path("readyz", readyz),
     path("kora-diagnose", kora_diagnose),
     path("wema-diagnose", wema_diagnose),
+    path("monnify-diagnose", monnify_diagnose),
+    path("vtu-diagnose", vtu_diagnose),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
