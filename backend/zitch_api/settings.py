@@ -210,6 +210,27 @@ MONNIFY = {
     "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
     "SIMULATION": env_bool("MONNIFY_SIMULATION", False),
 }
+# Wema / ALAT (Banking-as-a-Service) — the target rail for the full migration
+# (funding accounts, payout, name-enquiry, balance; later VAS/cards/KYC). Azure
+# APIM: a per-PRODUCT subscription key (Ocp-Apim-Subscription-Key) + a channel id
+# (x-api-key / access). Sandbox host https://apiplayground.alat.ng (LIVE differs).
+# Blank keys => MOCK; WEMA_SIMULATION=true serves the mock flow even in prod (no
+# real money). securityInfo (encrypted, required on money-movement calls) is not
+# in the OpenAPI — set WEMA_SECURITY_INFO once Wema supplies the scheme. See
+# utility.wema. Kept opt-in (not wired as default) until verified end-to-end.
+WEMA = {
+    "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
+    "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
+    "KEYS": {
+        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services (create/acct-mgt/credit/debit)
+        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
+        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime & Data (subscribe to enable)
+        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # Bills Payment (subscribe to enable)
+        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
+    },
+    "SECURITY_INFO": os.environ.get("WEMA_SECURITY_INFO", ""),
+    "SIMULATION": env_bool("WEMA_SIMULATION", False),
+}
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
 # Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY
