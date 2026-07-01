@@ -503,7 +503,15 @@ def _kora_live() -> bool:
 
 
 def payment_provider() -> str:
-    """The wallet-funding rail — always 'kora'."""
+    """The wallet FUND-IN rail — 'monnify' or 'kora'. Explicit PAYMENT_PROVIDER
+    wins; blank => auto (Monnify if its keys/simulation are set, else Kora).
+    Payouts + recipient name-enquiry always stay on Kora regardless."""
+    choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
+    if choice in ("monnify", "kora"):
+        return choice
+    from . import monnify
+    if monnify.monnify_live() or monnify.monnify_simulation():
+        return "monnify"
     return "kora"
 
 
@@ -529,35 +537,52 @@ def card_provider() -> str:
     return "issuer"
 
 
-# --- Funding (wallet top-up) dispatch ---
+# --- Funding (wallet top-up) dispatch — Monnify or Kora, per payment_provider() ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
-    """Start a funding charge via Kora -> {success, authorization_url}."""
+    """Start a hosted-checkout funding charge -> {success, authorization_url}."""
+    if payment_provider() == "monnify":
+        from . import monnify
+        return monnify.payment_initialize(email, amount_naira, reference,
+                                          name=name, redirect_url=redirect_url)
     from . import kora
     return kora.payment_initialize(email, amount_naira, reference,
                                    name=name, redirect_url=redirect_url)
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
-    """Verify a funding charge via Kora."""
+    """Verify a funding charge. Honours the provider stamped on the FundingIntent
+    (so a charge started on one rail verifies against that same rail even if the
+    default flips), falling back to the current default."""
+    prov = (provider or payment_provider()).strip().lower()
+    if prov == "monnify":
+        from . import monnify
+        return monnify.payment_verify(reference)
     from . import kora
     return kora.payment_verify(reference)
 
 
 def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
                             customer_name: str, bvn: str = "", nin: str = "") -> dict:
-    """Provision a dedicated funding (virtual) account via Kora.
+    """Provision a dedicated funding (virtual) account via the selected rail.
 
     Returns {success, account_number, bank_name, account_name, reference} so
     wallet.services.ensure_reserved_account stays agnostic.
     """
+    if payment_provider() == "monnify":
+        from . import monnify
+        return monnify.create_virtual_account(account_reference, account_name, customer_email,
+                                              customer_name, bvn=bvn, nin=nin)
     from . import kora
     return kora.create_virtual_account(account_reference, account_name, customer_email,
                                        customer_name, bvn=bvn, nin=nin)
 
 
 def funding_account_get(account_reference: str) -> dict:
-    """Fetch an existing Kora virtual account (duplicate recovery)."""
+    """Fetch an existing dedicated account (duplicate recovery), per rail."""
+    if payment_provider() == "monnify":
+        from . import monnify
+        return monnify.get_virtual_account(account_reference)
     from . import kora
     return kora.get_virtual_account(account_reference)
 
