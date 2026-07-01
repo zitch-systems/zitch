@@ -10,8 +10,9 @@ from common.http import (
 from common.ratelimit import ratelimit
 from utility.providers import funding_initialize, funding_verify, payment_provider
 from utility import kora as kora_provider
+from utility import monnify as monnify_provider
 
-from .models import FundingIntent
+from .models import FundingIntent, Wallet
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
@@ -21,6 +22,7 @@ from .services import (
     get_or_create_wallet,
     make_reference,
     settle_funding,
+    settle_reserved_funding,
     transfer,
 )
 
@@ -274,6 +276,62 @@ def fund_webhook(request):
     from whatsapp.ops import record_audit
     record_audit("webhook.kora", actor_type="system",
                  target=data.get("reference", ""),
+                 after={"event": etype, "signature": "verified"})
+    return ok(status=True)
+
+
+@csrf_exempt
+def monnify_fund_webhook(request):
+    """POST /api/fund/monnify/webhook/ — Monnify pay-in callback.
+
+    Verifies the `monnify-signature` header (HMAC-SHA512 of the RAW body with the
+    secret key), then credits idempotently. A SUCCESSFUL_TRANSACTION for a
+    RESERVED_ACCOUNT credits the wallet mapped by our accountReference (or the
+    destination account number) via settle_reserved_funding; a hosted-checkout
+    success settles its FundingIntent by paymentReference. Always 200 on accepted
+    events so Monnify stops retrying.
+    """
+    if request.method != "POST":
+        return fail("Method not allowed", status=405)
+    raw = request.body or b""
+    signature = request.headers.get("monnify-signature", "")
+    if not monnify_provider.verify_webhook(raw, signature):
+        log.warning("monnify_webhook_bad_signature has_header=%s body_len=%s", bool(signature), len(raw))
+        return fail("Invalid signature", status=401)
+    try:
+        event = json.loads(raw or b"{}")
+    except (ValueError, TypeError):
+        return fail("Invalid payload", status=400)
+
+    etype = event.get("eventType", "")
+    ed = event.get("eventData", {}) or {}
+    if etype == "SUCCESSFUL_TRANSACTION":
+        product = ed.get("product", {}) or {}
+        txref = ed.get("transactionReference", "")
+        payref = ed.get("paymentReference", "")
+        amount = ed.get("amountPaid")
+        if product.get("type") == "RESERVED_ACCOUNT":
+            account_ref = ed.get("accountReference", "") or product.get("reference", "")
+            dest = ed.get("destinationAccountInformation", {}) or {}
+            number = dest.get("accountNumber", "")
+            wallet = None
+            if account_ref:
+                wallet = Wallet.objects.filter(account_reference=account_ref).first()
+            if wallet is None and number:
+                wallet = Wallet.objects.filter(account_number=number).first()
+            if wallet is not None:
+                settle_reserved_funding(txref or payref, amount, wallet.user)
+            else:
+                log.warning("monnify_funding_no_wallet account_ref=%r dest=%r ref=%s",
+                            account_ref, number, txref)
+        else:
+            # Hosted checkout: settle the FundingIntent by our paymentReference.
+            settle_funding(payref or txref, amount)
+        log.info("monnify_webhook event=%s txref=%s payref=%s amount=%s", etype, txref, payref, amount)
+    else:
+        log.info("monnify_webhook ignored_event=%s", etype)
+    from whatsapp.ops import record_audit
+    record_audit("webhook.monnify", actor_type="system", target=ed.get("transactionReference", ""),
                  after={"event": etype, "signature": "verified"})
     return ok(status=True)
 

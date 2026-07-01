@@ -191,6 +191,25 @@ KORA = {
 # Virtual-card backend: "kora" or "issuer" (the generic CARD_ISSUER). Blank =>
 # auto (issuer if configured, else Kora). See utility.providers.card_provider.
 CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
+# Wallet FUND-IN backend — "monnify" or "kora". Blank => auto (Monnify if its keys
+# are set, else Kora). Payouts + recipient name-enquiry always stay on Kora; this
+# only selects the funding rail (hosted checkout + dedicated virtual account).
+# See utility.providers.payment_provider.
+PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
+# Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-account
+# collections need NO IP whitelisting. Blank keys => MOCK; MONNIFY_SIMULATION=true
+# serves the mock fund-in flow even in production (test a real build without live
+# keys — no real money moves). Live BASE_URL https://api.monnify.com, sandbox
+# https://sandbox.monnify.com. Webhook (monnify-signature, HMAC-SHA512) ->
+# /api/fund/monnify/webhook/. See utility.monnify.
+MONNIFY = {
+    "BASE_URL": os.environ.get("MONNIFY_BASE_URL", "https://api.monnify.com"),
+    "API_KEY": os.environ.get("MONNIFY_API_KEY", ""),
+    "SECRET_KEY": os.environ.get("MONNIFY_SECRET_KEY", ""),
+    "CONTRACT_CODE": os.environ.get("MONNIFY_CONTRACT_CODE", ""),
+    "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
+    "SIMULATION": env_bool("MONNIFY_SIMULATION", False),
+}
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
 # Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY

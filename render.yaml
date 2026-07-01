@@ -50,6 +50,23 @@ services:
       # Virtual-card backend: "kora" or "issuer" (generic CARD_ISSUER); blank => auto.
       - key: CARD_PROVIDER
         sync: false
+      # Wallet FUND-IN rail: "monnify" or "kora"; blank => auto (Monnify if its keys
+      # are set, else Kora). Payouts + recipient name-enquiry always stay on Kora.
+      - key: PAYMENT_PROVIDER
+        sync: false
+      # Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-
+      # account collections need NO IP whitelisting. Blank keys => mock; set
+      # MONNIFY_SIMULATION=true to test the fund-in flow in a real build without live
+      # keys (no real money). BASE_URL: live https://api.monnify.com, sandbox
+      # https://sandbox.monnify.com. Set the Monnify webhook to /api/fund/monnify/webhook/.
+      - key: MONNIFY_API_KEY
+        sync: false
+      - key: MONNIFY_SECRET_KEY
+        sync: false
+      - key: MONNIFY_CONTRACT_CODE
+        sync: false
+      - key: MONNIFY_BASE_URL
+        sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
       # defaults to https://api.withmono.com in code.
