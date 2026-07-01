@@ -4,10 +4,11 @@
 - Simulated LIVE: utility.wema.requests patched to build the real request and parse
   ALAT's two envelope shapes ({status,...} and {result,hasError,...}).
 """
+import os
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import Client, SimpleTestCase, override_settings
 
 from utility import wema
 
@@ -148,6 +149,36 @@ class WemaProbeTests(SimpleTestCase):
         self.assertIn("banks", r)
         self.assertTrue(r["banks"]["ok"])
         self.assertIn("airtime_product", r)
+
+
+class WemaDiagnoseViewTests(SimpleTestCase):
+    """The /wema-diagnose view must parse EVERY wema_probe() parameter from the
+    querystring — including otp/tracking_id, which were added to wema_probe for the
+    two-step OTP flow after the view was first wired, and had to be threaded through
+    separately (a real gap: the probe supported the params but the view dropped them)."""
+
+    def setUp(self):
+        self.client = Client()
+        self._patch = patch.dict(os.environ, {"WEMA_DIAG_TOKEN": "test-token"})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def test_forwards_otp_and_tracking_id_to_probe(self):
+        with patch("utility.wema.wema_probe", return_value={}) as mock_probe:
+            self.client.get("/wema-diagnose", {
+                "token": "test-token", "phone": "08030000000", "otp": "123456",
+                "tracking_id": "WEMA-TRK-1",
+            })
+        mock_probe.assert_called_once_with("", "", "08030000000", bvn="", nin="",
+                                           otp="123456", tracking_id="WEMA-TRK-1")
+
+    def test_missing_bvn_or_phone_skips_wallet_create(self):
+        # Mirrors the real report: hitting the URL without both phone and bvn must
+        # not silently attempt wallet creation (wema_probe itself already guards
+        # this — asserted here at the view boundary too).
+        with patch("utility.wema.wema_probe", return_value={}) as mock_probe:
+            self.client.get("/wema-diagnose", {"token": "test-token"})
+        mock_probe.assert_called_once_with("", "", "", bvn="", nin="", otp="", tracking_id="")
 
 
 @override_settings(WEMA=WEMA_VAS)

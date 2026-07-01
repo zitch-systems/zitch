@@ -136,7 +136,10 @@ def wema_diagnose(request):
     phone = "".join(c for c in request.GET.get("phone", "") if c.isdigit())[:14]
     bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
     nin = "".join(c for c in request.GET.get("nin", "") if c.isdigit())[:11]
-    return JsonResponse({"wema": wema_probe(account, bank, phone, bvn=bvn, nin=nin)})
+    otp = "".join(c for c in request.GET.get("otp", "") if c.isdigit())[:8]
+    tracking_id = request.GET.get("tracking_id", "").strip()[:80]
+    return JsonResponse({"wema": wema_probe(account, bank, phone, bvn=bvn, nin=nin,
+                                            otp=otp, tracking_id=tracking_id)})
 
 
 urlpatterns = [
