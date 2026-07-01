@@ -507,18 +507,6 @@ def _wema_live() -> bool:
     return wema.wema_live()
 
 
-def _wema_payout_ready() -> bool:
-    """Wema can send payouts only with a source (pool) account to debit — live
-    keys or simulation, plus WEMA_SOURCE_ACCOUNT set. In simulation the source
-    account is not enforced (the mock never touches a real pool)."""
-    from . import wema
-    if not (wema.wema_live() or wema.wema_simulation()):
-        return False
-    if wema.wema_simulation():
-        return True
-    return bool(settings.WEMA.get("SOURCE_ACCOUNT"))
-
-
 def payment_provider() -> str:
     """The wallet FUND-IN rail — 'wema', 'monnify' or 'kora'. Explicit
     PAYMENT_PROVIDER wins; blank => auto (Monnify if its keys/simulation are set,
@@ -651,7 +639,8 @@ def payout_resolve_account(account_number: str, bank_code: str) -> dict:
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
-                account_number: str, account_name: str, bank_name: str = "") -> dict:
+                account_number: str, account_name: str, bank_name: str = "",
+                source_account: str = "") -> dict:
     """Single bank payout via the selected rail. Returns {success, status, ...};
     both rails yield success/processing/pending — execute_payout treats
     PROCESSING/PENDING as not-yet-confirmed.
@@ -659,23 +648,21 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
     `bank_name` is optional for Kora (routes by code) but sent to Wema, whose
     ProcessClientTransfer takes destinationBankName alongside the code.
 
-    MONEY-FLOW ASSUMPTION (verify with Wema before go-live): Wema payouts debit a
-    single shared pool account (WEMA_SOURCE_ACCOUNT). This is correct ONLY if per-
-    user NUBAN deposits settle into that pool (pooled/collection model). If each
-    user's NUBAN instead holds its own balance, payouts must source from the
-    SENDER's NUBAN (thread wallet.account_number through here) — otherwise the pool
-    drains while user NUBANs accumulate. See docs/wema-migration.md."""
+    MONEY-FLOW (per-user-balance model): a Wema payout debits the SENDER's own
+    NUBAN — `source_account`, which execute_payout passes as the sender's
+    wallet.account_number. It falls back to the shared WEMA_SOURCE_ACCOUNT pool
+    only for a sender who has no Wema NUBAN yet (mixed migration), and fails closed
+    (refundable) on a live call with neither, rather than sending an empty
+    sourceAccountNumber. `source_account` is ignored by Kora (routes by code)."""
     if payout_provider() == "wema":
         from . import wema
-        # Fail closed (and refundable) rather than send a transfer with an empty
-        # sourceAccountNumber: a live Wema payout needs WEMA_SOURCE_ACCOUNT set.
-        if not _wema_payout_ready():
+        src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
+        if wema.wema_live() and not src:
             return {"success": False,
                     "message": "Payouts are temporarily unavailable — please try again shortly."}
-        source = settings.WEMA.get("SOURCE_ACCOUNT", "")
         return wema.transfer(
             amount_naira, reference, narration,
-            source_account=source, destination_account=account_number,
+            source_account=src, destination_account=account_number,
             destination_bank_code=bank_code, destination_bank_name=bank_name,
             destination_name=account_name,
         )

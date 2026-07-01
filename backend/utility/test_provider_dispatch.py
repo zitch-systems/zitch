@@ -103,12 +103,20 @@ class PayoutDispatchTests(SimpleTestCase):
 
     @override_settings(PAYOUT_PROVIDER="wema", WEMA={**WEMA_LIVE, "SOURCE_ACCOUNT": ""})
     def test_payout_send_fails_closed_without_source_account(self):
-        # Live Wema payout with no pool account must refuse (refundable) rather than
-        # send an empty sourceAccountNumber. wema.transfer must NOT be called.
+        # Live Wema payout with no sender NUBAN and no pool must refuse (refundable)
+        # rather than send an empty sourceAccountNumber. wema.transfer must NOT be called.
         with patch("utility.wema.transfer") as m:
             out = P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE", bank_name="Wema Bank")
         self.assertFalse(out["success"])
         m.assert_not_called()
+
+    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
+    def test_payout_send_prefers_sender_nuban_over_pool(self):
+        # Per-user-balance model: debit the SENDER's own NUBAN, not the pool.
+        with patch("utility.wema.transfer", return_value={"success": True, "status": "SUCCESS"}) as m:
+            P.payout_send(1000, "ZTRF1", "note", "035", "0123456789", "ADA EZE",
+                          bank_name="Wema Bank", source_account="0199999999")
+        self.assertEqual(m.call_args.kwargs["source_account"], "0199999999")  # sender NUBAN wins over pool
 
 
 class FundingAccountGetDispatchTests(SimpleTestCase):

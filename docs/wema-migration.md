@@ -37,13 +37,13 @@ small transfer. `/healthz` should show `payout_provider: "wema"`.
 
 ## ⚠️ Open decisions — confirm with Wema before go-live
 
-1. **Money-flow model (BLOCKER).** Deposits land in each user's per-user NUBAN, and the
-   funding reconciler reads *per-user* transaction history. But `payout_send` debits a
-   single shared `WEMA_SOURCE_ACCOUNT` pool. These two assumptions only reconcile if
-   per-user NUBAN deposits **settle into that pool** (pooled/collection model). If instead
-   each NUBAN holds its own balance, payouts must source from the **sender's own NUBAN**
-   (thread `wallet.account_number` into `payout_send`), or the pool drains while user
-   NUBANs accumulate. **Confirm which model your Wema contract uses.**
+1. **Money-flow model — RESOLVED: per-user balances.** Each user's NUBAN holds its own
+   balance. `payout_send` debits the **sender's own NUBAN** (`execute_payout` passes the
+   sender's `wallet.account_number` as `source_account`); the shared `WEMA_SOURCE_ACCOUNT`
+   pool is only a fallback for a sender who has no Wema NUBAN yet (mixed migration). A live
+   payout with neither fails closed (refundable). Note: to pay out via Wema a user must
+   have a Wema NUBAN with balance — during migration, a user who funded via Monnify/Kora
+   (no Wema NUBAN) can't be paid out from the pool unless `WEMA_SOURCE_ACCOUNT` is funded.
 2. **`securityInfo` construction.** The encryption scheme (algorithm / what is signed /
    key material) is not in the OpenAPI. Implement in `utility.wema._security_info` once
    Wema supplies it. Sandbox does not enforce it.

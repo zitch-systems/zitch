@@ -100,8 +100,11 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     except InsufficientFunds:
         raise PayoutError("insufficient", "Insufficient wallet balance.")
 
+    # Wema per-user-balance model: debit the sender's own NUBAN (ignored by Kora).
+    sender_source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
-                         bank.bank_code, account_number, name, bank_name=bank.name)
+                         bank.bank_code, account_number, name, bank_name=bank.name,
+                         source_account=sender_source)
     if not result.get("success"):
         refund(txn)
         raise PayoutError("provider", result.get("message", "Transfer failed"))
