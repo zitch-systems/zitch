@@ -139,6 +139,38 @@ def _request(method: str, path: str, *, json_body=None, params=None) -> dict:
     return resp.json()
 
 
+def vtu_probe() -> dict:
+    """Live self-test against VTU.ng (returns NO secrets): proves the credentials
+    authenticate and the wallet balance is readable — the two things every
+    airtime/data/bill purchase depends on. Read-only; buys nothing."""
+    cfg = settings.VTUNG
+    out = {"config": {"base_url": _base(), "api_key_set": bool(cfg["API_KEY"]),
+                      "username_set": bool(cfg["USERNAME"]), "live": _live(),
+                      "auth_mode": "api_key" if cfg["API_KEY"] else "username_password"}}
+    if not _live():
+        out["hint"] = ("No VTU.ng credentials — set VTUNG_API_KEY or VTUNG_USERNAME + "
+                       "VTUNG_PASSWORD. No live call was made.")
+        return out
+    token = _token(force_refresh=not cfg["API_KEY"])
+    out["auth"] = {"ok": bool(token)}
+    if not token:
+        out["auth"]["hint"] = ("Login failed ('authorization header malformed' in the app comes "
+                               "from this) — check VTUNG_USERNAME/VTUNG_PASSWORD, or set a "
+                               "long-lived VTUNG_API_KEY instead.")
+        return out
+    try:
+        body = _request("GET", "balance")
+        bal = (body.get("data") or {}).get("balance", body.get("balance"))
+        out["balance"] = {"ok": bal is not None, "balance": str(bal) if bal is not None else "",
+                          "raw": str(body)[:300]}
+        if bal is not None and _amount(bal) is not None and _amount(bal) <= 0:
+            out["balance"]["hint"] = ("VTU.ng wallet is EMPTY — purchases will fail with "
+                                      "'insufficient balance' until you top up your VTU.ng account.")
+    except (requests.RequestException, ValueError) as exc:
+        out["balance"] = {"ok": False, "message": f"unreachable: {exc}"}
+    return out
+
+
 def _build(service_id: str, payload: dict, reference: str):
     """Map (service_id, view payload) -> (endpoint_path, JSON body).
 

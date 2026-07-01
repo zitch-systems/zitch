@@ -91,6 +91,34 @@ class MonnifyKycTests(SimpleTestCase):
         self.assertTrue(mock_post.call_args[0][0].endswith("/api/v1/vas/nin-details"))
 
 
+class MonnifyProbeTests(SimpleTestCase):
+    def test_probe_without_keys_makes_no_live_call(self):
+        r = monnify.monnify_probe()
+        self.assertIn("config", r)
+        self.assertIn("hint", r)
+        self.assertNotIn("auth", r)
+
+    @override_settings(MONNIFY=MONNIFY_LIVE)
+    @patch("utility.monnify.get_virtual_account", return_value={"success": False, "message": "not found"})
+    @patch("utility.monnify._monnify_token", return_value="tok")
+    def test_probe_reports_auth_and_product(self, _tok, _get):
+        r = monnify.monnify_probe()
+        self.assertTrue(r["auth"]["ok"])
+        self.assertTrue(r["reserved_product"]["reachable"])
+        self.assertNotIn("nuban_create", r)   # no bvn+name supplied
+
+    @override_settings(MONNIFY=MONNIFY_LIVE)
+    @patch("utility.monnify.create_virtual_account",
+           return_value={"success": True, "account_number": "9912345678", "bank_name": "Moniepoint"})
+    @patch("utility.monnify.get_virtual_account", return_value={"success": False, "message": "not found"})
+    @patch("utility.monnify._monnify_token", return_value="tok")
+    def test_probe_mints_nuban_with_bvn(self, _tok, _get, mk_create):
+        r = monnify.monnify_probe(bvn="22222222222", name="Ada Eze")
+        self.assertTrue(r["nuban_create"]["ok"])
+        self.assertEqual(r["nuban_create"]["account_number"], "9912345678")
+        self.assertTrue(mk_create.call_args[0][0].startswith("ZITCH-DIAG-"))
+
+
 class MonnifyMockTests(SimpleTestCase):
     def test_mock_mode_active(self):
         self.assertFalse(monnify.monnify_live())
