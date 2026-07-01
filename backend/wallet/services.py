@@ -395,6 +395,69 @@ def credit_kora_virtual_account_funding(data: dict) -> Transaction | None:
     return txn
 
 
+# Account-reference prefix that marks a wallet as provisioned on Wema/ALAT (vs
+# Kora/Monnify's "ZITCH-WALLET-"). Wema has no inbound-credit webhook, so these
+# wallets are the ones the reconcile_wema poller sweeps for deposits.
+WEMA_ACCOUNT_REF_PREFIX = "WEMA-WALLET-"
+
+
+def wema_account_reference(user) -> str:
+    return f"{WEMA_ACCOUNT_REF_PREFIX}{user.id}"
+
+
+def wema_provisioned_wallets():
+    """Wallets whose funding account lives on Wema (have a NUBAN + our Wema ref).
+
+    These are polled for inbound credits because ALAT exposes no funding webhook."""
+    return (Wallet.objects
+            .filter(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
+            .exclude(account_number=""))
+
+
+def apply_wema_credit(wallet, tx: dict) -> Transaction | None:
+    """Credit `wallet` for one inbound Wema transaction-history row, exactly once.
+
+    Skips non-credit / zero rows. Idempotent on Wema's per-transaction referenceId,
+    stored under a ``WEMA-CR-`` prefix so the ledger key can NEVER collide with a
+    payout (``ZTRF…``), funding (``ZPAY…``/``ZFND…``) or internal-transfer reference
+    in the shared, globally-unique ``Transaction.reference`` namespace — a collision
+    would otherwise make settle_reserved_funding treat a real deposit as 'already
+    credited' and silently drop it. Returns the credit row if applied, else None.
+    """
+    from utility import wema
+
+    norm = wema.normalize_transaction(tx)
+    if not norm["is_credit"] or not norm["reference"]:
+        return None
+    if norm["amount_naira"] is None:
+        # A credit row we can't price (unparseable amount) — never silently lose it.
+        log.warning("wema_credit_unparseable_amount ref=%s raw_amount=%r account=%s",
+                    norm["reference"], tx.get("amount"), wallet.account_number)
+        return None
+    if norm["amount_naira"] <= Decimal("0"):
+        return None
+    ledger_ref = f"WEMA-CR-{norm['reference']}"
+    return settle_reserved_funding(ledger_ref, norm["amount_naira"], wallet.user)
+
+
+def pending_bank_payouts(cutoff):
+    """PENDING outbound bank-transfer payouts (rows carrying a ``bank`` in meta),
+    due for settlement reconciliation.
+
+    Kora payouts settle via the disbursement webhook, but Wema exposes NO payout
+    webhook, so a Wema transfer returned PENDING/PROCESSING would otherwise sit
+    debited forever. reconcile_wema polls confirm_transfer_status for these and
+    settles/reverses them. The mirror of pending_vtu_purchases (which EXCLUDES
+    bank payouts)."""
+    return Transaction.objects.filter(
+        transaction_status=Transaction.PENDING,
+        direction=Transaction.OUT,
+        meta__reconcile=True,
+        meta__has_key="bank",
+        created__lte=cutoff,
+    )
+
+
 @db_transaction.atomic
 def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "") -> tuple[Transaction, Transaction]:
     """Move funds between two Zitch wallets atomically.

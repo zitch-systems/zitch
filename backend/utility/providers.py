@@ -507,24 +507,14 @@ def _wema_live() -> bool:
     return wema.wema_live()
 
 
-def _wema_payout_ready() -> bool:
-    """Wema can send payouts only with a source (pool) account to debit — live
-    keys or simulation, plus WEMA_SOURCE_ACCOUNT set. In simulation the source
-    account is not enforced (the mock never touches a real pool)."""
-    from . import wema
-    if not (wema.wema_live() or wema.wema_simulation()):
-        return False
-    if wema.wema_simulation():
-        return True
-    return bool(settings.WEMA.get("SOURCE_ACCOUNT"))
-
-
 def payment_provider() -> str:
-    """The wallet FUND-IN rail — 'monnify' or 'kora'. Explicit PAYMENT_PROVIDER
-    wins; blank => auto (Monnify if its keys/simulation are set, else Kora).
-    Payouts + recipient name-enquiry always stay on Kora regardless."""
+    """The wallet FUND-IN rail — 'wema', 'monnify' or 'kora'. Explicit
+    PAYMENT_PROVIDER wins; blank => auto (Monnify if its keys/simulation are set,
+    else Kora). Wema funds by bank transfer to an OTP-provisioned NUBAN (no hosted
+    checkout, no webhook — deposits are reconciled by the reconcile_wema poller),
+    so it is opt-in only (never auto-selected)."""
     choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "kora"):
+    if choice in ("wema", "monnify", "kora"):
         return choice
     from . import monnify
     if monnify.monnify_live() or monnify.monnify_simulation():
@@ -566,7 +556,13 @@ def card_provider() -> str:
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
     """Start a hosted-checkout funding charge -> {success, authorization_url}."""
-    if payment_provider() == "monnify":
+    prov = payment_provider()
+    if prov == "wema":
+        # Wema/ALAT has no hosted checkout — funding is by bank transfer to the
+        # user's NUBAN (credited by the reconcile_wema poller). Fail gracefully.
+        return {"success": False,
+                "message": "Top up by bank transfer to your account number."}
+    if prov == "monnify":
         from . import monnify
         return monnify.payment_initialize(email, amount_naira, reference,
                                           name=name, redirect_url=redirect_url)
@@ -580,6 +576,9 @@ def funding_verify(reference: str, provider: str = "") -> dict:
     (so a charge started on one rail verifies against that same rail even if the
     default flips), falling back to the current default."""
     prov = (provider or payment_provider()).strip().lower()
+    if prov == "wema":
+        # Wema deposits are credited by the reconcile poller, not a verify call.
+        return {"success": False, "message": "Wema funding is credited automatically on receipt."}
     if prov == "monnify":
         from . import monnify
         return monnify.payment_verify(reference)
@@ -594,7 +593,15 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
     Returns {success, account_number, bank_name, account_name, reference} so
     wallet.services.ensure_reserved_account stays agnostic.
     """
-    if payment_provider() == "monnify":
+    prov = payment_provider()
+    if prov == "wema":
+        # Wema can't mint an account synchronously — it needs a BVN/NIN + OTP
+        # round-trip driven by the /api/wallet/wema/* endpoints. Signal that so
+        # ensure_reserved_account leaves the wallet numberless (the OTP flow fills
+        # it) rather than surfacing a hard error.
+        return {"success": False, "otp_required": True,
+                "message": "Verify the OTP to finish setting up your account."}
+    if prov == "monnify":
         from . import monnify
         return monnify.create_virtual_account(account_reference, account_name, customer_email,
                                               customer_name, bvn=bvn, nin=nin)
@@ -605,7 +612,13 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
 
 def funding_account_get(account_reference: str) -> dict:
     """Fetch an existing dedicated account (duplicate recovery), per rail."""
-    if payment_provider() == "monnify":
+    prov = payment_provider()
+    if prov == "wema":
+        # Wema accounts are provisioned by the OTP endpoints, not a synchronous
+        # lookup — never fall through to Kora's get_virtual_account (wrong rail).
+        return {"success": False, "otp_required": True,
+                "message": "Verify the OTP to finish setting up your account."}
+    if prov == "monnify":
         from . import monnify
         return monnify.get_virtual_account(account_reference)
     from . import kora
@@ -626,19 +639,30 @@ def payout_resolve_account(account_number: str, bank_code: str) -> dict:
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
-                account_number: str, account_name: str, bank_name: str = "") -> dict:
+                account_number: str, account_name: str, bank_name: str = "",
+                source_account: str = "") -> dict:
     """Single bank payout via the selected rail. Returns {success, status, ...};
     both rails yield success/processing/pending — execute_payout treats
     PROCESSING/PENDING as not-yet-confirmed.
 
     `bank_name` is optional for Kora (routes by code) but sent to Wema, whose
-    ProcessClientTransfer takes destinationBankName alongside the code."""
+    ProcessClientTransfer takes destinationBankName alongside the code.
+
+    MONEY-FLOW (per-user-balance model): a Wema payout debits the SENDER's own
+    NUBAN — `source_account`, which execute_payout passes as the sender's
+    wallet.account_number. It falls back to the shared WEMA_SOURCE_ACCOUNT pool
+    only for a sender who has no Wema NUBAN yet (mixed migration), and fails closed
+    (refundable) on a live call with neither, rather than sending an empty
+    sourceAccountNumber. `source_account` is ignored by Kora (routes by code)."""
     if payout_provider() == "wema":
         from . import wema
-        source = settings.WEMA.get("SOURCE_ACCOUNT", "")
+        src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
+        if wema.wema_live() and not src:
+            return {"success": False,
+                    "message": "Payouts are temporarily unavailable — please try again shortly."}
         return wema.transfer(
             amount_naira, reference, narration,
-            source_account=source, destination_account=account_number,
+            source_account=src, destination_account=account_number,
             destination_bank_code=bank_code, destination_bank_name=bank_name,
             destination_name=account_name,
         )

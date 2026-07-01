@@ -214,6 +214,39 @@ services:
           name: zitch-db
           property: connectionString
 
+  # Wema funding reconciliation — ALAT has NO inbound-credit webhook, so a bank
+  # transfer into a user's Wema NUBAN is only detected by polling. This sweeps each
+  # Wema-provisioned wallet's transaction history and credits new deposits
+  # (idempotent on Wema's referenceId). Also a paid plan (cron has no free tier).
+  # Only does work when Wema is the funding rail; harmless otherwise.
+  - type: cron
+    name: zitch-reconcile-wema
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "*/5 * * * *"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py reconcile_wema"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      - key: PAYMENT_PROVIDER
+        sync: false
+      - key: WEMA_CHANNEL_ID
+        sync: false
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_BASE_URL
+        sync: false
+      - key: WEMA_SIMULATION
+        sync: false
+
 databases:
   - name: zitch-db
     plan: free   # upgrade before go-live; free Postgres expires

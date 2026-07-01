@@ -83,11 +83,27 @@ class WemaLiveTests(SimpleTestCase):
 
     @patch("utility.wema.requests.get")
     def test_balance_live(self, mock_get):
+        # GetAccountV2 envelope is {result, successful, message} — no status/hasError.
         mock_get.return_value = _resp({"result": {"availableBalance": "8420.10", "walletStatus": "Active"},
-                                       "successful": True, "status": True})
+                                       "successful": True})
         r = wema.get_balance("0123456789")
+        self.assertTrue(r["success"])          # must not be dropped by the envelope mismatch
         self.assertEqual(r["balance_naira"], Decimal("8420.10"))
         self.assertEqual(mock_get.call_args[1]["headers"]["x-api-key"], "chan-1")  # acct-mgt uses x-api-key
+
+    def test_naira_tolerates_formatting(self):
+        self.assertEqual(wema._naira("1,000.50"), Decimal("1000.50"))
+        self.assertEqual(wema._naira("₦2,500"), Decimal("2500.00"))
+        self.assertEqual(wema._naira("3000"), Decimal("3000.00"))
+        self.assertIsNone(wema._naira("N/A"))
+        self.assertIsNone(wema._naira(None))
+
+    def test_normalize_transaction_credit(self):
+        n = wema.normalize_transaction({"referenceId": "R1", "amount": "1,200.00",
+                                        "creditType": "Credit", "narration": "in"})
+        self.assertTrue(n["is_credit"])
+        self.assertEqual(n["reference"], "R1")
+        self.assertEqual(n["amount_naira"], Decimal("1200.00"))
 
     @patch("utility.wema.requests.post")
     def test_transfer_live_sends_securityinfo(self, mock_post):

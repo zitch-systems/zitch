@@ -1,6 +1,7 @@
 import json
 import logging
 
+from django.db import IntegrityError
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
@@ -11,6 +12,7 @@ from common.ratelimit import ratelimit
 from utility.providers import funding_initialize, funding_verify, payment_provider
 from utility import kora as kora_provider
 from utility import monnify as monnify_provider
+from utility import wema as wema_provider
 
 from .models import FundingIntent, Wallet
 from .services import (
@@ -24,6 +26,7 @@ from .services import (
     settle_funding,
     settle_reserved_funding,
     transfer,
+    wema_account_reference,
 )
 
 log = logging.getLogger("wallet")
@@ -151,6 +154,136 @@ def wallet_account_create(request):
     return ok(**_account_payload(
         wallet, message="Your Zitch account is ready", tier=user.tier,
         bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
+
+
+# ------------------- WEMA / ALAT wallet provisioning (OTP) -------------------
+# Wema mints a dedicated NUBAN via a BVN/NIN + OTP round-trip (unlike Kora's
+# one-step reserved account), and exposes NO inbound-credit webhook — deposits to
+# the NUBAN are detected by the reconcile_wema poller. These three endpoints drive
+# the OTP flow; they are gated on Wema being the funding rail (or configured).
+def _wema_funding_enabled() -> bool:
+    return (payment_provider() == "wema"
+            or wema_provider.wema_live() or wema_provider.wema_simulation())
+
+
+@api
+@ratelimit("wema_wallet_create", limit=5, window=60)
+@require_user
+def wema_wallet_create(request):
+    """POST /api/wallet/wema/create/ {access_token, bvn?, nin?}
+    -> {success, tracking_id, otp_destination, using_bvn, message}
+
+    Step 1: submit the BVN (or NIN); Wema sends an OTP to the customer's phone.
+    The client then calls /api/wallet/wema/verify-otp/ with the code + tracking_id.
+    Idempotent: returns the existing account if one is already provisioned.
+    """
+    if not _wema_funding_enabled():
+        return fail("Bank account creation is not available right now")
+    user = request.user_obj
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return ok(**_account_payload(wallet, already=True,
+                                     message="Your account is already set up"))
+    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
+    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+    if len(bvn) != 11 and len(nin) != 11:
+        return fail("Enter your 11-digit BVN or NIN")
+    using_bvn = len(bvn) == 11
+    email = user.email or f"{user.phone}@zitch.app"
+    res = wema_provider.create_wallet_request(user.phone or "", email, bvn=bvn, nin=nin)
+    if not res.get("success"):
+        return fail(res.get("message", "Couldn't start account creation"), status=502)
+    return ok(success=True, tracking_id=res.get("tracking_id", ""),
+              otp_destination=res.get("otp_destination", user.phone or ""),
+              using_bvn=using_bvn, mock=res.get("mock", False),
+              message=res.get("message", "Enter the OTP sent to your phone"))
+
+
+@api
+@ratelimit("wema_wallet_verify", limit=10, window=60)
+@require_user
+def wema_wallet_verify_otp(request):
+    """POST /api/wallet/wema/verify-otp/
+       {access_token, otp, tracking_id, using_bvn?, bvn?, nin?}
+    -> {success, account_number, account_name, bank_name, tier, bvn_verified, nin_verified}
+
+    Step 2: validate the OTP, then fetch + persist the created NUBAN (marked with a
+    WEMA account_reference so the reconcile poller sweeps it for deposits). If the
+    identifier is echoed, the user is marked KYC-verified and their tier lifted —
+    mirroring the Kora account flow.
+    """
+    if not _wema_funding_enabled():
+        return fail("Bank account creation is not available right now")
+    user = request.user_obj
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return ok(**_account_payload(wallet, already=True))
+    otp = (request.data.get("otp") or "").strip()
+    tracking_id = (request.data.get("tracking_id") or "").strip()
+    using_bvn = bool(request.data.get("using_bvn"))
+    if not otp or not tracking_id:
+        return fail("Enter the OTP sent to your phone")
+    val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
+    if not val.get("success"):
+        return fail(val.get("message", "OTP verification failed"), status=502)
+    acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
+    if not acct.get("success") or not acct.get("account_number"):
+        return fail(acct.get("message", "Your account is being created — try again shortly"),
+                    status=502)
+    # Guard the unique account_number/account_reference constraints: if Wema hands
+    # back a NUBAN already owned by another wallet (provider bug / reused sandbox
+    # number), fail cleanly instead of a 500.
+    if Wallet.objects.filter(account_number=acct["account_number"]).exclude(pk=wallet.pk).exists():
+        log.warning("wema_account_number_conflict user=%s account=%s", user.id, acct["account_number"])
+        return fail("We couldn't finish setting up your account. Please contact support.", status=409)
+    wallet.account_number = acct["account_number"]
+    wallet.account_name = acct.get("account_name", "") or (user.get_full_name() or "").strip()
+    wallet.bank_name = acct.get("bank_name", "") or "Wema Bank"
+    wallet.account_reference = wema_account_reference(user)
+    try:
+        wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                   "account_reference", "updated"])
+    except IntegrityError:
+        log.warning("wema_account_persist_conflict user=%s account=%s", user.id, acct["account_number"])
+        return fail("We couldn't finish setting up your account. Please contact support.", status=409)
+    # Best-effort KYC / tier lift if the client echoed the identifier.
+    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
+    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+    fields: list[str] = []
+    if using_bvn and len(bvn) == 11 and not user.bvn_verified:
+        user.set_bvn(bvn)
+        user.bvn_verified = True
+        fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
+    elif not using_bvn and len(nin) == 11 and not user.nin_verified:
+        user.set_nin(nin)
+        user.nin_verified = True
+        fields += ["nin_hash", "nin_last4", "nin_verified"]
+    if fields:
+        user.recompute_tier()
+        user.save(update_fields=fields + ["tier"])
+    return ok(**_account_payload(
+        wallet, message="Your Zitch account is ready", tier=user.tier,
+        bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
+
+
+@api
+@ratelimit("wema_wallet_resend", limit=5, window=60)
+@require_user
+def wema_wallet_resend_otp(request):
+    """POST /api/wallet/wema/resend-otp/ {access_token, tracking_id, using_bvn?}
+    -> {success, message}
+    """
+    if not _wema_funding_enabled():
+        return fail("Bank account creation is not available right now")
+    user = request.user_obj
+    tracking_id = (request.data.get("tracking_id") or "").strip()
+    using_bvn = bool(request.data.get("using_bvn"))
+    if not tracking_id:
+        return fail("Missing tracking reference")
+    res = wema_provider.resend_wallet_otp(user.phone or "", tracking_id, bvn=using_bvn)
+    if not res.get("success"):
+        return fail(res.get("message", "Couldn't resend the OTP"), status=502)
+    return ok(success=True, message=res.get("message", "OTP resent"))
 
 
 @api

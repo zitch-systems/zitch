@@ -114,8 +114,17 @@ def _msg(data: dict) -> str:
 
 
 def _naira(v) -> Decimal | None:
+    """Parse an ALAT money value to Decimal, tolerating thousands separators and a
+    currency symbol/code (history amounts can arrive as "1,000.00" or "₦1,000").
+    Returns None only when genuinely unparseable — callers must treat None as
+    'skip', never as zero."""
+    if v is None:
+        return None
+    s = str(v).strip().replace(",", "").replace("₦", "").replace("NGN", "").strip()
+    if not s:
+        return None
     try:
-        return Decimal(str(v)).quantize(Decimal("0.01"))
+        return Decimal(s).quantize(Decimal("0.01"))
     except (TypeError, ValueError, InvalidOperation):
         return None
 
@@ -180,11 +189,18 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
             resp = _post("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
                          {"phoneNumber": phone, "email": email, "nin": nin})
         data = resp.json()
-        d = data.get("data", {}) or {}
-        return {"success": _ok(data),
-                "tracking_id": d.get("trackingId") or d.get("otpTrackingID", ""),
-                "otp_destination": d.get("otpDestination", phone),
-                "message": _msg(data), "raw": data}
+        # The documented ResponseModel has no `data` envelope, but the live gateway
+        # returns the OTP tracking id (schemas B2BOTPResponseModel/B2BOnboardingResponse)
+        # — look for it at the top level and under data/result so we don't depend on
+        # one undocumented shape. An empty tracking_id would break OTP validation.
+        d = data.get("data") or data.get("result") or {}
+        if not isinstance(d, dict):
+            d = {}
+        tracking = (d.get("trackingId") or d.get("otpTrackingID")
+                    or data.get("trackingId") or data.get("otpTrackingID") or "")
+        dest = d.get("otpDestination") or data.get("otpDestination") or phone
+        return {"success": _ok(data), "tracking_id": tracking,
+                "otp_destination": dest, "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -249,7 +265,11 @@ def get_balance(account_number: str) -> dict:
         data = _get("acct_mgt",
                     f"/api/AccountMaintenance/CustomerAccount/GetAccountV2/accountNumber/{account_number}").json()
         r = data.get("result", {}) or {}
-        return {"success": _ok(data), "balance_naira": _naira(r.get("availableBalance")),
+        # GetAccountV2 uses the account-maintenance envelope {result, successful,
+        # message} — no status/hasError — so _ok() alone would report every valid
+        # read as a failure (same envelope handled in get_transactions).
+        ok = bool(data.get("successful")) or _ok(data)
+        return {"success": ok, "balance_naira": _naira(r.get("availableBalance")),
                 "wallet_status": r.get("walletStatus", ""), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -265,9 +285,27 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
         data = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                      {"accountNumber": account_number, "from": date_from, "to": date_to,
                       "keyWord": keyword}).json()
-        return {"success": _ok(data), "transactions": data.get("result", []) or [], "raw": data}
+        # This envelope uses {successful, result[], message} rather than status/hasError.
+        ok = bool(data.get("successful")) or _ok(data)
+        return {"success": ok, "transactions": data.get("result", []) or [], "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+
+
+def normalize_transaction(tx: dict) -> dict:
+    """Flatten one ALAT TransactionHistoryModel row to the fields reconciliation
+    needs: {reference, amount_naira, is_credit, narration, sender}.
+
+    `referenceId` (fallback `tranId`) is the unique per-transaction key used as
+    the ledger idempotency guard; `creditType == "Credit"` marks an inbound
+    deposit (the only rows funding applies)."""
+    if not isinstance(tx, dict):
+        return {"reference": "", "amount_naira": None, "is_credit": False, "narration": "", "sender": ""}
+    ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
+    is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
+    return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
+            "is_credit": is_credit, "narration": tx.get("narration") or "",
+            "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
 
 
 # ---------------------------------------------------------------------------
