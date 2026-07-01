@@ -68,6 +68,17 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["success"])
 
+    def test_account_create_starts_otp_flow_on_wema(self):
+        # The app's existing "Get my account" endpoint must drive the Wema OTP
+        # round-trip (not the one-step Kora reserve) when Wema is the funding rail.
+        r = self._post("/api/wallet/account/create/", {"bvn": "22222222222"})
+        self.assertEqual(r.status_code, 200)
+        b = r.json()
+        self.assertTrue(b["success"])
+        self.assertTrue(b["otp_required"])
+        self.assertTrue(b["tracking_id"])
+        self.assertTrue(b["using_bvn"])
+
 
 class WemaReconcileTests(TestCase):
     def setUp(self):
