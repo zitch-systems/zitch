@@ -14,10 +14,14 @@ def health(_request):
     wired without exposing them. Served at /healthz so the marketing landing
     page can own "/". (The platform health check points at /healthz.)
     """
-    from utility.providers import _prembly_live, kyc_provider, payout_live, vtu_live
+    from utility.providers import _prembly_live, kyc_provider, payment_provider, payout_live, vtu_live
+    from utility import monnify
 
     integrations = {
-        "payments_kora": payout_live(),
+        "funding_provider": payment_provider(),   # which rail funds the wallet (monnify/kora)
+        "funding_monnify": monnify.monnify_live(),
+        "funding_monnify_simulation": monnify.monnify_simulation(),
+        "payments_kora": payout_live(),           # Kora: payout + name enquiry (+ funding if selected)
         "vtu_vtung": vtu_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
