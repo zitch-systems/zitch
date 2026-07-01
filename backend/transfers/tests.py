@@ -25,6 +25,15 @@ class BankTransferTests(TestCase):
     def balance(self):
         return get_or_create_wallet(self.user).balance
 
+    def test_transfer_below_50_rejected(self):
+        res, body = self.post("/api/transfers/send/", {
+            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+            "name": "ADEYEMI WILLIAM", "amount": "40", "transaction_pin": "1234",
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("50", body.get("message", ""))
+        self.assertEqual(self.balance(), Decimal("50000"))  # nothing moved
+
     def test_live_resolution_blocks_name_mismatch(self):
         # With a LIVE name enquiry, an account whose real holder differs from the
         # name the user confirmed must be BLOCKED — no debit. (Guards the reported

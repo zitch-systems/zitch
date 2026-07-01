@@ -326,19 +326,26 @@ def set_password(request):
 @api
 @require_user
 def set_transaction_pin(request):
-    """POST /api/set-transaction-pin/ {access_token, pin, password?}
+    """POST /api/set-transaction-pin/ {access_token, pin, old_pin?, password?}
 
     First-time set (onboarding) needs only the session token. CHANGING an
-    already-set PIN additionally requires the account password, so a stolen
-    session token alone can't overwrite the PIN that gates money movement.
+    already-set PIN additionally requires proof the caller knows the current PIN
+    — either the ``old_pin`` itself, or (as a fallback for a forgotten PIN) the
+    account ``password`` — so a stolen session token alone can't overwrite the
+    PIN that gates money movement.
     """
     user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
     if len(pin) < 4:
         return fail("PIN must be at least 4 digits")
-    if user.transaction_pin and not user.check_password(request.data.get("password") or ""):
-        return fail("Enter your account password to change your PIN",
-                    status=403, code="password_required")
+    if user.transaction_pin:
+        old_pin = (request.data.get("old_pin") or "").strip()
+        password = request.data.get("password") or ""
+        ok_old = bool(old_pin) and user.check_transaction_pin(old_pin)
+        ok_pwd = bool(password) and user.check_password(password)
+        if not (ok_old or ok_pwd):
+            return fail("Enter your current PIN to change it",
+                        status=403, code="current_pin_required")
     user.set_transaction_pin(pin)
     # Clear any brute-force lockout so a legitimate (password-authenticated) PIN
     # change isn't blocked by a stale lock against the old PIN.

@@ -159,7 +159,7 @@ class CredentialSecurityTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1357"))
 
-    def test_changing_existing_pin_requires_account_password(self):
+    def test_changing_existing_pin_requires_current_pin_or_password(self):
         # A token alone must not be enough to OVERWRITE an existing PIN (else the
         # brute-force lockout is moot — an attacker would just reset the PIN).
         user = User.objects.create(username="08050000005", phone="08050000005", email="e@zitch.test")
@@ -167,14 +167,25 @@ class CredentialSecurityTests(TestCase):
         user.set_transaction_pin("1234")
         user.save()
         token = AccessToken.issue(user).key
+        # No proof at all -> rejected.
         res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "9999"})
-        self.assertEqual((res.status_code, body.get("code")), (403, "password_required"))
+        self.assertEqual((res.status_code, body.get("code")), (403, "current_pin_required"))
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
-        # With the account password, the change goes through.
+        # A WRONG current PIN is rejected too.
+        res, body = self.post("/api/set-transaction-pin/", {
+            "access_token": token, "pin": "9999", "old_pin": "0000"})
+        self.assertEqual(res.status_code, 403)
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
+        # With the CURRENT PIN, the change goes through.
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "9999", "password": "Passw0rd123"})
+            "access_token": token, "pin": "9999", "old_pin": "1234"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("9999"))
+        # The account password remains a valid fallback (forgot-PIN recovery).
+        res, _ = self.post("/api/set-transaction-pin/", {
+            "access_token": token, "pin": "4321", "password": "Passw0rd123"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("4321"))
 
     def test_setting_new_pin_clears_brute_force_lockout(self):
         # A user who locked their PIN and then legitimately changes it (which

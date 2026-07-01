@@ -128,7 +128,7 @@ const SendMoney = () => {
 
   const acctReady = mode === 'bank' ? acct.length === 10 && !!bank : !!resolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? bankName : resolvedName;
-  const valid = (!!picked || acctReady) && amount >= 10 && amount <= balance;
+  const valid = (!!picked || acctReady) && amount >= 50 && amount <= balance;
 
   const resolveZitch = async () => {
     if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
