@@ -1,9 +1,32 @@
-# Wema / ALAT migration — status & go-live checklist
+# Wema / ALAT migration — ⚠️ ARCHIVED (2026-07)
 
-The wallet money rails are being migrated to **Wema / ALAT** (Azure APIM Banking-as-a-Service).
-Everything below is **opt-in** and mock/simulation-gated, so it changes no live behaviour
-until the env vars are set. Kora/Monnify/VTU.ng/Prembly remain the defaults until Wema is
-verified sandbox → live.
+**Status: parked.** The production rails are locked to **Monnify** (wallet funding,
+dedicated accounts, BVN/NIN KYC), **Kora** (bank payout + name enquiry, vNIN), and
+**VTU.ng** (airtime/data/bills); face/liveness stays on Prembly. All Wema code is
+retained, opt-in only — nothing routes to Wema unless a `*_PROVIDER` env is
+explicitly set to `wema`. Leave those blank.
+
+**Verified against Wema test keys before archiving** (via `/wema-diagnose`):
+auth model (per-product `Ocp-Apim-Subscription-Key` + universal channel id) ✅,
+bank list (499 banks) ✅, recipient name enquiry ✅.
+
+**Why parked — blocked on Wema's side:**
+1. The sandbox (`apiplayground.alat.ng`) does **not** mint partnership accounts:
+   both BVN and NIN wallet-creation return a canned "download ALAT" response with
+   no `trackingId` and no OTP — so the account → fund → transfer loop can't be
+   exercised end-to-end.
+2. The `securityInfo` encryption scheme (required on live money calls) is
+   undocumented.
+3. The transaction-status code legend is undocumented.
+
+**To resume:** get from Wema (a) a working sandbox provisioning path or a funded
+test source account, (b) the securityInfo spec, (c) the status legend — then set
+the `WEMA_*` env vars, flip the `*_PROVIDER` selectors, and restore the
+`zitch-reconcile-wema` cron in render.yaml (schedule `*/5 * * * *`, command
+`python manage.py reconcile_wema`). Everything below is kept as the reference for
+that resumption.
+
+---
 
 ## What's wired
 

@@ -15,23 +15,26 @@ def health(_request):
     page can own "/". (The platform health check points at /healthz.)
     """
     from utility.providers import (_kora_live, _prembly_live, kyc_provider, payment_provider,
-                                    payout_live, payout_provider, vtu_live)
-    from utility import monnify, wema
+                                    payout_live, payout_provider, vas_provider, vtu_live)
+    from utility import monnify
 
     integrations = {
-        "funding_provider": payment_provider(),   # which rail funds the wallet (monnify/kora)
+        "funding_provider": payment_provider(),   # which rail funds the wallet (monnify default)
         "funding_monnify": monnify.monnify_live(),
         "funding_monnify_simulation": monnify.monnify_simulation(),
-        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (wema/kora)
+        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (kora default)
         "payout_live": payout_live(),             # selected payout rail has live keys
         "payments_kora": _kora_live(),            # Kora keys present (payout/enquiry/funding fallback)
-        "payout_wema": wema.wema_live(),
-        "payout_wema_simulation": wema.wema_simulation(),
+        "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
+        # Wema/ALAT is ARCHIVED: opt-in code retained (see docs/wema-migration.md),
+        # nothing routes to it unless a *_PROVIDER env is explicitly set to "wema".
+        "wema_status": "archived",
         "vtu_vtung": vtu_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
-        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN
-        "kyc_prembly": _prembly_live(),
+        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN (monnify default)
+        "kyc_monnify": monnify.monnify_live(),
+        "kyc_prembly": _prembly_live(),  # face/liveness stays on Prembly
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})

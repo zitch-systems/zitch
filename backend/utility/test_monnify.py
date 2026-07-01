@@ -33,6 +33,64 @@ def _resp(body):
     return m
 
 
+class MonnifyKycTests(SimpleTestCase):
+    """BVN details-match + NIN lookup — the production KYC rail."""
+
+    def test_kyc_mock_mode(self):
+        self.assertTrue(monnify.verify_bvn("22222222222", name="Ada Eze")["success"])
+        self.assertTrue(monnify.verify_nin("12345678901")["success"])
+        self.assertFalse(monnify.verify_bvn("123")["success"])       # bad length
+        self.assertFalse(monnify.verify_nin("abc")["success"])
+
+    @override_settings(DEBUG=False, TESTING=False, MONNIFY={**NOKEY, "SIMULATION": False})
+    def test_kyc_fails_closed_in_prod_without_keys(self):
+        self.assertFalse(monnify.verify_bvn("22222222222", name="Ada")["success"])
+        self.assertFalse(monnify.verify_nin("12345678901")["success"])
+
+    @override_settings(DEBUG=False, TESTING=False, MONNIFY={**NOKEY, "SIMULATION": True})
+    def test_kyc_fails_closed_in_prod_even_under_simulation(self):
+        # MONNIFY_SIMULATION covers the fund-in demo ONLY — a simulated KYC pass
+        # would upgrade a real tier on a fabricated identity, so identity always
+        # fails closed in production without live keys.
+        self.assertFalse(monnify.verify_bvn("22222222222", name="Ada")["success"])
+        self.assertFalse(monnify.verify_nin("12345678901")["success"])
+
+    @override_settings(MONNIFY=MONNIFY_LIVE)
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_bvn_match_live(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"name": {"matchStatus": "FULL_MATCH",
+                                                                  "matchPercentage": 100}}})
+        r = monnify.verify_bvn("22222222222", name="Ada Eze", mobile="08030000000")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["match"], "FULL_MATCH")
+        self.assertTrue(mock_post.call_args[0][0].endswith("/api/v1/vas/bvn-details-match"))
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["bvn"], "22222222222")
+        self.assertEqual(body["name"], "Ada Eze")
+
+    @override_settings(MONNIFY=MONNIFY_LIVE)
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_bvn_no_match_fails(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": True,
+                                        "responseBody": {"name": {"matchStatus": "NO_MATCH"}}})
+        r = monnify.verify_bvn("22222222222", name="Wrong Name")
+        self.assertFalse(r["success"])
+        self.assertIn("does not match", r["message"])
+
+    @override_settings(MONNIFY=MONNIFY_LIVE)
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_nin_live(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"name": "ADA EZE"}})
+        r = monnify.verify_nin("12345678901")
+        self.assertTrue(r["success"])
+        self.assertTrue(mock_post.call_args[0][0].endswith("/api/v1/vas/nin-details"))
+
+
 class MonnifyMockTests(SimpleTestCase):
     def test_mock_mode_active(self):
         self.assertFalse(monnify.monnify_live())

@@ -54,19 +54,22 @@ services:
       # are set, else Kora).
       - key: PAYMENT_PROVIDER
         sync: false
-      # Bank-PAYOUT + recipient name-enquiry rail: "wema" or "kora"; blank => kora.
-      # Set PAYOUT_PROVIDER=wema once the WEMA_* vars below are configured (or
-      # WEMA_SIMULATION=true) to route transfer-out + name enquiry through Wema/ALAT.
+      # Bank-PAYOUT + recipient name-enquiry rail: blank => kora (the production
+      # choice). "wema" exists but is ARCHIVED — do not set it.
       - key: PAYOUT_PROVIDER
         sync: false
-      # Wema / ALAT (Banking-as-a-Service) — the migration target rail. Azure APIM:
-      # a per-PRODUCT subscription key (Ocp-Apim-Subscription-Key) + one channel id
-      # (sent as x-api-key / access; SAME value for all products). Sandbox host is
-      # https://apiplayground.alat.ng (set WEMA_BASE_URL to the live host for go-live).
-      # Blank keys => MOCK; WEMA_SIMULATION=true serves the mock flow in a real build
-      # without live keys (no real money). securityInfo (encrypted, required on money-
-      # movement calls at go-live; NOT enforced in sandbox) => WEMA_SECURITY_INFO.
-      # WEMA_SOURCE_ACCOUNT is our pool NUBAN that funds outbound transfers.
+      # BVN/NIN KYC rail: blank => auto (Monnify when its keys are set — the
+      # production choice — else Kora). vNIN + face stay on Kora/Prembly.
+      - key: KYC_PROVIDER
+        sync: false
+      # ---------------------------------------------------------------------
+      # Wema / ALAT — ARCHIVED (2026-07). Integration code is retained and opt-in
+      # only; NOTHING routes to Wema unless a *_PROVIDER env is explicitly set to
+      # "wema". Verified on test keys: auth + bank list + name enquiry. Blocked on
+      # Wema's side: the sandbox does not mint partnership accounts/OTPs, and the
+      # securityInfo scheme + tx-status legend are undocumented. To resume, see
+      # docs/wema-migration.md. The env vars below can stay blank.
+      # ---------------------------------------------------------------------
       - key: WEMA_CHANNEL_ID
         sync: false
       - key: WEMA_WALLET_KEY
@@ -214,38 +217,8 @@ services:
           name: zitch-db
           property: connectionString
 
-  # Wema funding reconciliation — ALAT has NO inbound-credit webhook, so a bank
-  # transfer into a user's Wema NUBAN is only detected by polling. This sweeps each
-  # Wema-provisioned wallet's transaction history and credits new deposits
-  # (idempotent on Wema's referenceId). Also a paid plan (cron has no free tier).
-  # Only does work when Wema is the funding rail; harmless otherwise.
-  - type: cron
-    name: zitch-reconcile-wema
-    runtime: python
-    rootDir: backend
-    plan: starter
-    schedule: "*/5 * * * *"
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python manage.py reconcile_wema"
-    envVars:
-      - key: DJANGO_SECRET_KEY
-        generateValue: true
-      - key: DJANGO_DEBUG
-        value: "false"
-      - key: DATABASE_URL
-        fromDatabase:
-          name: zitch-db
-          property: connectionString
-      - key: PAYMENT_PROVIDER
-        sync: false
-      - key: WEMA_CHANNEL_ID
-        sync: false
-      - key: WEMA_WALLET_KEY
-        sync: false
-      - key: WEMA_BASE_URL
-        sync: false
-      - key: WEMA_SIMULATION
-        sync: false
+  # (The zitch-reconcile-wema cron was removed when Wema was archived — restore it
+  # from docs/wema-migration.md if the Wema rail is ever resumed.)
 
 databases:
   - name: zitch-db
