@@ -119,6 +119,35 @@ class PayoutDispatchTests(SimpleTestCase):
         self.assertEqual(m.call_args.kwargs["source_account"], "0199999999")  # sender NUBAN wins over pool
 
 
+class VasDispatchTests(SimpleTestCase):
+    def test_vas_provider_defaults_to_vtung(self):
+        self.assertEqual(P.vas_provider(), "vtung")
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_airtime_routes_to_wema(self):
+        with patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw, \
+             patch("utility.vtung.vt_purchase") as mv:
+            P.vtu_purchase("mtn-airtime", {"amount": "500", "phone": "080", "source_account": "0155500011"},
+                           reference="R")
+        mw.assert_called_once()
+        self.assertEqual(mw.call_args.kwargs["source_account"], "0155500011")  # sender NUBAN threaded
+        mv.assert_not_called()
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_data_stays_on_vtung(self):
+        # Data needs Wema's catalog — must NOT route to Wema yet.
+        with patch("utility.vtung.vt_purchase", return_value={"success": True}) as mv, \
+             patch("utility.wema.purchase_airtime") as mw:
+            P.vtu_purchase("mtn-data", {"amount": "500", "phone": "080"}, reference="R")
+        mv.assert_called_once()
+        mw.assert_not_called()
+
+    def test_airtime_stays_on_vtung_by_default(self):
+        with patch("utility.vtung.vt_purchase", return_value={"success": True}) as mv:
+            P.vtu_purchase("mtn-airtime", {"amount": "500", "phone": "080"}, reference="R")
+        mv.assert_called_once()
+
+
 class FundingAccountGetDispatchTests(SimpleTestCase):
     @override_settings(PAYMENT_PROVIDER="wema")
     def test_funding_account_get_wema_does_not_hit_kora(self):

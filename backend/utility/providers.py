@@ -48,14 +48,35 @@ def vtu_live() -> bool:
     return _live()
 
 
-def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
-    """Submit a VTU purchase via VTU.ng.
+def vas_provider() -> str:
+    """VAS (airtime/data/bills) rail — 'wema' or 'vtung'; blank => 'vtung'.
 
-    Pass the wallet ledger `reference` so it becomes VTU.ng's request_id
+    Opt-in only. Wema currently routes AIRTIME here (debited from the user's own
+    NUBAN); data & bills stay on VTU.ng until Wema's plan/biller catalog is synced,
+    because Wema uses its own packageCode/packageId (see docs/wema-migration.md)."""
+    choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
+    return choice if choice in ("wema", "vtung") else "vtung"
+
+
+def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
+    """Submit a VAS purchase via the selected rail.
+
+    Pass the wallet ledger `reference` so it becomes the provider's request_id
     (idempotency key + requery handle). On a network error returns
     ``pending=True``: the purchase may have landed, so the caller must NOT refund
     — reconciliation requeries it by reference instead.
-    """
+
+    Wema routing is AIRTIME-only for now (per-service): a `*-airtime` service_id
+    with VAS_PROVIDER=wema debits the sender's NUBAN via Wema; every other service
+    (data/cable/electricity) stays on VTU.ng regardless, so enabling Wema VAS never
+    breaks the services whose catalog isn't mapped yet."""
+    if vas_provider() == "wema" and service_id.endswith("-airtime"):
+        from . import wema
+        network = service_id.rsplit("-airtime", 1)[0]
+        return wema.purchase_airtime(
+            payload.get("amount"), reference or "", payload.get("phone", ""), network,
+            source_account=payload.get("source_account", ""),
+        )
     from .vtung import vt_purchase
     return vt_purchase(service_id, payload, reference)
 
@@ -66,8 +87,11 @@ def vtu_requery(reference: str) -> dict:
 
     Returns the {"success", "pending", ...} shape settle_or_refund expects:
     success => delivered; pending => still unknown (retry later); neither =>
-    a definitive failure the caller refunds.
-    """
+    a definitive failure the caller refunds. Wema airtime requeries via
+    wema.vas_status when Wema is the VAS rail."""
+    if vas_provider() == "wema":
+        from . import wema
+        return wema.vas_status(reference, "airtime")
     from .vtung import vt_requery
     return vt_requery(reference)
 

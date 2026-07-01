@@ -68,11 +68,15 @@ def buyairtime(request):
         return fail("Enter a valid amount")
     net = str(data.get("network", ""))
     phone = data.get("phone", "")
+    # Sender's own NUBAN — the source for a Wema airtime buy (per-user model);
+    # ignored by VTU.ng, so harmless when Wema VAS is off.
+    source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     outcome = _run_purchase(
         user, amount, f"Airtime — {NETWORK_NAMES.get(net, net)}",
         {"phone": phone, "network": net},
         lambda ref: vtu_purchase(f"{NETWORK_NAMES.get(net, 'mtn').lower()}-airtime",
-                                 {"amount": str(amount), "phone": phone}, reference=ref),
+                                 {"amount": str(amount), "phone": phone, "source_account": source},
+                                 reference=ref),
         idempotency_key=spend_key(data.get("idempotency_key"), user, "airtime", net, phone, amount),
     )
     if not isinstance(outcome, tuple):

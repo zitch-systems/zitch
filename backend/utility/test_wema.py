@@ -15,6 +15,8 @@ WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1"
              "KEYS": {"wallet": "subkey", "card": "", "airtime": "", "bills": "", "kyc": ""},
              "SECURITY_INFO": "sec", "SIMULATION": False}
 WEMA_NOKEY = {**WEMA_LIVE, "CHANNEL_ID": "", "KEYS": {"wallet": ""}, "SECURITY_INFO": ""}
+WEMA_VAS = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "airtime": "airkey", "bills": "billkey"},
+            "SOURCE_ACCOUNT": "0100000001"}
 
 
 def _resp(body):
@@ -43,6 +45,15 @@ class WemaMockTests(SimpleTestCase):
                                       destination_bank_code="035", destination_bank_name="Wema",
                                       destination_name="ADA")["success"])
         self.assertTrue(wema.credit_wallet(1000, "REF-2", "test", destination_account="01")["success"])
+
+    def test_vas_mock(self):
+        self.assertTrue(wema.purchase_airtime(500, "R", "08030000000", "MTN", source_account="01")["success"])
+        self.assertTrue(wema.purchase_data(500, "R2", "08030000000", "MTN", "PKG", source_account="01")["success"])
+        self.assertTrue(wema.get_data_plans("MTN")["success"])
+        self.assertTrue(wema.get_bills()["success"])
+        self.assertTrue(wema.validate_bill_customer("1234567890", "PKG")["success"])
+        self.assertTrue(wema.pay_bill(2000, "R3", package_id="PKG", identifier="1234567890",
+                                      source_account="01")["success"])
 
 
 @override_settings(DEBUG=False, TESTING=False)
@@ -117,3 +128,26 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(body["securityInfo"], "sec")       # from WEMA_SECURITY_INFO
         self.assertEqual(body["transactionReference"], "REF-1")
         self.assertEqual(body["destinationAccountNumber"], "02")
+
+
+@override_settings(WEMA=WEMA_VAS)
+class WemaVasLiveTests(SimpleTestCase):
+    @patch("utility.wema.requests.post")
+    def test_airtime_live_sends_nuban_and_securityinfo(self, mock_post):
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS", "transactionReference": "R"},
+                                        "hasError": False})
+        r = wema.purchase_airtime(500, "R", "08030000000", "MTN", source_account="0155500011")
+        self.assertTrue(r["success"])
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["accountNumber"], "0155500011")   # debits the user's own NUBAN
+        self.assertEqual(body["securityInfo"], "sec")
+        self.assertEqual(mock_post.call_args[1]["headers"]["access"], "chan-1")   # VAS uses `access`
+        self.assertEqual(mock_post.call_args[1]["headers"]["Ocp-Apim-Subscription-Key"], "airkey")
+        self.assertTrue(mock_post.call_args[0][0].endswith("/airtime-data/api/Airtime/Client/PurchaseAirtime"))
+
+    @patch("utility.wema.requests.post")
+    def test_airtime_pending_status_maps_to_pending(self, mock_post):
+        mock_post.return_value = _resp({"result": {"status": "PROCESSING"}, "hasError": False})
+        r = wema.purchase_airtime(500, "R", "08030000000", "MTN", source_account="0155500011")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])       # never refund a maybe-delivered buy
