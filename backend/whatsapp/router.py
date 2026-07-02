@@ -31,8 +31,9 @@ from wallet.services import (
 )
 
 from . import ai
+from .flows import FLOW_PIN_STATE, PIN_SCREEN, sign_flow_token
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
-from .providers import send_buttons, send_image, send_list, send_text
+from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
 
 User = get_user_model()
 
@@ -157,12 +158,58 @@ def _receipt(title: str, lines: list) -> str:
     return f"🧾 *{title}*\n━━━━━━━━━━━━\n{body}\n━━━━━━━━━━━━\nStatus: ✅ Successful"
 
 
+def _flow_summary(pa: PendingAction) -> str:
+    """One-line human summary of a pending money action — shown on the secure
+    Flow's PIN screen and reused as the Flow message body."""
+    p = pa.payload
+    at = pa.action_type
+    try:
+        if at == "transfer":
+            return (f"Send {_money(Decimal(p['amount']))} to {p.get('name', 'recipient').upper()}"
+                    f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip())
+        if at == "airtime":
+            return f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime → {p.get('phone', '')}"
+        if at == "data":
+            return (f"{p.get('plan_name', 'Data')} ({NETWORK_NAMES.get(p.get('net', ''), '')})"
+                    f" → {p.get('phone', '')} · {_money(Decimal(p['price']))}")
+        if at == "electricity":
+            return f"{_money(Decimal(p['amount']))} {DISCO_NAMES.get(p.get('disco', ''), '')} · meter {p.get('meter', '')}"
+        if at == "cable":
+            return (f"{CABLE_NAMES.get(p.get('prov', ''), '')} {p.get('plan_name', '')}"
+                    f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
+        if at == "convert":
+            return "Confirm your currency conversion"
+    except (KeyError, InvalidOperation):
+        pass
+    return "Confirm your payment"
+
+
+def _send_pin_flow(pa: PendingAction, user) -> bool:
+    """Send the secure PIN Flow for this action and move it to the flow_pin state.
+    Returns True if the Flow was dispatched; False to fall back to SMS/PIN. The
+    signed flow_token maps Meta's later data-exchange call back to THIS action."""
+    summary = _flow_summary(pa)
+    pa.payload["flow_summary"] = summary
+    _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)  # persist so the token resolves
+    res = send_flow(
+        pa.msisdn, sign_flow_token(pa),
+        header="Confirm payment", body=summary,
+        screen=PIN_SCREEN, screen_data={"summary": summary, "error": ""},
+    )
+    return bool(res.get("success"))
+
+
 def _arm_confirm(pa: PendingAction, user) -> None:
-    """Move a money flow to its confirm step. With live SMS, arm a SINGLE-USE
-    6-digit code (sent to the user's registered number) so the WhatsApp chat
-    never carries the transaction PIN — anything visible in chat history is
-    worthless after one use / 5 minutes. Without live SMS (dev/mock) the classic
-    PIN gate stays, so flows never brick when SMS is down."""
+    """Move a money flow to its confirm step. Preference, most-secure first:
+
+    1. A WhatsApp Flow (secure PIN pad) when configured — the PIN is typed into a
+       native masked field and submitted ENCRYPTED to our endpoint, so the chat
+       never carries it at all.
+    2. A single-use 6-digit SMS code (live SMS, no Flow) — the chat carries a code
+       that's worthless after one use / 5 minutes, never the PIN.
+    3. The PIN in chat (dev/mock, neither available) so flows never brick."""
+    if flows_live() and _send_pin_flow(pa, user):
+        return
     if settings.SENDCHAMP.get("API_KEY"):
         code = f"{secrets.randbelow(10**6):06d}"
         sent = send_sms(user.phone or "",
@@ -188,7 +235,7 @@ def is_awaiting_pin(msisdn: str) -> bool:
     Covers an in-progress money flow AND account onboarding (where the user sets
     a PIN in chat), so neither PIN is ever written to the message log in clear."""
     pa = _current_action(msisdn)
-    if pa and pa.state == "pin":
+    if pa and pa.state in ("pin", FLOW_PIN_STATE):
         return True
     ob = _current_onboarding(msisdn)
     return bool(ob and ob.step in ("pin", "pin_confirm"))
@@ -552,6 +599,12 @@ def _start_transfer(user, msisdn: str) -> None:
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    if pa.state == FLOW_PIN_STATE:
+        # A secure PIN Flow is open: the PIN is entered there, never in chat. If
+        # the user types here instead, nudge them back to the Flow (or cancel).
+        cta = (getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("CTA", "Confirm with PIN")
+        return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN — "
+                             "it stays private and never appears in this chat. Or reply \"cancel\".")
     handler = {
         "transfer": _advance_transfer,
         "airtime": _advance_airtime,
@@ -707,11 +760,19 @@ def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
 def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if not _flow_pin_ok(pa, user, msisdn, text):
         return
+    return _exec_transfer(pa, user, msisdn)
+
+
+def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
+    """Execute a PIN-confirmed transfer (called by the chat PIN path AND the
+    secure Flow endpoint). Sends the chat receipt and returns a short outcome
+    line for the Flow success screen."""
     amount = Decimal(pa.payload["amount"])
     bank = Bank.objects.filter(bank_code=pa.payload["bank_code"]).first()
     if bank is None:
         _clear_actions(msisdn)
-        return reply(msisdn, "Something went wrong. Reply \"menu\" to start over.")
+        reply(msisdn, "Something went wrong. Reply \"menu\" to start over.")
+        return "Transfer could not be completed."
     try:
         # Stable key per flow: a re-sent "pin" message can't double-pay.
         txn = execute_payout(
@@ -721,10 +782,13 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
     except PayoutError as exc:
         _clear_actions(msisdn)
         if exc.kind == "insufficient":
-            return reply(msisdn, "Insufficient balance — transfer cancelled.")
+            reply(msisdn, "Insufficient balance — transfer cancelled.")
+            return "Insufficient balance — transfer cancelled."
         if exc.kind == "duplicate":
-            return reply(msisdn, "That transfer was already processed.")
-        return reply(msisdn, f"Transfer failed: {exc.message}")
+            reply(msisdn, "That transfer was already processed.")
+            return "That transfer was already processed."
+        reply(msisdn, f"Transfer failed: {exc.message}")
+        return f"Transfer failed: {exc.message}"
 
     _clear_actions(msisdn)
     wallet = get_or_create_wallet(user)
@@ -739,6 +803,7 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
             ("New balance", _money(wallet.balance)),
         ]),
     )
+    return f"✅ {_money(amount)} sent to {pa.payload['name'].upper()}. Ref {txn.reference}."
 
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
@@ -815,10 +880,11 @@ def _insufficient(user, amount: Decimal) -> bool:
 
 
 def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
-             provider_call, success_line, logo_url: str | None = None) -> None:
+             provider_call, success_line, logo_url: str | None = None) -> str:
     """Debit -> provider -> settle via the shared run_provider_purchase, then
     reply with the receipt / processing / failure line. On success the receipt
-    carries the biller logo (or the Zitch mark) when `logo_url` is given."""
+    carries the biller logo (or the Zitch mark) when `logo_url` is given. Returns
+    the outcome line (also used verbatim on the secure Flow's success screen)."""
     # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
     # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
     # this without the guided flow's own send_limit_error check, which would
@@ -826,11 +892,13 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     send_msg = send_limit_error(user, amount)
     if send_msg:
         _clear_actions(msisdn)
-        return reply(msisdn, send_msg)
+        reply(msisdn, send_msg)
+        return send_msg
     bill_limit_msg = daily_limit_error(user, amount, "bill")
     if bill_limit_msg:
         _clear_actions(msisdn)
-        return reply(msisdn, bill_limit_msg)
+        reply(msisdn, bill_limit_msg)
+        return bill_limit_msg
     try:
         status, txn, result = run_provider_purchase(
             user, amount, label, pa.payload.get("meta", {}), provider_call,
@@ -838,19 +906,24 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         )
     except InsufficientFunds:
         _clear_actions(msisdn)
-        return reply(msisdn, "Insufficient balance — cancelled.")
+        reply(msisdn, "Insufficient balance — cancelled.")
+        return "Insufficient balance — cancelled."
     except DuplicateTransaction:
         _clear_actions(msisdn)
-        return reply(msisdn, "That request was already processed.")
+        reply(msisdn, "That request was already processed.")
+        return "That request was already processed."
     _clear_actions(msisdn)
     if status == "success":
         line = success_line(txn, result)
-        if logo_url:
-            return reply_image(msisdn, logo_url, line)
-        return reply(msisdn, line)
+        reply_image(msisdn, logo_url, line) if logo_url else reply(msisdn, line)
+        return line
     if status == "pending":
-        return reply(msisdn, f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}.")
-    return reply(msisdn, f"❌ {label} failed: {result.get('message', 'please try again')}. You were not charged.")
+        line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
+        reply(msisdn, line)
+        return line
+    line = f"❌ {label} failed: {result.get('message', 'please try again')}. You were not charged."
+    reply(msisdn, line)
+    return line
 
 
 # ---- airtime ----
@@ -902,20 +975,24 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
-        amount = Decimal(pa.payload["amount"])
-        net = NETWORK_NAMES[pa.payload["net"]]
-        phone = pa.payload["phone"]
-        return _run_vtu(
-            pa, user, msisdn, amount, f"Airtime — {net}",
-            lambda ref: vtu_purchase(f"{net.lower()}-airtime",
-                                     {"amount": str(amount), "phone": phone}, reference=ref),
-            lambda txn, res: _receipt("Airtime receipt", [
-                ("Service", f"{net} airtime"), ("To", phone), ("Amount", _money(amount)),
-                ("Ref", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
-            logo_url=provider_logo(net),
-        )
+        return _exec_airtime(pa, user, msisdn)
     _clear_actions(msisdn)
     return send_menu(msisdn)
+
+
+def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
+    amount = Decimal(pa.payload["amount"])
+    net = NETWORK_NAMES[pa.payload["net"]]
+    phone = pa.payload["phone"]
+    return _run_vtu(
+        pa, user, msisdn, amount, f"Airtime — {net}",
+        lambda ref: vtu_purchase(f"{net.lower()}-airtime",
+                                 {"amount": str(amount), "phone": phone}, reference=ref),
+        lambda txn, res: _receipt("Airtime receipt", [
+            ("Service", f"{net} airtime"), ("To", phone), ("Amount", _money(amount)),
+            ("Ref", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
+        logo_url=provider_logo(net),
+    )
 
 
 # ---- data ----
@@ -969,17 +1046,21 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
-        net = NETWORK_NAMES[pa.payload["net"]]
-        phone, plan_code, price = pa.payload["phone"], pa.payload["plan_code"], Decimal(pa.payload["price"])
-        return _run_vtu(
-            pa, user, msisdn, price, f"Data — {net} {pa.payload['plan_name']}",
-            lambda ref: vtu_purchase(f"{net.lower()}-data",
-                                     {"billersCode": phone, "variation_code": plan_code, "phone": phone}, reference=ref),
-            lambda txn, res: f"✅ {pa.payload['plan_name']} ({net}) sent to {phone} 🎉\nRef {txn.reference}.",
-            logo_url=provider_logo(net),
-        )
+        return _exec_data(pa, user, msisdn)
     _clear_actions(msisdn)
     return send_menu(msisdn)
+
+
+def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
+    net = NETWORK_NAMES[pa.payload["net"]]
+    phone, plan_code, price = pa.payload["phone"], pa.payload["plan_code"], Decimal(pa.payload["price"])
+    return _run_vtu(
+        pa, user, msisdn, price, f"Data — {net} {pa.payload['plan_name']}",
+        lambda ref: vtu_purchase(f"{net.lower()}-data",
+                                 {"billersCode": phone, "variation_code": plan_code, "phone": phone}, reference=ref),
+        lambda txn, res: f"✅ {pa.payload['plan_name']} ({net}) sent to {phone} 🎉\nRef {txn.reference}.",
+        logo_url=provider_logo(net),
+    )
 
 
 # ---- electricity ----
@@ -1041,24 +1122,28 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
-        amount = Decimal(pa.payload["amount"])
-        disco = DISCO_NAMES[pa.payload["disco"]].lower()
-        disco_name = DISCO_NAMES[pa.payload["disco"]]
-        meter, mt = pa.payload["meter"], pa.payload["meter_type"]
-
-        def _line(txn, res):
-            token = res.get("token") or res.get("provider_reference", "")
-            extra = f"\n🔌 Token: {token}." if token else ""
-            return f"✅ {_money(amount)} {disco_name} on meter {meter} 🎉{extra}\nRef {txn.reference}."
-
-        return _run_vtu(
-            pa, user, msisdn, amount, f"Electricity — {disco_name}",
-            lambda ref: vtu_purchase(f"{disco}-electric",
-                                     {"billersCode": meter, "variation_code": mt, "amount": str(amount)}, reference=ref),
-            _line,
-        )
+        return _exec_electricity(pa, user, msisdn)
     _clear_actions(msisdn)
     return send_menu(msisdn)
+
+
+def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
+    amount = Decimal(pa.payload["amount"])
+    disco = DISCO_NAMES[pa.payload["disco"]].lower()
+    disco_name = DISCO_NAMES[pa.payload["disco"]]
+    meter, mt = pa.payload["meter"], pa.payload["meter_type"]
+
+    def _line(txn, res):
+        token = res.get("token") or res.get("provider_reference", "")
+        extra = f"\n🔌 Token: {token}." if token else ""
+        return f"✅ {_money(amount)} {disco_name} on meter {meter} 🎉{extra}\nRef {txn.reference}."
+
+    return _run_vtu(
+        pa, user, msisdn, amount, f"Electricity — {disco_name}",
+        lambda ref: vtu_purchase(f"{disco}-electric",
+                                 {"billersCode": meter, "variation_code": mt, "amount": str(amount)}, reference=ref),
+        _line,
+    )
 
 
 # ---- cable ----
@@ -1120,17 +1205,21 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
-        prov = CABLE_NAMES[pa.payload["prov"]].lower()
-        prov_name = CABLE_NAMES[pa.payload["prov"]]
-        iuc, plan_code, price = pa.payload["iuc"], pa.payload["plan_code"], Decimal(pa.payload["price"])
-        return _run_vtu(
-            pa, user, msisdn, price, f"Cable — {prov_name} {pa.payload['plan_name']}",
-            lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
-            lambda txn, res: f"✅ {prov_name} {pa.payload['plan_name']} activated on {iuc} 🎉\nRef {txn.reference}.",
-            logo_url=provider_logo(prov_name),
-        )
+        return _exec_cable(pa, user, msisdn)
     _clear_actions(msisdn)
     return send_menu(msisdn)
+
+
+def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
+    prov = CABLE_NAMES[pa.payload["prov"]].lower()
+    prov_name = CABLE_NAMES[pa.payload["prov"]]
+    iuc, plan_code, price = pa.payload["iuc"], pa.payload["plan_code"], Decimal(pa.payload["price"])
+    return _run_vtu(
+        pa, user, msisdn, price, f"Cable — {prov_name} {pa.payload['plan_name']}",
+        lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
+        lambda txn, res: f"✅ {prov_name} {pa.payload['plan_name']} activated on {iuc} 🎉\nRef {txn.reference}.",
+        logo_url=provider_logo(prov_name),
+    )
 
 
 def _pick(text: str, choices: list, fetch):
@@ -1292,18 +1381,39 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
-        try:
-            quote = execute_fx(user, pa.payload["quote_ref"], idempotency_key=f"wa-fx-{pa.id}")
-        except FxError as exc:
-            _clear_actions(msisdn)
-            return reply(msisdn, exc.message)
-        _clear_actions(msisdn)
-        new_bal = currency_balance(user, quote.to_currency)
-        return reply(
-            msisdn,
-            f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
-            f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
-            f"New {quote.to_currency} balance: {new_bal:,.2f}.",
-        )
+        return _exec_convert(pa, user, msisdn)
     _clear_actions(msisdn)
     return send_menu(msisdn)
+
+
+def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
+    try:
+        quote = execute_fx(user, pa.payload["quote_ref"], idempotency_key=f"wa-fx-{pa.id}")
+    except FxError as exc:
+        _clear_actions(msisdn)
+        reply(msisdn, exc.message)
+        return exc.message
+    _clear_actions(msisdn)
+    new_bal = currency_balance(user, quote.to_currency)
+    line = (f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
+            f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
+            f"New {quote.to_currency} balance: {new_bal:,.2f}.")
+    reply(msisdn, line)
+    return line
+
+
+# --------------------------------------------------------------------------- #
+# Secure-Flow execution dispatch — the Flows endpoint (whatsapp.flows) calls this
+# AFTER verifying the PIN, so a Flow-confirmed action runs the exact same money
+# path as the chat PIN path.
+# --------------------------------------------------------------------------- #
+def run_flow_execution(pa: PendingAction, user) -> str:
+    executors = {
+        "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
+        "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
+    }
+    fn = executors.get(pa.action_type)
+    if fn is None:
+        _clear_actions(pa.msisdn)
+        return "Sorry, this action can't be completed here. Please try again in the chat."
+    return fn(pa, user, pa.msisdn) or "Done ✅"

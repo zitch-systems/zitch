@@ -22,6 +22,15 @@ def wa_live() -> bool:
     return bool(_cfg().get("TOKEN") and _cfg().get("PHONE_NUMBER_ID"))
 
 
+def flows_live() -> bool:
+    """True when the secure PIN Flow is fully configured: the channel is live AND
+    a published Flow ID + our decryption key are set. Until then the router falls
+    back to the SMS confirmation code, so nothing breaks before Meta business
+    verification is done (verify-before-live)."""
+    flow = getattr(settings, "WHATSAPP_FLOW", {}) or {}
+    return bool(wa_live() and flow.get("FLOW_ID") and flow.get("PRIVATE_KEY"))
+
+
 def verify_signature(raw_body: bytes, header: str) -> bool:
     """Validate Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body).
 
@@ -112,6 +121,32 @@ def send_list(msisdn: str, body: str, rows: list,
                       "description": str(desc or "")[:72]}
                      for rid, title, desc in rows[:10]]}]}}}
     return _send_payload(msisdn, payload, f"[list] {body} {[r[0] for r in rows]}")
+
+
+def send_flow(msisdn: str, flow_token: str, header: str, body: str,
+              screen: str, screen_data: dict, cta: str = "") -> dict:
+    """Send an interactive Flow message — the secure PIN pad. Opens directly to
+    `screen` with `screen_data` (flow_action=navigate); the screen's submit does
+    a data_exchange to our endpoint. `flow_token` ties the Flow session back to
+    the pending money action. MOCK mode logs and returns success."""
+    cfg = getattr(settings, "WHATSAPP_FLOW", {}) or {}
+    payload = {"type": "interactive", "interactive": {
+        "type": "flow",
+        "header": {"type": "text", "text": header[:60]},
+        "body": {"text": body[:1024]},
+        "action": {
+            "name": "flow",
+            "parameters": {
+                "flow_message_version": "3",
+                "flow_token": flow_token,
+                "flow_id": cfg.get("FLOW_ID", ""),
+                "flow_cta": (cta or cfg.get("CTA", "Confirm with PIN"))[:30],
+                "flow_action": "navigate",
+                "flow_action_payload": {"screen": screen, "data": screen_data},
+            },
+        },
+    }}
+    return _send_payload(msisdn, payload, f"[flow] {header} -> {screen}")
 
 
 def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
