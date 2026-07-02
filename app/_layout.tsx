@@ -58,13 +58,11 @@ const _layout = () => {
     }
   }, [fontsLoaded, error]);
 
-  // Block screenshots, screen recording, and the recents/app-switcher thumbnail
-  // app-wide (Android FLAG_SECURE / iOS screenshot prevention). The app routinely
-  // renders the full card PAN/CVV, the money-PIN pad, balances and BVN/NIN — none
-  // of which should be captureable by a screenshot, a screen-recording app, or
-  // the OS task switcher. No-op on web.
+  // Screenshots are ALLOWED (product decision): the app-wide capture block
+  // (FLAG_SECURE) frustrated users sharing receipts/balances, so it's off.
+  // Explicitly allow in case a previous build's flag persists on the activity.
   useEffect(() => {
-    ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    ScreenCapture.allowScreenCaptureAsync().catch(() => {});
     // Drop any money PIN left cached by older builds when biometric pay is off.
     reconcileCachedPin().catch(() => {});
   }, []);

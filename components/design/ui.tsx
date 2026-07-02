@@ -17,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import AmbientBackground from '@/components/design/AmbientBackground';
+import { Loading } from '@/components/design/Loading';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
@@ -496,16 +497,12 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
   };
   const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
-  // While a submission is in flight, replace the keypad with a loading animation
-  // so the moment the PIN is entered (or the biometric clears) the sheet shows
-  // clear progress instead of sitting on a full keypad.
+  // While a submission is in flight, replace the keypad with the branded
+  // loading animation — the moment the correct PIN is entered (or the biometric
+  // clears) the sheet cuts straight to the same loader used across the app,
+  // never an "authenticating" keypad state.
   if (busy) {
-    return (
-      <View style={{ alignItems: 'center', paddingVertical: 38 }}>
-        <ActivityIndicator size="large" color={c.brand} />
-        <Text style={{ marginTop: 16, fontSize: 14.5, fontFamily: font.semibold, color: c.ink2 }}>Processing…</Text>
-      </View>
-    );
+    return <Loading full={false} label="Processing…" />;
   }
   // Brief check-in-progress hold (only when biometrics may take over) so the
   // keypad doesn't flash before the biometric screen appears.
