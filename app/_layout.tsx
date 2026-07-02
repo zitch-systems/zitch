@@ -1,3 +1,7 @@
+// Side-effect import FIRST: installs the global fetch User-Agent guard before any
+// screen can make a request, so even direct fetch() call sites aren't edge-blocked
+// as anonymous bots.
+import "@/lib/netPatch";
 import { useEffect } from "react";
 import { AppState, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";

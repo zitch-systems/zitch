@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken, hasTransactionPin, saveTransactionPin, hasOfferedBiometricPay, markBiometricPayOffered } from '@/lib/secureStore';
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { isBiometricAvailable, authenticate, biometricLabel, setBiometricEnabled } from '@/lib/biometrics';
@@ -51,12 +50,22 @@ const SendMoney = () => {
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
 
+  const loadBanks = () => {
+    // Banks are a PUBLIC endpoint — load them regardless of session so the picker
+    // is never empty. Routed through apiJson so it carries the app User-Agent
+    // (keeps the request out of edge/bot 403 rules) and surfaces a failure
+    // instead of silently leaving the list empty.
+    apiJson('/api/transfers/banks/').then((res) => {
+      if (res?.banks?.length) setBanks(res.banks);
+      else notify('Couldn’t load banks', 'Check your connection and try again.', 'error');
+    });
+  };
+
   useEffect(() => {
+    loadBanks();
     getToken().then((t) => {
       if (!t) return;
       setToken(t);
-      fetch(`${baseUrl}/api/transfers/banks/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then((r) => r.json()).then((res) => res.banks && setBanks(res.banks)).catch(() => {});
       apiPost('/api/transfers/beneficiaries/')
         .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
     });

@@ -2,6 +2,10 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken, clearSession } from '@/lib/secureStore';
 import { touchActivity } from '@/lib/session';
+// Importing this also installs the global fetch User-Agent guard (covers the
+// screens that call fetch() directly, not just apiPost). USER_AGENT is reused
+// here so an explicit apiPost header and the guard agree.
+import { USER_AGENT } from '@/lib/netPatch';
 
 // On an authenticated 401 the session is dead (expired or revoked): clear it and
 // bounce to sign-in. Guarded so several in-flight requests failing together only
@@ -28,7 +32,11 @@ async function onSessionExpired(): Promise<void> {
  */
 export async function apiPost(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<Response> {
   const token = await getToken();
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'User-Agent': USER_AGENT,
+  };
   if (token) headers.Authorization = `Bearer ${token}`;
   // Bound every request so a slow/hanging backend (e.g. a slow upstream provider
   // call) can never leave a screen stuck forever — it aborts and the caller's
