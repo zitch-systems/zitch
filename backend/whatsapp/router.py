@@ -107,6 +107,33 @@ def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
     WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=caption)
 
 
+def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
+    """Send the transaction receipt as a branded, downloadable JPEG (rendered
+    server-side and uploaded as a document) with the readable text as the caption.
+    Falls back to the text receipt when the channel is mock/dev or any step fails,
+    so a receipt is never lost. Returns the text form (used as the Flow success
+    screen message and the OUT log row)."""
+    text = _receipt(title, rows)
+    from .providers import send_document, upload_media, wa_live
+
+    delivered = False
+    if wa_live():
+        try:
+            from .receipt import render_receipt
+
+            media_id = upload_media(render_receipt(title, rows, ref), "image/jpeg",
+                                    f"Zitch-Receipt-{ref}.jpg")
+            if media_id:
+                delivered = send_document(msisdn, media_id, f"Zitch-Receipt-{ref}.jpg",
+                                          caption=text).get("success", False)
+        except Exception:  # never let receipt rendering break a completed txn
+            delivered = False
+    if not delivered:
+        send_text(msisdn, text)
+    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text)
+    return text
+
+
 def reply_list(msisdn: str, body: str, rows, button_label: str = "Choose") -> None:
     """Interactive list with a numbered-text fallback: live sends a tappable list
     (row ids = the text the router expects), mock/dev sends the equivalent
@@ -137,13 +164,10 @@ def reply_buttons(msisdn: str, body: str, buttons) -> None:
 
 
 def send_menu(msisdn: str) -> None:
-    """The main menu as a tappable list (typed replies still work — row ids are
-    the same digits the classic menu used)."""
-    reply_list(msisdn, "💚 *Zitch* — what would you like to do?\nTap an option, or just type it (e.g. \"send 5k\").",
-               [("1", "💰 Check balance", ""), ("2", "💸 Send money", ""),
-                ("3", "📲 Airtime / Data", ""), ("4", "🧾 Pay a bill", ""),
-                ("5", "💱 Convert currency", ""), ("6", "🏦 Add money", "")],
-               button_label="Menu")
+    """The main menu as a plain numbered list — reply with the number (1–6) or
+    type the action (e.g. \"send 5k\"). Kept as text rather than a tappable list
+    so it reads as the classic numbered menu."""
+    reply(msisdn, MENU)
 
 
 def _ask_network(msisdn: str) -> None:
@@ -792,18 +816,15 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
 
     _clear_actions(msisdn)
     wallet = get_or_create_wallet(user)
-    reply(
-        msisdn,
-        _receipt("Transfer receipt", [
-            ("To", pa.payload["name"].upper()),
-            ("Bank", f"{pa.payload['bank_name']} • {pa.payload['account']}"),
-            ("Amount", _money(amount)),
-            ("Ref", txn.reference),
-            ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
-            ("New balance", _money(wallet.balance)),
-        ]),
-    )
-    return f"✅ {_money(amount)} sent to {pa.payload['name'].upper()}. Ref {txn.reference}."
+    return reply_receipt(msisdn, "Transfer receipt", [
+        ("To", pa.payload["name"].upper()),
+        ("Bank", pa.payload["bank_name"]),
+        ("Account", pa.payload["account"]),
+        ("Amount", _money(amount)),
+        ("Reference", txn.reference),
+        ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
+        ("New balance", _money(wallet.balance)),
+    ], ref=txn.reference)
 
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
@@ -880,11 +901,11 @@ def _insufficient(user, amount: Decimal) -> bool:
 
 
 def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
-             provider_call, success_line, logo_url: str | None = None) -> str:
-    """Debit -> provider -> settle via the shared run_provider_purchase, then
-    reply with the receipt / processing / failure line. On success the receipt
-    carries the biller logo (or the Zitch mark) when `logo_url` is given. Returns
-    the outcome line (also used verbatim on the secure Flow's success screen)."""
+             provider_call, receipt) -> str:
+    """Debit -> provider -> settle via the shared run_provider_purchase, then send
+    the outcome. On success `receipt(txn, result)` returns ``(title, rows)`` and we
+    send a branded, downloadable receipt JPEG. Returns the outcome text (also used
+    verbatim on the secure Flow's success screen)."""
     # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
     # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
     # this without the guided flow's own send_limit_error check, which would
@@ -914,9 +935,8 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         return "That request was already processed."
     _clear_actions(msisdn)
     if status == "success":
-        line = success_line(txn, result)
-        reply_image(msisdn, logo_url, line) if logo_url else reply(msisdn, line)
-        return line
+        title, rows = receipt(txn, result)
+        return reply_receipt(msisdn, title, rows, ref=txn.reference)
     if status == "pending":
         line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
         reply(msisdn, line)
@@ -947,14 +967,8 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Enter a valid phone number (or \"me\").")
         pa.payload["phone"] = phone
         _touch(pa, state="amount", payload=pa.payload)
-        return reply_list(msisdn, "How much airtime?",
-                          [("100", "₦100", ""), ("200", "₦200", ""), ("500", "₦500", ""),
-                           ("1000", "₦1,000", ""), ("2000", "₦2,000", ""),
-                           ("other", "Other amount", "type any amount, min ₦50")],
-                          button_label="Amount")
+        return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
     if st == "amount":
-        if text.strip().lower() == "other":
-            return reply(msisdn, "Type the amount (e.g. 150). Minimum ₦50.")
         amount = parse_amount(text)
         if amount is None or amount < 50:
             return reply(msisdn, "Enter a valid amount, at least ₦50.")
@@ -988,10 +1002,9 @@ def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
         pa, user, msisdn, amount, f"Airtime — {net}",
         lambda ref: vtu_purchase(f"{net.lower()}-airtime",
                                  {"amount": str(amount), "phone": phone}, reference=ref),
-        lambda txn, res: _receipt("Airtime receipt", [
-            ("Service", f"{net} airtime"), ("To", phone), ("Amount", _money(amount)),
-            ("Ref", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
-        logo_url=provider_logo(net),
+        lambda txn, res: ("Airtime receipt", [
+            ("Network", net), ("Phone", phone), ("Amount", _money(amount)),
+            ("Reference", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
     )
 
 
@@ -1058,8 +1071,10 @@ def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
         pa, user, msisdn, price, f"Data — {net} {pa.payload['plan_name']}",
         lambda ref: vtu_purchase(f"{net.lower()}-data",
                                  {"billersCode": phone, "variation_code": plan_code, "phone": phone}, reference=ref),
-        lambda txn, res: f"✅ {pa.payload['plan_name']} ({net}) sent to {phone} 🎉\nRef {txn.reference}.",
-        logo_url=provider_logo(net),
+        lambda txn, res: ("Data receipt", [
+            ("Network", net), ("Plan", pa.payload["plan_name"]), ("Phone", phone),
+            ("Amount", _money(price)), ("Reference", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
     )
 
 
@@ -1133,16 +1148,19 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
     disco_name = DISCO_NAMES[pa.payload["disco"]]
     meter, mt = pa.payload["meter"], pa.payload["meter_type"]
 
-    def _line(txn, res):
+    def _receipt_rows(txn, res):
         token = res.get("token") or res.get("provider_reference", "")
-        extra = f"\n🔌 Token: {token}." if token else ""
-        return f"✅ {_money(amount)} {disco_name} on meter {meter} 🎉{extra}\nRef {txn.reference}."
+        rows = [("Disco", disco_name), ("Meter", f"{meter} ({mt})"), ("Amount", _money(amount))]
+        if token:
+            rows.append(("Token", token))
+        rows += [("Reference", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]
+        return ("Electricity receipt", rows)
 
     return _run_vtu(
         pa, user, msisdn, amount, f"Electricity — {disco_name}",
         lambda ref: vtu_purchase(f"{disco}-electric",
                                  {"billersCode": meter, "variation_code": mt, "amount": str(amount)}, reference=ref),
-        _line,
+        _receipt_rows,
     )
 
 
@@ -1217,8 +1235,10 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
     return _run_vtu(
         pa, user, msisdn, price, f"Cable — {prov_name} {pa.payload['plan_name']}",
         lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
-        lambda txn, res: f"✅ {prov_name} {pa.payload['plan_name']} activated on {iuc} 🎉\nRef {txn.reference}.",
-        logo_url=provider_logo(prov_name),
+        lambda txn, res: ("Cable receipt", [
+            ("Provider", prov_name), ("Package", pa.payload["plan_name"]), ("Smartcard", iuc),
+            ("Amount", _money(price)), ("Reference", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
     )
 
 

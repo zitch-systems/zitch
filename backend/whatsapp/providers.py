@@ -177,6 +177,38 @@ def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
         return {"success": False, "message": str(exc)}
 
 
+def upload_media(data: bytes, mime: str, filename: str) -> str:
+    """Upload bytes to the WhatsApp Cloud media store and return the media id
+    (empty string on failure / mock). The id is single-account, short-lived, and
+    referenced by a subsequent message send."""
+    if not wa_live():
+        log.info("[wa-mock] upload_media %s (%d bytes)", filename, len(data))
+        return "mock-media-id"
+    url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/media"
+    try:
+        r = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {_cfg()['TOKEN']}"},
+            data={"messaging_product": "whatsapp", "type": mime},
+            files={"file": (filename, data, mime)},
+            timeout=30,
+        )
+        return (r.json() if r.content else {}).get("id", "") if r.ok else ""
+    except requests.RequestException as exc:
+        log.warning("wa media upload failed: %s", exc)
+        return ""
+
+
+def send_document(msisdn: str, media_id: str, filename: str, caption: str = "") -> dict:
+    """Send a previously-uploaded document (e.g. a receipt JPEG) as a downloadable
+    file with `filename` and an optional caption."""
+    doc = {"id": media_id, "filename": filename[:240]}
+    if caption:
+        doc["caption"] = caption[:1024]
+    return _send_payload(msisdn, {"type": "document", "document": doc},
+                         f"[document] {filename}")
+
+
 def send_template(msisdn: str, template_name: str, params: list | None = None, lang: str = "en_US") -> dict:
     """Send a pre-approved template message (used for broadcasts outside the
     24-hr window). MOCK mode logs and returns success."""
