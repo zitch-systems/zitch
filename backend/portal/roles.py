@@ -8,7 +8,7 @@ disabling a button is never the actual gate.
 """
 import functools
 
-from common.http import fail, require_user
+from common.http import fail
 
 ROLES = ("super_admin", "finance", "support", "read_only")
 
@@ -35,18 +35,28 @@ def caps_of(user) -> dict:
 
 
 def require_cap(cap=None):
-    """Decorator (under @api): staff-gate the view; when `cap` is given, the
-    caller's role must also grant that capability."""
+    """Decorator (under @api): staff-gate the view with an ADMIN-scoped token;
+    when `cap` is given, the caller's role must also grant that capability.
+
+    Resolves the bearer token itself with ``required_scope="admin"`` rather than
+    delegating to ``require_user`` — so a mobile app-scoped token, even one that
+    belongs to a staff member who also uses the app, can never reach the operator
+    portal. Staff obtain an admin-scoped token only through the operator login."""
 
     def deco(view):
         @functools.wraps(view)
-        @require_user
         def wrapped(request, *args, **kwargs):
-            user = request.user_obj
+            from accounts.models import AccessToken
+            from common.http import resolve_token
+
+            user = AccessToken.resolve(resolve_token(request), required_scope=AccessToken.ADMIN)
+            if user is None:
+                return fail("Invalid or expired session", status=401)
             if not user.is_staff:
                 return fail("Staff access required", status=403)
             if cap and not caps_of(user).get(cap):
                 return fail(f"Your role ({role_of(user)}) can't perform this action", status=403)
+            request.user_obj = user
             request.role = role_of(user)
             return view(request, *args, **kwargs)
 

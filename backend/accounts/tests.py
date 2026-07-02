@@ -283,6 +283,23 @@ class KycTierTests(TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
 
+    def test_bvn_otp_burns_after_repeated_wrong_codes(self):
+        # The 6-digit code is brute-forceable inside its 10-min window without a
+        # cap: after 5 wrong guesses the pending code is burned (429) and the
+        # right code no longer works until the user restarts.
+        from django.core.cache import cache
+        self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        real = cache.get(f"kyc_bvn:{self.user.id}")["code"]
+        for _ in range(4):
+            r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
+            self.assertEqual(r.status_code, 400)
+        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
+        self.assertEqual(r.status_code, 429)  # 5th wrong guess burns the code
+        # Even the correct code is now rejected — the pending entry is gone.
+        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": real})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
+
     def test_bvn_rejects_bad_format(self):
         res, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "123"})
         self.assertEqual(res.status_code, 400)

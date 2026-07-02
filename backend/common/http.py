@@ -289,6 +289,23 @@ def provider_purchase_response(status, txn, result, *, success_message, **succes
     return ok(success=True, message=success_message, reference=txn.reference, **success_extra)
 
 
+def mask_pii(value: str) -> str:
+    """Redact a login identifier for logs and audit rows: keep just enough to
+    correlate repeated attempts, hide the rest. A failed-login trail must not
+    become a plaintext list of real emails/phones that anyone with audit read
+    can harvest. `jane@zitch.ng` -> `j***@zitch.ng`; `08012345678` ->
+    `0801***78`; short values collapse to `***`."""
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if "@" in v:
+        local, _, domain = v.partition("@")
+        return f"{(local[:1] or '')}***@{domain}"
+    if len(v) <= 4:
+        return "***"
+    return f"{v[:4]}***{v[-2:]}"
+
+
 def fail(message, status=400, **extra):
     return JsonResponse({"message": message, **extra}, status=status)
 

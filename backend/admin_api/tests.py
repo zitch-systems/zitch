@@ -5,7 +5,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import Group
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken, User
@@ -36,13 +36,13 @@ class AdminApiTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.admin = make_staff("amara", superuser=True)
-        self.admin_token = AccessToken.issue(self.admin).key
+        self.admin_token = AccessToken.issue(self.admin, scope=AccessToken.ADMIN).key
         self.finance = make_staff("dapo", role="finance")
-        self.finance_token = AccessToken.issue(self.finance).key
+        self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
         self.support = make_staff("funmi", role="support")
-        self.support_token = AccessToken.issue(self.support).key
+        self.support_token = AccessToken.issue(self.support, scope=AccessToken.ADMIN).key
         self.readonly = make_staff("ada_ro")  # staff, no group -> read_only
-        self.readonly_token = AccessToken.issue(self.readonly).key
+        self.readonly_token = AccessToken.issue(self.readonly, scope=AccessToken.ADMIN).key
         self.customer = make_customer()
 
     def post(self, path, token, body=None):
@@ -279,11 +279,11 @@ class AdminApiFeatureTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.finance = make_staff("dapo2", role="finance")
-        self.finance_token = AccessToken.issue(self.finance).key
+        self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
         self.support = make_staff("funmi2", role="support")
-        self.support_token = AccessToken.issue(self.support).key
+        self.support_token = AccessToken.issue(self.support, scope=AccessToken.ADMIN).key
         self.readonly = make_staff("ro2")
-        self.readonly_token = AccessToken.issue(self.readonly).key
+        self.readonly_token = AccessToken.issue(self.readonly, scope=AccessToken.ADMIN).key
         self.customer = make_customer("zara", phone="08055556666", balance="1000")
 
     def post(self, path, token, body=None):
@@ -456,3 +456,162 @@ class SeedOpsCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("seed_ops")
         self.assertFalse(User.objects.filter(username="amara").exists())
+
+
+class TokenScopeTests(TestCase):
+    """The app/admin token split: a mobile (app-scoped) token can never reach a
+    staff endpoint, and admin login issues an admin-scoped token."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = make_staff("scoped_admin", superuser=True)
+
+    def post(self, path, token, body=None):
+        return self.client.post(f"/api/admin/{path}", data=json.dumps(body or {}),
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def test_app_scoped_token_rejected_on_staff_endpoint(self):
+        # A staff user's *app* token (e.g. from the mobile app) must not open the
+        # back office — the scope gate refuses it with 401 before any role check.
+        app_tok = AccessToken.issue(self.staff).key  # default app scope
+        res = self.client.get("/api/admin/bootstrap", HTTP_AUTHORIZATION=f"Bearer {app_tok}")
+        self.assertEqual(res.status_code, 401)
+
+    def test_admin_scoped_token_accepted(self):
+        admin_tok = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
+        res = self.client.get("/api/admin/bootstrap", HTTP_AUTHORIZATION=f"Bearer {admin_tok}")
+        self.assertEqual(res.status_code, 200)
+
+    def test_admin_login_issues_admin_scoped_token(self):
+        self.staff.set_password("S3cret#pass"); self.staff.save()
+        res = self.client.post("/api/admin/login",
+                               data=json.dumps({"username": "scoped_admin", "password": "S3cret#pass"}),
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        tok = AccessToken.objects.get(key=AccessToken._hash(res.json()["token"]))
+        self.assertEqual(tok.scope, AccessToken.ADMIN)
+
+    def test_admin_token_expires_on_short_ttl(self):
+        from datetime import timedelta
+
+        from django.test import override_settings
+        from django.utils import timezone
+        tok = AccessToken.issue(self.staff, scope=AccessToken.ADMIN)
+        raw = tok.key
+        # Age the token past the 2h admin TTL but well within the 24h app TTL.
+        AccessToken.objects.filter(pk=tok.pk).update(created=timezone.now() - timedelta(hours=3))
+        with override_settings(ADMIN_TOKEN_TTL_HOURS=2, TOKEN_TTL_HOURS=24):
+            self.assertIsNone(AccessToken.resolve(raw, required_scope=AccessToken.ADMIN))
+
+    def test_resolve_rejects_inactive_user(self):
+        tok = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
+        self.staff.is_active = False
+        self.staff.save(update_fields=["is_active"])
+        self.assertIsNone(AccessToken.resolve(tok, required_scope=AccessToken.ADMIN))
+
+
+@override_settings(RATELIMIT_ENABLE=True)
+class AdminLoginLockoutTests(TestCase):
+    """Per-account brute-force lockout + masked-PII audit on the admin login."""
+
+    def setUp(self):
+        from django.core.cache import cache
+        cache.clear()
+        self.client = Client()
+        self.staff = make_staff("lockme", superuser=True)
+        self.staff.set_password("S3cret#pass"); self.staff.save()
+
+    def tearDown(self):
+        from django.core.cache import cache
+        cache.clear()
+
+    def login(self, password):
+        return self.client.post("/api/admin/login",
+                                data=json.dumps({"username": "lockme", "password": password}),
+                                content_type="application/json")
+
+    def test_lockout_after_repeated_failures(self):
+        from django.test import override_settings
+        with override_settings(ADMIN_LOGIN_MAX_FAILS=5, ADMIN_LOGIN_LOCKOUT_SECONDS=900):
+            for _ in range(5):
+                self.assertEqual(self.login("wrong").status_code, 401)
+            # 6th attempt is locked out (429) even though the account isn't
+            # otherwise flagged — and even a NOW-correct password is refused.
+            self.assertEqual(self.login("S3cret#pass").status_code, 429)
+        self.assertTrue(AuditLog.objects.filter(action="admin.login_locked").exists())
+
+    def test_failed_login_masks_identifier_in_audit(self):
+        self.login("wrong")
+        row = AuditLog.objects.filter(action="admin.login_failed").first()
+        self.assertIsNotNone(row)
+        # The raw identifier is never stored verbatim.
+        self.assertNotEqual(row.target, "lockme")
+        self.assertIn("***", row.target)
+
+
+class SettingValidationTests(TestCase):
+    """setting_update coerces + range-checks values by key type."""
+
+    def setUp(self):
+        self.client = Client()
+        self.admin_token = AccessToken.issue(make_staff("cfg", superuser=True),
+                                             scope=AccessToken.ADMIN).key
+
+    def post(self, body):
+        return self.client.post("/api/admin/settings/update",
+                                data=json.dumps(body), content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {self.admin_token}")
+
+    def test_bool_setting_normalised(self):
+        res = self.post({"key": "ai_enabled_global", "value": "yes"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["value"], "true")
+
+    def test_int_setting_out_of_range_rejected(self):
+        self.assertEqual(self.post({"key": "fx_margin_bps", "value": "5000"}).status_code, 400)
+        self.assertEqual(self.post({"key": "fx_margin_bps", "value": "notanumber"}).status_code, 400)
+
+    def test_int_setting_in_range_accepted(self):
+        res = self.post({"key": "fx_margin_bps", "value": "75"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["value"], "75")
+
+    def test_unknown_key_rejected(self):
+        self.assertEqual(self.post({"key": "arbitrary_key", "value": "x"}).status_code, 400)
+
+
+class ManualCreditCapTests(TestCase):
+    """The insider-risk guardrails on manual wallet credit."""
+
+    def setUp(self):
+        self.client = Client()
+        self.finance = make_staff("cap_fin", role="finance")
+        self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
+        self.customer = make_customer("capcust", phone="08055550000", balance="0")
+
+    def credit(self, amount, reason="Goodwill manual credit", key=None):
+        body = {"uid": self.customer.id, "amount": str(amount), "reason": reason}
+        if key:
+            body["idempotency_key"] = key
+        return self.client.post("/api/admin/wallet/credit", data=json.dumps(body),
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION=f"Bearer {self.finance_token}")
+
+    def test_single_credit_ceiling(self):
+        from django.test import override_settings
+        with override_settings(ADMIN_MAX_MANUAL_CREDIT=500000):
+            res = self.credit("600000", key="over-one")
+            self.assertEqual(res.status_code, 403)
+            self.assertEqual(res.json().get("code"), "credit_limit")
+
+    def test_daily_cap_across_credits(self):
+        from django.test import override_settings
+        with override_settings(ADMIN_MAX_MANUAL_CREDIT=500000,
+                               ADMIN_MANUAL_CREDIT_DAILY_CAP=800000):
+            self.assertEqual(self.credit("500000", key="d1").status_code, 200)
+            # A second credit that would push the operator's rolling 24h past the
+            # daily cap is refused, even though each is under the single ceiling.
+            res = self.credit("400000", key="d2")
+            self.assertEqual(res.status_code, 403)
+            self.assertEqual(res.json().get("code"), "credit_daily_cap")

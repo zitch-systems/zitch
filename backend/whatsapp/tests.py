@@ -619,7 +619,7 @@ class OperatorTests(TestCase):
         self.staff = User.objects.create(username="adm", phone="08099999999", email="adm@zitch.test", is_staff=True)
         group, _ = Group.objects.get_or_create(name="support")
         self.staff.groups.add(group)
-        self.staff_token = AccessToken.issue(self.staff).key
+        self.staff_token = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
 
     def inbound(self, text, mid):
         event = {"entry": [{"changes": [{"value": {"messages": [
@@ -661,13 +661,15 @@ class OperatorTests(TestCase):
         self.assertTrue(AuditLog.objects.filter(action="conversation.handover").exists())
 
     def test_ops_requires_staff(self):
+        # A normal user's app-scoped token is refused at the scope gate (401),
+        # before any staff/role check — it can never reach the ops surface.
         res, _ = self.post_as("/api/whatsapp/ops/handover/", self.token, {"msisdn": MSISDN})  # normal user
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 401)
 
     def test_ops_requires_role_capability(self):
         """A staff account with no role group is read_only: no wa/broadcast caps."""
         bare = User.objects.create(username="ro", phone="08098888888", email="ro@zitch.test", is_staff=True)
-        bare_token = AccessToken.issue(bare).key
+        bare_token = AccessToken.issue(bare, scope=AccessToken.ADMIN).key
         res, _ = self.post_as("/api/whatsapp/ops/handover/", bare_token, {"msisdn": MSISDN})
         self.assertEqual(res.status_code, 403)
         res, _ = self.post_as("/api/whatsapp/ops/broadcast/", bare_token, {"template_name": "promo"})
@@ -679,7 +681,7 @@ class OperatorTests(TestCase):
 
         fin = User.objects.create(username="fin", phone="08097777777", email="fin@zitch.test", is_staff=True)
         fin.groups.add(Group.objects.get_or_create(name="finance")[0])
-        fin_token = AccessToken.issue(fin).key
+        fin_token = AccessToken.issue(fin, scope=AccessToken.ADMIN).key
         res, _ = self.post_as("/api/whatsapp/ops/broadcast/", fin_token, {"template_name": "promo"})
         self.assertEqual(res.status_code, 403)
         res, _ = self.post_as("/api/whatsapp/ops/reply/", fin_token, {"msisdn": MSISDN, "text": "hi"})
@@ -743,3 +745,22 @@ class SmsCodeConfirmTests(TestCase):
         self.inbound(code, "s6")
         self.assertIn("Airtime receipt", self.last_reply())
         self.assertEqual(self.bal(), Decimal("19800"))
+
+
+class AuditLogImmutabilityTests(TestCase):
+    """The audit trail is append-only at the ORM layer: a back-office bug or a
+    compromised operator must not be able to rewrite or delete history."""
+
+    def test_existing_row_cannot_be_edited(self):
+        row = AuditLog.objects.create(actor_type="admin", actor_id="1",
+                                      action="wallet.manual_credit", target="u_1")
+        row.action = "tampered"
+        with self.assertRaises(ValueError):
+            row.save()
+        self.assertEqual(AuditLog.objects.get(pk=row.pk).action, "wallet.manual_credit")
+
+    def test_row_cannot_be_deleted(self):
+        row = AuditLog.objects.create(actor_type="admin", actor_id="1", action="user.freeze")
+        with self.assertRaises(ValueError):
+            row.delete()
+        self.assertTrue(AuditLog.objects.filter(pk=row.pk).exists())

@@ -43,6 +43,43 @@ SETTING_DEFS = [
     ("broadcast_marketing_optin_only", "true", "Marketing templates only reach users with marketing_opt_in = true."),
 ]
 
+# Type + range constraints per setting key. A runtime setting drives money math
+# (fx_margin_bps) and security behaviour (wa_pin_max_attempts, the AI kill
+# switch), so an operator can't write a value the consumers can't parse — a
+# non-numeric fx_margin_bps would raise mid-quote, and an absurd
+# wa_pin_max_attempts would neuter the WhatsApp PIN throttle.
+_BOOL_SETTINGS = {"ai_enabled_global", "cny_settlement_enabled", "broadcast_marketing_optin_only"}
+_INT_SETTINGS = {
+    "fx_margin_bps": (0, 1000),          # ≤10% margin
+    "fx_quote_ttl_seconds": (5, 3600),   # 5s – 1h quote validity
+    "wa_pin_max_attempts": (1, 10),      # keep the throttle meaningful
+}
+
+
+def _clean_setting_value(key: str, value):
+    """Coerce + validate a SystemSetting write by key type.
+
+    Returns ``(cleaned_str, None)`` on success or ``(None, error)`` — bool keys
+    normalise to ``"true"``/``"false"``; int keys must parse and sit in range;
+    any other allow-listed key is stored as its trimmed string."""
+    if key in _BOOL_SETTINGS:
+        s = str(value).strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return "true", None
+        if s in ("false", "0", "no", "off"):
+            return "false", None
+        return None, "Value must be true or false"
+    if key in _INT_SETTINGS:
+        lo, hi = _INT_SETTINGS[key]
+        try:
+            n = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None, "Value must be a whole number"
+        if not lo <= n <= hi:
+            return None, f"Value must be between {lo} and {hi}"
+        return str(n), None
+    return str(value).strip(), None
+
 
 def _ms(dt) -> int | None:
     """Epoch milliseconds (the portal revives these into JS Dates)."""
@@ -273,17 +310,34 @@ def login(request):
         return fail("Invalid JSON body", status=400)
 
     from accounts.models import AccessToken, User
+    from common.http import mask_pii
+    from common.ratelimit import clear_login_failures, login_locked, note_login_failure
+    from whatsapp.ops import record_audit
 
     ident = (data.get("username") or data.get("email") or "").strip()
     password = data.get("password") or ""
     if not ident or not password:
         return fail("Username and password are required")
+    # Per-account lockout on top of the per-IP ratelimit: a rotating-IP brute
+    # force against one operator account is capped here.
+    if login_locked("admin", ident):
+        record_audit("admin.login_locked", target=mask_pii(ident), actor_type="system")
+        return fail("Too many failed attempts. Try again later.", status=429, code="locked")
     user = User.objects.filter(Q(username__iexact=ident) | Q(email__iexact=ident)).first()
     if user is None or not user.check_password(password):
+        note_login_failure("admin", ident)
+        # Log the masked identifier only — never the raw email/phone, so the
+        # audit trail can't be harvested as a plaintext account list.
+        record_audit("admin.login_failed", target=mask_pii(ident), actor_type="system")
         return fail("Incorrect credentials", status=401)
-    if not user.is_staff:
+    if not (user.is_staff and user.is_active):
+        record_audit("admin.login_denied", actor=user, target=mask_pii(ident))
         return fail("This account does not have operator access", status=403)
-    token = AccessToken.issue(user)
+    clear_login_failures("admin", ident)
+    # Admin-scoped, short-lived token (ADMIN_TOKEN_TTL_HOURS): it resolves only on
+    # staff endpoints and never on the mobile app surface.
+    token = AccessToken.issue(user, scope=AccessToken.ADMIN)
+    record_audit("admin.login", actor=user, target=user.username)
     return ok(token=token.key, role=staff_role(user),
               name=(user.get_full_name() or user.username), email=user.email)
 
@@ -487,10 +541,13 @@ def setting_update(request):
     allowed = {k for k, _, _ in SETTING_DEFS}
     if key not in allowed:
         return fail("Unknown setting key", status=400)
+    cleaned, err = _clean_setting_value(key, value)
+    if err:
+        return fail(err, status=400)
     before = SystemSetting.get(key, "")
-    SystemSetting.set(key, value)
-    audit(request, "settings.update", target=key, before={"value": before}, after={"value": str(value)})
-    return ok(success=True, key=key, value=str(value))
+    SystemSetting.set(key, cleaned)
+    audit(request, "settings.update", target=key, before={"value": before}, after={"value": cleaned})
+    return ok(success=True, key=key, value=cleaned)
 
 
 @staff_endpoint(methods=("POST",), perm="users")
@@ -505,9 +562,15 @@ def user_status(request):
     before = "active" if u.is_active else "frozen"
     u.is_active = status == "active"
     u.save(update_fields=["is_active"])
+    # A freeze must take effect NOW, not at token TTL: revoke the user's live
+    # sessions so a frozen account can't keep transacting on an existing token.
+    revoked = 0
+    if status == "frozen":
+        revoked = u.tokens.all().delete()[0]
     audit(request, "user.freeze" if status == "frozen" else "user.unfreeze",
-          target=f"u_{u.id} ({u.get_full_name() or u.username})", before={"status": before}, after={"status": status})
-    return ok(success=True, uid=u.id, status=status)
+          target=f"u_{u.id} ({u.get_full_name() or u.username})",
+          before={"status": before}, after={"status": status, "sessions_revoked": revoked})
+    return ok(success=True, uid=u.id, status=status, sessions_revoked=revoked)
 
 
 @staff_endpoint(methods=("POST",), perm="users")
@@ -944,6 +1007,34 @@ def wallet_credit(request):
     reason = (request.data.get("reason") or "").strip()
     if len(reason) < 5:
         return fail("A reason (min 5 characters) is required for manual credits")
+    # Bound insider/abuse risk on the highest-value operator action: a per-credit
+    # ceiling and a per-operator rolling-24h cap (settings-driven), independent of
+    # the idempotency guard (which only stops *accidental* double credits).
+    from decimal import Decimal as _D
+    from datetime import timedelta as _td
+
+    from django.conf import settings
+    from django.utils import timezone as _tz
+
+    from whatsapp.models import AuditLog as _AL
+
+    max_one = _D(str(getattr(settings, "ADMIN_MAX_MANUAL_CREDIT", "500000")))
+    if amount > max_one:
+        return fail(f"Amount exceeds the single manual-credit limit of ₦{max_one:,.0f}. "
+                    "A larger credit needs a second approver.", status=403, code="credit_limit")
+    op = request.staff.email or request.staff.username or str(request.staff.id)
+    since = _tz.now() - _td(hours=24)
+    spent_today = _D("0")
+    for row in _AL.objects.filter(actor_id=op, action="wallet.manual_credit", created__gte=since):
+        try:
+            spent_today += _D(str((row.after or {}).get("amount", "0")))
+        except (TypeError, ValueError):
+            pass
+    day_cap = _D(str(getattr(settings, "ADMIN_MANUAL_CREDIT_DAILY_CAP", "2000000")))
+    if spent_today + amount > day_cap:
+        return fail(f"This exceeds your ₦{day_cap:,.0f} daily manual-credit cap "
+                    f"(₦{spent_today:,.0f} already in the last 24h).",
+                    status=403, code="credit_daily_cap")
     # Derive a server-side idempotency key when the client omits one: the ledger's
     # unique (user, idempotency_key) constraint is PARTIAL (excludes ""), so a blank
     # key would let a double-submit credit twice. spend_key falls back to a

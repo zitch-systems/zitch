@@ -66,18 +66,20 @@ class LoginTests(PortalTestCase):
         self.assertTrue(AuditLog.objects.filter(action="ops.login_failed").exists())
 
     def test_customer_token_cannot_reach_ops(self):
+        # An app-scoped (mobile) token is refused at the scope gate before any
+        # role check — 401, not 403 — so it can never reach the operator surface.
         u = User.objects.create(username="cust2", phone="08011113333")
-        token = AccessToken.issue(u).key
+        token = AccessToken.issue(u).key  # default app scope
         res = self.post("summary", token=token)
-        self.assertEqual(res.status_code, 403)
+        self.assertEqual(res.status_code, 401)
 
 
 class RbacTests(PortalTestCase):
     def setUp(self):
         super().setUp()
-        self.read_only = AccessToken.issue(make_staff("ada")).key
-        self.support = AccessToken.issue(make_staff("funmi", role="support")).key
-        self.finance = AccessToken.issue(make_staff("dapo", role="finance")).key
+        self.read_only = AccessToken.issue(make_staff("ada"), scope=AccessToken.ADMIN).key
+        self.support = AccessToken.issue(make_staff("funmi", role="support"), scope=AccessToken.ADMIN).key
+        self.finance = AccessToken.issue(make_staff("dapo", role="finance"), scope=AccessToken.ADMIN).key
 
     def test_read_only_can_read_but_not_mutate(self):
         self.assertEqual(self.post("summary", token=self.read_only).status_code, 200)
@@ -98,7 +100,7 @@ class RbacTests(PortalTestCase):
 class MutationTests(PortalTestCase):
     def setUp(self):
         super().setUp()
-        self.admin = AccessToken.issue(make_staff("amara", superuser=True)).key
+        self.admin = AccessToken.issue(make_staff("amara", superuser=True), scope=AccessToken.ADMIN).key
         self.user = User.objects.create(username="08010000009", phone="08010000009",
                                         first_name="Kemi", tier=1)
         get_or_create_wallet(self.user)

@@ -50,20 +50,33 @@ def login(request):
     Staff-only: a valid password on a non-staff account is still a 403, and the
     failure is audited so brute-force attempts on operator accounts are visible.
     """
+    from common.http import mask_pii
+    from common.ratelimit import clear_login_failures, login_locked, note_login_failure
+
     ident = (request.data.get("identifier") or "").strip()
     password = request.data.get("password") or ""
     if not ident or not password:
         return fail("identifier and password required")
+    # Per-account lockout on top of the per-IP ratelimit (@ratelimit above) — a
+    # distributed brute force against one operator account is capped here.
+    if login_locked("ops", ident):
+        record_audit("ops.login_locked", target=mask_pii(ident), actor_type="system")
+        return fail("Too many failed attempts. Try again later.", status=429, code="locked")
     user = User.objects.filter(
         Q(username__iexact=ident) | Q(email__iexact=ident) | Q(phone=ident)
     ).first()
     if user is None or not user.check_password(password):
-        record_audit("ops.login_failed", target=ident, actor_type="system")
+        note_login_failure("ops", ident)
+        # Mask the identifier in the audit trail — a failed-login log must not be
+        # a plaintext list of real operator emails/phones.
+        record_audit("ops.login_failed", target=mask_pii(ident), actor_type="system")
         return fail("Invalid credentials", status=401)
     if not (user.is_staff and user.is_active):
-        record_audit("ops.login_denied", actor=user, target=ident)
+        record_audit("ops.login_denied", actor=user, target=mask_pii(ident))
         return fail("Staff access required", status=403)
-    token = AccessToken.issue(user)
+    clear_login_failures("ops", ident)
+    # Admin-scoped, short-lived token so it never resolves on the mobile surface.
+    token = AccessToken.issue(user, scope=AccessToken.ADMIN)
     record_audit("ops.login", actor=user, target=user.username)
     return ok(
         token=token.key,
