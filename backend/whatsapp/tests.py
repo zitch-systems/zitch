@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import re
+import unittest
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -360,7 +361,7 @@ class VtuTests(TestCase):
         self.inbound("me", "d4")              # phone -> confirm
         self.assertIn("Confirm data", self.last_reply())
         self.inbound("1234", "d5")
-        self.assertIn("sent to", self.last_reply())
+        self.assertIn("Data receipt", self.last_reply())
         self.assertEqual(self.bal(), Decimal("19500"))
 
     def test_electricity_returns_token(self):
@@ -384,7 +385,7 @@ class VtuTests(TestCase):
         self.inbound("1234567890", "c4")      # IUC -> validated -> confirm
         self.assertIn("Confirm cable", self.last_reply())
         self.inbound("1234", "c5")
-        self.assertIn("activated", self.last_reply())
+        self.assertIn("Cable receipt", self.last_reply())
         self.assertEqual(self.bal(), Decimal("11000"))
 
     def test_wrong_network_reprompts(self):
@@ -764,3 +765,45 @@ class AuditLogImmutabilityTests(TestCase):
         with self.assertRaises(ValueError):
             row.delete()
         self.assertTrue(AuditLog.objects.filter(pk=row.pk).exists())
+
+
+try:
+    import PIL  # noqa: F401
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
+
+
+class WhatsAppReceiptTests(TestCase):
+    """The transaction receipt is a branded, downloadable JPEG (uploaded as a
+    document) when the channel is live, with a text fallback in mock/dev."""
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_render_receipt_is_a_jpeg(self):
+        from whatsapp.receipt import render_receipt
+        b = render_receipt("Airtime receipt",
+                           [("Network", "MTN"), ("Amount", "₦500.00")], "ZTC-1")
+        self.assertEqual(b[:2], b"\xff\xd8")   # JPEG start-of-image marker
+        self.assertGreater(len(b), 1000)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_reply_receipt_sends_downloadable_document_when_live(self):
+        from whatsapp import providers
+        from whatsapp.router import reply_receipt
+        with patch.object(providers, "wa_live", return_value=True), \
+             patch.object(providers, "upload_media", return_value="mid-123") as up, \
+             patch.object(providers, "send_document", return_value={"success": True}) as sd:
+            text = reply_receipt("2348011112222", "Airtime receipt",
+                                 [("Network", "MTN"), ("Amount", "₦500.00")], ref="ZTC-1")
+        up.assert_called_once()
+        sd.assert_called_once()
+        self.assertIn("Airtime receipt", sd.call_args.kwargs.get("caption", ""))
+        self.assertTrue(sd.call_args.args[2].endswith(".jpg"))   # filename
+        self.assertIn("Airtime receipt", text)
+
+    def test_reply_receipt_text_fallback_in_mock(self):
+        from whatsapp.router import reply_receipt
+        text = reply_receipt("2348011112222", "Airtime receipt", [("Network", "MTN")], ref="ZTC-1")
+        self.assertIn("Airtime receipt", text)
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn="2348011112222", text__icontains="Airtime receipt").exists())

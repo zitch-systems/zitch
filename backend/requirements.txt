@@ -9,3 +9,4 @@ cryptography>=41,<43   # WhatsApp Flows endpoint encryption (RSA-OAEP + AES-GCM;
 django-cors-headers>=4.9
 anthropic>=0.40,<1.0   # WhatsApp LLM intent layer (lazy-imported; only used when LLM_API_KEY is set)
 sentry-sdk[django]>=2.0,<3   # error reporting (lazy-init; only active when SENTRY_DSN is set)
+Pillow>=10,<12   # WhatsApp receipt image rendering
