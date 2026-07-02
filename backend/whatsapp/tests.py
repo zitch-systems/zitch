@@ -6,6 +6,7 @@ bodies and the payout settles automatically — the full flow is exercised offli
 import hashlib
 import hmac
 import json
+import re
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -260,7 +261,7 @@ class ChannelTests(TestCase):
         self.assertIn("Confirm transfer", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # the BANK's name, not a typed one
         self.inbound("1234", "t5")
-        self.assertIn("Sent", self.last_reply())
+        self.assertIn("Transfer receipt", self.last_reply())
         self.assertEqual(self.balance(), Decimal("45000"))
         self.assertEqual(
             Transaction.objects.filter(user=self.user, direction=Transaction.OUT,
@@ -271,7 +272,7 @@ class ChannelTests(TestCase):
         self.inbound("0123456789 GTBank John Doe 5000", "p1")  # single bank match -> confirm
         self.assertIn("Confirm transfer", self.last_reply())
         self.inbound("1234", "p2")
-        self.assertIn("Sent", self.last_reply())
+        self.assertIn("Transfer receipt", self.last_reply())
         self.assertEqual(self.balance(), Decimal("45000"))
 
     def test_paste_amount_before_account(self):
@@ -348,7 +349,7 @@ class VtuTests(TestCase):
         self.inbound("200", "a4")             # amount -> confirm
         self.assertIn("Confirm airtime", self.last_reply())
         self.inbound("1234", "a5")            # PIN
-        self.assertIn("airtime sent", self.last_reply())
+        self.assertIn("Airtime receipt", self.last_reply())
         self.assertEqual(self.bal(), Decimal("19800"))
 
     def test_data(self):
@@ -706,3 +707,39 @@ class OperatorTests(TestCase):
         res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
                                  {"template_name": "txn_alert", "category": "utility"})
         self.assertEqual(body["sent"], 1)          # utility reaches non-opted-in users
+
+
+class SmsCodeConfirmTests(TestCase):
+    """With live SMS configured, money flows confirm with a SINGLE-USE 6-digit
+    code sent by SMS — the chat never carries the transaction PIN."""
+
+    def setUp(self):
+        # Mirror VtuTests' setup by reusing its fixtures via a fresh instance.
+        self._vt = VtuTests("test_airtime")
+        self._vt.setUp()
+        self.user = self._vt.user
+        self.client = self._vt.client
+        self.inbound = self._vt.inbound
+        self.last_reply = self._vt.last_reply
+        self.bal = self._vt.bal
+
+    @override_settings(SENDCHAMP={"BASE_URL": "https://api.sendchamp.com/api/v1",
+                                  "API_KEY": "sc-key", "SENDER_NAME": "Zitch"})
+    def test_confirm_uses_sms_code_not_pin(self):
+        sent = {}
+        with patch("whatsapp.router.send_sms",
+                   return_value={"success": True}) as sms:
+            self.inbound("airtime", "s1")
+            self.inbound("1", "s2")
+            self.inbound("08099998888", "s3")
+            self.inbound("200", "s4")
+            self.assertIn("6-digit code", self.last_reply())
+            sent["msg"] = sms.call_args[0][1]
+        code = re.search(r"\b(\d{6})\b", sent["msg"]).group(1)
+        # The PIN must NOT confirm while a code is armed…
+        self.inbound("1234", "s5")
+        self.assertIn("isn't right", self.last_reply())
+        # …the SMS code does.
+        self.inbound(code, "s6")
+        self.assertIn("Airtime receipt", self.last_reply())
+        self.assertEqual(self.bal(), Decimal("19800"))
