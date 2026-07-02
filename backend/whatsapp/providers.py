@@ -70,6 +70,50 @@ def send_text(msisdn: str, text: str) -> dict:
         return {"success": False, "message": str(exc)}
 
 
+def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
+    """POST an arbitrary message payload to the Cloud API (shared by the
+    interactive senders). MOCK mode logs and returns success."""
+    if not wa_live():
+        log.info("[wa-mock] -> %s: %s", msisdn, mock_note)
+        return {"success": True, "mock": True, "message_id": ""}
+    url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages"
+    headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"}
+    try:
+        r = requests.post(url, json={"messaging_product": "whatsapp", "to": msisdn, **payload},
+                          headers=headers, timeout=15)
+        data = r.json() if r.content else {}
+        return {"success": r.ok, "message_id": (data.get("messages") or [{}])[0].get("id", ""),
+                "raw": data}
+    except requests.RequestException as exc:
+        log.warning("wa send failed -> %s: %s", msisdn, exc)
+        return {"success": False, "message": str(exc)}
+
+
+def send_buttons(msisdn: str, body: str, buttons: list) -> dict:
+    """Interactive reply-buttons message (max 3). ``buttons`` = [(id, title), ...] —
+    tapping one delivers the id back to the webhook, so ids should be the exact
+    text the router already understands (e.g. "airtime")."""
+    payload = {"type": "interactive", "interactive": {
+        "type": "button", "body": {"text": body[:1024]},
+        "action": {"buttons": [{"type": "reply", "reply": {"id": str(bid)[:200], "title": str(title)[:20]}}
+                               for bid, title in buttons[:3]]}}}
+    return _send_payload(msisdn, payload, f"[buttons] {body} {[b[0] for b in buttons]}")
+
+
+def send_list(msisdn: str, body: str, rows: list,
+              button_label: str = "Choose", section_title: str = "Options") -> dict:
+    """Interactive list message (max 10 rows). ``rows`` = [(id, title, description)] —
+    tapping a row delivers its id to the webhook (ids = text the router expects)."""
+    payload = {"type": "interactive", "interactive": {
+        "type": "list", "body": {"text": body[:1024]},
+        "action": {"button": button_label[:20], "sections": [{
+            "title": section_title[:24],
+            "rows": [{"id": str(rid)[:200], "title": str(title)[:24],
+                      "description": str(desc or "")[:72]}
+                     for rid, title, desc in rows[:10]]}]}}}
+    return _send_payload(msisdn, payload, f"[list] {body} {[r[0] for r in rows]}")
+
+
 def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
     """Send an image message (e.g. a biller/bank logo or the Zitch mark) with an
     optional caption. Meta fetches the image from `image_url`, so it must be a

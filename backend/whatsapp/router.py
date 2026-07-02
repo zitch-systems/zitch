@@ -6,10 +6,12 @@ PIN, idempotency). The LLM intent layer (later) sits *in front* of this and
 hands it the same structured actions, so money never depends on the AI being up.
 """
 import re
+import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
 
@@ -17,7 +19,7 @@ from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_
 from transfers.models import Bank
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
-from utility.providers import payout_resolve_account, vtu_purchase, vtu_verify_customer
+from utility.providers import payout_resolve_account, send_sms, vtu_purchase, vtu_verify_customer
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
@@ -30,7 +32,7 @@ from wallet.services import (
 
 from . import ai
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
-from .providers import send_image, send_text
+from .providers import send_buttons, send_image, send_list, send_text
 
 User = get_user_model()
 
@@ -102,6 +104,79 @@ def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
     if not sent:
         send_text(msisdn, caption)
     WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=caption)
+
+
+def reply_list(msisdn: str, body: str, rows, button_label: str = "Choose") -> None:
+    """Interactive list with a numbered-text fallback: live sends a tappable list
+    (row ids = the text the router expects), mock/dev sends the equivalent
+    numbered text. The OUT log row records the fallback text either way."""
+    fallback = body + "\n" + "\n".join(
+        f"{rid}  {title}" + (f" — {desc}" if desc else "") for rid, title, desc in rows)
+    from .providers import wa_live
+    if wa_live():
+        sent = send_list(msisdn, body, rows, button_label=button_label)
+        if not sent.get("success"):
+            send_text(msisdn, fallback)
+    else:
+        send_text(msisdn, fallback)
+    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=fallback)
+
+
+def reply_buttons(msisdn: str, body: str, buttons) -> None:
+    """Interactive reply buttons (max 3) with a text fallback, logged like reply()."""
+    fallback = body + "\n" + " / ".join(f"\"{bid}\"" for bid, _ in buttons)
+    from .providers import wa_live
+    if wa_live():
+        sent = send_buttons(msisdn, body, buttons)
+        if not sent.get("success"):
+            send_text(msisdn, fallback)
+    else:
+        send_text(msisdn, fallback)
+    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=fallback)
+
+
+def send_menu(msisdn: str) -> None:
+    """The main menu as a tappable list (typed replies still work — row ids are
+    the same digits the classic menu used)."""
+    reply_list(msisdn, "💚 *Zitch* — what would you like to do?\nTap an option, or just type it (e.g. \"send 5k\").",
+               [("1", "💰 Check balance", ""), ("2", "💸 Send money", ""),
+                ("3", "📲 Airtime / Data", ""), ("4", "🧾 Pay a bill", ""),
+                ("5", "💱 Convert currency", ""), ("6", "🏦 Add money", "")],
+               button_label="Menu")
+
+
+def _ask_network(msisdn: str) -> None:
+    reply_list(msisdn, "Which network?",
+               [("1", "MTN", ""), ("2", "GLO", ""), ("3", "Airtel", ""), ("4", "9mobile", "")],
+               button_label="Network")
+
+
+def _receipt(title: str, lines: list) -> str:
+    """A structured receipt block — the confirmation artifact users screenshot."""
+    body = "\n".join(f"{k}: {v}" for k, v in lines)
+    return f"🧾 *{title}*\n━━━━━━━━━━━━\n{body}\n━━━━━━━━━━━━\nStatus: ✅ Successful"
+
+
+def _arm_confirm(pa: PendingAction, user) -> None:
+    """Move a money flow to its confirm step. With live SMS, arm a SINGLE-USE
+    6-digit code (sent to the user's registered number) so the WhatsApp chat
+    never carries the transaction PIN — anything visible in chat history is
+    worthless after one use / 5 minutes. Without live SMS (dev/mock) the classic
+    PIN gate stays, so flows never brick when SMS is down."""
+    if settings.SENDCHAMP.get("API_KEY"):
+        code = f"{secrets.randbelow(10**6):06d}"
+        sent = send_sms(user.phone or "",
+                        f"Zitch: {code} is your confirmation code. It expires in 5 minutes. Never share it.")
+        if sent.get("success"):
+            pa.payload["otp_hash"] = make_password(code)
+            pa.payload["otp_exp"] = (timezone.now() + timedelta(minutes=5)).isoformat()
+    _touch(pa, state="pin", payload=pa.payload)
+
+
+def _confirm_prompt(pa: PendingAction) -> str:
+    if pa.payload.get("otp_hash"):
+        return "🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". (Never type your PIN here.)"
+    return "Reply with your PIN to confirm, or \"cancel\"."
 
 
 def active_link_for(msisdn: str) -> WhatsAppLink | None:
@@ -196,7 +271,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # except an explicit menu/help reset.
     if low in ("menu", "hi", "hello", "start", "help"):
         _clear_actions(msisdn)
-        return reply(msisdn, MENU)
+        return send_menu(msisdn)
 
     pa = _current_action(msisdn)
     if pa is not None:
@@ -488,7 +563,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)
-        return reply(msisdn, MENU)
+        return send_menu(msisdn)
     return handler(pa, user, msisdn, text)
 
 
@@ -525,8 +600,9 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if len(matches) > 1:
             pa.payload["bank_choices"] = [b.code for b in matches[:6]]
             _touch(pa, state="bank_pick", payload=pa.payload)
-            lines = "\n".join(f"{i+1}  {b.name}" for i, b in enumerate(matches[:6]))
-            return reply(msisdn, "I found a few — reply with the number:\n" + lines)
+            return reply_list(msisdn, "I found a few banks — pick yours:",
+                              [(str(i + 1), b.name[:24], "") for i, b in enumerate(matches[:6])],
+                              button_label="Banks")
         return _resolve_and_confirm(pa, user, msisdn, matches[0])
 
     if state == "bank_pick":
@@ -547,7 +623,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return _try_pin(pa, user, msisdn, text)
 
     _clear_actions(msisdn)
-    return reply(msisdn, MENU)
+    return send_menu(msisdn)
 
 
 def _match_banks(text: str) -> list:
@@ -570,20 +646,46 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     name = (res.get("name") or "").strip() or "Bank recipient"
     amount = Decimal(pa.payload["amount"])
     pa.payload.update({"bank_code": bank.bank_code, "bank_name": bank.name, "name": name})
-    _touch(pa, state="pin", payload=pa.payload)
+    _arm_confirm(pa, user)
     reply(
         msisdn,
         "Confirm transfer\n"
         f"{_money(amount)} → {name.upper()}\n"
         f"{bank.name} • {acct}\n"
-        "Reply with your PIN to confirm, or \"cancel\".",
+        f"{_confirm_prompt(pa)}",
     )
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
-    """Shared PIN gate for every money flow: True if correct (caller proceeds);
-    otherwise it sends the right message (locked / retry / cancel) and returns
-    False. Brute-force lockout is enforced inside evaluate_transaction_pin."""
+    """Shared confirm gate for every money flow: True if the reply is the armed
+    single-use SMS code (preferred — the chat never carries the PIN) or, when no
+    code was armed (dev/mock SMS), the transaction PIN. Sends the right message
+    (expired / locked / retry / cancel) and returns False otherwise."""
+    otp_hash = pa.payload.get("otp_hash", "")
+    if otp_hash:
+        exp = pa.payload.get("otp_exp", "")
+        expired = True
+        try:
+            expired = timezone.now() > timezone.datetime.fromisoformat(exp)
+        except (TypeError, ValueError):
+            pass
+        if expired:
+            _clear_actions(msisdn)
+            reply(msisdn, "That code has expired — cancelled for your safety. Reply \"menu\" to start over.")
+            return False
+        if check_password(text.strip(), otp_hash):
+            pa.payload.pop("otp_hash", None)   # single use — a replay can't confirm twice
+            _touch(pa, payload=pa.payload)
+            return True
+        attempts = int(pa.payload.get("pin_attempts", 0)) + 1
+        if attempts >= PIN_FLOW_ATTEMPTS:
+            _clear_actions(msisdn)
+            reply(msisdn, "Too many wrong codes. Cancelled — reply \"menu\" to start over.")
+            return False
+        pa.payload["pin_attempts"] = attempts
+        _touch(pa, payload=pa.payload)
+        reply(msisdn, "That code isn't right. Check the SMS we sent and try again, or \"cancel\".")
+        return False
     ok, code, message = evaluate_transaction_pin(user, text)
     if ok:
         return True
@@ -628,8 +730,14 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
     wallet = get_or_create_wallet(user)
     reply(
         msisdn,
-        f"✅ *Sent* {_money(amount)} to {pa.payload['name'].upper()} ({pa.payload['bank_name']}) 🎉\n"
-        f"🧾 Ref {txn.reference}\n💰 New balance: {_money(wallet.balance)}",
+        _receipt("Transfer receipt", [
+            ("To", pa.payload["name"].upper()),
+            ("Bank", f"{pa.payload['bank_name']} • {pa.payload['account']}"),
+            ("Amount", _money(amount)),
+            ("Ref", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
+            ("New balance", _money(wallet.balance)),
+        ]),
     )
 
 
@@ -748,7 +856,7 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
 # ---- airtime ----
 def _start_airtime(user, msisdn: str) -> None:
     _new_flow(user, msisdn, "airtime", "network")
-    reply(msisdn, NETWORK_PROMPT)
+    _ask_network(msisdn)
 
 
 def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -756,7 +864,7 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "network":
         net = text.strip()
         if net not in NETWORK_NAMES:
-            return reply(msisdn, "Reply with the network number.\n" + NETWORK_PROMPT)
+            return _ask_network(msisdn)
         pa.payload["net"] = net
         _touch(pa, state="phone", payload=pa.payload)
         return reply(msisdn, "What phone number? Reply \"me\" to use your own.")
@@ -766,8 +874,14 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Enter a valid phone number (or \"me\").")
         pa.payload["phone"] = phone
         _touch(pa, state="amount", payload=pa.payload)
-        return reply(msisdn, "How much airtime? (e.g. 200)")
+        return reply_list(msisdn, "How much airtime?",
+                          [("100", "₦100", ""), ("200", "₦200", ""), ("500", "₦500", ""),
+                           ("1000", "₦1,000", ""), ("2000", "₦2,000", ""),
+                           ("other", "Other amount", "type any amount, min ₦50")],
+                          button_label="Amount")
     if st == "amount":
+        if text.strip().lower() == "other":
+            return reply(msisdn, "Type the amount (e.g. 150). Minimum ₦50.")
         amount = parse_amount(text)
         if amount is None or amount < 50:
             return reply(msisdn, "Enter a valid amount, at least ₦50.")
@@ -780,11 +894,11 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
-        _touch(pa, state="pin", payload=pa.payload)
+        _arm_confirm(pa, user)
         return reply_image(
             msisdn, provider_logo(net),
             f"📱 *Confirm airtime*\n{_money(amount)} {net} → {pa.payload['phone']}\n\n"
-            "Reply with your PIN to confirm, or \"cancel\".")
+            f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -795,17 +909,19 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             pa, user, msisdn, amount, f"Airtime — {net}",
             lambda ref: vtu_purchase(f"{net.lower()}-airtime",
                                      {"amount": str(amount), "phone": phone}, reference=ref),
-            lambda txn, res: f"✅ {_money(amount)} {net} airtime sent to {phone} 🎉\nRef {txn.reference}.",
+            lambda txn, res: _receipt("Airtime receipt", [
+                ("Service", f"{net} airtime"), ("To", phone), ("Amount", _money(amount)),
+                ("Ref", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]),
             logo_url=provider_logo(net),
         )
     _clear_actions(msisdn)
-    return reply(msisdn, MENU)
+    return send_menu(msisdn)
 
 
 # ---- data ----
 def _start_data(user, msisdn: str) -> None:
     _new_flow(user, msisdn, "data", "network")
-    reply(msisdn, NETWORK_PROMPT)
+    _ask_network(msisdn)
 
 
 def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -813,7 +929,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "network":
         net = text.strip()
         if net not in NETWORK_NAMES:
-            return reply(msisdn, "Reply with the network number.\n" + NETWORK_PROMPT)
+            return _ask_network(msisdn)
         plans = list(DataPlan.objects.filter(network=net, active=True)[:8])
         if not plans:
             _clear_actions(msisdn)
@@ -845,11 +961,11 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["phone"] = phone
         pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
-        _touch(pa, state="pin", payload=pa.payload)
+        _arm_confirm(pa, user)
         return reply_image(
             msisdn, provider_logo(net),
             f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}\n\n"
-            "Reply with your PIN to confirm, or \"cancel\".")
+            f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -863,7 +979,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
             logo_url=provider_logo(net),
         )
     _clear_actions(msisdn)
-    return reply(msisdn, MENU)
+    return send_menu(msisdn)
 
 
 # ---- electricity ----
@@ -915,13 +1031,13 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"meter": pa.payload["meter"], "disco": pa.payload["disco"],
                               "meter_type": pa.payload["meter_type"]}
-        _touch(pa, state="pin", payload=pa.payload)
+        _arm_confirm(pa, user)
         cust = pa.payload.get("customer") or "—"
         return reply(
             msisdn,
             f"💡 *Confirm electricity*\n{disco_name} ({pa.payload['meter_type']}) • "
             f"Meter {pa.payload['meter']}\nCustomer: {cust} • {_money(amount)}\n\n"
-            "Reply with your PIN to confirm, or \"cancel\".")
+            f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -942,7 +1058,7 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
             _line,
         )
     _clear_actions(msisdn)
-    return reply(msisdn, MENU)
+    return send_menu(msisdn)
 
 
 # ---- cable ----
@@ -994,13 +1110,13 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         cust = res.get("customer_name", "")
         pa.payload.update({"iuc": iuc, "customer": cust})
         pa.payload["meta"] = {"iuc": iuc, "provider": pa.payload["prov"], "plan_code": pa.payload["plan_code"]}
-        _touch(pa, state="pin", payload=pa.payload)
+        _arm_confirm(pa, user)
         cust = cust or "—"
         return reply_image(
             msisdn, provider_logo(prov_name),
             f"📺 *Confirm cable*\n{prov_name} • {pa.payload['plan_name']}\n"
             f"Card {iuc} • {cust} • {_money(price)}\n\n"
-            "Reply with your PIN to confirm, or \"cancel\".")
+            f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -1014,7 +1130,7 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
             logo_url=provider_logo(prov_name),
         )
     _clear_actions(msisdn)
-    return reply(msisdn, MENU)
+    return send_menu(msisdn)
 
 
 def _pick(text: str, choices: list, fetch):
@@ -1113,11 +1229,12 @@ def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
             reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
             return True
         net = NETWORK_NAMES[netid]
-        _new_flow(user, msisdn, "airtime", "pin",
-                  {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
-                   "meta": {"phone": ph, "network": netid}})
+        pa = _new_flow(user, msisdn, "airtime", "pin",
+                       {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
+                        "meta": {"phone": ph, "network": netid}})
+        _arm_confirm(pa, user)   # the AI fast-path must arm the SMS code too
         reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}\n"
-                      "Reply with your PIN to confirm, or \"cancel\".")
+                      f"{_confirm_prompt(pa)}")
         return True
     _start_airtime(user, msisdn)
     return True
@@ -1162,7 +1279,7 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
             _clear_actions(msisdn)
             return reply(msisdn, exc.message)
         pa.payload["quote_ref"] = quote.quote_ref
-        _touch(pa, state="pin", payload=pa.payload)
+        _arm_confirm(pa, user)
         secs = max(1, int((quote.expires_at - timezone.now()).total_seconds()))
         return reply(
             msisdn,
@@ -1170,7 +1287,7 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
             f"Sell {quote.sell_amount:,.2f} {quote.from_currency} → "
             f"Receive {quote.receive_amount:,.2f} {quote.to_currency}\n"
             f"Rate {quote.rate:.4f} • expires in {secs}s\n"
-            "Reply with your PIN now to lock this rate.",
+            f"{_confirm_prompt(pa)}",
         )
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
@@ -1189,4 +1306,4 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
             f"New {quote.to_currency} balance: {new_bal:,.2f}.",
         )
     _clear_actions(msisdn)
-    return reply(msisdn, MENU)
+    return send_menu(msisdn)

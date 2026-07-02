@@ -124,6 +124,14 @@ def _process(msg: dict) -> None:
         return
     is_text = msg.get("type") == "text"
     body = (msg.get("text") or {}).get("body", "") if is_text else ""
+    # Interactive replies (list rows / reply buttons) deliver an id we chose when
+    # sending — the ids ARE the text the router understands ("1", "airtime", a
+    # bank code…), so a tap is handled exactly like the user typing it.
+    if msg.get("type") == "interactive":
+        inter = msg.get("interactive") or {}
+        picked = (inter.get("list_reply") or inter.get("button_reply") or {})
+        if picked.get("id"):
+            is_text, body = True, str(picked["id"])
     # Mask a PIN before it ever touches the log/monitor — by flow state AND by
     # shape, so a PIN typed out-of-band is never stored in clear.
     looks_like_pin = bool(is_text and _PIN_RE.match(body or ""))
