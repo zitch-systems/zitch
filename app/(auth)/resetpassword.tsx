@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { publicPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import { saveToken } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
@@ -31,11 +31,7 @@ const ResetPassword = () => {
     }
     setBusy(true);
     try {
-      const response = await fetch(`${baseUrl}/api/password/reset/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email_or_phone: ident, otp, password: p1 }),
-      });
+      const response = await publicPost('/api/password/reset/', { email_or_phone: ident, otp, password: p1 });
       const result = await response.json();
       if (response.ok && result.access_token) {
         await saveToken(result.access_token);

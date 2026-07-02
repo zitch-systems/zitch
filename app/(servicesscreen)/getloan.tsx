@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, apiJson } from '@/lib/api';
+import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
@@ -59,18 +59,28 @@ const GetLoan = () => {
   const repay = amount + interest;
   const overLimit = amount > available;
 
+  // Stable across retries of one loan request so a network-timeout retry or a
+  // double-tap can't disburse the loan twice (the server dedups on this key).
+  const idemKey = useRef('');
+
   const request = async (pin: string) => {
     setBusy(true);
+    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     try {
-      const res = await apiJson('/api/loans/request/', { amount: String(amount), tenure_days: tenure, transaction_pin: pin });
+      const res = await apiJson('/api/loans/request/', {
+        amount: String(amount), tenure_days: tenure, transaction_pin: pin,
+        idempotency_key: idemKey.current,
+      });
       if (res.success) {
         setStep(null);
         setDone(true);
+        idemKey.current = '';   // fresh key for a genuinely new request
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
         notify('Error', res.message || 'Loan request failed');
+        idemKey.current = '';
         setStep(null);
       }
     } catch {

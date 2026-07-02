@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { publicPost } from '@/lib/api';
 import { saveToken, getToken } from '@/lib/secureStore';
 import { unlockSession } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
@@ -71,11 +71,7 @@ const Signin = () => {
       return;
     }
     try {
-      const response = await fetch(`${baseUrl}/api/sigin/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email_or_phone: form.email, password: form.password }),
-      });
+      const response = await publicPost('/api/sigin/', { email_or_phone: form.email, password: form.password });
       const result = await response.json();
       if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.

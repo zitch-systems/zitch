@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { publicPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
@@ -23,11 +23,7 @@ const Register = () => {
     }
     setIsRegistering(true);
     try {
-      const response = await fetch(`${baseUrl}/api/phone_verification/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: form.email, phone: form.phone }),
-      });
+      const response = await publicPost('/api/phone_verification/', { email: form.email, phone: form.phone });
       const result = await response.json();
       if (response.ok) {
         await AsyncStorage.setItem('UserEmail', form.email);
