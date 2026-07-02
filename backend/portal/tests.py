@@ -125,14 +125,29 @@ class MutationTests(PortalTestCase):
         self.assertIsNone(AccessToken.resolve(token))
         self.assertTrue(AuditLog.objects.filter(action="user.freeze").exists())
 
-    def test_kyc_approve_bumps_tier_and_caps_at_3(self):
-        res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
-        self.assertEqual(res.json()["tier"], 2)
-        self.user.tier = 3
+    def test_kyc_approve_marks_flags_and_derives_tier(self):
+        # A user who submitted BVN + NIN (unverified): approval marks them verified
+        # and DERIVES the tier from the flags (BVN+NIN => Tier 1), never a blind
+        # +1. This is durable — the next recompute_tier keeps it.
+        self.user.bvn_hash, self.user.nin_hash, self.user.tier = "bvnhash", "ninhash", 0
         self.user.save()
         res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
-        self.assertEqual(res.json()["tier"], 3)
-        self.assertEqual(AuditLog.objects.filter(action="kyc.approve").count(), 2)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(res.json()["tier"], 1)
+        self.user.recompute_tier()          # the grant survives a recompute
+        self.assertEqual(self.user.tier, 1)
+        self.assertTrue(AuditLog.objects.filter(action="kyc.approve").exists())
+
+    def test_kyc_approve_without_submitted_identity_grants_no_tier(self):
+        # No identity on file: approval must NOT grant a tier the user hasn't
+        # earned (the old code blindly bumped tier — an AML/KYC control gap).
+        self.user.bvn_hash, self.user.nin_hash, self.user.tier = "", "", 0
+        self.user.save()
+        res = self.post("kyc-review", {"user_id": self.user.id, "approve": True}, token=self.admin)
+        self.assertEqual(res.json()["tier"], 0)
 
     def test_fx_margin_validates_and_audits(self):
         self.assertEqual(self.post("fx-margin", {"bps": 2000}, token=self.admin).status_code, 400)

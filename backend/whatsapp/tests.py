@@ -145,6 +145,19 @@ class ChannelTests(TestCase):
         self.assertIn("how much", self.last_reply().lower())
         self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
 
+    def test_frozen_user_is_blocked_on_whatsapp(self):
+        # Freeze is the primary incident-response lever; it must cover WhatsApp
+        # (which is link-bound, not token-bound) as well as the app.
+        self.link()
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        before = self.balance()
+        self.inbound("balance", "fz1")
+        self.assertIn("suspended", self.last_reply().lower())
+        self.inbound("send 5000", "fz2")
+        self.assertIn("suspended", self.last_reply().lower())
+        self.assertEqual(self.balance(), before)   # nothing transacted
+
     def test_link_code_links_number(self):
         # The code must be sent from the number on the user's Zitch account
         # (national significant number matches MSISDN's last 10 digits).

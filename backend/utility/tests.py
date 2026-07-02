@@ -48,6 +48,21 @@ class UtilityTests(TestCase):
         self.assertEqual(self.balance(), Decimal("20000"))  # fully refunded
         self.assertTrue(Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
+    def test_airtime_is_velocity_limited(self):
+        # VTU must run the SAME fraud velocity brake as transfers — previously it
+        # skipped check_send_limits, so airtime was the one un-throttled cash-out.
+        from django.test import override_settings
+        Transaction.objects.create(user=self.user, amount=Decimal("100"), direction=Transaction.OUT,
+                                   service="Airtime — MTN", transaction_status=Transaction.SUCCESS,
+                                   reference="ZTC-VEL1")
+        with override_settings(VELOCITY_MAX_OUT_10MIN=1):
+            res, body = self.post("/api/utility/buyairtime/", {
+                "access_token": self.token, "amount": "1000", "network": "1",
+                "phone": "08010000001", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(body.get("code"), "velocity")
+        self.assertEqual(self.balance(), Decimal("20000"))   # no debit
+
     def test_airtime_rejects_wrong_pin_without_debit(self):
         res, _ = self.post("/api/utility/buyairtime/", {
             "access_token": self.token, "amount": "1000", "network": "1",
@@ -191,3 +206,24 @@ class VtuReconciliationTests(TestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.FAILED)
         self.assertEqual(self.balance(), Decimal("20000"))  # money returned
+
+
+class FxFailClosedTests(TestCase):
+    """FX (Fincra) must fail closed in production like every other money provider
+    — a mock rate settling the real ledger would book phantom liability."""
+
+    def test_fx_mock_fails_closed_in_prod(self):
+        from django.test import override_settings
+
+        from .providers import fx_execute, fx_quote
+        with override_settings(DEBUG=False, TESTING=False,
+                               FINCRA={"SECRET_KEY": "", "BASE_URL": "https://x"}):
+            self.assertFalse(fx_quote("NGN", "USD", "16000").get("success"))
+            self.assertFalse(fx_execute("FXQ-TEST").get("success"))
+
+    def test_fx_mock_still_works_in_dev(self):
+        from django.test import override_settings
+
+        from .providers import fx_quote
+        with override_settings(DEBUG=True, FINCRA={"SECRET_KEY": "", "BASE_URL": "https://x"}):
+            self.assertTrue(fx_quote("NGN", "USD", "16000").get("success"))

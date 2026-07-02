@@ -15,7 +15,7 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
 
-from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_error
+from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_error, velocity_exceeded
 from transfers.models import Bank
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
@@ -321,6 +321,14 @@ def handle_inbound(msisdn: str, text: str) -> None:
 
     user = link.user
     low = text.lower()
+
+    # A frozen/suspended account is blocked on WhatsApp too. The app/admin gate
+    # frozen users at the token layer, but WhatsApp auth is link-bound (not token),
+    # so without this a frozen fraud account could keep transacting over chat —
+    # freeze is the primary incident-response lever and must cover every surface.
+    if not user.is_active:
+        _clear_actions(msisdn)
+        return reply(msisdn, "Your Zitch account is currently suspended. Please contact support.")
 
     # Honor marketing opt-out regardless of state (hard-rule #8).
     if low in ("stop", "unsubscribe", "stop promotions"):
@@ -791,6 +799,11 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     """Execute a PIN-confirmed transfer (called by the chat PIN path AND the
     secure Flow endpoint). Sends the chat receipt and returns a short outcome
     line for the Flow success screen."""
+    if velocity_exceeded(user):  # same fraud brake the app enforces (parity)
+        _clear_actions(msisdn)
+        msg = "Too many transactions in a short time. Please wait a few minutes and try again."
+        reply(msisdn, msg)
+        return msg
     amount = Decimal(pa.payload["amount"])
     bank = Bank.objects.filter(bank_code=pa.payload["bank_code"]).first()
     if bank is None:
@@ -920,6 +933,11 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         _clear_actions(msisdn)
         reply(msisdn, bill_limit_msg)
         return bill_limit_msg
+    if velocity_exceeded(user):  # same fraud brake the app enforces (parity)
+        _clear_actions(msisdn)
+        msg = "Too many transactions in a short time. Please wait a few minutes and try again."
+        reply(msisdn, msg)
+        return msg
     try:
         status, txn, result = run_provider_purchase(
             user, amount, label, pa.payload.get("meta", {}), provider_call,

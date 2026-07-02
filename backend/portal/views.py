@@ -302,14 +302,28 @@ def kyc_review(request):
     if user is None:
         return fail("User not found", status=404)
     approve = bool(request.data.get("approve"))
-    before = {"tier": user.tier}
+    before = {"tier": user.tier, "bvn_verified": user.bvn_verified, "nin_verified": user.nin_verified}
     if approve:
-        user.tier = min(user.tier + 1, 3)
-        user.save(update_fields=["tier"])
+        # Mark the SUBMITTED identity verified, then DERIVE the tier from the flags
+        # (recompute_tier) — the same path admin_api.kyc_review takes. Bumping
+        # user.tier directly (as this did) sets no flag, so the next recompute_tier
+        # silently reverts the approval while the user meanwhile holds transfer
+        # limits their verifications don't support (an AML/KYC control gap).
+        fields = []
+        if user.bvn_hash and not user.bvn_verified:
+            user.bvn_verified = True
+            fields.append("bvn_verified")
+        if user.nin_hash and not user.nin_verified:
+            user.nin_verified = True
+            fields.append("nin_verified")
+        user.recompute_tier()
+        fields.append("tier")
+        user.save(update_fields=fields)
     record_audit(
         "kyc.approve" if approve else "kyc.reject",
         actor=request.user_obj, target=f"user:{user.id}",
-        before=before, after={"tier": user.tier},
+        before=before, after={"tier": user.tier, "bvn_verified": user.bvn_verified,
+                              "nin_verified": user.nin_verified},
     )
     return ok(success=True, tier=user.tier)
 

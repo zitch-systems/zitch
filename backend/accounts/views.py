@@ -122,12 +122,13 @@ def phone_verification(request):
         else:
             code = _otp_code()
             OTP.objects.create(phone=phone, email=email, code=code)
-            message = f"Your Zitch verification code is {code}"
-            send_sms(phone, message)
-            send_email(email, "Your Zitch verification code", message,
-                       html=_branded_email("Verify your number",
-                                           "Use this code to finish creating your Zitch account.",
-                                           code, "This code expires shortly. If you didn't request it, ignore this email."))
+            # SMS ONLY: the signup OTP proves control of the PHONE (the identity
+            # being registered). Emailing it to the caller-supplied, unverified
+            # `email` would let an attacker receive the code for someone else's
+            # number and squat/deny that account (and misdirect P2P sends keyed on
+            # phone). The email is still stored for the account, just never sent the
+            # code. Account-recovery flows, by contrast, email the address on file.
+            send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="If this number can be registered, a verification code has been sent.")
 
 
@@ -207,12 +208,10 @@ def resend_verify_otp(request):
             email = prior.email if prior else ""
     code = _otp_code()
     OTP.objects.create(phone=phone, email=email, code=code)
-    message = f"Your Zitch verification code is {code}"
-    send_sms(phone, message)
-    send_email(email, "Your Zitch verification code", message,
-               html=_branded_email("Verify your number",
-                                   "Use this code to finish creating your Zitch account.",
-                                   code, "This code expires shortly. If you didn't request it, ignore this email."))
+    # SMS ONLY, same reason as phone_verification: a signup OTP authenticates into
+    # the matching account, so it must reach only the PHONE being registered —
+    # never a client-supplied email. The email is stored for the account record.
+    send_sms(phone, f"Your Zitch verification code is {code}")
     return ok(message="OTP resent")
 
 

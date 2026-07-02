@@ -492,6 +492,11 @@ def fx_quote(from_ccy: str, to_ccy: str, sell_amount) -> dict:
     from decimal import Decimal
 
     if not fincra_live():
+        # Fail closed in production (like every other money provider): a mock FX
+        # quote would settle the REAL NGN ledger against a fabricated rate and
+        # book phantom foreign-currency liability. Only the mock in dev/tests.
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "FX is not configured"}
         f, t = _NGN_PER.get(from_ccy), _NGN_PER.get(to_ccy)
         if f is None or t is None:
             return {"success": False, "message": f"Unsupported pair {from_ccy}/{to_ccy}"}
@@ -518,6 +523,8 @@ def fx_quote(from_ccy: str, to_ccy: str, sell_amount) -> dict:
 def fx_execute(quote_ref: str) -> dict:
     """Execute a previously quoted conversion against its quote reference."""
     if not fincra_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "FX is not configured"}
         return {"success": True, "mock": True}
     try:
         r = requests.post(
