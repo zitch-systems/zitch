@@ -34,6 +34,27 @@ class OnboardingOtpTests(TestCase):
         self.assertIn("access_token", body)
         self.assertTrue(User.objects.filter(phone="08011112222").exists())
 
+    def test_signup_otp_is_sent_by_sms_only_not_email(self):
+        # The signup OTP proves control of the PHONE, so it must never be emailed
+        # to the caller-supplied (unverified) address — that would let an attacker
+        # receive the code for someone else's number and squat the account.
+        from unittest.mock import patch
+        with patch("accounts.views.send_sms") as sms, patch("accounts.views.send_email") as email:
+            self.post("/api/phone_verification/",
+                      {"phone": "08012223333", "email": "attacker@evil.test"})
+        sms.assert_called_once()                       # code goes to the phone
+        email.assert_not_called()                      # never to the body-supplied email
+        # The email is still captured on the OTP for the eventual account record.
+        self.assertEqual(OTP.objects.get(phone="08012223333").email, "attacker@evil.test")
+
+    def test_resend_signup_otp_is_sms_only(self):
+        from unittest.mock import patch
+        with patch("accounts.views.send_sms") as sms, patch("accounts.views.send_email") as email:
+            self.post("/api/resend_verify_otp/",
+                      {"phone": "08012224444", "email": "attacker@evil.test"})
+        sms.assert_called_once()
+        email.assert_not_called()
+
     def test_otp_attempts_are_capped(self):
         OTP.objects.create(phone="08033334444", code="13579")
         for _ in range(OTP.MAX_ATTEMPTS):

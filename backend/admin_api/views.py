@@ -1018,23 +1018,17 @@ def wallet_credit(request):
 
     from whatsapp.models import AuditLog as _AL
 
+    from django.db import transaction as _dbtx
+
+    from accounts.models import User as _User
+
     max_one = _D(str(getattr(settings, "ADMIN_MAX_MANUAL_CREDIT", "500000")))
     if amount > max_one:
         return fail(f"Amount exceeds the single manual-credit limit of ₦{max_one:,.0f}. "
                     "A larger credit needs a second approver.", status=403, code="credit_limit")
     op = request.staff.email or request.staff.username or str(request.staff.id)
     since = _tz.now() - _td(hours=24)
-    spent_today = _D("0")
-    for row in _AL.objects.filter(actor_id=op, action="wallet.manual_credit", created__gte=since):
-        try:
-            spent_today += _D(str((row.after or {}).get("amount", "0")))
-        except (TypeError, ValueError):
-            pass
     day_cap = _D(str(getattr(settings, "ADMIN_MANUAL_CREDIT_DAILY_CAP", "2000000")))
-    if spent_today + amount > day_cap:
-        return fail(f"This exceeds your ₦{day_cap:,.0f} daily manual-credit cap "
-                    f"(₦{spent_today:,.0f} already in the last 24h).",
-                    status=403, code="credit_daily_cap")
     # Derive a server-side idempotency key when the client omits one: the ledger's
     # unique (user, idempotency_key) constraint is PARTIAL (excludes ""), so a blank
     # key would let a double-submit credit twice. spend_key falls back to a
@@ -1043,18 +1037,35 @@ def wallet_credit(request):
     replay = idempotent_replay(existing_for_key(u, key))
     if replay is not None:
         return replay
-    before = get_or_create_wallet(u).balance
-    try:
-        txn = credit(
-            u, amount, "Manual credit — operations",
-            meta={"channel": "admin", "reason": reason,
-                  "actor": (request.staff.email or request.staff.username)},
-            idempotency_key=key,
-        )
-    except DuplicateTransaction:
-        return idempotent_replay(existing_for_key(u, key))
-    audit(request, "wallet.manual_credit", target=f"u_{u.id}",
-          before={"balance": str(before)},
-          after={"balance": str(before + amount), "amount": str(amount), "reason": reason})
+    with _dbtx.atomic():
+        # Serialize THIS operator's manual credits so the rolling-24h cap can't be
+        # raced: without the lock, N concurrent credits each read spent=0, all pass
+        # the check, and mint past the cap (the control this bounds). Locking the
+        # operator's own staff row is a cheap per-operator mutex; credit() then
+        # locks the target wallet row, in a consistent order (no deadlock).
+        _User.objects.select_for_update().get(pk=request.staff.id)
+        spent_today = _D("0")
+        for row in _AL.objects.filter(actor_id=op, action="wallet.manual_credit", created__gte=since):
+            try:
+                spent_today += _D(str((row.after or {}).get("amount", "0")))
+            except (TypeError, ValueError):
+                pass
+        if spent_today + amount > day_cap:
+            return fail(f"This exceeds your ₦{day_cap:,.0f} daily manual-credit cap "
+                        f"(₦{spent_today:,.0f} already in the last 24h).",
+                        status=403, code="credit_daily_cap")
+        before = get_or_create_wallet(u).balance
+        try:
+            txn = credit(
+                u, amount, "Manual credit — operations",
+                meta={"channel": "admin", "reason": reason,
+                      "actor": (request.staff.email or request.staff.username)},
+                idempotency_key=key,
+            )
+        except DuplicateTransaction:
+            return idempotent_replay(existing_for_key(u, key))
+        audit(request, "wallet.manual_credit", target=f"u_{u.id}",
+              before={"balance": str(before)},
+              after={"balance": str(before + amount), "amount": str(amount), "reason": reason})
     return ok(success=True, uid=u.id, reference=txn.reference,
               amount=str(amount), balance=_num(before + amount))

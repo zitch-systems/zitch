@@ -19,7 +19,7 @@ class Loan(models.Model):
     REPAID = "repaid"
     STATUSES = [(ACTIVE, "Active"), (REPAID, "Repaid")]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="loans")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="loans")
     principal = models.DecimalField(max_digits=14, decimal_places=2)
     interest = models.DecimalField(max_digits=14, decimal_places=2)
     tenure_days = models.PositiveIntegerField(default=30)

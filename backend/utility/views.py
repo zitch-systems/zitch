@@ -6,8 +6,8 @@ aggregator -> mark the row Successful, or refund on failure.
 from decimal import Decimal, InvalidOperation
 
 from common.http import (
-    api, check_daily_limit, fail, idempotent_replay, ok, parse_amount, provider_purchase_response,
-    require_user, spend_key, verify_transaction_pin,
+    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
+    provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
@@ -42,6 +42,13 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
     replay = idempotent_replay(existing_for_key(user, idempotency_key))
     if replay:
         return replay
+    # Per-txn tier ceiling + large-txn face gate + fraud VELOCITY brake — the same
+    # guard every other spend flow (transfers/betting/exams/cards) runs. Without
+    # it, VTU was the one category not velocity-guarded, so a stolen session+PIN
+    # could cash out via rapid airtime buys at a rate transfers would throttle.
+    limit_err = check_send_limits(user, amount)
+    if limit_err:
+        return limit_err
     # Daily bill cap (after replay so a retried purchase replays cleanly).
     daily_err = check_daily_limit(user, amount, "bill")
     if daily_err:

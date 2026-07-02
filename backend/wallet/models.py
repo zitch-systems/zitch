@@ -4,8 +4,13 @@ from django.conf import settings
 from django.db import models
 
 
+# Money/ledger models bind to the user with PROTECT, not CASCADE: a customer is
+# frozen (is_active=False), never deleted, so a single (accidental or malicious)
+# User delete can't silently erase the append-only ledger / balances / liability
+# history a fintech must retain. There is no user-deletion flow; PROTECT makes
+# that a hard guarantee. (Ephemeral rows like FxQuote keep CASCADE.)
 class Wallet(models.Model):
-    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wallet")
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="wallet")
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     # Dedicated (reserved) virtual account — a permanent NUBAN the user funds by
     # bank transfer, minted via Kora once KYC supplies a BVN/NIN. `account_number`
@@ -59,7 +64,7 @@ class Transaction(models.Model):
     FAILED = "Failed"
     STATUSES = [(PENDING, PENDING), (SUCCESS, SUCCESS), (FAILED, FAILED)]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="transactions")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="transactions")
     service = models.CharField(max_length=80)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     # Currency of `amount`: NGN for the primary wallet, other ISO codes for FX
@@ -137,7 +142,7 @@ class FundingIntent(models.Model):
     FAILED = "failed"
     STATUSES = [(PENDING, PENDING), (PAID, PAID), (FAILED, FAILED)]
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="funding_intents")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="funding_intents")
     reference = models.CharField(max_length=64, unique=True, db_index=True)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
@@ -162,7 +167,7 @@ class CurrencyWallet(models.Model):
     holdings, one row per (user, currency). A DB check keeps balances non-negative.
     """
 
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="currency_wallets")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="currency_wallets")
     currency = models.CharField(max_length=3)
     balance = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     updated = models.DateTimeField(auto_now=True)
