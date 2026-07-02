@@ -70,7 +70,13 @@ def signup(phone, email, password="Sup3r#secret", pin="1234", first="Test", last
     otp = OTP.objects.filter(phone=phone, used=False).order_by("-created").first()
     if otp is None:
         return None, "no OTP row created"
-    r = post("/api/verify_otp/", {"phone": phone, "otp": otp.code})
+    # Codes are stored hashed, so the plaintext can't be read back. This smoke
+    # runner has DB access, so plant a known code (hashed the same way the verifier
+    # hashes the submission) and submit it.
+    code = "123456"
+    otp.code_hash = OTP.hash_code(code)
+    otp.save(update_fields=["code_hash"])
+    r = post("/api/verify_otp/", {"phone": phone, "otp": code})
     tok = j(r).get("access_token")
     if not tok:
         return None, f"verify_otp {r.status_code}: {j(r)}"

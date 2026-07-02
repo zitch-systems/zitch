@@ -121,7 +121,7 @@ def phone_verification(request):
             send_email(existing.email or "", "Zitch sign-in reminder", reminder)
         else:
             code = _otp_code()
-            OTP.objects.create(phone=phone, email=email, code=code)
+            OTP.issue(phone=phone, code=code, email=email)
             # SMS ONLY: the signup OTP proves control of the PHONE (the identity
             # being registered). Emailing it to the caller-supplied, unverified
             # `email` would let an attacker receive the code for someone else's
@@ -150,7 +150,7 @@ def verify_otp(request):
         # Cap reached: refuse further guesses on this code until a new one is
         # requested, bounding an attacker to MAX_ATTEMPTS tries per code.
         return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if otp.code != code:
+    if not otp.verify_code(code):
         otp.attempts += 1
         otp.save(update_fields=["attempts"])
         return fail("Invalid OTP", status=400)
@@ -207,7 +207,7 @@ def resend_verify_otp(request):
             prior = OTP.objects.filter(phone=phone).order_by("-created").first()
             email = prior.email if prior else ""
     code = _otp_code()
-    OTP.objects.create(phone=phone, email=email, code=code)
+    OTP.issue(phone=phone, code=code, email=email)
     # SMS ONLY, same reason as phone_verification: a signup OTP authenticates into
     # the matching account, so it must reach only the PHONE being registered —
     # never a client-supplied email. The email is stored for the account record.
@@ -231,7 +231,7 @@ def password_forgot(request):
     user = User.objects.filter(phone=ident).first() or User.objects.filter(email__iexact=ident).first()
     if user is not None and user.phone and not _otp_on_cooldown(user.phone):
         code = _otp_code()
-        OTP.objects.create(phone=user.phone, email=user.email or "", code=code, purpose=OTP.RESET)
+        OTP.issue(phone=user.phone, code=code, email=user.email or "", purpose=OTP.RESET)
         message = f"Your Zitch password reset code is {code}"
         send_sms(user.phone, message)
         send_email(user.email or "", "Your Zitch password reset code", message,
@@ -273,7 +273,7 @@ def password_reset(request):
         return fail("Reset code has expired", status=400)
     if otp.too_many_attempts:
         return fail("Too many incorrect attempts. Request a new code.", status=429)
-    if otp.code != code:
+    if not otp.verify_code(code):
         otp.attempts += 1
         otp.save(update_fields=["attempts"])
         return fail("Invalid reset code", status=400)
