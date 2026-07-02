@@ -57,6 +57,41 @@ def webhook(request):
     return JsonResponse({"status": True})
 
 
+@csrf_exempt
+def flow_endpoint(request):
+    """POST /webhooks/whatsapp/flow — the WhatsApp Flows data-exchange endpoint.
+
+    Meta posts an encrypted body when the user submits the secure PIN screen (or
+    for the periodic health-check ping). We decrypt with our private key, run the
+    business logic (PIN verify + execute), and return the reply encrypted with the
+    same AES key and the inverted IV. On a decryption failure we return 421, Meta's
+    signal to refetch our public key.
+    """
+    if request.method != "POST":
+        return HttpResponse(status=405)
+
+    from .flows import handle_flow_request
+    from .flows_crypto import FlowDecryptError, decrypt_request, encrypt_response
+
+    try:
+        body = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return HttpResponse(status=400)
+    if not isinstance(body, dict):
+        return HttpResponse(status=400)
+
+    try:
+        payload, aes_key, iv = decrypt_request(body)
+    except FlowDecryptError:
+        # 421 => Meta refetches the endpoint's public key and retries.
+        return HttpResponse(status=421)
+
+    response = handle_flow_request(payload)
+    encrypted = encrypt_response(response, aes_key, iv)
+    # Meta expects the raw base64 ciphertext as the body (not JSON-wrapped).
+    return HttpResponse(encrypted, content_type="text/plain")
+
+
 def _iter_messages(event: dict):
     for entry in event.get("entry", []) or []:
         for change in entry.get("changes", []) or []:
@@ -124,18 +159,28 @@ def _process(msg: dict) -> None:
         return
     is_text = msg.get("type") == "text"
     body = (msg.get("text") or {}).get("body", "") if is_text else ""
+    is_flow_reply = False
     # Interactive replies (list rows / reply buttons) deliver an id we chose when
     # sending — the ids ARE the text the router understands ("1", "airtime", a
     # bank code…), so a tap is handled exactly like the user typing it.
     if msg.get("type") == "interactive":
         inter = msg.get("interactive") or {}
-        picked = (inter.get("list_reply") or inter.get("button_reply") or {})
-        if picked.get("id"):
-            is_text, body = True, str(picked["id"])
+        if inter.get("type") == "nfm_reply" or inter.get("nfm_reply"):
+            # A completed secure PIN Flow. The money already moved (and the receipt
+            # was already sent) via the encrypted data-exchange endpoint — this is
+            # just the "flow finished" callback, so record it and stop; never run
+            # the text router or echo the flow payload.
+            is_flow_reply = True
+        else:
+            picked = (inter.get("list_reply") or inter.get("button_reply") or {})
+            if picked.get("id"):
+                is_text, body = True, str(picked["id"])
     # Mask a PIN before it ever touches the log/monitor — by flow state AND by
     # shape, so a PIN typed out-of-band is never stored in clear.
     looks_like_pin = bool(is_text and _PIN_RE.match(body or ""))
-    if is_awaiting_pin(frm) or looks_like_pin:
+    if is_flow_reply:
+        logged = "[flow completed]"
+    elif is_awaiting_pin(frm) or looks_like_pin:
         logged = "[PIN]"
     elif is_awaiting_bvn(frm):
         logged = "[BVN]"  # keep the BVN out of the message log, like the PIN
@@ -152,6 +197,8 @@ def _process(msg: dict) -> None:
     except IntegrityError:
         return  # already processed this message
 
+    if is_flow_reply:
+        return  # the data-exchange endpoint already handled it
     if not is_text:
         return reply(frm, "I can only read text messages for now. Reply \"menu\" for options.")
     handle_inbound(frm, body)

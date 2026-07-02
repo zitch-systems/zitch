@@ -331,6 +331,20 @@ WHATSAPP = {
     "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
 }
 
+# WhatsApp Flows — the secure PIN pad. When a published Flow ID + our RSA private
+# key are set (and the WhatsApp channel is live), a money confirm sends an
+# encrypted Flow whose masked PIN field never reaches the chat; the submit hits
+# our data-exchange endpoint. Blank => the channel falls back to the single-use
+# SMS confirmation code (verify-before-live: nothing changes until Meta business
+# verification is done and these are set). The PRIVATE_KEY decrypts Meta's
+# request; its public half is uploaded to the WABA once.
+WHATSAPP_FLOW = {
+    "FLOW_ID": os.environ.get("WHATSAPP_FLOW_ID", ""),
+    "PRIVATE_KEY": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY", ""),
+    "PRIVATE_KEY_PASSPHRASE": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE", ""),
+    "CTA": os.environ.get("WHATSAPP_FLOW_CTA", "Confirm with PIN"),
+}
+
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
 # handles everything). The model only proposes intents; it never moves money.
 LLM = {

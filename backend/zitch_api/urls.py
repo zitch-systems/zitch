@@ -4,6 +4,7 @@ from django.http import HttpResponse, JsonResponse
 from django.urls import include, path
 
 from portal.pages import admin_portal, landing, prototype
+from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
 
 
@@ -227,6 +228,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
     path("webhooks/whatsapp", whatsapp_webhook),
+    # WhatsApp Flows data-exchange endpoint (encrypted secure PIN submit).
+    path("webhooks/whatsapp/flow", whatsapp_flow_endpoint),
     path("api/admin/", include("admin_api.urls")),
     path("api/whatsapp/", include("whatsapp.urls")),
     path("api/ops/", include("portal.urls")),
