@@ -44,6 +44,17 @@ class AuditLogAdmin(admin.ModelAdmin):
     search_fields = ("actor_id", "action", "target")
     readonly_fields = ("actor_type", "actor_id", "action", "target", "before", "after", "created")
 
+    # Tamper-evident: even a Django superuser can't add, edit or delete audit rows
+    # from the admin — the log is append-only (matched by the model-layer guard).
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 class BroadcastRecipientInline(admin.TabularInline):
     model = BroadcastRecipient

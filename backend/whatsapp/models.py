@@ -200,6 +200,17 @@ class AuditLog(models.Model):
             models.Index(fields=["action"], name="audit_action_idx"),
         ]
 
+    def save(self, *args, **kwargs):
+        # Append-only, enforced at the ORM layer: an audit row can be created but
+        # never edited. A back-office bug (or a compromised operator) must not be
+        # able to rewrite history to cover a fraudulent action.
+        if self.pk is not None:
+            raise ValueError("AuditLog rows are immutable and cannot be modified")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("AuditLog rows are immutable and cannot be deleted")
+
     def __str__(self):
         return f"{self.actor_type}:{self.actor_id} {self.action} {self.target}"
 

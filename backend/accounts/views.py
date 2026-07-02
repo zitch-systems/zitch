@@ -324,6 +324,7 @@ def set_password(request):
 
 
 @api
+@ratelimit("set_pin", limit=10, window=300)
 @require_user
 def set_transaction_pin(request):
     """POST /api/set-transaction-pin/ {access_token, pin, old_pin?, password?}
@@ -334,6 +335,8 @@ def set_transaction_pin(request):
     account ``password`` — so a stolen session token alone can't overwrite the
     PIN that gates money movement.
     """
+    from common.http import evaluate_transaction_pin
+
     user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
     if len(pin) < 4:
@@ -341,8 +344,16 @@ def set_transaction_pin(request):
     if user.transaction_pin:
         old_pin = (request.data.get("old_pin") or "").strip()
         password = request.data.get("password") or ""
-        ok_old = bool(old_pin) and user.check_transaction_pin(old_pin)
+        # old_pin MUST go through the brute-force-protected checker (lockout after
+        # PIN_MAX_ATTEMPTS) — a raw check_transaction_pin here let a stolen token
+        # guess the 4-digit PIN unlimited times and overwrite it. The password
+        # fallback keeps forgot-PIN recovery working.
         ok_pwd = bool(password) and user.check_password(password)
+        ok_old = False
+        if not ok_pwd and old_pin:
+            ok_old, code, message = evaluate_transaction_pin(user, old_pin)
+            if code == "pin_locked":
+                return fail(message, status=403, code="pin_locked")
         if not (ok_old or ok_pwd):
             return fail("Enter your current PIN to change it",
                         status=403, code="current_pin_required")
@@ -483,9 +494,11 @@ def kyc_status(request):
 
 
 _KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid
+_KYC_BVN_MAX_ATTEMPTS = 5  # wrong OTP guesses before the pending code is burned
 
 
 @api
+@ratelimit("kyc_bvn_start", limit=5, window=300)
 @require_user
 def kyc_bvn_start(request):
     """POST /api/kyc/bvn/start {access_token, bvn}
@@ -511,18 +524,31 @@ def kyc_bvn_start(request):
 
 
 @api
+@ratelimit("kyc_bvn_confirm", limit=20, window=300)
 @require_user
 def kyc_bvn_confirm(request):
     """POST /api/kyc/bvn/confirm {access_token, otp} — confirm the BVN code and
     mark the BVN verified."""
     user = request.user_obj
     otp = (request.data.get("otp") or "").strip()
-    pending = cache.get(f"kyc_bvn:{user.id}")
+    cache_key = f"kyc_bvn:{user.id}"
+    pending = cache.get(cache_key)
     if not pending:
         return fail("Your code expired — start BVN verification again", status=400)
     if otp != pending["code"]:
-        return fail("Incorrect code", status=400)
-    cache.delete(f"kyc_bvn:{user.id}")
+        # Cap wrong guesses: the OTP is only 6 digits, so without a counter a
+        # stolen session could brute-force it inside the 10-minute window. After
+        # _KYC_BVN_MAX_ATTEMPTS the pending code is burned and the user restarts.
+        attempts = int(pending.get("attempts", 0)) + 1
+        if attempts >= _KYC_BVN_MAX_ATTEMPTS:
+            cache.delete(cache_key)
+            return fail("Too many incorrect attempts — start BVN verification again",
+                        status=429, code="too_many_attempts")
+        pending["attempts"] = attempts
+        cache.set(cache_key, pending, _KYC_BVN_TTL)
+        left = _KYC_BVN_MAX_ATTEMPTS - attempts
+        return fail(f"Incorrect code. {left} attempt(s) left.", status=400)
+    cache.delete(cache_key)
     user.set_bvn(pending["bvn"])
     user.bvn_verified = True
     user.recompute_tier()
@@ -532,6 +558,7 @@ def kyc_bvn_confirm(request):
 
 
 @api
+@ratelimit("kyc_bvn", limit=5, window=300)
 @require_user
 def kyc_bvn(request):
     """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
@@ -549,6 +576,7 @@ def kyc_bvn(request):
 
 
 @api
+@ratelimit("kyc_nin", limit=5, window=300)
 @require_user
 def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""

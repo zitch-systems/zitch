@@ -169,8 +169,18 @@ class AccessToken(models.Model):
     brute-force.
     """
 
+    # A token is minted for exactly one surface. An `app` token drives the mobile
+    # app; an `admin` token drives the staff back-office. They are NOT
+    # interchangeable: a stolen app token must never reach an admin endpoint, and
+    # admin tokens expire far sooner (ADMIN_TOKEN_TTL_HOURS). `resolve` enforces
+    # the split, so scope is a hard boundary, not a hint.
+    APP = "app"
+    ADMIN = "admin"
+    SCOPES = [(APP, APP), (ADMIN, ADMIN)]
+
     key = models.CharField(max_length=64, unique=True, db_index=True)  # sha256 hex of the token
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="tokens")
+    scope = models.CharField(max_length=8, choices=SCOPES, default=APP, db_index=True)
     created = models.DateTimeField(auto_now_add=True)
 
     @staticmethod
@@ -178,26 +188,47 @@ class AccessToken(models.Model):
         return hashlib.sha256((raw or "").encode()).hexdigest()
 
     @classmethod
-    def issue(cls, user) -> "AccessToken":
+    def issue(cls, user, scope: str = APP) -> "AccessToken":
         """Create a session token. The DB stores only the hash; the returned
         instance carries the RAW token on `.key` (in memory, unsaved) for the
-        caller to hand to the client — do not re-save the instance afterwards."""
+        caller to hand to the client — do not re-save the instance afterwards.
+
+        `scope` binds the token to a surface (app vs admin) — mint admin tokens
+        with `scope=AccessToken.ADMIN` so they resolve only on staff endpoints
+        and inherit the shorter admin TTL."""
         raw = secrets.token_hex(32)
-        tok = cls.objects.create(key=cls._hash(raw), user=user)
+        tok = cls.objects.create(key=cls._hash(raw), user=user, scope=scope)
         tok.key = raw  # transient: expose the raw token to the caller without persisting it
         return tok
 
     @classmethod
-    def resolve(cls, key: str):
+    def resolve(cls, key: str, required_scope: str | None = None):
+        """Resolve a raw token to its user, or None if it is unknown, expired,
+        out of scope, or belongs to a deactivated account.
+
+        `required_scope` (when given) rejects a token minted for a different
+        surface — an app token presented to an admin endpoint resolves to None
+        even though the row is otherwise valid. Admin-scoped tokens expire after
+        ADMIN_TOKEN_TTL_HOURS; app tokens after TOKEN_TTL_HOURS."""
         if not key:
             return None
         try:
             tok = cls.objects.select_related("user").get(key=cls._hash(key))
         except cls.DoesNotExist:
             return None
-        ttl = timedelta(hours=settings.TOKEN_TTL_HOURS)
-        if timezone.now() - tok.created > ttl:
+        if required_scope is not None and tok.scope != required_scope:
+            return None
+        if tok.scope == cls.ADMIN:
+            ttl_hours = getattr(settings, "ADMIN_TOKEN_TTL_HOURS", 2)
+        else:
+            ttl_hours = settings.TOKEN_TTL_HOURS
+        if timezone.now() - tok.created > timedelta(hours=ttl_hours):
             tok.delete()
+            return None
+        # A frozen / deactivated account must lose every live session
+        # immediately — freezing a user revokes their tokens, but a token that
+        # slips through (race, cached lookup) is still refused here.
+        if not tok.user.is_active:
             return None
         return tok.user
 

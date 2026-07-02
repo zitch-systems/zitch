@@ -154,6 +154,23 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # --- App-specific config ---
 TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
+# Admin/operator (staff-scoped) tokens expire far sooner than app sessions — a
+# leaked back-office token is high blast-radius, so keep the window short.
+ADMIN_TOKEN_TTL_HOURS = int(os.environ.get("ADMIN_TOKEN_TTL_HOURS", "2"))
+
+# Manual wallet credit guardrails (admin_api.wallet_credit). A single manual
+# credit can't exceed ADMIN_MAX_MANUAL_CREDIT, and one operator's manual credits
+# can't exceed ADMIN_MANUAL_CREDIT_DAILY_CAP in a rolling 24h — so a compromised
+# or rogue operator account can't mint unlimited balance in one action or a
+# drip. Raise via env for a treasury operator if genuinely needed.
+ADMIN_MAX_MANUAL_CREDIT = int(os.environ.get("ADMIN_MAX_MANUAL_CREDIT", "500000"))
+ADMIN_MANUAL_CREDIT_DAILY_CAP = int(os.environ.get("ADMIN_MANUAL_CREDIT_DAILY_CAP", "2000000"))
+
+# Per-account login lockout (common.ratelimit). After ADMIN_LOGIN_MAX_FAILS bad
+# attempts against one operator identifier, further attempts are refused for
+# ADMIN_LOGIN_LOCKOUT_SECONDS regardless of source IP.
+ADMIN_LOGIN_MAX_FAILS = int(os.environ.get("ADMIN_LOGIN_MAX_FAILS", "5"))
+ADMIN_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("ADMIN_LOGIN_LOCKOUT_SECONDS", "900"))
 
 # Per-IP rate limiting (see common/ratelimit). Off under tests so the shared
 # process cache can't bleed counts across unrelated cases; a dedicated test

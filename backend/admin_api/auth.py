@@ -76,7 +76,11 @@ def staff_endpoint(*, methods=("GET", "POST"), perm=None):
             else:
                 request.data = {}
 
-            user = AccessToken.resolve(resolve_token(request))
+            # Admin-scoped only: an app session token (scope="app") is refused
+            # here even for a staff user, so a stolen mobile token can never
+            # reach the back-office. Staff sign in through the admin login,
+            # which mints a short-lived admin-scoped token.
+            user = AccessToken.resolve(resolve_token(request), required_scope=AccessToken.ADMIN)
             if user is None or not user.is_staff:
                 return fail("Staff authentication required", status=401)
             request.staff = user
