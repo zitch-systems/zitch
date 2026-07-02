@@ -364,6 +364,29 @@ def verify_webhook(body: bytes, signature: str) -> bool:
 # ---------------------------------------------------------------------------
 # Diagnostics — mirrors kora_diagnostics / mono_diagnostics
 # ---------------------------------------------------------------------------
+def deallocate_virtual_account(account_reference: str) -> dict:
+    """Deallocate (release) a reserved account by our accountReference —
+    DELETE /api/v1/bank-transfer/reserved-accounts/reference/{ref}. Used to clean
+    up ZITCH-DIAG-* probe accounts, which otherwise block the customer's real
+    account (Monnify allows one reserved account per customer/BVN)."""
+    if not monnify_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    try:
+        resp = requests.delete(
+            f"{m['BASE_URL']}/api/v1/bank-transfer/reserved-accounts/reference/{account_reference}",
+            headers=headers, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json() if resp.content else {}
+        return {"success": bool(data.get("requestSuccessful")),
+                "message": data.get("responseMessage", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
 def monnify_probe(bvn: str = "", name: str = "", email: str = "") -> dict:
     """Live self-test against the configured Monnify gateway (returns NO secrets).
 

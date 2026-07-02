@@ -175,7 +175,18 @@ def monnify_diagnose(request):
     denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
     if denied:
         return denied
-    from utility.monnify import monnify_probe
+    from utility.monnify import deallocate_virtual_account, monnify_probe
+
+    # &dealloc=ZITCH-DIAG-XXXX — release a probe account so it stops blocking the
+    # customer's REAL account (Monnify: one reserved account per customer/BVN).
+    # Restricted to the diagnostic prefix: this endpoint can never deallocate a
+    # real user wallet account, token or not.
+    dealloc = request.GET.get("dealloc", "").strip()[:40]
+    if dealloc:
+        if not dealloc.startswith("ZITCH-DIAG-"):
+            return JsonResponse({"detail": "Only ZITCH-DIAG-* references can be deallocated here."},
+                                status=400)
+        return JsonResponse({"deallocate": deallocate_virtual_account(dealloc)})
 
     bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
     name = request.GET.get("name", "").strip()[:80]
