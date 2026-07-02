@@ -13,6 +13,14 @@ import { Platform } from 'react-native';
 const TOKEN_KEY = 'access_token';
 const isWeb = Platform.OS === 'web';
 
+// Bind secrets (session token + money PIN) to THIS device: `WHEN_UNLOCKED_THIS_
+// DEVICE_ONLY` keeps them out of iCloud/device backups, so a backup extraction
+// or restore onto another handset can't lift the credential. Reads/deletes don't
+// take the option — only the write sets the item's accessibility class.
+const KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
+
 // In-memory cache of the access token. getToken() is on the hot path of every
 // authenticated API call (plus the auth guard and wallet load), and a native
 // keychain read costs real milliseconds on each call — enough to make taps feel
@@ -27,7 +35,7 @@ export async function saveToken(token: string): Promise<void> {
     await AsyncStorage.setItem(TOKEN_KEY, token);
     return;
   }
-  await SecureStore.setItemAsync(TOKEN_KEY, token);
+  await SecureStore.setItemAsync(TOKEN_KEY, token, KEYCHAIN_OPTS);
 }
 
 export async function getToken(): Promise<string | null> {
@@ -66,7 +74,7 @@ const HAS_TXN_PIN_KEY = 'z-has-pin';
 
 export async function saveTransactionPin(pin: string): Promise<void> {
   if (isWeb) return; // don't persist the money PIN in unencrypted web storage
-  await SecureStore.setItemAsync(TXN_PIN_KEY, pin);
+  await SecureStore.setItemAsync(TXN_PIN_KEY, pin, KEYCHAIN_OPTS);
   await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');
 }
 

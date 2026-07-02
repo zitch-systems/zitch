@@ -3,7 +3,7 @@ import { View, Text, TextInput, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import baseUrl from '@/components/configFiles/apiConfig';
+import { publicPost } from '@/lib/api';
 import { saveToken } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header } from '@/components/design/ui';
@@ -38,11 +38,7 @@ const OTPVerification = () => {
     submittedRef.current = otp;
     setIsCheckingOtp(true);
     try {
-      const response = await fetch(`${baseUrl}/api/verify_otp/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ otp, phone: userPhone }),
-      });
+      const response = await publicPost('/api/verify_otp/', { otp, phone: userPhone });
       const result = await response.json();
       if (response.ok && result.access_token) {
         await saveToken(result.access_token);
@@ -69,11 +65,7 @@ const OTPVerification = () => {
   const handleResendOtp = async () => {
     if (seconds > 0) return;
     try {
-      const response = await fetch(`${baseUrl}/api/resend_verify_otp/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: userPhone }),
-      });
+      const response = await publicPost('/api/resend_verify_otp/', { phone: userPhone });
       const result = await response.json();
       if (response.ok) {
         setSeconds(24);

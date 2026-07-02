@@ -83,6 +83,29 @@ export async function apiJson<T = any>(path: string, body: Record<string, any> =
 }
 
 /**
+ * Timeout-bounded POST for UNAUTHENTICATED endpoints (sign-in, register, OTP,
+ * password reset). Same AbortController deadline as `apiPost` so a hung
+ * connection can never leave an auth screen's full-screen loader spinning
+ * forever — but no `Authorization` header and no 401→sign-out redirect (these
+ * calls legitimately 401 on bad credentials, and there's no session to clear).
+ * The global fetch guard still stamps the User-Agent.
+ */
+export async function publicPost(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<Response> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    return await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * A stable key for a single spend attempt. Pass it as `idempotency_key` on a
  * money-moving request so a double-tap / retry / network race is deduped
  * server-side and never debits twice. Generate one per authorization and reuse
