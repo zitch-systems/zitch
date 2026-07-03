@@ -27,6 +27,8 @@ class AccessTokenAdmin(admin.ModelAdmin):
 
 @admin.register(OTP)
 class OTPAdmin(admin.ModelAdmin):
-    list_display = ("phone", "code", "used", "created")
+    # Never surface the code (it is stored only as a hash, and showing a live code
+    # to staff would defeat the point). Purpose + used are enough to triage.
+    list_display = ("phone", "purpose", "used", "created")
     search_fields = ("phone",)
-    list_filter = ("used",)
+    list_filter = ("used", "purpose")

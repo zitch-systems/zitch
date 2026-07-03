@@ -25,6 +25,11 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-insecure-change-me")
 # its own value and PINNED: unlike SECRET_KEY it must never rotate, or every stored
 # BVN/NIN hash becomes unverifiable (the raw value is intentionally not retained).
 KYC_HASH_KEY = os.environ.get("DJANGO_KYC_HASH_KEY", "") or SECRET_KEY
+# Key for hashing one-time codes (signup / password-reset OTPs) at rest — see
+# accounts.OTP.hash_code. Defaults to SECRET_KEY. Unlike KYC_HASH_KEY it may rotate
+# freely: codes are single-use and expire in minutes, so a rotation only invalidates
+# codes still in flight.
+OTP_HASH_KEY = os.environ.get("DJANGO_OTP_HASH_KEY", "") or SECRET_KEY
 # Secure by default: a real deploy must never accidentally run in debug (which
 # would disable the HTTPS redirect, secure cookies, and the fail-closed provider
 # mock guards below). Local dev opts in with DJANGO_DEBUG=true (see .env.example).

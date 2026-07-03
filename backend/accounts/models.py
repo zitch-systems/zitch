@@ -249,7 +249,13 @@ class OTP(models.Model):
     PURPOSES = [(SIGNUP, SIGNUP), (RESET, RESET)]
 
     phone = models.CharField(max_length=20, db_index=True)
-    code = models.CharField(max_length=6)
+    # The raw 6-digit code is NEVER stored — only its keyed hash. A 6-digit code
+    # has just 10^6 possibilities, so a plain SHA-256 would be trivially reversed
+    # from a DB leak; HMAC with a server-side secret means an attacker needs the
+    # secret too. Without this, a leaked backup / read replica / SQL-injection
+    # would hand out live signup codes (which authenticate straight into the
+    # matching account) and reset codes (which reset the password).
+    code_hash = models.CharField(max_length=64)
     email = models.EmailField(blank=True, default="")
     purpose = models.CharField(max_length=10, choices=PURPOSES, default=SIGNUP)
     created = models.DateTimeField(auto_now_add=True)
@@ -260,6 +266,27 @@ class OTP(models.Model):
     MAX_ATTEMPTS = 5          # wrong guesses before a code is burned
     RESEND_COOLDOWN_SECONDS = 20  # min gap between codes for a phone
 
+    @staticmethod
+    def hash_code(raw: str) -> str:
+        """Keyed HMAC-SHA256 of a one-time code. Keyed with OTP_HASH_KEY (which
+        defaults to SECRET_KEY) so the tiny code space is not offline-brute-forceable
+        from a DB leak. Codes are single-use and expire in EXPIRY_MINUTES, so —
+        unlike the BVN/NIN hash — surviving a key rotation does not matter: a
+        rotation only invalidates codes still in flight, which lapse in minutes."""
+        key = getattr(settings, "OTP_HASH_KEY", "") or settings.SECRET_KEY
+        return hmac.new(key.encode(), (raw or "").encode(), hashlib.sha256).hexdigest()
+
+    def verify_code(self, raw: str) -> bool:
+        """Constant-time compare of a submitted code against the stored hash."""
+        return hmac.compare_digest(self.code_hash, self.hash_code(raw))
+
+    @classmethod
+    def issue(cls, phone, code, email="", purpose=None):
+        """Create an OTP row, storing only the hash of `code`."""
+        return cls.objects.create(
+            phone=phone, code_hash=cls.hash_code(code),
+            email=email, purpose=purpose or cls.SIGNUP)
+
     @property
     def is_expired(self) -> bool:
         return timezone.now() - self.created > timedelta(minutes=self.EXPIRY_MINUTES)
@@ -269,4 +296,4 @@ class OTP(models.Model):
         return self.attempts >= self.MAX_ATTEMPTS
 
     def __str__(self):
-        return f"{self.phone} · {self.code}"
+        return f"{self.phone} · {self.purpose}"

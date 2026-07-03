@@ -2,6 +2,7 @@
 import json
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -27,12 +28,16 @@ class OnboardingOtpTests(TestCase):
         return res, res.json()
 
     def test_onboarding_creates_user_and_token(self):
-        self.post("/api/phone_verification/", {"phone": "08011112222", "email": "new@zitch.test"})
-        otp = OTP.objects.filter(phone="08011112222").latest("created")
-        res, body = self.post("/api/verify_otp/", {"phone": "08011112222", "otp": otp.code})
+        # The raw code is never stored (only its hash), so pin it via _otp_code to
+        # learn what to submit — reading it back off the row is no longer possible.
+        with patch("accounts.views._otp_code", return_value="112233"):
+            self.post("/api/phone_verification/", {"phone": "08011112222", "email": "new@zitch.test"})
+        res, body = self.post("/api/verify_otp/", {"phone": "08011112222", "otp": "112233"})
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
         self.assertTrue(User.objects.filter(phone="08011112222").exists())
+        # The stored value is a hash, not the plaintext code.
+        self.assertNotEqual(OTP.objects.get(phone="08011112222").code_hash, "112233")
 
     def test_signup_otp_is_sent_by_sms_only_not_email(self):
         # The signup OTP proves control of the PHONE, so it must never be emailed
@@ -56,7 +61,7 @@ class OnboardingOtpTests(TestCase):
         email.assert_not_called()
 
     def test_otp_attempts_are_capped(self):
-        OTP.objects.create(phone="08033334444", code="13579")
+        OTP.issue(phone="08033334444", code="13579")
         for _ in range(OTP.MAX_ATTEMPTS):
             res, _ = self.post("/api/verify_otp/", {"phone": "08033334444", "otp": "00000"})
             self.assertEqual(res.status_code, 400)
@@ -66,7 +71,7 @@ class OnboardingOtpTests(TestCase):
         self.assertFalse(User.objects.filter(phone="08033334444").exists())
 
     def test_correct_code_works_within_attempt_cap(self):
-        OTP.objects.create(phone="08055556666", code="24680")
+        OTP.issue(phone="08055556666", code="24680")
         for _ in range(OTP.MAX_ATTEMPTS - 1):
             self.post("/api/verify_otp/", {"phone": "08055556666", "otp": "00000"})
         res, body = self.post("/api/verify_otp/", {"phone": "08055556666", "otp": "24680"})
@@ -116,16 +121,16 @@ class OtpTakeoverTests(TestCase):
     def test_verify_otp_cannot_authenticate_into_established_account(self):
         self._established_victim("08099990002", "victim2@zitch.test")
         # Even if a SIGNUP OTP somehow exists for the phone, it must not log in.
-        OTP.objects.create(phone="08099990002", email="attacker@evil.test", code="55555")
+        OTP.issue(phone="08099990002", email="attacker@evil.test", code="55555")
         res, body = self.post("/api/verify_otp/", {"phone": "08099990002", "otp": "55555"})
         self.assertEqual(res.status_code, 400)
         self.assertNotIn("access_token", body)
 
     def test_genuine_new_signup_still_works(self):
         # The guards must not break a real first-time signup.
-        self.post("/api/phone_verification/", {"phone": "08099990003", "email": "new@zitch.test"})
-        otp = OTP.objects.filter(phone="08099990003").latest("created")
-        res, body = self.post("/api/verify_otp/", {"phone": "08099990003", "otp": otp.code})
+        with patch("accounts.views._otp_code", return_value="778899"):
+            self.post("/api/phone_verification/", {"phone": "08099990003", "email": "new@zitch.test"})
+        res, body = self.post("/api/verify_otp/", {"phone": "08099990003", "otp": "778899"})
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
 
@@ -410,9 +415,9 @@ class FullJourneyE2ETests(TestCase):
         P, R = self.PHONE, self.RECIP
 
         # --- onboarding -> sign in (the auth refactor, end to end) ---
-        self.assertEqual(self.post("/api/phone_verification/", phone=P, email="e2e@zitch.test")[0], 200)
-        otp = OTP.objects.filter(phone=P).latest("created").code
-        self.assertEqual(len(otp), 6)
+        with patch("accounts.views._otp_code", return_value="135790"):
+            self.assertEqual(self.post("/api/phone_verification/", phone=P, email="e2e@zitch.test")[0], 200)
+        otp = "135790"
         s, b = self.post("/api/verify_otp/", phone=P, otp=otp)
         self.assertEqual(s, 200)
         tok = b["access_token"]
@@ -589,15 +594,22 @@ class PasswordRecoveryTests(TestCase):
     """OTP-based password reset for users who can't sign in. Reset codes are a
     distinct OTP purpose, so they can't be replayed on the signup verifier."""
 
+    RESET_CODE = "246813"
+
     def setUp(self):
         self.client = Client()
+        # Codes are stored hashed, so pin the generator to a known value for the
+        # whole class; _reset_code then returns that value instead of reading the row.
+        patcher = patch("accounts.views._otp_code", return_value=self.RESET_CODE)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def post(self, path, **payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
     def _reset_code(self, phone):
-        return OTP.objects.filter(phone=phone, purpose=OTP.RESET).latest("created").code
+        return self.RESET_CODE
 
     def test_forgot_sends_reset_code_for_a_registered_phone(self):
         make_user("08010000001", "a@zitch.test")
