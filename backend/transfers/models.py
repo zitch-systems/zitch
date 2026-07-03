@@ -10,6 +10,15 @@ class Bank(models.Model):
     color = models.CharField(max_length=9, blank=True, default="")
     # NIBSS / payout-provider bank code, used when live.
     bank_code = models.CharField(max_length=10, blank=True, default="")
+    # Hosted logo image for the app's bank picker (blank -> the app shows a
+    # colored monogram). A URL rather than a bundled asset so logos can be
+    # updated/added server-side without shipping an app release.
+    logo = models.URLField(max_length=300, blank=True, default="")
+    # High-volume banks probed by the auto-detect name-enquiry sweep
+    # (detect_account_banks). Every active bank is manually pickable; only the
+    # popular set is swept, so a typed account never fans out ~40 paid
+    # name-enquiry calls.
+    popular = models.BooleanField(default=False)
     active = models.BooleanField(default=True)
 
     class Meta:

@@ -2,10 +2,12 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken, clearSession } from '@/lib/secureStore';
 import { touchActivity } from '@/lib/session';
-// Importing this also installs the global fetch User-Agent guard (covers the
-// screens that call fetch() directly, not just apiPost). USER_AGENT is reused
-// here so an explicit apiPost header and the guard agree.
-import { USER_AGENT } from '@/lib/netPatch';
+// Importing this also installs the global fetch guard: it stamps the app
+// User-Agent on every API request (covers the screens that call fetch()
+// directly, not just apiPost) and retries edge/WAF-blocked calls against the
+// Render fallback host. USER_AGENT is reused here so an explicit apiPost
+// header and the guard agree.
+import { USER_AGENT, isEdgeBlockMessage } from '@/lib/netPatch';
 
 // On an authenticated 401 the session is dead (expired or revoked): clear it and
 // bounce to sign-in. Guarded so several in-flight requests failing together only
@@ -68,12 +70,27 @@ export async function apiPost(path: string, body: Record<string, any> = {}, time
  * { success:false, message } shape so callers' `success`/`message` checks keep
  * working and no screen hangs waiting on a promise that never settles. */
 export async function apiJson<T = any>(path: string, body: Record<string, any> = {}, timeoutMs = 30000): Promise<T> {
-  const offline = { success: false, message: 'Service temporarily unavailable. Please try again.' } as T;
+  // `offline: true` distinguishes "the request/reply never completed — delivery
+  // unknown" from a definitive backend rejection. Money screens use it to KEEP
+  // their idempotency key, so a user retry replays server-side instead of
+  // double-debiting.
+  const offline = { success: false, offline: true, message: 'Service temporarily unavailable. Please try again.' } as T;
   try {
     const res = await apiPost(path, body, timeoutMs);
     const text = await res.text();
     try {
-      return JSON.parse(text) as T;
+      const parsed = JSON.parse(text) as any;
+      // Both the edge and the fallback host blocked us (the fetch guard already
+      // retried): replace the WAF's raw block-page message ("You are not
+      // authorized to access this resource") with something a user can act on.
+      if (res.status === 403 && isEdgeBlockMessage(parsed?.message)) {
+        return {
+          ...parsed,
+          success: false,
+          message: 'A network security check blocked this request. Please try again in a moment.',
+        } as T;
+      }
+      return parsed as T;
     } catch {
       return offline;
     }

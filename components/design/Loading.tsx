@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, Animated, Easing } from 'react-native';
+import { View, Text, Animated, Easing, Image } from 'react-native';
 import { useTheme, font } from '@/lib/theme';
 
 // Direct (relative) require so the logo always resolves in the bundle,
@@ -63,6 +63,45 @@ export const Loading = ({ label, full = true }: { label?: string; full?: boolean
         <Animated.Image source={LOGO} resizeMode="contain" style={{ width: 52, height: 52, transform: [{ scale }] }} />
       </View>
       {label ? <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.medium }}>{label}</Text> : null}
+    </View>
+  );
+};
+
+/**
+ * Compact inline variant of the branded loader — the same sweeping brand arc
+ * around the Zitch mark, sized to sit inside a field or list row (e.g. the
+ * bank auto-detect state on Send money). Purely the mark: no padding, no label.
+ */
+export const LoadingMark = ({ size = 20 }: { size?: number }) => {
+  const { c } = useTheme();
+  const spin = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const s = Animated.loop(
+      Animated.timing(spin, { toValue: 1, duration: 900, easing: Easing.linear, useNativeDriver: true }),
+    );
+    s.start();
+    return () => s.stop();
+  }, [spin]);
+
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+
+  return (
+    <View style={{ width: size, height: size, alignItems: 'center', justifyContent: 'center' }}>
+      <Animated.View
+        style={{
+          position: 'absolute',
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: Math.max(2, Math.round(size * 0.1)),
+          borderColor: c.line,
+          borderTopColor: c.brand,
+          borderRightColor: c.brand,
+          transform: [{ rotate }],
+        }}
+      />
+      <Image source={LOGO} resizeMode="contain" style={{ width: size * 0.55, height: size * 0.55 }} />
     </View>
   );
 };

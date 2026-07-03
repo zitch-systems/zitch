@@ -65,6 +65,29 @@ class BankTransferTests(TestCase):
         res, body = self.post("/api/transfers/banks/", {})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["banks"][0]["code"], "gtb")
+        # The picker renders a hosted logo (with a monogram fallback), so the
+        # payload must always carry the field — blank when unset.
+        self.assertIn("logo", body["banks"][0])
+
+    def test_detect_sweeps_only_popular_banks_when_flagged(self):
+        # With a `popular` set defined, auto-detect must not fan name-enquiries
+        # out to every active bank (each probe is a paid provider call).
+        from transfers.services import detect_account_banks
+        popular = Bank.objects.create(code="acc", name="Access Bank", bank_code="044",
+                                      color="#F68B1F", popular=True)
+        probed = []
+
+        def fake_resolve(acct, bank_code):
+            probed.append(bank_code)
+            return {"success": True, "name": "ADA EZE"}
+
+        # detect_account_banks imports these inside the function, so patch the
+        # source module, not transfers.services.
+        with patch("utility.providers.payout_live", return_value=True), \
+             patch("utility.providers.payout_resolve_account", side_effect=fake_resolve):
+            matches = detect_account_banks("0000000001")
+        self.assertEqual(probed, [popular.bank_code])  # gtb (not popular) skipped
+        self.assertEqual([m["bank"] for m in matches], [popular.code])
 
     def test_resolve_requires_10_digits(self):
         res, _ = self.post("/api/transfers/resolve/", {"access_token": self.token, "account_number": "123", "bank": "gtb"})

@@ -42,7 +42,16 @@ def detect_account_banks(account_number: str) -> list[dict]:
     if cached is not None:
         return cached
 
-    banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
+    # Sweep only the `popular` banks (the high-volume set covering nearly all
+    # transfer traffic): each probe is a paid provider name-enquiry, and the
+    # picker now lists ~40+ banks — fanning out to all of them for every typed
+    # account would be slow and expensive. An account at a non-popular bank
+    # just isn't auto-detected; the user picks the bank manually (which
+    # resolves at that one bank). Falls back to every active bank if no bank
+    # is flagged popular (e.g. a stale seed).
+    banks = list(Bank.objects.filter(active=True, popular=True).exclude(bank_code=""))
+    if not banks:
+        banks = list(Bank.objects.filter(active=True).exclude(bank_code=""))
     if not payout_live():
         # No live name-enquiry rail: this is a placeholder, NOT a real detection.
         # Flag it `mock` so callers don't present the stub bank/name as verified.
