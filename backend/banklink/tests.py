@@ -232,6 +232,19 @@ class BanklinkPayoutTests(TestCase):
         self._post("/api/banklink/payout/", body)  # replay — must not debit twice
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("40000"))
 
+    def test_payout_blocked_under_simulation_with_live_rail(self):
+        # A demo (Mono-simulated) linked account must never drive the LIVE payout
+        # rail — that would move real wallet money to an unverified/fake account.
+        # Fully-mock (both rails mock) stays allowed; only the mismatch is refused.
+        lid = self._link()
+        with patch("utility.mono.mono_live", return_value=False), \
+             patch("utility.providers.payout_live", return_value=True):
+            r = self._post("/api/banklink/payout/",
+                           {"linked_id": lid, "amount": "10000", "pin": "1234"})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json().get("code"), "simulation")
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
+
     def test_payout_rejected_when_account_maps_to_multiple_banks(self):
         # An ambiguous NUBAN (valid at two banks, possibly different holders) must
         # not be routed by guessing matches[0] — reject and keep the wallet whole.

@@ -74,7 +74,7 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
               borderColor: on ? c.brand : c.line,
             }}
           >
-            <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? '#fff' : c.ink2, fontVariant: ['tabular-nums'] }}>
+            <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink2, fontVariant: ['tabular-nums'] }}>
               <Naira />{a.toLocaleString()}
             </Text>
           </Pressable>

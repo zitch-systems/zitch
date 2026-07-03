@@ -683,10 +683,17 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if not matches:
             return reply(msisdn, "I couldn't find that bank. Type the name again, or \"cancel\".")
         if len(matches) > 1:
-            pa.payload["bank_choices"] = [b.code for b in matches[:6]]
+            shown = matches[:6]
+            pa.payload["bank_choices"] = [b.code for b in shown]
             _touch(pa, state="bank_pick", payload=pa.payload)
-            return reply_list(msisdn, "I found a few banks — pick yours:",
-                              [(str(i + 1), b.name[:24], "") for i, b in enumerate(matches[:6])],
+            # The list caps at 6; with the full bank catalogue a loose name can
+            # match more, so when we truncate, tell the user how to narrow it
+            # instead of silently hiding the rest.
+            prompt = ("I found a few banks — pick yours:" if len(matches) <= 6
+                      else f"I found {len(matches)} banks — here are the first 6. "
+                           "Reply a number, or type the bank's exact name:")
+            return reply_list(msisdn, prompt,
+                              [(str(i + 1), b.name[:24], "") for i, b in enumerate(shown)],
                               button_label="Banks")
         return _resolve_and_confirm(pa, user, msisdn, matches[0])
 

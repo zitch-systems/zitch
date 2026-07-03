@@ -47,6 +47,7 @@ const SendMoney = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);  // queued by the rail, not yet confirmed
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
 
@@ -169,6 +170,14 @@ const SendMoney = () => {
 
   const idemKey = useRef('');  // stable across retries of one transfer attempt
 
+  // A change to ANY transfer detail is a new spend — drop the retained key so
+  // the next attempt mints a fresh one. We deliberately KEEP the key across a
+  // byte-identical retry (so a timed-out-but-delivered attempt replays
+  // server-side instead of double-debiting); but if the user edits the amount,
+  // account, bank, recipient, mode or note, reusing that key would replay the
+  // PRIOR transfer and render a false success for the edited one.
+  useEffect(() => { idemKey.current = ''; }, [amt, acct, bank?.code, mode, picked?.id, identifier, note]);
+
   // After a PIN-approved transfer, offer (once) to approve future payments with
   // Face ID / fingerprint instead of the PIN. The money PIN is cached only after
   // a fresh biometric scan, so the PinPad's biometric shortcut then appears. This
@@ -233,8 +242,13 @@ const SendMoney = () => {
         return;
       }
 
-      if (res.success) {
+      // `pending` = the rail accepted and QUEUED the payout (money already left
+      // the wallet); it carries no `success` field. Treat it as a completed
+      // attempt — NOT a failure — so it never falls into the else branch that
+      // would mint a fresh key and let a retry debit a second time.
+      if (res.success || res.pending) {
         idemKey.current = '';
+        setPending(!res.success && !!res.pending);
         if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
         setStep(null);   // close the PIN sheet FIRST…
         reload();
@@ -266,8 +280,10 @@ const SendMoney = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Money sent"
-          message={`${money(amount)} sent to ${finalName || 'recipient'}.`}
+          title={pending ? 'Transfer processing' : 'Money sent'}
+          message={pending
+            ? `${money(amount)} to ${finalName || 'recipient'} is processing and will be confirmed shortly.`
+            : `${money(amount)} sent to ${finalName || 'recipient'}.`}
           rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />

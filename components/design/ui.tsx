@@ -361,7 +361,12 @@ export const Field = ({
       >
         {prefix}
         {loading ? (
-          <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
+          <View
+            style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+            accessible
+            accessibilityRole="progressbar"
+            accessibilityLabel="Loading"
+          >
             <LoadingMark size={22} />
           </View>
         ) : (

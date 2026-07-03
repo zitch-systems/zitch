@@ -161,6 +161,17 @@ def payout(request):
         id=data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
     if acct_obj is None:
         return fail("Linked account not found", status=404)
+
+    # A linked account created under Mono SIMULATION (no live bank connection) is
+    # a demo stub, not a verified real account. Never drive the LIVE payout rail
+    # from one — that would move real wallet money to an unverified/fake number.
+    # Fully-mock dev/pilot (payout rail also mock) stays allowed so the flow is
+    # testable; only the dangerous sim-link + live-rail mismatch is refused.
+    from utility.providers import payout_live
+    if not mono.mono_live() and payout_live():
+        return fail("Payouts to a linked bank need a live bank connection.",
+                    status=409, code="simulation")
+
     acct = (acct_obj.account_number or "").strip()
     if len(acct) != 10:
         return fail("This linked account can't receive a payout.", status=400)

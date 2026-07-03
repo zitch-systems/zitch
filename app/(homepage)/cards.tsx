@@ -177,7 +177,7 @@ const Cards = () => {
       </Sheet>
 
       <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN">
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Funding…' : `Load ${money(Number(fundAmt))} onto your card`}
         </Text>
         <PinPad onComplete={(p) => doFund(p)} busy={busy} error={pinError} />
@@ -185,7 +185,7 @@ const Cards = () => {
 
       {/* Details reveal: PIN */}
       <Sheet open={detailsPin} onClose={() => !busy && setDetailsPin(false)} title="Reveal card details">
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           Enter your PIN to show the full card number & CVV
         </Text>
         <PinPad onComplete={(p) => doReveal(p)} busy={busy} error={pinError} />
