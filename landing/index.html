@@ -1,1540 +1,664 @@
 <!DOCTYPE html>
-<html lang="en-NG">
+<html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Zitch — Send Money & Bank on WhatsApp | Nigeria Fintech</title>
-<meta name="description" content="Zitch is the Nigerian money app for instant bank transfers, airtime, data, bills, virtual dollar cards and multi-currency wallets — plus full banking right inside WhatsApp." />
-<meta name="keywords" content="Zitch, WhatsApp banking Nigeria, send money, buy airtime, buy data, pay bills, virtual dollar card, multi-currency wallet, NGN USD GBP CAD, fintech Nigeria" />
-<meta name="author" content="Zitch Technologies Limited" />
-<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
-<meta name="theme-color" content="#00847B" />
-<meta name="application-name" content="Zitch" />
-<meta name="apple-mobile-web-app-title" content="Zitch" />
-<meta name="geo.region" content="NG-LA" />
-<meta name="geo.placename" content="Lagos, Nigeria" />
-<link rel="canonical" href="https://zitch.ng/" />
+<link rel="icon" type="image/png" href="uploads/zitch-logo.png" />
+<link rel="apple-touch-icon" href="uploads/zitch-logo.png" />
+<title>Zitch — Airtime, Data, Cable, Electricity & Bill Payments</title>
+<meta name="description" content="Zitch is a Nigerian bill-payment platform. Buy airtime and data, print recharge PINs, renew DStv, GOtv and StarTimes, pay electricity bills, buy exam PINs and fund your betting wallet — instantly, from one app." />
 
-<!-- Icons -->
-<link rel="icon" type="image/png" sizes="64x64" href="assets/brand/zitch-icon-64.png" />
-<link rel="icon" type="image/png" sizes="512x512" href="assets/brand/zitch-icon.png" />
-<link rel="apple-touch-icon" href="assets/brand/zitch-icon.png" />
-
-<!-- Open Graph / Facebook -->
-<meta property="og:type" content="website" />
-<meta property="og:site_name" content="Zitch" />
-<meta property="og:title" content="Zitch — Money that speaks your language" />
-<meta property="og:description" content="Send money, pay every bill and top up in seconds — all in one app. And when you can't open it, just text Zitch on WhatsApp." />
-<meta property="og:url" content="https://zitch.ng/" />
-<meta property="og:image" content="https://zitch.ng/assets/brand/zitch-badge.png" />
-<meta property="og:image:type" content="image/png" />
-<meta property="og:image:alt" content="Zitch — money that speaks your language" />
-<meta property="og:locale" content="en_NG" />
-
-<!-- Twitter -->
-<meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="Zitch — Money that speaks your language" />
-<meta name="twitter:description" content="Send money, pay bills, top up and bank on WhatsApp — all in one Nigerian money app." />
-<meta name="twitter:image" content="https://zitch.ng/assets/brand/zitch-badge.png" />
-<meta name="twitter:image:alt" content="Zitch — money that speaks your language" />
-
+<!-- Design system tokens + local Sora / DM Sans webfonts -->
+<link rel="stylesheet" href="_ds/remotejobs44-design-system-01e971a1-a75c-46a8-961e-ce72965a5e0a/colors_and_type.css" />
+<!-- Google Fonts fallback (originals) -->
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-<style>
-  /* Render only the Naira sign (U+20A6) in the platform system font — Apple SF
-     on iOS/macOS, Segoe UI on Windows, Roboto on Android — which has a
-     better-designed ₦ glyph than Inter/Plus Jakarta Sans. The unicode-range
-     limits this @font-face override to the ₦ codepoint. */
-  @font-face{
-    font-family:'ZNairaSys';
-    src:local('-apple-system'),local('BlinkMacSystemFont'),
-        local('Segoe UI Variable'),local('Segoe UI'),
-        local('Roboto'),local('Helvetica Neue'),local('Arial');
-    unicode-range:U+20A6;
-  }
-  :root{
-    --teal:#23B1A8; --teal-deep:#00847B; --teal-ink:#004D47; --cyan:#5CF5EB;
-    --navy:#02344A; --navy-2:#0B3547; --navy-3:#062B3D;
-    --ink:#000000; --t2:#46535B; --t3:#73838C;
-    --head:#02344A; --card:#FFFFFF;
-    --bg:#FFFFFF; --mint:#EAF3F6; --paper:#F7FAFB; --line:#E3EAED;
-    --wa:#25D366;
-    --disp:'ZNairaSys','Plus Jakarta Sans',sans-serif; --body:'ZNairaSys','Inter',system-ui,sans-serif;
-    --max:1280px; --r:20px; --rl:28px;
-    --shadow:0 2px 6px rgba(2,52,74,.05),0 24px 48px -24px rgba(2,52,74,.18);
-    --shadow-lg:0 60px 110px -45px rgba(2,52,74,.5);
-  }
-  /* ---- 4K / large-display scaling: the whole layout zooms crisply ---- */
-  @media (min-width:1680px){ html{zoom:1.18;} }
-  @media (min-width:2240px){ html{zoom:1.62;} }
-  @media (min-width:3300px){ html{zoom:2.3;} }
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet" />
 
-  *{box-sizing:border-box;} html{scroll-behavior:smooth;}
-  /* Offset anchored sections so the sticky header never hides their headings
-     when navigating via the in-page menu (most noticeable on mobile). */
-  #ways,#whatsapp,#services,#fx,#pricing,#security,#faq,#cta{scroll-margin-top:92px;}
-  body{margin:0;font-family:var(--body);color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;font-feature-settings:"kern" 1,"liga" 1;}
-  a{color:inherit;text-decoration:none;} img{display:block;max-width:100%;}
-  h1,h2,h3,h4,p{margin:0;}
-  .wrap{max-width:var(--max);margin:0 auto;padding-left:32px;padding-right:32px;}
-  .disp{font-family:var(--disp);}
-  .num{font-variant-numeric:tabular-nums;letter-spacing:-.01em;}
-  .eyebrow{font-size:12.5px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--teal-deep);}
-  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;height:52px;padding:0 26px;border-radius:13px;font-family:var(--disp);font-weight:600;font-size:15.5px;cursor:pointer;border:none;transition:background .15s,transform .12s,border-color .15s,box-shadow .15s;white-space:nowrap;}
-  .btn:active{transform:scale(.98);}
-  .btn-teal{background:var(--teal-deep);color:#fff;box-shadow:0 16px 34px -14px rgba(0,132,123,.65);} .btn-teal:hover{background:var(--teal-ink);}
-  .btn-line{background:transparent;color:var(--head);border:1.5px solid #CBDBE1;} .btn-line:hover{border-color:var(--teal);color:var(--teal-deep);}
-  .btn-cyan{background:var(--cyan);color:var(--navy);} .btn-cyan:hover{background:#7df7ef;}
-  .btn-wa{background:var(--wa);color:#fff;box-shadow:0 16px 34px -14px rgba(37,211,102,.55);} .btn-wa:hover{background:#1fb858;}
+<style>
+  :root{
+    --wrap:1200px;
+    --ease-spring:cubic-bezier(0.34,1.56,0.64,1);
+    /* ===== Zitch teal brand — overrides the design-system blue ===== */
+    --brand-50:#E6F7F4;--brand-100:#C2EDE7;--brand-200:#8FDDD4;--brand-300:#54C9BD;
+    --brand-400:#2BBAAF;--brand-500:#12A99B;--brand-600:#0FA295;--brand-700:#00847B;
+    --brand-800:#00615A;--brand-900:#043C37;--brand-950:#04221F;--brand:var(--brand-600);
+    --accent:#F5A623;--accent-light:#FBC85A;--accent-dark:#D48A0A;
+    --bg-app:#F4FAF9;--bg-section:#E9F5F2;--bg-card:#FFFFFF;
+    --border-1:#DCEDE9;--border-2:#CFE5E0;--border-3:#E9F5F2;
+    --shadow-sm-brand:0 1px 4px rgba(0,132,123,.08);
+    --shadow-md-brand:0 4px 20px rgba(0,132,123,.18);
+    --shadow-lg-brand:0 8px 32px rgba(0,132,123,.20);
+    --shadow-xl-brand:0 16px 56px rgba(0,132,123,.24);
+  }
+  [data-theme="dark"]{
+    --bg-app:#04211D;--bg-section:#062B26;--bg-card:#0A362F;
+    --border-1:#123F38;--border-2:#174B42;--border-3:#0B2E29;--brand:var(--brand-400);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--bg-app);color:var(--fg-1);font-family:var(--font-body);}
+  a{color:inherit;text-decoration:none;}
+  img,svg{display:block;}
+  h1,h2,h3,h4{margin:0;}
+  p{margin:0;}
+  ::selection{background:var(--brand-200);color:var(--brand-800);}
+  [data-lucide]{width:20px;height:20px;stroke-width:1.75;}
+
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px;}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);}
+  .eyebrow.on-dark{color:var(--brand-300);}
+
+  /* ---------- buttons ---------- */
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;height:50px;padding:0 24px;border-radius:14px;font-family:var(--font-display);font-weight:600;font-size:15px;cursor:pointer;border:1.5px solid transparent;transition:background var(--dur-fast),color var(--dur-fast),border-color var(--dur-fast),box-shadow var(--dur-fast),transform var(--dur-normal);white-space:nowrap;}
+  .btn:hover{text-decoration:none;}
+  .btn-primary{background:var(--brand-700);color:#fff;box-shadow:var(--shadow-md-brand);}
+  .btn-primary:hover{background:var(--brand-800);}
+  .btn-ghost{background:transparent;color:var(--fg-1);border-color:var(--border-2);}
+  .btn-ghost:hover{border-color:var(--brand-500);color:var(--brand-700);}
+  .btn-sm{height:44px;padding:0 18px;font-size:14px;}
 
   /* store badges */
-  .store{display:flex;align-items:center;gap:12px;height:56px;padding:0 22px;border-radius:14px;background:var(--navy);color:#fff;transition:background .15s,transform .12s,box-shadow .15s;}
-  .store:hover{background:var(--navy-3);transform:translateY(-2px);box-shadow:0 18px 36px -16px rgba(2,52,74,.55);}
-  .store:active{transform:scale(.98);}
-  .store .txt{display:grid;line-height:1.18;text-align:left;}
-  .store .sub{font-size:10.5px;opacity:.72;letter-spacing:.02em;}
-  .store .main{font-family:var(--disp);font-size:16px;font-weight:600;}
-  .store.lt{background:#fff;color:var(--navy);}
-  .store.lt:hover{background:var(--mint);box-shadow:0 18px 36px -16px rgba(0,0,0,.4);}
+  .stores{display:flex;gap:12px;flex-wrap:wrap;}
+  .store{display:inline-flex;align-items:center;gap:12px;height:56px;padding:0 20px;border-radius:14px;background:var(--fg-1);color:#fff;transition:transform var(--dur-normal),box-shadow var(--dur-fast),background var(--dur-fast);}
+  .store:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg-brand);}
+  .store .txt{display:grid;line-height:1.15;text-align:left;}
+  .store .txt .s{font-size:10.5px;opacity:.8;font-family:var(--font-body);}
+  .store .txt .m{font-size:16px;font-weight:600;font-family:var(--font-display);}
+  .store.light{background:#fff;color:var(--brand-900);border:1.5px solid rgba(255,255,255,.6);}
 
-  /* reveal on scroll (motion-gated; base state is fully visible) */
-  @media (prefers-reduced-motion:no-preference){
-    .rev{opacity:0;transform:translateY(22px);transition:opacity .65s cubic-bezier(.2,.6,.2,1),transform .65s cubic-bezier(.2,.6,.2,1);transition-delay:var(--d,0s);}
-    .rev.vis{opacity:1;transform:none;}
-    .fx-chip{animation:float 5.5s ease-in-out infinite alternate;}
-    .chip-2{animation-delay:1.4s;} .chip-3{animation-delay:2.6s;}
-    @keyframes float{from{transform:translateY(0);}to{transform:translateY(-9px);}}
-    .push{animation:pushio 8s cubic-bezier(.34,1.56,.64,1) 1.8s both;}
-    @keyframes pushio{0%{transform:translateY(-130%);opacity:0;}6%{transform:none;opacity:1;}82%{transform:none;opacity:1;}94%{transform:translateY(-130%);opacity:0;}100%{transform:translateY(-130%);opacity:0;}}
-  }
+  /* ---------- brand lockup ---------- */
+  .brand{display:inline-flex;align-items:center;gap:11px;}
+  .brand .mark{width:38px;height:38px;border-radius:11px;object-fit:cover;display:block;flex-shrink:0;box-shadow:var(--shadow-sm-brand);}
+  .brand .word{font-family:var(--font-display);font-weight:800;font-size:22px;letter-spacing:-.02em;color:var(--fg-1);}
 
-  /* announce */
-  .announce{background:var(--navy);color:#BFE3DF;font-size:13.5px;text-align:center;padding:11px 16px;}
-  .announce b{color:#fff;} .announce a{color:var(--cyan);font-weight:600;}
+  /* ---------- header ---------- */
+  header.nav{position:sticky;top:0;z-index:70;background:rgba(244,250,249,.92);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border-bottom:1px solid var(--border-1);}
+  .nav-in{display:flex;align-items:center;gap:32px;height:68px;}
+  .nav-links{display:flex;gap:28px;flex:1;}
+  .nav-links a{font-size:14.5px;font-weight:500;color:var(--fg-2);transition:color var(--dur-fast);}
+  .nav-links a:hover{color:var(--brand-700);}
+  .nav-right{display:flex;align-items:center;gap:10px;}
+  .icon-btn{width:44px;height:44px;border-radius:12px;border:1.5px solid var(--border-2);background:transparent;color:var(--fg-2);cursor:pointer;display:grid;place-items:center;transition:border-color var(--dur-fast),color var(--dur-fast);}
+  .icon-btn:hover{border-color:var(--brand-500);color:var(--brand-700);}
+  .burger{display:none;}
 
-  /* nav */
-  header.nav{position:sticky;top:0;z-index:60;background:rgba(255,255,255,.86);backdrop-filter:blur(20px) saturate(170%);border-bottom:1px solid var(--line);}
-  .nav-in{display:flex;align-items:center;gap:36px;height:78px;}
-  .brand{display:flex;align-items:center;gap:11px;font-family:var(--disp);font-weight:700;letter-spacing:.2em;font-size:19px;}
-  .brand img{height:32px;width:auto;}
-  @media (prefers-reduced-motion:no-preference){
-    .brand img{animation:logoflip 7s ease-in-out infinite;}
-    @keyframes logoflip{0%,68%{transform:perspective(340px) rotateY(0deg);}90%,100%{transform:perspective(340px) rotateY(360deg);}}
-  }
-  .nav-links{display:flex;gap:32px;flex:1;}
-  .nav-links a{font-size:15px;font-weight:500;color:var(--t2);position:relative;padding:6px 0;}
-  .nav-links a::after{content:"";position:absolute;left:0;right:100%;bottom:0;height:2px;background:var(--teal);transition:right .2s ease;}
-  .nav-links a:hover{color:var(--teal-deep);} .nav-links a:hover::after{right:0;}
-  .nav-cta{display:flex;gap:12px;align-items:center;}
+  /* ---------- hero ---------- */
+  .hero{position:relative;overflow:hidden;}
+  .hero::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(15,162,149,.12),transparent 70%);pointer-events:none;}
+  .hero-in{position:relative;display:grid;grid-template-columns:1.05fr .95fr;gap:56px;align-items:center;padding:76px 0 88px;}
+  .hero h1{font-family:var(--font-display);font-weight:800;font-size:clamp(38px,5vw,60px);line-height:1.04;letter-spacing:-.025em;color:var(--fg-1);text-wrap:balance;margin-top:20px;}
+  .hero .lead{font-size:18px;line-height:1.6;color:var(--fg-2);max-width:520px;margin-top:20px;text-wrap:pretty;}
+  .hero-cta{display:flex;flex-direction:column;gap:16px;margin-top:34px;}
+  .hero-sub{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--fg-3);}
+  .hero-sub b{color:var(--fg-1);font-weight:600;}
+  .hl{position:relative;color:var(--brand-600);white-space:nowrap;}
+  .hl::after{content:"";position:absolute;left:0;right:0;bottom:4px;height:10px;background:var(--accent);opacity:.22;border-radius:3px;z-index:-1;}
 
-  /* hero */
-  .hero{background:linear-gradient(178deg,#F2FAF8 0%,#E7F2F4 70%,#F2FAF8 100%);overflow:hidden;position:relative;}
-  .hero::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 56% 64% at 72% 36%,rgba(35,177,168,.16),transparent 70%),radial-gradient(ellipse 42% 48% at 4% 90%,rgba(92,245,235,.2),transparent 70%),radial-gradient(ellipse 30% 36% at 92% 88%,rgba(2,52,74,.08),transparent 70%);pointer-events:none;}
-  .hero::after{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(0,132,123,.16) 1.2px,transparent 1.3px);background-size:26px 26px;-webkit-mask-image:radial-gradient(ellipse 55% 65% at 14% 22%,#000 0%,transparent 72%);mask-image:radial-gradient(ellipse 55% 65% at 14% 22%,#000 0%,transparent 72%);pointer-events:none;}
-  .hero-rib{position:absolute;right:-150px;top:-100px;width:580px;opacity:.12;transform:rotate(12deg);pointer-events:none;}
-  /* ===== animated 3D background (hero) ===== */
-  .hero-3d{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:0;}
-  .hero-3d span{position:absolute;display:block;}
-  .hero-3d .orb{border-radius:50%;}
-  .hero-3d .orb1{width:140px;height:140px;left:5%;top:24%;background:radial-gradient(circle at 35% 30%,rgba(92,245,235,.45),rgba(35,177,168,.16) 58%,transparent 72%);}
-  .hero-3d .orb2{width:104px;height:104px;right:8%;top:58%;background:radial-gradient(circle at 35% 30%,rgba(35,177,168,.4),rgba(0,132,123,.14) 58%,transparent 72%);}
-  .hero-3d .coin{border-radius:20px;background:linear-gradient(145deg,rgba(92,245,235,.5),rgba(0,132,123,.32));border:1px solid rgba(255,255,255,.45);box-shadow:0 20px 44px -18px rgba(0,132,123,.5);}
-  .hero-3d .coin1{width:78px;height:78px;left:13%;top:60%;}
-  .hero-3d .coin2{width:60px;height:60px;right:15%;top:16%;border-radius:16px;}
-  .hero-3d .coin3{width:48px;height:48px;left:46%;top:7%;border-radius:14px;}
-  .hero-in{z-index:1;}
-  @media (prefers-reduced-motion:no-preference){
-    .hero-3d .orb1{animation:drift1 15s ease-in-out infinite;}
-    .hero-3d .orb2{animation:drift2 19s ease-in-out infinite;}
-    .hero-3d .coin1{animation:spin3d 13s linear infinite,bob 7s ease-in-out infinite;}
-    .hero-3d .coin2{animation:spin3dr 16s linear infinite,bob 9s ease-in-out infinite;}
-    .hero-3d .coin3{animation:spin3d 19s linear infinite,bob 8s ease-in-out infinite;}
-    @keyframes spin3d{from{transform:perspective(700px) rotateY(0deg) rotateX(12deg);}to{transform:perspective(700px) rotateY(360deg) rotateX(12deg);}}
-    @keyframes spin3dr{from{transform:perspective(700px) rotateY(360deg) rotateX(-10deg);}to{transform:perspective(700px) rotateY(0deg) rotateX(-10deg);}}
-    @keyframes bob{0%,100%{margin-top:0;}50%{margin-top:-20px;}}
-    @keyframes drift1{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(32px,-24px) scale(1.06);}}
-    @keyframes drift2{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(-26px,18px) scale(1.05);}}
-    .h-glow{animation:glowpulse 9s ease-in-out infinite;}
-    @keyframes glowpulse{0%,100%{opacity:.7;}50%{opacity:1;}}
-  }
-  /* Plaid-style layered depth objects — transformed by JS parallax (cursor +
-     scroll + idle float), so they carry no CSS-animation transform of their own. */
-  .hero-3d [data-par]{position:absolute;will-change:transform;}
-  .h-glow{left:50%;top:40%;width:680px;height:680px;margin:-340px 0 0 -340px;border-radius:50%;
-    background:radial-gradient(circle at 50% 42%,rgba(92,245,235,.20),rgba(35,177,168,.09) 44%,transparent 68%);filter:blur(6px);}
-  .g-ring{right:11%;top:30%;width:120px;height:120px;border-radius:50%;
-    border:2px solid rgba(92,245,235,.5);box-shadow:inset 0 0 26px rgba(92,245,235,.22),0 18px 40px -18px rgba(0,132,123,.4);}
-  .g-card{left:7%;top:44%;width:150px;height:96px;border-radius:18px;
-    background:linear-gradient(145deg,rgba(255,255,255,.55),rgba(234,243,246,.26));
-    border:1px solid rgba(255,255,255,.6);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
-    box-shadow:0 26px 60px -26px rgba(2,52,74,.5);}
-  .g-blob{right:6%;bottom:14%;width:170px;height:170px;border-radius:46% 54% 60% 40%/52% 44% 56% 48%;
-    background:radial-gradient(circle at 35% 30%,rgba(35,177,168,.32),rgba(0,132,123,.10) 60%,transparent 74%);filter:blur(2px);}
-  .g-pill{left:6%;top:14%;width:96px;height:34px;border-radius:999px;
-    background:linear-gradient(135deg,rgba(92,245,235,.52),rgba(0,132,123,.38));border:1px solid rgba(255,255,255,.5);
-    box-shadow:0 16px 34px -16px rgba(0,132,123,.5);}
-  @media (max-width:760px){ .g-card,.g-ring,.g-pill{display:none;} }
-  .hero-in{display:flex;flex-direction:column;gap:40px;padding-top:64px;padding-bottom:104px;position:relative;}
-  .hero-copy{max-width:820px;margin:0 auto;text-align:center;}
-  .hero h1{font-family:var(--disp);font-size:clamp(40px,4.8vw,66px);line-height:1.04;font-weight:700;letter-spacing:-.022em;color:var(--head);text-wrap:balance;}
-  .hero h1 .tl{color:var(--teal);}
-  .hero p.lead{font-size:18.5px;line-height:1.68;color:var(--t2);max-width:560px;margin:24px auto 34px;text-wrap:pretty;}
-  .hero-ctas{display:flex;gap:13px;flex-wrap:wrap;align-items:center;justify-content:center;}
-  .hero-note{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:26px;font-size:13.5px;color:var(--t3);}
-  .hero-note .dots{display:flex;}
-  .hero-note .dots span{width:30px;height:30px;border-radius:50%;border:2.5px solid #EDF6F4;background:linear-gradient(135deg,var(--teal),var(--teal-deep));display:grid;place-items:center;font-size:11px;font-weight:700;color:#fff;margin-left:-9px;font-family:var(--disp);}
-  .hero-note .dots span:first-child{margin-left:0;}
-  .hero-note b{color:var(--navy);}
-  /* Plaid-style split hero on desktop: copy left, the two phones side-by-side
-     on the right. Below 1180px it falls back to the centered/stacked layout. */
-  @media (min-width:1180px){
-    .hero-in{display:grid;grid-template-columns:minmax(340px,44%) 1fr;align-items:center;gap:40px;}
-    .hero-copy{max-width:520px;margin:0;text-align:left;}
-    .hero p.lead{margin:22px 0 32px;}
-    .hero-ctas{justify-content:flex-start;}
-    .hero-note{justify-content:flex-start;}
-    .hero .demo-duo{justify-content:center;align-items:center;flex-wrap:nowrap;gap:22px;zoom:.72;}
-    /* Cluster the floating depth objects around the phones (right half). */
-    .hero-3d .h-glow{left:72%;}
-    .hero-3d .g-card{left:auto;right:34%;top:30%;}
-    .hero-3d .g-pill{left:auto;right:8%;top:12%;}
-    .hero-3d .g-blob{right:2%;bottom:8%;}
-    .hero-3d .g-ring{right:30%;top:24%;}
-  }
+  /* phone mockup */
+  .phone-wrap{position:relative;display:flex;justify-content:center;}
+  .phone-wrap::before{content:"";position:absolute;width:460px;height:460px;border-radius:50%;background:radial-gradient(circle,rgba(15,162,149,.16),transparent 62%);top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;}
+  .phone{position:relative;width:320px;background:#0b1220;border-radius:44px;padding:11px;box-shadow:var(--shadow-xl-brand),inset 0 0 0 2px rgba(255,255,255,.05);z-index:2;}
+  .phone .screen{background:var(--bg-app);border-radius:34px;overflow:hidden;position:relative;}
+  .p-notch{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:96px;height:22px;border-radius:999px;background:#0b1220;z-index:5;}
+  .p-top{background:linear-gradient(160deg,var(--brand-700),var(--brand-800));color:#fff;padding:40px 20px 22px;}
+  .p-stat{display:flex;justify-content:space-between;font-size:11px;font-weight:600;opacity:.85;font-family:var(--font-display);}
+  .p-hi{font-size:12.5px;opacity:.8;margin-top:14px;}
+  .p-bal-l{font-size:10px;letter-spacing:.14em;text-transform:uppercase;opacity:.7;margin-top:12px;}
+  .p-bal{font-family:var(--font-display);font-weight:800;font-size:30px;letter-spacing:-.02em;margin-top:3px;font-variant-numeric:tabular-nums;}
+  .p-fund{display:inline-flex;align-items:center;gap:6px;margin-top:14px;background:rgba(255,255,255,.15);color:#fff;font-family:var(--font-display);font-weight:600;font-size:12px;padding:7px 13px;border-radius:999px;}
+  .p-fund [data-lucide]{width:14px;height:14px;}
+  .p-body{padding:16px;}
+  .p-label{font-family:var(--font-display);font-weight:700;font-size:12.5px;color:var(--fg-2);margin:2px 2px 12px;}
+  .p-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;}
+  .p-tile{background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;padding:11px 4px 9px;display:grid;justify-items:center;gap:6px;text-align:center;}
+  .p-tile .ic{width:34px;height:34px;border-radius:10px;background:var(--brand-50);color:var(--brand-700);display:grid;place-items:center;}
+  .p-tile .ic [data-lucide]{width:17px;height:17px;}
+  .p-tile span{font-size:8.5px;font-weight:600;color:var(--fg-2);line-height:1.15;}
+  .p-recent{margin-top:14px;background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;padding:12px 13px;}
+  .p-recent .r-h{display:flex;justify-content:space-between;align-items:center;font-family:var(--font-display);font-size:11px;font-weight:700;color:var(--fg-3);margin-bottom:9px;text-transform:uppercase;letter-spacing:.08em;}
+  .p-rrow{display:flex;align-items:center;gap:9px;padding:6px 0;}
+  .p-rrow .d{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;}
+  .p-rrow .d [data-lucide]{width:15px;height:15px;}
+  .p-rrow .t{flex:1;min-width:0;}
+  .p-rrow .t b{display:block;font-size:11.5px;font-weight:600;color:var(--fg-1);}
+  .p-rrow .t small{font-size:10px;color:var(--fg-4);}
+  .p-rrow .amt{font-family:var(--font-display);font-weight:700;font-size:12px;color:var(--fg-1);font-variant-numeric:tabular-nums;}
+  .p-float{position:absolute;background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;padding:10px 13px;box-shadow:var(--shadow-lg-brand);display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:600;color:var(--fg-1);z-index:4;}
+  .p-float .fic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;}
+  .p-float small{display:block;font-size:10px;color:var(--fg-4);font-weight:500;}
+  .pf-1{top:64px;left:-26px;}
+  .pf-1 .fic{background:var(--success-bg);color:var(--success);}
+  .pf-2{bottom:78px;right:-30px;}
+  .pf-2 .fic{background:#fff3e6;color:var(--accent);}
 
-  /* phone */
-  .phone-zone{position:relative;display:flex;flex-direction:column;align-items:center;}
-  .phone-zone::before{content:"";position:absolute;width:580px;height:580px;border-radius:50%;background:radial-gradient(circle,rgba(35,177,168,.17),transparent 64%);top:50%;left:50%;transform:translate(-50%,-46%);pointer-events:none;}
-  /* ===== realistic 3D device mockups ===== */
-  .phone{width:360px;position:relative;z-index:2;border-radius:58px;padding:11px;background:linear-gradient(145deg,#2c2e33 0%,#161719 30%,#0d0e10 50%,#161719 70%,#3a3c42 100%);box-shadow:inset 0 1.5px 2px rgba(255,255,255,.18),0 0 0 1px rgba(0,0,0,.55),0 70px 120px -42px rgba(2,28,40,.6),0 26px 56px -30px rgba(2,28,40,.5);transition:transform .55s cubic-bezier(.22,1,.36,1);}
-  .phone .scr{background:#0b0d10;border-radius:48px;overflow:hidden;position:relative;}
-  .phone::before{content:"";position:absolute;left:-2.5px;top:118px;width:3px;height:58px;border-radius:4px 0 0 4px;background:linear-gradient(180deg,#56585e,#26272c);}
-  .phone::after{content:"";position:absolute;right:-2.5px;top:150px;width:3px;height:92px;border-radius:0 4px 4px 0;background:linear-gradient(180deg,#56585e,#26272c);}
-  .phone.iphone{border-radius:62px;padding:10px;background:linear-gradient(145deg,#83848b 0%,#3f4046 22%,#2c2d32 50%,#3f4046 78%,#8a8b92 100%);}
-  .phone.iphone .scr{border-radius:52px;}
-  .island{position:absolute;top:16px;left:50%;transform:translateX(-50%);width:106px;height:31px;border-radius:999px;background:#000;z-index:7;display:flex;align-items:center;justify-content:flex-end;padding-right:11px;}
-  .island::after{content:"";width:9px;height:9px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#35536f,#060a0f);}
-  .phone.samsung{border-radius:42px;padding:7px;background:linear-gradient(145deg,#43454c 0%,#212328 28%,#121316 50%,#212328 72%,#474950 100%);}
-  .phone.samsung .scr{border-radius:36px;}
-  .punch{position:absolute;top:13px;left:50%;transform:translateX(-50%);width:12px;height:12px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#2c3c4e,#04070b);z-index:7;box-shadow:0 0 0 2px rgba(0,0,0,.4);}
-  @media (min-width:1020px){
-    .phone-zone .phone{transform:perspective(2200px) rotateY(9deg) rotateX(2.5deg);}
-    .chat-zone .phone{transform:perspective(2200px) rotateY(-9deg) rotateX(2.5deg);}
-    .demo-duo:hover .phone{transform:perspective(2200px) rotateY(0) rotateX(0);}
-  }
-  .scr-top{background:linear-gradient(160deg,var(--navy) 0%,#06425C 100%);color:#fff;padding:50px 22px 24px;}
-  .scr-status{display:flex;justify-content:space-between;font-size:11.5px;font-weight:600;color:#BFD8DF;margin-bottom:16px;font-family:var(--disp);}
-  .scr-top .hi{font-size:13px;color:#9FC3CE;}
-  .scr-top .bal-l{font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:#7FB0BD;margin-top:16px;}
-  .scr-top .bal{font-family:var(--disp);font-size:33px;font-weight:700;margin-top:4px;letter-spacing:-.01em;}
-  .scr-cur{display:flex;gap:8px;margin-top:16px;}
-  .scr-cur span{font-size:11.5px;font-weight:600;padding:5px 11px;border-radius:999px;background:rgba(92,245,235,.13);color:var(--cyan);font-family:var(--disp);}
-  .scr-cur span.on{background:var(--cyan);color:var(--navy);}
-  .scr-acts{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;padding:15px;}
-  .scr-acts div{background:#fff;border:1px solid #E6EFEC;border-radius:15px;padding:11px 6px;text-align:center;font-size:10.5px;font-weight:600;color:var(--navy);display:grid;justify-items:center;gap:6px;}
-  .scr-acts svg{color:var(--teal-deep);}
-  .scr-row{display:flex;justify-content:space-between;align-items:center;padding:12px 17px;border-top:1px solid #ECF2F0;background:#fff;font-size:12.5px;}
-  .scr-row .l{font-weight:600;color:var(--ink);} .scr-row .s{color:var(--t3);font-size:10.5px;margin-top:2px;}
-  .scr-row .amt{font-weight:700;font-family:var(--disp);} .amt.in{color:var(--teal-deep);}
-  .app-live{display:block;width:100%;height:auto;aspect-ratio:414/868;border:none;background:#0A1614;}
-  .phone-cap{position:absolute;bottom:-40px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;color:var(--t3);white-space:nowrap;}
-  .phone-cap .live{width:8px;height:8px;border-radius:50%;background:var(--wa);box-shadow:0 0 0 3px rgba(37,211,102,.18);}
-  /* "try the demo" callout above the mockup */
-  .demo-duo{display:flex;gap:52px;justify-content:center;align-items:flex-start;flex-wrap:wrap;}
-  .chat-zone{width:360px;max-width:100%;}
-  .chat-zone .phone{width:360px;}
-  .chat-zone .chat{max-width:none;border-radius:40px;border:none;box-shadow:none;}
-  .chat-zone .chat-body{height:537px;}
-  .demo-call{display:flex;justify-content:center;margin-bottom:18px;pointer-events:none;}
-  .demo-call .pill{display:flex;align-items:center;gap:9px;background:var(--navy);color:#fff;font-family:var(--disp);font-weight:600;font-size:14px;padding:11px 19px;border-radius:999px;box-shadow:0 18px 40px -16px rgba(2,52,74,.55);white-space:nowrap;}
-  .demo-call .live{width:8px;height:8px;border-radius:50%;background:var(--wa);box-shadow:0 0 0 3px rgba(37,211,102,.35);}
-  .demo-call .pill em{font-style:normal;color:var(--cyan);}
-  .demo-call .down{color:var(--navy);}
-  @media (prefers-reduced-motion:no-preference){
-    .demo-call .live{animation:pulse 1.8s ease-in-out infinite;}
-    @keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(37,211,102,.35);}50%{box-shadow:0 0 0 7px rgba(37,211,102,.12);}}
-    .demo-call .down{animation:nudge 1.6s ease-in-out infinite;}
-    @keyframes nudge{0%,100%{transform:translateY(0);}50%{transform:translateY(5px);}}
-    .wa-live .live{animation:pulse 1.8s ease-in-out infinite;}
-    .scan.busy svg{animation:fpp 1s ease-in-out infinite;}
-    @keyframes fpp{0%,100%{opacity:.35;}50%{opacity:1;}}
-    .typing .dot{animation:blink 1.2s ease-in-out infinite;}
-    .typing .dot:nth-child(2){animation-delay:.18s;} .typing .dot:nth-child(3){animation-delay:.36s;}
-    @keyframes blink{0%,100%{opacity:.25;}50%{opacity:1;}}
-  }
-  .push{pointer-events:none;position:absolute;top:12px;left:12px;right:12px;z-index:6;background:rgba(255,255,255,.96);backdrop-filter:blur(10px);border-radius:16px;padding:11px 13px;display:flex;gap:10px;align-items:center;box-shadow:0 14px 34px -10px rgba(2,52,74,.35);}
-  .push .pic{width:32px;height:32px;border-radius:9px;background:var(--wa);display:grid;place-items:center;color:#fff;flex-shrink:0;}
-  .push .pt{font-size:11px;color:var(--t3);} .push .pm{font-size:12px;font-weight:600;color:var(--ink);margin-top:1px;line-height:1.35;}
-  .fx-chip{pointer-events:none;position:absolute;background:var(--card);border:1px solid var(--line);border-radius:15px;padding:11px 15px;box-shadow:var(--shadow);font-size:13px;font-weight:600;display:flex;align-items:center;gap:9px;z-index:3;}
-  .fx-chip svg{flex-shrink:0;}
-  .fx-chip .rate{color:var(--teal-deep);font-family:var(--disp);font-weight:700;}
-  .chip-1{top:178px;left:-34px;color:var(--head);} .chip-1 svg{color:#F5A623;}
-  .chip-2{bottom:150px;right:-38px;color:var(--head);}
-  .chip-3{bottom:34px;left:-18px;background:var(--navy);color:#fff;border-color:var(--navy);} .chip-3 svg{color:var(--wa);}
-  .chip-3 .rate{color:var(--cyan);}
+  /* ---------- providers ---------- */
+  .providers{border-top:1px solid var(--border-1);border-bottom:1px solid var(--border-1);background:var(--bg-card);}
+  .providers-in{padding:34px 0;}
+  .providers .cap{text-align:center;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-4);font-family:var(--font-display);margin-bottom:22px;}
+  .logo-row{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:14px;}
+  .logo-tile{height:60px;min-width:104px;padding:0 20px;background:var(--bg-app);border:1.5px solid var(--border-1);border-radius:14px;display:grid;place-items:center;transition:border-color var(--dur-fast),transform var(--dur-normal),box-shadow var(--dur-fast);}
+  .logo-tile:hover{border-color:var(--brand-300);transform:translateY(-2px);box-shadow:var(--shadow-sm-brand);}
+  .logo-tile img{max-height:34px;max-width:78px;width:auto;height:auto;object-fit:contain;}
+  .logo-tile img.sq{max-height:40px;max-width:40px;border-radius:8px;}
 
-  /* trust strip */
-  .strip{border-bottom:1px solid var(--line);background:linear-gradient(180deg,#FFFFFF 0%,#F5FAF9 100%);}
-  .strip-in{display:grid;grid-template-columns:repeat(4,1fr);padding-top:44px;padding-bottom:44px;}
-  .stat{padding:2px 34px;border-left:1px solid var(--line);}
-  .stat:first-child{border-left:none;padding-left:0;}
-  .stat .n{font-family:var(--disp);font-size:40px;font-weight:700;color:var(--head);letter-spacing:-.02em;}
-  .stat .n em{font-style:normal;color:var(--teal);}
-  .stat .l{font-size:13.5px;color:var(--t3);margin-top:5px;line-height:1.45;}
+  /* ---------- section shell ---------- */
+  section.block{padding:92px 0;}
+  section.tint{background:var(--bg-section);}
+  .sec-head{max-width:660px;margin:0 auto 52px;text-align:center;}
+  .sec-head.left{margin-left:0;text-align:left;}
+  .sec-head h2{font-family:var(--font-display);font-weight:800;font-size:clamp(28px,3.4vw,42px);line-height:1.12;letter-spacing:-.02em;color:var(--fg-1);margin-top:14px;text-wrap:balance;}
+  .sec-head p{font-size:17px;line-height:1.6;color:var(--fg-2);margin-top:16px;text-wrap:pretty;}
 
-  section.block{padding-top:104px;padding-bottom:104px;}
-  .sec-head{max-width:680px;margin-bottom:58px;}
-  .sec-head h2{font-family:var(--disp);font-size:clamp(30px,3.5vw,46px);font-weight:700;color:var(--head);line-height:1.1;letter-spacing:-.018em;margin-top:15px;text-wrap:balance;}
-  .sec-head p{font-size:17px;line-height:1.66;color:var(--t2);margin-top:17px;text-wrap:pretty;}
+  /* ---------- services grid ---------- */
+  .svc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;}
+  .svc{position:relative;background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;padding:26px 22px;transition:border-color var(--dur-normal),transform var(--dur-normal),box-shadow var(--dur-normal);}
+  .svc:hover{border-color:var(--brand-400);transform:translateY(-3px);box-shadow:var(--shadow-md-brand);}
+  .svc .ic{width:50px;height:50px;border-radius:14px;background:var(--brand-50);color:var(--brand-700);display:grid;place-items:center;margin-bottom:18px;transition:background var(--dur-normal),color var(--dur-normal);}
+  .svc:hover .ic{background:var(--brand-700);color:#fff;}
+  .svc .ic [data-lucide]{width:24px;height:24px;}
+  .svc h4{font-family:var(--font-display);font-weight:700;font-size:17px;color:var(--fg-1);letter-spacing:-.01em;}
+  .svc p{font-size:14px;line-height:1.55;color:var(--fg-2);margin-top:8px;}
+  .svc .tag{display:inline-block;margin-top:14px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--success);background:var(--success-bg);padding:4px 9px;border-radius:999px;}
 
-  /* whatsapp dark section */
-  .wa{background:linear-gradient(168deg,var(--navy) 0%,#032B3E 58%,#04374E 100%);color:#fff;position:relative;overflow:hidden;}
-  .wa::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 46% 52% at 18% 82%,rgba(92,245,235,.09),transparent 70%),repeating-linear-gradient(45deg,rgba(92,245,235,.028) 0 1px,transparent 1px 26px),repeating-linear-gradient(-45deg,rgba(92,245,235,.028) 0 1px,transparent 1px 26px);pointer-events:none;}
-  .wa-rib{position:absolute;left:-170px;bottom:-130px;width:540px;opacity:.07;transform:rotate(-160deg);pointer-events:none;}
-  .wa .eyebrow{color:var(--cyan);}
-  .wa .sec-head h2{color:#fff;} .wa .sec-head p{color:#A9C6CF;}
-  .wa-grid{position:relative;z-index:1;text-align:center;}
-  .wa .sec-head{margin-left:auto;margin-right:auto;}
-  .wa-feat{text-align:left;}
-  .chat{background:#fff;color:#111B21;border-radius:28px;border:1px solid #E2E5E9;overflow:hidden;box-shadow:0 50px 100px -36px rgba(2,52,74,.32);max-width:440px;}
-  .chat-top{display:flex;align-items:center;gap:11px;background:#fff;border-bottom:1px solid #E9EDEF;padding:11px 14px;}
-  .chat-top .bk{color:#54656F;flex-shrink:0;}
-  .chat-top .av{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,#0FA295,#0C5249);display:grid;place-items:center;flex-shrink:0;}
-  .chat-top .av img{width:20px;height:auto;}
-  .chat-top .nm{font-weight:600;font-size:15.5px;font-family:var(--disp);color:#111B21;} .chat-top .st{font-size:11.5px;color:#667781;margin-top:1px;}
-  .chat-body{padding:20px 15px 22px;display:flex;flex-direction:column;gap:9px;background-color:#E5DDD5;background-image:url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20width%3D%2796%27%20height%3D%2796%27%20viewBox%3D%270%200%2096%2096%27%3E%3Cg%20fill%3D%27none%27%20stroke%3D%27%23a99a82%27%20stroke-opacity%3D%270.45%27%20stroke-width%3D%271.6%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M14%2016c-3-4-9-2-9%202%200%204%209%209%209%209s9-5%209-9c0-4-6-6-9-2z%27/%3E%3Ccircle%20cx%3D%2772%27%20cy%3D%2718%27%20r%3D%276%27/%3E%3Cpath%20d%3D%27M46%2010l2%204%205%201-4%203%201%205-4-2-4%202%201-5-4-3%205-1z%27/%3E%3Crect%20x%3D%2710%27%20y%3D%2762%27%20width%3D%2717%27%20height%3D%2712%27%20rx%3D%273%27/%3E%3Cpath%20d%3D%27M14%2074l-3%205%206-2%27/%3E%3Cpath%20d%3D%27M64%2060h18%27/%3E%3Cpath%20d%3D%27M77%2056l5%204-5%204%27/%3E%3Cpath%20d%3D%27M44%2070a6%206%200%201%200%2012%200%206%206%200%200%200-12%200z%27/%3E%3Cpath%20d%3D%27M47%2068v-6l6%201.6%27/%3E%3Ccircle%20cx%3D%2726%27%20cy%3D%2740%27%20r%3D%271.4%27/%3E%3Ccircle%20cx%3D%2734%27%20cy%3D%2740%27%20r%3D%271.4%27/%3E%3Ccircle%20cx%3D%2730%27%20cy%3D%2744%27%20r%3D%271.4%27/%3E%3Cpath%20d%3D%27M82%2078l5%205M87%2078l-5%205%27/%3E%3C/g%3E%3C/svg%3E");background-size:96px 96px;}
-  .msg{position:relative;max-width:80%;padding:6px 9px 7px 11px;border-radius:8px;font-size:13.5px;line-height:1.45;color:#111B21;box-shadow:0 1px .5px rgba(11,20,26,.13);}
-  .msg.you{align-self:flex-end;background:#D9FDD3;border-top-right-radius:0;}
-  .msg.you::after{content:"";position:absolute;top:0;right:-8px;border-top:8px solid #D9FDD3;border-right:8px solid transparent;}
-  .msg.bot{align-self:flex-start;background:#fff;border-top-left-radius:0;}
-  .msg.bot::after{content:"";position:absolute;top:0;left:-8px;border-top:8px solid #fff;border-left:8px solid transparent;}
-  .msg .tick{display:block;text-align:right;font-size:10px;color:#667781;margin-top:5px;}
-  .msg b{color:#008069;font-weight:600;}
-  .msg .rcpt{background:#F0F7F6;border:1px solid #D6E6E3;border-radius:10px;padding:9px 11px;margin-top:8px;font-size:12.5px;}
-  .msg .rcpt div{display:flex;justify-content:space-between;gap:20px;padding:2.5px 0;color:#4A5A60;}
-  .msg .rcpt div b{color:#02344A;font-weight:600;}
-  .msg .tick .ck{color:#53BDEB;font-style:normal;}
-  .msg i{color:#667781;font-size:11.5px;}
-  .chat-note{align-self:center;text-align:center;margin:3px auto;max-width:92%;}
-  .chat-note.date{background:#fff;color:#54656F;font-size:11.5px;font-weight:600;padding:5px 12px;border-radius:8px;box-shadow:0 1px .5px rgba(11,20,26,.13);}
-  .chat-note.enc{display:block;text-align:center;background:#D9FDD3;color:#3B4A54;font-size:11px;line-height:1.5;padding:8px 14px;border-radius:8px;box-shadow:0 1px .5px rgba(11,20,26,.1);max-width:86%;}
-  /* live WhatsApp demo */
-  .wa-live{display:inline-flex;align-items:center;gap:8px;background:rgba(37,211,102,.12);border:1px solid rgba(37,211,102,.38);color:#9FE8BC;font-size:12.5px;font-weight:600;padding:8px 15px;border-radius:999px;margin-bottom:14px;font-family:var(--disp);}
-  .wa-live .live{width:8px;height:8px;border-radius:50%;background:var(--wa);box-shadow:0 0 0 3px rgba(37,211,102,.3);}
-  .chat-top .top-ics{display:flex;gap:18px;color:#54656F;align-items:center;}
-  .chat-body{height:460px;overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(2,52,74,.22) transparent;}
-  .chat-body::-webkit-scrollbar{width:6px;} .chat-body::-webkit-scrollbar-thumb{background:rgba(2,52,74,.18);border-radius:99px;}
-  .typing{display:flex;gap:5px;align-items:center;padding:14px 15px;}
-  .typing .dot{width:7px;height:7px;border-radius:50%;background:#8696A0;}
-  .chat-chips{display:flex;gap:8px;flex-wrap:wrap;padding:11px 13px 3px;background:#F0F2F5;border-top:1px solid #E2E5E9;}
-  .chat-chips button{font-family:var(--body);font-size:12px;font-weight:600;color:#008069;background:#fff;border:1px solid #CFE3DF;border-radius:999px;padding:7px 13px;cursor:pointer;transition:background .15s;}
-  .chat-chips button:hover{background:#E7F3F0;}
-  /* WA-style reply buttons inside a bubble */
-  .wabtns{margin-top:10px;border-top:1px solid #E6EBEC;display:grid;}
-  .wabtns button{font-family:var(--body);font-size:13px;font-weight:600;color:#008069;background:none;border:none;border-bottom:1px solid #EAEFF0;padding:11px 6px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:background .15s;}
-  .wabtns button:last-child{border-bottom:none;}
-  .wabtns button:hover{background:rgba(0,128,105,.07);}
-  .scan svg{color:#53BDEB;}
-  /* receipt card (rendered like an attachment) */
-  .receipt{background:#fff;color:#111B21;border-radius:12px;margin-top:9px;overflow:hidden;font-size:12.5px;min-width:230px;}
-  .rc-top{display:flex;align-items:center;gap:7px;background:#E7F6F5;color:#00564F;font-weight:700;font-size:10.5px;letter-spacing:.07em;padding:9px 12px;}
-  .rc-top img{height:13px;width:auto;}
-  .rc-ok{margin-left:auto;background:#D7F5E2;color:#0B7A43;font-size:9.5px;font-weight:700;padding:3px 8px;border-radius:999px;letter-spacing:.05em;}
-  .rc-amt{font-family:var(--disp);font-size:23px;font-weight:700;color:#02344A;padding:11px 14px 0;letter-spacing:-.01em;}
-  .rc-sub{color:#667781;font-size:11px;padding:3px 14px 10px;border-bottom:1px dashed #D8E0E4;}
-  .rc-rows{padding:10px 14px;display:grid;gap:6px;}
-  .rc-rows div{display:flex;justify-content:space-between;gap:16px;}
-  .rc-rows span{color:#667781;}
-  .rc-rows b{color:#111B21;font-weight:600;text-align:right;}
-  .rc-mono{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;}
-  .rc-foot{border-top:1px dashed #D8E0E4;padding:8px 14px;color:#8696A0;font-size:10px;text-align:center;}
-  .chat-input{display:flex;align-items:center;gap:8px;padding:9px 11px 12px;background:#F5F3EE;}
-  .chat-input .field{flex:1;display:flex;align-items:center;gap:10px;background:#fff;border-radius:999px;padding:9px 14px;color:#8696A0;box-shadow:0 1px .5px rgba(11,20,26,.08);}
-  .chat-input .field svg{flex-shrink:0;}
-  .chat-input input{flex:1;min-width:0;background:none;border:none;outline:none;color:#111B21;font-family:var(--body);font-size:13.5px;}
-  .chat-input input::placeholder{color:#8696A0;}
-  .chat-input .snd{width:44px;height:44px;border-radius:50%;background:#00A884;border:none;display:grid;place-items:center;color:#fff;cursor:pointer;flex-shrink:0;transition:background .15s;}
-  .chat-input .snd:hover{background:#02bd97;}
-  .wa-feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:8px;}
-  .wa-feat{display:flex;gap:16px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);border-radius:17px;padding:17px 19px;transition:background .2s,border-color .2s,transform .25s;}
-  .wa-feat:hover{background:rgba(255,255,255,.08);border-color:rgba(92,245,235,.3);transform:perspective(900px) translateY(-3px) rotateX(4deg);}
-  .wa-feat .ic{width:42px;height:42px;border-radius:12px;background:rgba(92,245,235,.12);display:grid;place-items:center;color:var(--cyan);flex-shrink:0;}
-  .wa-feat h4{font-family:var(--disp);font-size:16px;} .wa-feat p{font-size:13.5px;color:#A9C6CF;line-height:1.58;margin-top:4px;}
-  .wa-cta{display:flex;gap:14px;margin-top:28px;flex-wrap:wrap;justify-content:center;}
-  .ai-pill{display:inline-flex;align-items:center;gap:8px;background:rgba(92,245,235,.1);border:1px solid rgba(92,245,235,.32);color:var(--cyan);font-size:12.5px;font-weight:600;padding:8px 15px;border-radius:999px;margin-bottom:20px;font-family:var(--disp);}
+  /* ---------- how it works ---------- */
+  .steps{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;counter-reset:step;}
+  .step{position:relative;padding-top:8px;}
+  .step .n{width:46px;height:46px;border-radius:14px;background:var(--brand-700);color:#fff;font-family:var(--font-display);font-weight:800;font-size:19px;display:grid;place-items:center;box-shadow:var(--shadow-md-brand);}
+  .step h4{font-family:var(--font-display);font-weight:700;font-size:18px;margin-top:20px;color:var(--fg-1);}
+  .step p{font-size:14.5px;line-height:1.58;color:var(--fg-2);margin-top:8px;}
+  .step .ic{position:absolute;top:8px;right:6px;color:var(--brand-200);}
+  .step .ic [data-lucide]{width:30px;height:30px;stroke-width:1.5;}
 
-  /* services */
-  /* services backdrop pattern + watermark */
-  #services{position:relative;overflow:hidden;}
-  #services::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(2,52,74,.07) 1.2px,transparent 1.3px);background-size:24px 24px;-webkit-mask-image:linear-gradient(115deg,transparent 48%,#000 88%);mask-image:linear-gradient(115deg,transparent 48%,#000 88%);pointer-events:none;}
-  #services::after{content:"";position:absolute;right:-130px;top:-110px;width:430px;height:560px;background:url("assets/brand/zitch-ribbon2.png") no-repeat center / contain;opacity:.05;transform:rotate(18deg);pointer-events:none;}
-  #services .wrap{position:relative;z-index:1;}
-  .svc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;}
-  .svc{position:relative;background:var(--card);border:1px solid var(--line);border-radius:19px;padding:26px 22px;transition:border-color .18s,transform .18s,box-shadow .18s;}
-  .svc:hover{border-color:var(--teal);transform:perspective(800px) translateY(-5px) rotateX(5deg);box-shadow:var(--shadow);}
-  .svc .ic{width:44px;height:44px;border-radius:13px;background:var(--mint);display:grid;place-items:center;color:var(--teal-deep);margin-bottom:17px;transition:background .22s,color .22s,box-shadow .35s;transform-style:preserve-3d;}
-  .svc:hover .ic{background:var(--teal-deep);color:#fff;}
-  .svc h4{font-family:var(--disp);font-size:16.5px;color:var(--head);}
-  .svc p{font-size:13.5px;color:var(--t2);line-height:1.58;margin-top:7px;}
-  .svc .go{position:absolute;top:22px;right:20px;color:var(--teal-deep);opacity:0;transform:translateX(-6px);transition:opacity .18s,transform .18s;}
-  .svc:hover .go{opacity:1;transform:none;}
-  /* services: a 3D flip that spotlights one icon at a time, advancing every 5s
-     (driven by JS below). Motion-gated so reduced-motion users get the static grid. */
-  @keyframes svcflip{
-    0%{transform:perspective(680px) rotateY(0) scale(1);}
-    35%{transform:perspective(680px) rotateY(180deg) scale(1.22);}
-    70%{transform:perspective(680px) rotateY(360deg) scale(1.07);}
-    100%{transform:perspective(680px) rotateY(360deg) scale(1);}
-  }
-  @media (prefers-reduced-motion:no-preference){
-    .svc .ic.flip3d{animation:svcflip 1.15s cubic-bezier(.45,.05,.25,1) both;background:var(--teal-deep);color:#fff;box-shadow:0 12px 28px rgba(2,52,74,.26);}
-  }
-  body[data-theme="dark"] .svc .ic.flip3d{box-shadow:0 12px 30px rgba(0,0,0,.5);}
+  /* ---------- why us ---------- */
+  .why-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;}
+  .why{display:flex;gap:16px;background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;padding:24px 22px;}
+  .why .ic{width:46px;height:46px;border-radius:13px;background:var(--brand-50);color:var(--brand-700);display:grid;place-items:center;flex-shrink:0;}
+  .why h4{font-family:var(--font-display);font-weight:700;font-size:16.5px;color:var(--fg-1);}
+  .why p{font-size:14px;line-height:1.56;color:var(--fg-2);margin-top:6px;}
 
-  /* compact FX band */
-  .fx-band{display:grid;grid-template-columns:1fr 1.15fr;gap:48px;align-items:center;background:radial-gradient(ellipse 55% 90% at 100% 0%,rgba(35,177,168,.09),transparent 60%),radial-gradient(ellipse 40% 70% at 0% 100%,rgba(92,245,235,.1),transparent 65%),var(--paper);border:1px solid var(--line);border-radius:var(--rl);padding:48px 52px;position:relative;overflow:hidden;}
-  .fx-band h2{font-family:var(--disp);font-size:28px;font-weight:700;color:var(--head);margin-top:13px;letter-spacing:-.015em;line-height:1.12;}
-  .fx-band p{font-size:15.5px;line-height:1.66;color:var(--t2);margin-top:13px;}
-  .rate-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px;}
-  .rate-cell{display:flex;align-items:center;gap:11px;background:var(--card);border:1px solid var(--line);border-radius:15px;padding:15px 17px;font-size:13.5px;transition:border-color .15s,box-shadow .15s;}
-  .rate-cell:hover{border-color:var(--teal);box-shadow:var(--shadow);}
-  .rate-cell .flag{font-size:17px;}
-  .rate-cell .pair{font-weight:600;flex:1;}
-  .rate-cell .rt{font-family:var(--disp);font-weight:700;color:var(--teal-deep);}
+  /* ---------- pricing / cashback ---------- */
+  .price-wrap{display:grid;grid-template-columns:.9fr 1.1fr;gap:44px;align-items:center;}
+  .price-points{display:grid;gap:16px;margin-top:26px;}
+  .price-point{display:flex;gap:13px;align-items:flex-start;}
+  .price-point .c{width:26px;height:26px;border-radius:8px;background:var(--success-bg);color:var(--success);display:grid;place-items:center;flex-shrink:0;margin-top:1px;}
+  .price-point .c [data-lucide]{width:15px;height:15px;stroke-width:2.4;}
+  .price-point b{font-family:var(--font-display);font-size:15.5px;color:var(--fg-1);}
+  .price-point span{display:block;font-size:14px;color:var(--fg-2);margin-top:3px;line-height:1.5;}
+  .rate-card{background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;overflow:hidden;box-shadow:var(--shadow-md-brand);}
+  .rate-card .rc-top{background:linear-gradient(140deg,var(--brand-700),var(--brand-800));color:#fff;padding:22px 24px;}
+  .rate-card .rc-top .k{font-size:12px;letter-spacing:.1em;text-transform:uppercase;opacity:.8;font-family:var(--font-display);font-weight:600;}
+  .rate-card .rc-top .v{font-family:var(--font-display);font-weight:800;font-size:26px;margin-top:6px;letter-spacing:-.01em;}
+  .rate-row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:15px 24px;border-top:1px solid var(--border-1);}
+  .rate-row .l{display:flex;align-items:center;gap:11px;font-size:14.5px;color:var(--fg-1);font-weight:500;}
+  .rate-row .l .ri{width:32px;height:32px;border-radius:9px;background:var(--brand-50);color:var(--brand-700);display:grid;place-items:center;flex-shrink:0;}
+  .rate-row .l .ri [data-lucide]{width:16px;height:16px;}
+  .rate-row .r{font-family:var(--font-display);font-weight:700;font-size:14px;color:var(--success);white-space:nowrap;}
 
-  /* security band */
-  .sec-band{background:var(--paper);border-top:1px solid var(--line);border-bottom:1px solid var(--line);position:relative;}
-  .sec-band::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(2,52,74,.06) 1.2px,transparent 1.3px);background-size:24px 24px;-webkit-mask-image:linear-gradient(65deg,#000 0%,transparent 45%);mask-image:linear-gradient(65deg,#000 0%,transparent 45%);pointer-events:none;}
-  .sec-band .wrap{position:relative;}
-  .band-in{display:grid;grid-template-columns:repeat(3,1fr);gap:40px;padding-top:72px;padding-bottom:72px;}
-  .band-item{display:flex;gap:17px;}
-  .band-item .ic{width:46px;height:46px;border-radius:14px;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;color:var(--teal-deep);flex-shrink:0;}
-  .band-item h4{font-family:var(--disp);font-size:16.5px;color:var(--head);}
-  .band-item p{font-size:13.5px;color:var(--t2);line-height:1.62;margin-top:6px;}
+  /* ---------- faq ---------- */
+  .faq{max-width:800px;margin:0 auto;display:grid;gap:12px;}
+  .qa{background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;overflow:hidden;transition:border-color var(--dur-fast);}
+  .qa[open]{border-color:var(--brand-300);}
+  .qa summary{list-style:none;cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 22px;font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--fg-1);}
+  .qa summary::-webkit-details-marker{display:none;}
+  .qa summary .chev{color:var(--brand-600);transition:transform var(--dur-normal);flex-shrink:0;}
+  .qa[open] summary .chev{transform:rotate(180deg);}
+  .qa .a{padding:0 22px 20px;font-size:15px;line-height:1.62;color:var(--fg-2);}
 
-  /* CTA */
-  .cta{background:linear-gradient(165deg,var(--navy) 0%,#032B3E 100%);color:#fff;text-align:center;position:relative;overflow:hidden;}
-  .cta::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 50% 60% at 50% 0%,rgba(92,245,235,.1),transparent 70%),repeating-linear-gradient(45deg,rgba(92,245,235,.025) 0 1px,transparent 1px 26px),repeating-linear-gradient(-45deg,rgba(92,245,235,.025) 0 1px,transparent 1px 26px);}
-  .cta-in{padding:112px 32px;position:relative;}
-  .cta h2{font-family:var(--disp);font-size:clamp(32px,4vw,50px);font-weight:700;line-height:1.1;letter-spacing:-.018em;text-wrap:balance;}
-  .cta p{color:#A9C6CF;font-size:17.5px;margin:20px auto 38px;max-width:540px;line-height:1.62;}
-  .cta .row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;align-items:center;}
-  .cta-rib{position:absolute;right:-110px;top:-90px;width:450px;opacity:.09;transform:rotate(24deg);}
+  /* ---------- contact ---------- */
+  .contact-wrap{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start;}
+  .contact-list{display:grid;gap:14px;margin-top:8px;}
+  .contact-item{display:flex;gap:15px;align-items:flex-start;background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:14px;padding:18px 20px;}
+  .contact-item .ic{width:44px;height:44px;border-radius:12px;background:var(--brand-50);color:var(--brand-700);display:grid;place-items:center;flex-shrink:0;}
+  .contact-item .k{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-4);font-family:var(--font-display);}
+  .contact-item .val{font-size:15.5px;color:var(--fg-1);font-weight:500;margin-top:3px;}
+  .form{background:var(--bg-card);border:1.5px solid var(--border-1);border-radius:16px;padding:26px;}
+  .form .field{margin-bottom:15px;}
+  .form label{display:block;font-size:13px;font-weight:600;color:var(--fg-2);margin-bottom:7px;font-family:var(--font-display);}
+  .form input,.form textarea{width:100%;font-family:var(--font-body);font-size:15px;color:var(--fg-1);background:var(--bg-app);border:1.5px solid var(--border-2);border-radius:8px;padding:12px 14px;transition:border-color var(--dur-fast),box-shadow var(--dur-fast);}
+  .form input:focus,.form textarea:focus{outline:none;border-color:var(--brand-600);box-shadow:0 0 0 3px rgba(15,162,149,.20);}
+  .form textarea{resize:vertical;min-height:110px;}
+  .form .btn-primary{width:100%;}
+  .form .note{font-size:12.5px;color:var(--fg-4);margin-top:12px;text-align:center;}
 
-  /* footer */
-  footer{background:var(--navy-3);color:#8FB2BC;padding:72px 0 40px;font-size:14px;}
-  .foot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:44px;padding-bottom:48px;border-bottom:1px solid rgba(255,255,255,.08);}
-  .foot-brand img{height:36px;margin-bottom:18px;}
-  .foot-brand p{line-height:1.68;max-width:290px;}
-  footer h5{color:#fff;font-family:var(--disp);font-size:14px;margin:0 0 17px;letter-spacing:.05em;}
-  footer ul{list-style:none;margin:0;padding:0;display:grid;gap:12px;}
-  footer a{transition:color .15s;} footer a:hover{color:var(--cyan);}
-  .foot-base{display:flex;justify-content:space-between;gap:20px;padding-top:30px;font-size:12.5px;flex-wrap:wrap;}
-  .foot-social{display:flex;gap:11px;margin-top:20px;}
-  .foot-social a{width:40px;height:40px;border-radius:11px;border:1px solid rgba(255,255,255,.14);display:grid;place-items:center;color:#BFE3DF;transition:background .15s,color .15s,border-color .15s,transform .12s;}
-  .foot-social a:hover{background:var(--teal-deep);color:#fff;border-color:var(--teal-deep);transform:translateY(-2px);}
+  /* ---------- cta ---------- */
+  .cta{background:var(--brand-700);color:#fff;position:relative;overflow:hidden;}
+  .cta::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 60% 70% at 50% -10%,rgba(255,255,255,.14),transparent 70%);pointer-events:none;}
+  .cta-in{position:relative;text-align:center;padding:88px 24px;}
+  .cta h2{font-family:var(--font-display);font-weight:800;font-size:clamp(30px,3.6vw,44px);line-height:1.1;letter-spacing:-.02em;color:#fff;text-wrap:balance;}
+  .cta p{font-size:17.5px;line-height:1.6;color:rgba(255,255,255,.85);max-width:520px;margin:18px auto 32px;}
+  .cta .stores{justify-content:center;}
 
-  /* FAQ */
-  .faq .sec-head{max-width:660px;margin-left:auto;margin-right:auto;text-align:center;margin-bottom:46px;}
-  .faq-list{max-width:820px;margin:0 auto;display:grid;gap:12px;}
-  .faq-item{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:0 22px;transition:border-color .18s,box-shadow .18s;}
-  .faq-item[open]{border-color:var(--teal);box-shadow:var(--shadow);}
-  .faq-item summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 0;font-family:var(--disp);font-weight:600;font-size:16.5px;color:var(--head);line-height:1.4;}
-  .faq-item summary::-webkit-details-marker{display:none;}
-  .faq-x{flex-shrink:0;width:27px;height:27px;border-radius:8px;background:var(--mint);color:var(--teal-deep);display:grid;place-items:center;transition:transform .22s ease,background .18s,color .18s;}
-  .faq-item[open] .faq-x{transform:rotate(45deg);background:var(--teal-deep);color:#fff;}
-  .faq-a{padding:0 0 21px;}
-  .faq-a p{font-size:14.5px;line-height:1.72;color:var(--t2);max-width:700px;}
-  .faq-a p a{color:var(--teal-deep);font-weight:600;}
-  body[data-theme="dark"] .faq-a p a{color:#3ED8CC;}
+  /* ---------- footer ---------- */
+  footer{background:var(--brand-900);color:#93a4c4;padding:66px 0 34px;font-size:14px;}
+  .foot-grid{display:grid;grid-template-columns:1.8fr 1fr 1fr 1.1fr;gap:40px;padding-bottom:44px;border-bottom:1px solid rgba(255,255,255,.09);}
+  .foot-brand .brand .word{color:#fff;}
+  .foot-brand p{margin-top:16px;line-height:1.65;max-width:300px;color:#8496b8;}
+  .foot-store{margin-top:20px;display:flex;gap:10px;}
+  .foot-store .store{height:48px;padding:0 15px;}
+  .foot-store .store .txt .m{font-size:14px;}
+  footer h5{color:#fff;font-family:var(--font-display);font-weight:700;font-size:14px;margin:0 0 16px;letter-spacing:.02em;}
+  footer ul{list-style:none;margin:0;padding:0;display:grid;gap:11px;}
+  footer ul a{color:#93a4c4;transition:color var(--dur-fast);}
+  footer ul a:hover{color:#fff;}
+  .foot-base{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;padding-top:26px;font-size:12.5px;color:#7286a8;}
+  .ph{border-bottom:1px dotted rgba(147,164,196,.55);}
 
-  /* theme toggle */
-  .thm{width:46px;height:46px;border-radius:12px;border:1.5px solid #CBDBE1;background:transparent;color:var(--head);cursor:pointer;display:grid;place-items:center;transition:border-color .15s;}
-  .thm:hover{border-color:var(--teal);color:var(--teal-deep);}
-  /* dark theme */
-  body[data-theme="dark"]{--bg:#04161F;--paper:#082230;--mint:#0E2E3B;--line:#15384A;--ink:#E9F5F3;--t2:#A9C6CF;--t3:#6E8E99;--head:#EAF7F5;--card:#0B2836;--shadow:0 2px 6px rgba(0,0,0,.25),0 24px 48px -24px rgba(0,0,0,.55);}
-  body[data-theme="dark"] header.nav{background:rgba(4,22,31,.86);}
-  body[data-theme="dark"] .hero{background:linear-gradient(178deg,#07212E 0%,#04161F 75%);}
-  body[data-theme="dark"] .hero::after{background-image:radial-gradient(rgba(92,245,235,.12) 1.2px,transparent 1.3px);}
-  body[data-theme="dark"] .strip{background:linear-gradient(180deg,#04161F,#062029);}
-  body[data-theme="dark"] .eyebrow{color:#3ED8CC;}
-  body[data-theme="dark"] .rate-cell .rt,body[data-theme="dark"] .svc .ic,body[data-theme="dark"] .band-item .ic,body[data-theme="dark"] .fx-chip .rate{color:#3ED8CC;}
-  body[data-theme="dark"] .svc:hover .ic{background:var(--teal-deep);color:#fff;}
-  body[data-theme="dark"] .btn-line,body[data-theme="dark"] .thm{border-color:var(--line);}
-  body[data-theme="dark"] .hero-ctas .store{background:#fff;color:#02344A;}
-  body[data-theme="dark"] .hero-ctas .store:hover{background:#D9EEE9;}
-  body[data-theme="dark"] .demo-call .pill{background:#0E2E3B;border:1px solid var(--line);}
-  body[data-theme="dark"] #services::before{background-image:radial-gradient(rgba(92,245,235,.07) 1.2px,transparent 1.3px);}
-  body[data-theme="dark"] .sec-band::before{background-image:radial-gradient(rgba(92,245,235,.06) 1.2px,transparent 1.3px);}
-
-  /* burger */
-  .burger{display:none;width:46px;height:46px;border-radius:12px;border:1.5px solid #CBDBE1;background:transparent;color:var(--head);cursor:pointer;place-items:center;}
-  .burger:hover{border-color:var(--teal);color:var(--teal-deep);}
-  body[data-theme="dark"] .burger{border-color:var(--line);}
-  .m-menu{display:none;position:fixed;top:0;left:0;right:0;z-index:90;background:var(--bg);border-bottom:1px solid var(--line);padding:18px 24px 22px;box-shadow:0 30px 60px -20px rgba(2,52,74,.25);}
+  /* ---------- mobile menu ---------- */
+  .m-menu{display:none;position:fixed;inset:0 0 auto 0;z-index:90;background:var(--bg-app);border-bottom:1px solid var(--border-1);padding:16px 24px 22px;box-shadow:var(--shadow-lg-brand);}
   .m-menu.open{display:block;}
-  .m-menu .m-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+  .m-menu .m-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
   .m-menu nav{display:grid;}
-  .m-menu nav a{padding:15px 4px;font-size:17px;font-weight:600;font-family:var(--disp);color:var(--head);border-bottom:1px solid var(--line);}
-  .m-menu nav a:last-child{border-bottom:none;}
-  .m-menu .m-ctas{display:grid;gap:10px;margin-top:16px;}
+  .m-menu nav a{padding:14px 4px;font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--fg-1);border-bottom:1px solid var(--border-1);}
+  .m-menu .btn{margin-top:16px;width:100%;}
 
-  @media (max-width:1020px){
-    .wa-grid,.fx-band{grid-template-columns:1fr;}
-    .wa-feats{grid-template-columns:1fr;}
-    .demo-duo{gap:44px;}
-    .strip-in,.svc-grid{grid-template-columns:repeat(2,1fr);}
-    .strip-in{gap:26px 0;} .stat:nth-child(odd){border-left:none;padding-left:0;}
-    .band-in{grid-template-columns:1fr;}
+  /* ---------- reveal ---------- */
+  @media (prefers-reduced-motion:no-preference){
+    .rev{opacity:0;transform:translateY(20px);transition:opacity .6s var(--ease-out),transform .6s var(--ease-out);transition-delay:var(--d,0s);}
+    .rev.vis{opacity:1;transform:none;}
+    .pf-1,.pf-2{animation:float 5s ease-in-out infinite alternate;}
+    .pf-2{animation-delay:1.4s;}
+    @keyframes float{from{transform:translateY(0);}to{transform:translateY(-8px);}}
+  }
+
+  /* ---------- responsive ---------- */
+  @media (max-width:1000px){
     .nav-links{display:none;}
     .burger{display:grid;}
-    .foot-grid{grid-template-columns:1fr 1fr;}
-    .phone-zone{margin-top:0;}
-    .phone{width:344px;}
-    .chip-1{left:0;} .chip-2{right:0;}
+    .hero-in{grid-template-columns:1fr;gap:52px;text-align:center;padding:56px 0 72px;}
+    .hero .lead{margin-left:auto;margin-right:auto;}
+    .hero-cta{align-items:center;}
+    .hero-sub{justify-content:center;}
+    .sec-head.left{text-align:center;margin-left:auto;}
+    .svc-grid{grid-template-columns:repeat(2,1fr);}
+    .steps{grid-template-columns:repeat(2,1fr);}
+    .why-grid{grid-template-columns:1fr;}
+    .price-wrap,.contact-wrap{grid-template-columns:1fr;gap:32px;}
+    .foot-grid{grid-template-columns:1fr 1fr;gap:32px;}
   }
-
-  /* ---- fold / large phone ---- */
-  @media (max-width:760px){
-    .wrap{padding-left:22px;padding-right:22px;}
-    .announce{font-size:12px;padding:9px 14px;}
-    .nav-in{height:64px;gap:14px;}
-    .brand{font-size:16px;} .brand img{height:26px;}
-    .nav-cta .btn-line{display:none;}
-    .nav-cta .btn-teal{height:42px;padding:0 18px;font-size:14px;}
-    .thm{width:42px;height:42px;} .burger{width:42px;height:42px;}
-    .hero-in{padding-top:52px;padding-bottom:64px;gap:44px;}
-    .hero h1{font-size:clamp(30px,6.4vw,42px);line-height:1.08;}
-    .hero p.lead{font-size:15.5px;}
-    .sec-head h2{font-size:clamp(26px,4.8vw,34px);}
-    .demo-duo{gap:40px;}
-    .phone,.chat-zone,.chat-zone .phone{width:min(392px,100%);}
-    .chat-zone .chat-body{height:min(537px,118vw);}
-    section.block{padding-top:64px;padding-bottom:64px;}
-    .sec-head{margin-bottom:36px;}
-    .strip-in{padding-top:30px;padding-bottom:30px;}
-    .stat .n{font-size:30px;}
-    .stat{padding:2px 20px;}
-    .fx-band{padding:32px 26px;gap:28px;}
-    .band-in{padding-top:48px;padding-bottom:48px;gap:26px;}
-    .cta-in{padding:68px 22px;}
-    footer{padding:48px 0 30px;}
-  }
-
-  /* ---- mobile ---- */
-  @media (max-width:480px){
-    .wrap{padding-left:18px;padding-right:18px;}
-    .hero h1{font-size:clamp(25px,7vw,31px);line-height:1.12;}
-    .hero p.lead{font-size:14.5px;margin-bottom:24px;}
-    .sec-head h2{font-size:23px;line-height:1.16;}
-    .sec-head p{font-size:14.5px;}
-    .eyebrow{font-size:11.5px;}
-    .hero-ctas{flex-direction:column;align-items:stretch;}
-    .hero-ctas .store,.hero-ctas .btn-wa{width:100%;justify-content:center;}
-    .hero-note{flex-direction:column;gap:8px;}
-    .chip-1,.chip-2{display:none;}
-    .chip-3{bottom:18px;left:50%;transform:translateX(-50%);white-space:nowrap;}
-    .svc-grid{grid-template-columns:1fr;}
-    .strip-in{grid-template-columns:1fr 1fr;gap:20px 0;}
-    .rate-grid{grid-template-columns:1fr;}
-    .foot-grid{grid-template-columns:1fr;gap:30px;}
+  @media (max-width:560px){
+    .wrap{padding:0 18px;}
+    section.block{padding:64px 0;}
+    .svc-grid,.steps{grid-template-columns:1fr;}
+    .stores{flex-direction:column;}
+    .store{width:100%;}
+    .foot-grid{grid-template-columns:1fr;}
     .foot-base{flex-direction:column;gap:8px;}
-    .cta .row{flex-direction:column;align-items:stretch;}
-    .cta .row .store,.cta .row .btn-wa{width:100%;justify-content:center;}
-    .demo-call .pill{font-size:12px;padding:8px 14px;text-align:center;white-space:normal;line-height:1.3;}
-    .demo-duo{gap:30px;}
-  }
-  /* ---- fold cover screens ---- */
-  @media (max-width:340px){
-    .hero h1{font-size:25px;}
-    .stat .n{font-size:24px;}
-    .chat-zone .chat-body{height:108vw;}
-    .msg{max-width:92%;}
+    .phone{width:280px;}
+    .pf-1{left:-8px;}.pf-2{right:-8px;}
   }
 
-  /* ===== big WhatsApp portal button + floating FAB ===== */
-  .btn-wa-xl{height:62px;padding:0 32px;font-size:16.5px;border-radius:16px;box-shadow:0 18px 42px -14px rgba(37,211,102,.62);}
-  .btn-wa-xl svg{width:24px;height:24px;}
-  .wa-fab{position:fixed;right:22px;bottom:22px;z-index:80;width:62px;height:62px;border-radius:50%;background:var(--wa);display:grid;place-items:center;color:#fff;box-shadow:0 14px 34px -8px rgba(37,211,102,.7);transition:transform .15s,box-shadow .15s;}
-  .wa-fab:hover{transform:translateY(-3px) scale(1.04);box-shadow:0 20px 46px -10px rgba(37,211,102,.82);}
-  .wa-fab svg{width:33px;height:33px;}
-  .wa-fab .fab-pulse{position:absolute;inset:0;border-radius:50%;pointer-events:none;}
-  @media (prefers-reduced-motion:no-preference){
-    .wa-fab .fab-pulse{animation:fabp 2.6s ease-out infinite;}
-    @keyframes fabp{0%{box-shadow:0 0 0 0 rgba(37,211,102,.5);}70%{box-shadow:0 0 0 17px rgba(37,211,102,0);}100%{box-shadow:0 0 0 0 rgba(37,211,102,0);}}
-  }
-
-  /* ===== Two ways to bank (WhatsApp vs App) ===== */
-  .ways{background:var(--paper);border-top:1px solid var(--line);border-bottom:1px solid var(--line);position:relative;overflow:hidden;}
-  .ways::before{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(2,52,74,.06) 1.2px,transparent 1.3px);background-size:24px 24px;-webkit-mask-image:linear-gradient(160deg,#000,transparent 62%);mask-image:linear-gradient(160deg,#000,transparent 62%);pointer-events:none;}
-  .ways .wrap{position:relative;z-index:1;}
-  .ways .sec-head{margin-left:auto;margin-right:auto;text-align:center;}
-  .ways-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;}
-  .way{position:relative;border-radius:var(--rl);padding:34px 32px;border:1px solid var(--line);background:var(--card);box-shadow:var(--shadow);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.22,1,.36,1),box-shadow .3s;}
-  .way:hover{transform:perspective(1200px) translateY(-5px) rotateX(2.5deg);box-shadow:var(--shadow-lg);}
-  .way.wa{background:linear-gradient(162deg,#0B141A 0%,#0E2A20 100%);border-color:rgba(37,211,102,.32);color:#fff;}
-  .way-top{display:flex;align-items:center;gap:14px;margin-bottom:16px;}
-  .way-ic{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;flex-shrink:0;}
-  .way.wa .way-ic{background:var(--wa);color:#fff;}
-  .way.app .way-ic{background:var(--mint);color:var(--teal-deep);}
-  .way .tag{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;}
-  .way.wa .tag{color:#7BE3A6;} .way.app .tag{color:var(--teal-deep);}
-  .way h3{font-family:var(--disp);font-size:23px;font-weight:700;letter-spacing:-.01em;margin-top:3px;}
-  .way.app h3{color:var(--head);}
-  .way .way-sub{font-size:14.5px;line-height:1.62;}
-  .way.wa .way-sub{color:#A9C6CF;} .way.app .way-sub{color:var(--t2);}
-  .way .feat-chips{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 4px;}
-  .way .feat-chips span{font-size:12px;font-weight:600;padding:6px 12px;border-radius:999px;}
-  .way.wa .feat-chips span{background:rgba(92,245,235,.1);color:var(--cyan);border:1px solid rgba(92,245,235,.22);}
-  .way.app .feat-chips span{background:var(--mint);color:var(--teal-deep);border:1px solid var(--line);}
-  .way .limits{margin:20px 0;border-radius:16px;overflow:hidden;border:1px solid;}
-  .way.wa .limits{border-color:rgba(255,255,255,.12);background:rgba(255,255,255,.04);}
-  .way.app .limits{border-color:var(--line);background:var(--paper);}
-  .way .limit{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:13px 16px;font-size:13.5px;}
-  .way .limit + .limit{border-top:1px solid;}
-  .way.wa .limit + .limit{border-color:rgba(255,255,255,.08);}
-  .way.app .limit + .limit{border-color:var(--line);}
-  .way .limit .lk{display:flex;align-items:center;gap:9px;}
-  .way.wa .limit .lk{color:#C8DEE4;} .way.app .limit .lk{color:var(--t2);}
-  .way .limit .lk svg{flex-shrink:0;opacity:.85;}
-  .way .limit .lv{font-family:var(--disp);font-weight:700;text-align:right;}
-  .way.wa .limit .lv{color:#fff;} .way.app .limit .lv{color:var(--head);}
-  .way .limit .lv.up{color:var(--teal);}
-  .way .way-cta{margin-top:auto;}
-  .way .way-cta .btn{width:100%;}
-  .way .way-foot{font-size:12.5px;margin-top:14px;text-align:center;}
-  .way.wa .way-foot{color:#8FB2BC;} .way.app .way-foot{color:var(--t3);}
-  .ways-note{display:flex;align-items:center;justify-content:center;gap:11px;margin-top:26px;font-size:14.5px;color:var(--t2);text-align:center;text-wrap:pretty;}
-  .ways-note b{color:var(--head);} .ways-note svg{color:var(--teal-deep);flex-shrink:0;}
-
-  /* ===== Pricing ===== */
-  .price-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
-  .price{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:26px 24px;transition:border-color .18s,box-shadow .18s,transform .18s;}
-  .price:hover{border-color:var(--teal);box-shadow:var(--shadow);transform:translateY(-3px);}
-  .price .ph{display:flex;align-items:center;gap:11px;margin-bottom:15px;}
-  .price .ph .ic{width:40px;height:40px;border-radius:12px;background:var(--mint);display:grid;place-items:center;color:var(--teal-deep);flex-shrink:0;}
-  .price .ph .pt{font-family:var(--disp);font-weight:700;font-size:16px;color:var(--head);}
-  .price .big{font-family:var(--disp);font-size:25px;font-weight:700;color:var(--head);letter-spacing:-.01em;}
-  .price .small{font-size:13px;color:var(--t3);margin-top:4px;}
-  .price .plabel{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--t3);margin:17px 0 9px;}
-  .price .pchips{display:flex;flex-wrap:wrap;gap:7px;}
-  .price .pchips span{font-size:11.5px;font-weight:600;color:var(--t2);background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:5px 11px;}
-  .price-foot{display:flex;align-items:center;justify-content:center;gap:9px;flex-wrap:wrap;margin-top:26px;font-size:14px;color:var(--t3);text-align:center;}
-  .price-foot b{color:var(--teal-deep);}
-
-  @media (max-width:760px){ .ways-grid,.price-grid{grid-template-columns:1fr;} }
-
-  /* How it works — three-step band */
-  .how-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:46px;}
-  .how-step{background:var(--card);border:1px solid var(--line);border-radius:var(--rl);padding:30px 28px;box-shadow:var(--shadow);}
-  .how-step .num{font-family:var(--disp);font-weight:700;font-size:15px;color:var(--teal-deep);background:var(--mint);width:40px;height:40px;border-radius:13px;display:grid;place-items:center;margin-bottom:18px;}
-  .how-step h4{font-family:var(--disp);font-size:19px;color:var(--head);margin:0 0 8px;letter-spacing:-.01em;}
-  .how-step p{font-size:15px;line-height:1.62;color:var(--t2);margin:0;}
-  @media (max-width:820px){ .how-grid{grid-template-columns:1fr;} }
+  /* ---------- dark ---------- */
+  body[data-theme="dark"]{background:var(--bg-app);}
+  body[data-theme="dark"] header.nav{background:rgba(5,32,28,.85);}
+  body[data-theme="dark"] .store{background:#fff;color:var(--brand-900);}
+  body[data-theme="dark"] .providers,body[data-theme="dark"] .svc,body[data-theme="dark"] .why,body[data-theme="dark"] .qa,body[data-theme="dark"] .contact-item,body[data-theme="dark"] .form,body[data-theme="dark"] .rate-card,body[data-theme="dark"] .p-tile,body[data-theme="dark"] .p-recent{background:var(--bg-card);}
+  body[data-theme="dark"] .logo-tile{background:var(--bg-section);}
+  body[data-theme="dark"] .logo-tile img:not(.sq){filter:brightness(0) invert(1);opacity:.9;}
 </style>
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": ["Organization", "FinancialService"],
-      "@id": "https://zitch.ng/#organization",
-      "name": "Zitch",
-      "legalName": "Zitch Technologies Limited",
-      "url": "https://zitch.ng/",
-      "logo": "https://zitch.ng/assets/brand/zitch-mark.png",
-      "image": "https://zitch.ng/assets/brand/zitch-badge.png",
-      "description": "Nigerian fintech for instant payments, multi-currency wallets and WhatsApp banking.",
-      "email": "support@zitch.ng",
-      "telephone": "+2348166938327",
-      "address": {
-        "@type": "PostalAddress",
-        "addressLocality": "Ketu, Lagos",
-        "addressRegion": "Lagos",
-        "addressCountry": "NG"
-      },
-      "contactPoint": {
-        "@type": "ContactPoint",
-        "contactType": "customer support",
-        "email": "support@zitch.ng",
-        "telephone": "+2348166938327",
-        "areaServed": "NG",
-        "availableLanguage": ["en"]
-      },
-      "sameAs": [
-        "https://instagram.com/zitchng",
-        "https://facebook.com/zitchng"
-      ],
-      "hasOfferCatalog": {
-        "@type": "OfferCatalog",
-        "name": "Zitch services",
-        "itemListElement": [
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Bank transfers", "description": "Instant transfers to any Nigerian bank, and to other Zitch users." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Airtime & data", "description": "Top up MTN, Airtel, Glo and 9mobile in seconds." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Bill payments", "description": "Electricity for all discos plus DStv, GOtv and StarTimes." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Virtual dollar cards", "description": "Spend a USD wallet anywhere online." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Fixed savings", "description": "Lock funds and grow your savings." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Loans", "description": "Quick credit with clear terms, repaid in-app." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "Multi-currency wallet & FX", "description": "Hold and convert NGN, USD, GBP, CAD and CNY." } },
-          { "@type": "Offer", "itemOffered": { "@type": "Service", "name": "WhatsApp banking", "description": "Bank by chat; money moves only after PIN or biometric approval." } }
-        ]
-      }
-    },
-    {
-      "@type": "WebSite",
-      "@id": "https://zitch.ng/#website",
-      "url": "https://zitch.ng/",
-      "name": "Zitch",
-      "publisher": { "@id": "https://zitch.ng/#organization" },
-      "inLanguage": "en-NG"
-    },
-    {
-      "@type": "SoftwareApplication",
-      "@id": "https://zitch.ng/#app",
-      "name": "Zitch",
-      "applicationCategory": "FinanceApplication",
-      "operatingSystem": "Android, iOS",
-      "url": "https://zitch.ng/",
-      "image": "https://zitch.ng/assets/brand/zitch-badge.png",
-      "description": "Nigerian money app for instant transfers, airtime, data, bills, virtual dollar cards, savings, loans and multi-currency wallets — plus banking on WhatsApp.",
-      "publisher": { "@id": "https://zitch.ng/#organization" },
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "NGN" },
-      "featureList": [
-        "Send money to any Nigerian bank",
-        "Buy airtime and data",
-        "Pay electricity and cable bills",
-        "Virtual dollar cards",
-        "Fixed savings",
-        "Loans",
-        "Multi-currency wallet and FX (NGN, USD, GBP, CAD, CNY)",
-        "WhatsApp banking"
-      ]
-    },
-    {
-      "@type": "FAQPage",
-      "@id": "https://zitch.ng/#faq",
-      "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "Is Zitch a licensed and safe place to keep my money?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Zitch operates in partnership with CBN-licensed financial institutions, and customer funds are held with regulated partners. Every transaction is protected by your secret PIN, bank-grade BVN/NIN and face verification, and an append-only audit trail records every movement."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How do I open a Zitch account?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Download the Zitch app from the App Store or Google Play, sign up with your phone number, verify the OTP, set a password and a 4-digit PIN, and you're ready. Opening an account takes a few minutes."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "What can I do on Zitch?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Send money to any Nigerian bank, buy airtime and data on all networks, pay electricity and cable bills, buy exam pins, fund betting wallets, get a virtual dollar card, grow your savings, and hold and convert NGN, USD, GBP, CAD and CNY."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How does WhatsApp banking work, and is it secure?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Link your phone number once, then bank by chatting with Zitch on WhatsApp in plain language — for example, \"send 5k to my brother John.\" Zitch can draft the transaction, but no money ever moves until you approve it with your fingerprint, Face ID or PIN."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How fast are transfers and bill payments?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Zitch-to-Zitch transfers are instant, transfers to other Nigerian banks arrive in seconds, and airtime, data and electricity tokens are usually delivered within a few seconds."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How do I get help or contact Zitch support?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "You can reach the Zitch team on WhatsApp, by email at support@zitch.ng, or by phone at 08166938327, 8am to 8pm daily. You can also follow @zitchng on Instagram and Facebook for updates."
-          }
-        }
-      ]
-    }
-  ]
-}
-</script>
 </head>
 <body>
 
-<div class="announce">🎉 <b>Free transfers on WhatsApp — no download.</b> Onboard with your BVN and send money &amp; pay bills right from your chats. <a href="#ways">See how →</a></div>
-
+<!-- ============ HEADER ============ -->
 <header class="nav">
   <div class="wrap nav-in">
-    <a class="brand" href="#"><img src="assets/brand/zitch-ribbon2.png" alt="Zitch" />ZITCH</a>
+    <a class="brand" href="#top" aria-label="Zitch home">
+      <img class="mark" src="uploads/zitch-logo.png" alt="Zitch" />
+      <span class="word">Zitch</span>
+    </a>
     <nav class="nav-links">
+      <a href="#services">Services</a>
       <a href="#how">How it works</a>
-      <a href="#whatsapp">WhatsApp banking</a>
-      <a href="#services">The app</a>
-      <a href="#fx">Currencies</a>
-      <a href="#security">Security</a>
+      <a href="#pricing">Pricing</a>
       <a href="#faq">FAQ</a>
+      <a href="#contact">Contact</a>
     </nav>
-    <div class="nav-cta">
-      <button class="thm" id="thmBtn" type="button" aria-label="Toggle dark mode"></button>
-      <a class="btn btn-line" style="height:46px;" href="prototype.html">Sign in</a>
-      <a class="btn btn-teal" style="height:46px;" href="#cta">Get the app</a>
-      <button class="burger" id="burgerBtn" type="button" aria-label="Open menu"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="7" x2="21" y2="7"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="17" x2="21" y2="17"/></svg></button>
+    <div class="nav-right">
+      <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+      <a class="btn btn-primary btn-sm" href="#get">Get the App</a>
+      <button class="icon-btn burger" id="burgerBtn" type="button" aria-label="Open menu"><i data-lucide="menu"></i></button>
     </div>
   </div>
 </header>
 
 <div class="m-menu" id="mMenu">
   <div class="m-top">
-    <a class="brand" href="#"><img src="assets/brand/zitch-ribbon2.png" alt="Zitch" />ZITCH</a>
-    <button class="burger" style="display:grid;" id="mClose" type="button" aria-label="Close menu"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg></button>
+    <a class="brand" href="#top"><img class="mark" src="uploads/zitch-logo.png" alt="Zitch" /><span class="word">Zitch</span></a>
+    <button class="icon-btn" id="mClose" type="button" aria-label="Close menu"><i data-lucide="x"></i></button>
   </div>
   <nav>
-    <a href="#whatsapp">WhatsApp banking</a>
-    <a href="#services">The app</a>
-    <a href="#fx">Currencies</a>
-    <a href="#security">Security</a>
+    <a href="#services">Services</a>
+    <a href="#how">How it works</a>
+    <a href="#pricing">Pricing</a>
     <a href="#faq">FAQ</a>
+    <a href="#contact">Contact</a>
   </nav>
-  <div class="m-ctas">
-    <a class="btn btn-teal" href="#cta">Get the app</a>
-    <a class="btn btn-line" href="prototype.html">Sign in</a>
-  </div>
+  <a class="btn btn-primary" href="#get">Get the App</a>
 </div>
 
-<section class="hero" data-screen-label="Hero">
-  <img class="hero-rib" src="assets/brand/zitch-ribbon2.png" alt="" />
-  <div class="hero-3d" aria-hidden="true"><span class="h-glow" data-par data-depth="0.05"></span><span class="orb orb1"></span><span class="orb orb2"></span><span class="coin coin1"></span><span class="coin coin2"></span><span class="coin coin3"></span><span class="g-card" data-par data-depth="0.26"></span><span class="g-ring" data-par data-depth="0.16"></span><span class="g-blob" data-par data-depth="0.1"></span><span class="g-pill" data-par data-depth="0.34"></span></div>
+<!-- ============ HERO ============ -->
+<section class="hero" id="top" data-screen-label="Hero">
   <div class="wrap hero-in">
     <div class="hero-copy">
-      <span class="eyebrow">Bank on WhatsApp · or get the app</span>
-      <h1 style="margin-top: 18px;">Money that speaks <span class="tl">your language.</span></h1>
-      <p class="lead">Send money free, pay bills and buy airtime — all inside WhatsApp, no download. Prefer the full experience? Get the app for dollar cards, savings and more — then bank on WhatsApp too.</p>
-      <div class="hero-ctas">
-        <a class="btn btn-wa btn-wa-xl" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" aria-label="Bank on WhatsApp">
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg>
-          Open on WhatsApp
-        </a>
-        <a class="store" href="https://apps.apple.com" aria-label="Download on the App Store">
-          <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 1.43c.09 1.16-.34 2.3-1.07 3.17-.76.9-2 1.57-3.04 1.49-.11-1.1.41-2.28 1.13-3.04.79-.86 2.12-1.52 2.98-1.62zM20.9 17.07c-.55 1.27-.82 1.84-1.53 2.96-1 1.56-2.4 3.51-4.15 3.52-1.55.02-1.95-.97-4.06-.95-2.1.01-2.55.97-4.1.96-1.75-.02-3.08-1.77-4.08-3.34-2.8-4.38-3.1-9.52-1.37-12.25 1.22-1.94 3.15-3.07 4.96-3.07 1.84 0 3 .98 4.52.98 1.48 0 2.38-.98 4.5-.98 1.62 0 3.33.86 4.55 2.36-4 2.18-3.35 7.85.76 9.81z"/></svg>
-          <span class="txt"><span class="sub">Download on the</span><span class="main">App Store</span></span>
-        </a>
-        <a class="store" href="https://play.google.com" aria-label="Get it on Google Play">
-          <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg>
-          <span class="txt"><span class="sub">Get it on</span><span class="main">Google Play</span></span>
-        </a>
-      </div>
-      <div class="hero-note">
-        <span class="dots"><span>A</span><span>K</span><span>T</span></span>
-        <span>Trusted by <b>xx+ people</b> moving over <b>₦xx</b></span>
+      <span class="eyebrow">Airtime · Data · Cable · Electricity</span>
+      <h1>Recharge and pay every bill — <span class="hl">in seconds.</span></h1>
+      <p class="lead">Zitch is the simplest way to buy airtime and data, print recharge PINs, renew your cable TV, pay electricity, buy exam PINs and fund your betting wallet — all from one app.</p>
+      <div class="hero-cta">
+        <div class="stores">
+          <a class="store" href="#get" aria-label="Download on the App Store">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 1.43c.09 1.16-.34 2.3-1.07 3.17-.76.9-2 1.57-3.04 1.49-.11-1.1.41-2.28 1.13-3.04.79-.86 2.12-1.52 2.98-1.62zM20.9 17.07c-.55 1.27-.82 1.84-1.53 2.96-1 1.56-2.4 3.51-4.15 3.52-1.55.02-1.95-.97-4.06-.95-2.1.01-2.55.97-4.1.96-1.75-.02-3.08-1.77-4.08-3.34-2.8-4.38-3.1-9.52-1.37-12.25 1.22-1.94 3.15-3.07 4.96-3.07 1.84 0 3 .98 4.52.98 1.48 0 2.38-.98 4.5-.98 1.62 0 3.33.86 4.55 2.36-4 2.18-3.35 7.85.76 9.81z"/></svg>
+            <span class="txt"><span class="s">Download on the</span><span class="m">App Store</span></span>
+          </a>
+          <a class="store" href="#get" aria-label="Get it on Google Play">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg>
+            <span class="txt"><span class="s">Get it on</span><span class="m">Google Play</span></span>
+          </a>
+        </div>
+        <div class="hero-sub"><i data-lucide="shield-check" style="color:var(--success);width:18px;height:18px;"></i><span>PIN-protected payments · <b>instant delivery</b> · receipts for every transaction</span></div>
       </div>
     </div>
-    <div class="demo-duo">
-    <div class="phone-zone">
-      <div class="demo-call">
-        <div class="pill"><span class="live"></span>Zitch app · <em>iPhone 17 Pro Max</em></div>
-      </div>
-      <div class="fx-chip chip-1">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-        Airtime delivered <span class="rate">in 3s</span>
-      </div>
-      <div class="fx-chip chip-2">🇬🇧 NGN → GBP <span class="rate num">₦1,872.45</span></div>
-      <div class="fx-chip chip-3">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83"/></svg>
-        "Send 5k to John" <span class="rate">✓ Sent</span>
-      </div>
-      <div class="phone iphone">
-        <div class="island"></div>
-        <div class="scr">
-          <div class="push">
-            <div class="pic"><svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35"/></svg></div>
-            <div><div class="pt">WhatsApp · now</div><div class="pm">Zitch: ✅ ₦5,000 sent to John Adeyemi</div></div>
+
+    <div class="phone-wrap">
+      <div class="p-float pf-1"><div class="fic"><i data-lucide="check"></i></div><div>Airtime delivered<small>MTN · 3 seconds ago</small></div></div>
+      <div class="p-float pf-2"><div class="fic"><i data-lucide="tv"></i></div><div>DStv renewed<small>Compact · ₦19,000</small></div></div>
+      <div class="phone">
+        <div class="p-notch"></div>
+        <div class="screen">
+          <div class="p-top">
+            <div class="p-stat"><span>9:41</span><span>Zitch</span></div>
+            <div class="p-hi">Hi, Adaeze 👋</div>
+            <div class="p-bal-l">Wallet balance</div>
+            <div class="p-bal">₦48,250.00</div>
+            <span class="p-fund"><i data-lucide="plus"></i> Fund wallet</span>
           </div>
-          <iframe class="app-live" src="prototype.html?embed=1" title="Zitch app — live demo" loading="lazy"></iframe>
-        </div>
-      </div>
-    </div>
-      <div class="chat-zone">
-        <div class="demo-call">
-          <div class="pill"><span class="live"></span>WhatsApp · <em>Galaxy S26 Ultra</em></div>
-        </div>
-        <div class="phone samsung">
-        <div class="punch"></div>
-        <div class="scr">
-        <div class="chat">
-          <div class="chat-top">
-            <svg class="bk" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-            <div class="av"><img src="assets/brand/zitch-ribbon2.png" alt="" /></div>
-            <div style="flex:1;"><div class="nm">Zitch</div><div class="st">business account · online</div></div>
-            <div class="top-ics">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+          <div class="p-body">
+            <div class="p-label">Pay a bill</div>
+            <div class="p-grid">
+              <div class="p-tile"><div class="ic"><i data-lucide="smartphone"></i></div><span>Airtime</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="wifi"></i></div><span>Data</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="tv"></i></div><span>Cable</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="zap"></i></div><span>Power</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="credit-card"></i></div><span>PINs</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="globe"></i></div><span>Internet</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="graduation-cap"></i></div><span>Exams</span></div>
+              <div class="p-tile"><div class="ic"><i data-lucide="dice-5"></i></div><span>Betting</span></div>
+            </div>
+            <div class="p-recent">
+              <div class="r-h"><span>Recent</span><span>See all</span></div>
+              <div class="p-rrow"><div class="d" style="background:var(--success-bg);color:var(--success);"><i data-lucide="smartphone"></i></div><div class="t"><b>Airtel airtime</b><small>Today · 09:12</small></div><div class="amt">₦1,000</div></div>
+              <div class="p-rrow"><div class="d" style="background:var(--brand-50);color:var(--brand-700);"><i data-lucide="zap"></i></div><div class="t"><b>Ikeja Electric</b><small>Yesterday</small></div><div class="amt">₦5,000</div></div>
             </div>
           </div>
-          <div class="chat-body" id="waBody" aria-live="polite"></div>
-          <div class="chat-chips" id="waChips"></div>
-          <div class="chat-input">
-            <div class="field">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-              <input id="waIn" type="text" placeholder="Message" aria-label="Message" />
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="3.5"/></svg>
-            </div>
-            <button class="snd" id="waSend" type="button" aria-label="Send">
-              <svg class="ic-mic" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3z"/><path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21a1 1 0 0 0 2 0v-3.08A7 7 0 0 0 19 11z"/></svg>
-              <svg class="ic-send" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M1.1 21.76 23.8 12.03 1.1 2.3l.01 7.91 13.62 1.82-13.62 1.82z"/></svg>
-            </button>
-          </div>
-        </div>
-        </div>
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<div class="strip" data-screen-label="Stats">
-  <div class="wrap strip-in">
-    <div class="stat rev"><div class="n num">xx<em>+</em></div><div class="l">people bank with Zitch</div></div>
-    <div class="stat rev" style="--d:.08s;"><div class="n num">₦xx<em>+</em></div><div class="l">in transactions processed</div></div>
-    <div class="stat rev" style="--d:.16s;"><div class="n num">5</div><div class="l">currencies — ₦ $ £ C$ ¥</div></div>
-    <div class="stat rev" style="--d:.24s;"><div class="n num">24/7</div><div class="l">banking from your WhatsApp</div></div>
+<!-- ============ PROVIDERS ============ -->
+<div class="providers" data-screen-label="Providers">
+  <div class="wrap providers-in">
+    <div class="cap">Works with the billers you already use</div>
+    <div class="logo-row">
+      <div class="logo-tile"><img class="sq" src="assets/logos/mtn.jpg" alt="MTN" /></div>
+      <div class="logo-tile"><img src="assets/logos/airtel.svg" alt="Airtel" /></div>
+      <div class="logo-tile"><img class="sq" src="assets/logos/glo.jpg" alt="Glo" /></div>
+      <div class="logo-tile"><img src="assets/logos/9mobile.svg" alt="9mobile" /></div>
+      <div class="logo-tile"><img src="assets/logos/dstv.svg" alt="DStv" /></div>
+      <div class="logo-tile"><img src="assets/logos/gotv.svg" alt="GOtv" /></div>
+      <div class="logo-tile"><img src="assets/logos/startimes.png" alt="StarTimes" /></div>
+    </div>
   </div>
 </div>
 
-<section class="block how" id="how" data-screen-label="How it works">
+<!-- ============ SERVICES ============ -->
+<section class="block" id="services" data-screen-label="Services">
+  <div class="wrap">
+    <div class="sec-head rev">
+      <span class="eyebrow">What you can pay for</span>
+      <h2>One app for every top-up and bill</h2>
+      <p>Zitch is focused on the essentials Nigerians pay for every day — nothing more, nothing to slow you down.</p>
+    </div>
+    <div class="svc-grid">
+      <div class="svc rev"><div class="ic"><i data-lucide="smartphone"></i></div><h4>Airtime top-up</h4><p>Instant recharge for MTN, Airtel, Glo and 9mobile — any amount, any number.</p><span class="tag">All networks</span></div>
+      <div class="svc rev" style="--d:.05s"><div class="ic"><i data-lucide="wifi"></i></div><h4>Mobile data bundles</h4><p>Daily, weekly and monthly data plans across every network at great value.</p><span class="tag">Cheap plans</span></div>
+      <div class="svc rev" style="--d:.1s"><div class="ic"><i data-lucide="credit-card"></i></div><h4>Recharge card printing</h4><p>Generate airtime e-PINs and printable recharge cards in bulk — perfect for resellers.</p><span class="tag">Bulk e-PINs</span></div>
+      <div class="svc rev" style="--d:.15s"><div class="ic"><i data-lucide="tv"></i></div><h4>Cable & TV</h4><p>Renew or upgrade DStv, GOtv and StarTimes subscriptions in a few taps.</p><span class="tag">DStv · GOtv</span></div>
+      <div class="svc rev"><div class="ic"><i data-lucide="zap"></i></div><h4>Electricity bills</h4><p>Prepaid tokens and postpaid payments for every disco — tokens arrive instantly.</p><span class="tag">Prepaid & postpaid</span></div>
+      <div class="svc rev" style="--d:.05s"><div class="ic"><i data-lucide="globe"></i></div><h4>Internet & broadband</h4><p>Top up Spectranet, Smile, Swift and other broadband and Wi-Fi subscriptions.</p><span class="tag">Broadband</span></div>
+      <div class="svc rev" style="--d:.1s"><div class="ic"><i data-lucide="graduation-cap"></i></div><h4>Exam PINs</h4><p>Buy WAEC, JAMB and NECO result checker and registration PINs at face value.</p><span class="tag">WAEC · JAMB · NECO</span></div>
+      <div class="svc rev" style="--d:.15s"><div class="ic"><i data-lucide="dice-5"></i></div><h4>Betting wallet funding</h4><p>Fund your favourite betting wallets instantly and get back to the game.</p><span class="tag">Instant funding</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HOW IT WORKS ============ -->
+<section class="block tint" id="how" data-screen-label="How it works">
   <div class="wrap">
     <div class="sec-head rev">
       <span class="eyebrow">How it works</span>
-      <h2>Money moves in three taps.</h2>
-      <p>No forms, no queues, no jargon. Tell Zitch what you want — in the app or by chat — confirm with your PIN, and it's done.</p>
+      <h2>Paying a bill takes under a minute</h2>
     </div>
-    <div class="how-grid">
-      <div class="how-step rev">
-        <div class="num">1</div>
-        <h4>Say it your way</h4>
-        <p>Type, tap or send a voice note — "send 5k to John", buy airtime, pay a bill — in English, Pidgin, Yoruba, Igbo or Hausa.</p>
-      </div>
-      <div class="how-step rev" style="--d:.08s;">
-        <div class="num">2</div>
-        <h4>Confirm with your PIN</h4>
-        <p>Zitch shows exactly who gets paid and how much. Nothing moves until you approve it with your transaction PIN.</p>
-      </div>
-      <div class="how-step rev" style="--d:.16s;">
-        <div class="num">3</div>
-        <h4>Done in seconds</h4>
-        <p>Money lands instantly, you get a receipt, and every kobo is recorded on your statement. That's it.</p>
-      </div>
+    <div class="steps">
+      <div class="step rev"><div class="n">1</div><span class="ic"><i data-lucide="download"></i></span><h4>Download & sign up</h4><p>Get the app free on iOS or Android and create your account in minutes.</p></div>
+      <div class="step rev" style="--d:.08s"><div class="n">2</div><span class="ic"><i data-lucide="wallet"></i></span><h4>Fund your wallet</h4><p>Add money by bank transfer, card or USSD through our secure payment partners.</p></div>
+      <div class="step rev" style="--d:.16s"><div class="n">3</div><span class="ic"><i data-lucide="mouse-pointer-click"></i></span><h4>Pick a service</h4><p>Choose airtime, data, cable, power, PINs and more — then confirm with your PIN.</p></div>
+      <div class="step rev" style="--d:.24s"><div class="n">4</div><span class="ic"><i data-lucide="badge-check"></i></span><h4>Get instant delivery</h4><p>Your value lands in seconds, with a receipt saved for every transaction.</p></div>
     </div>
   </div>
 </section>
 
-<section class="block ways" id="ways" data-screen-label="Two ways to bank">
+<!-- ============ WHY US ============ -->
+<section class="block" id="why" data-screen-label="Why Zitch">
   <div class="wrap">
     <div class="sec-head rev">
-      <span class="eyebrow">Two ways to bank</span>
-      <h2>Start on WhatsApp. Get the app for more.</h2>
-      <p>Onboard and transact in seconds inside WhatsApp — no download needed. Want the full toolkit? Get the app for dollar cards, savings and more — and keep banking on WhatsApp too.</p>
+      <span class="eyebrow">Why Zitch</span>
+      <h2>Built to be fast, fair and reliable</h2>
     </div>
-    <div class="ways-grid">
-      <div class="way wa rev">
-        <div class="way-top">
-          <div class="way-ic"><svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg></div>
-          <div><div class="tag">No download</div><h3>Bank on WhatsApp</h3></div>
-        </div>
-        <p class="way-sub">Chat to onboard with your BVN, get a secure wallet, then send money free, buy airtime &amp; data, pay bills and run Ajo group savings — all without leaving WhatsApp.</p>
-        <div class="feat-chips"><span>Free transfers</span><span>Airtime &amp; Data</span><span>Bills</span><span>Ajo savings</span><span>Voice notes</span></div>
-        <div class="way-cta"><a class="btn btn-wa" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started">Open on WhatsApp</a></div>
-        <div class="way-foot">Every payment is sealed with your transaction PIN.</div>
-      </div>
-      <div class="way app rev" style="--d:.08s;">
-        <div class="way-top">
-          <div class="way-ic"><svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><line x1="10" y1="18" x2="14" y2="18"/></svg></div>
-          <div><div class="tag">Unlock more</div><h3>Get the Zitch app</h3></div>
-        </div>
-        <p class="way-sub">Unlock the full toolkit — virtual dollar cards, savings, multi-currency wallets and loans. And everything you set up in the app works on WhatsApp too.</p>
-        <div class="feat-chips"><span>Dollar cards</span><span>Savings</span><span>Multi-currency</span><span>Loans</span><span>Virtual accounts</span></div>
-        <div class="way-cta"><a class="btn btn-teal" href="#cta">Get the app</a></div>
-        <div class="way-foot">BVN + NIN + face check completes your verification.</div>
-      </div>
+    <div class="why-grid">
+      <div class="why rev"><div class="ic"><i data-lucide="rocket"></i></div><div><h4>Instant delivery</h4><p>Airtime, data and PINs are delivered in seconds — no waiting, no chasing.</p></div></div>
+      <div class="why rev" style="--d:.05s"><div class="ic"><i data-lucide="piggy-bank"></i></div><div><h4>Cashback & fair rates</h4><p>Earn cashback on airtime and data, and pay clear, upfront prices on every bill.</p></div></div>
+      <div class="why rev" style="--d:.1s"><div class="ic"><i data-lucide="layout-grid"></i></div><div><h4>Everything in one app</h4><p>Stop juggling apps and USSD codes — every biller you need lives in one place.</p></div></div>
+      <div class="why rev"><div class="ic"><i data-lucide="lock"></i></div><div><h4>Secure by design</h4><p>Every payment is PIN-protected and processed over encrypted, trusted connections.</p></div></div>
+      <div class="why rev" style="--d:.05s"><div class="ic"><i data-lucide="rotate-ccw"></i></div><div><h4>Auto-reversals</h4><p>If a transaction ever fails, your money is returned to your wallet automatically.</p></div></div>
+      <div class="why rev" style="--d:.1s"><div class="ic"><i data-lucide="headset"></i></div><div><h4>Real human support</h4><p>Our team is on hand to help you resolve anything, quickly and clearly.</p></div></div>
     </div>
-    <div class="ways-note rev"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg> <span>Onboard once with your BVN. Download the app anytime — <b>everything you set up carries over to WhatsApp automatically.</b></span></div>
   </div>
 </section>
 
-<section class="wa block" id="whatsapp" data-screen-label="WhatsApp banking">
-  <img class="wa-rib" src="assets/brand/zitch-ribbon2.png" alt="" loading="lazy" decoding="async" />
+<!-- ============ PRICING ============ -->
+<section class="block tint" id="pricing" data-screen-label="Pricing">
   <div class="wrap">
-    <div class="wa-grid">
+    <div class="price-wrap">
       <div class="rev">
-        <span class="ai-pill">✦ AI-assisted — type it how you'd say it</span>
-        <div class="sec-head" style="margin-bottom:30px;">
-          <span class="eyebrow">WhatsApp banking</span>
-          <h2>Your bank lives where your chats live.</h2>
-          <p>Link your number once, then bank by text. Zitch understands plain language — "send 5k to my brother John" just works — while your PIN still guards every kobo.</p>
+        <span class="eyebrow">Simple, honest pricing</span>
+        <h2 style="font-family:var(--font-display);font-weight:800;font-size:clamp(28px,3.4vw,40px);letter-spacing:-.02em;line-height:1.12;margin-top:14px;">No subscriptions. Pay only for what you buy.</h2>
+        <div class="price-points">
+          <div class="price-point"><div class="c"><i data-lucide="check"></i></div><div><b>No monthly or hidden fees</b><span>Your wallet is free to open and keep — you're only charged for the value you purchase.</span></div></div>
+          <div class="price-point"><div class="c"><i data-lucide="check"></i></div><div><b>Cashback on every recharge</b><span>Earn up to 3% back on airtime and up to 5% off on data, automatically.</span></div></div>
+          <div class="price-point"><div class="c"><i data-lucide="check"></i></div><div><b>Reseller discounts</b><span>Buy recharge PINs and data in bulk at wholesale rates built for vendors.</span></div></div>
         </div>
-        <div class="wa-feats">
-          <div class="wa-feat"><div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></div><div><h4>Send money by chat</h4><p>Transfer to any Nigerian bank with name-check, confirm and PIN — all inside WhatsApp.</p></div></div>
-          <div class="wa-feat"><div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div><div><h4>Airtime, data &amp; bills</h4><p>Top up any network, buy data bundles, pay electricity and cable. Prepaid tokens arrive in the receipt.</p></div></div>
-          <div class="wa-feat"><div class="ic"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></div><div><h4>Balance &amp; currency conversion</h4><p>Check every wallet or convert NGN to USD, GBP and CAD with a 60-second locked quote — by text.</p></div></div>
-        </div>
-        <div class="wa-cta">
-          <a class="btn btn-wa" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" target="_blank" rel="noopener">Open on WhatsApp</a>
-          <a class="btn btn-cyan" href="#cta">Get the app</a>
-        </div>
+      </div>
+      <div class="rate-card rev" style="--d:.1s">
+        <div class="rc-top"><div class="k">Wallet</div><div class="v">₦0 to open · ₦0 monthly</div></div>
+        <div class="rate-row"><div class="l"><span class="ri"><i data-lucide="smartphone"></i></span>Airtime — all networks</div><div class="r">Up to 3% cashback</div></div>
+        <div class="rate-row"><div class="l"><span class="ri"><i data-lucide="wifi"></i></span>Data bundles</div><div class="r">Up to 5% off</div></div>
+        <div class="rate-row"><div class="l"><span class="ri"><i data-lucide="tv"></i></span>Cable & TV renewals</div><div class="r">₦0 service fee</div></div>
+        <div class="rate-row"><div class="l"><span class="ri"><i data-lucide="zap"></i></span>Electricity tokens</div><div class="r">Low flat fee</div></div>
+        <div class="rate-row"><div class="l"><span class="ri"><i data-lucide="graduation-cap"></i></span>Exam PINs</div><div class="r">Face value</div></div>
+        <div class="rate-row"><div class="l"><span class="ri"><i data-lucide="credit-card"></i></span>Recharge PIN printing</div><div class="r">Reseller rates</div></div>
       </div>
     </div>
   </div>
 </section>
 
-<section class="block" id="services" data-screen-label="The app">
-  <div class="wrap">
-    <div class="sec-head rev">
-      <span class="eyebrow">The Zitch app</span>
-      <h2>Everything money, one app.</h2>
-      <p>Transfers, top-ups, bills, cards and savings — fast, reliable, and at the best prices.</p>
-    </div>
-    <div class="svc-grid">
-      <div class="svc rev"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></div><h4>Transfers</h4><p>Free transfers to every Nigerian bank, instant between Zitch users.</p></div>
-      <div class="svc rev" style="--d:.06s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><line x1="10" y1="18" x2="14" y2="18"/></svg></div><h4>Airtime &amp; data</h4><p>MTN, Airtel, Glo and 9mobile, topped up in seconds.</p></div>
-      <div class="svc rev" style="--d:.12s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div><h4>Electricity</h4><p>All discos, prepaid &amp; postpaid. Tokens in seconds.</p></div>
-      <div class="svc rev" style="--d:.18s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="13" rx="2"/><polyline points="8 2 12 7 16 2"/></svg></div><h4>Cable TV</h4><p>DStv, GOtv and StarTimes renewals without queues.</p></div>
-      <div class="svc rev"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><line x1="2" y1="10" x2="22" y2="10"/></svg></div><h4>Virtual cards</h4><p>Spend your USD wallet anywhere online.</p></div>
-      <div class="svc rev" style="--d:.06s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><h4>Fixed savings</h4><p>Lock funds and watch your savings grow.</p></div>
-      <div class="svc rev" style="--d:.12s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg></div><h4>Loans</h4><p>Quick credit, clear terms, repay in-app.</p></div>
-      <div class="svc rev" style="--d:.18s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v9a8 8 0 0 1-16 0z"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg></div><h4>Exams &amp; betting</h4><p>WAEC/JAMB pins and instant betting wallet top-ups.</p></div>
-      <div class="svc rev"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><h4>Ajo group savings</h4><p>Run automated Ajo/Esusu rounds with friends and family.</p></div>
-      <div class="svc rev" style="--d:.06s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg></div><h4>Group &amp; family wallets</h4><p>Shared wallets for runs, contributions and the household.</p></div>
-      <div class="svc rev" style="--d:.12s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><line x1="14" y1="14" x2="14" y2="14.01"/><line x1="21" y1="14" x2="21" y2="21"/><line x1="14" y1="21" x2="17.5" y2="21"/><line x1="17" y1="14" x2="17" y2="17.5"/></svg></div><h4>Pay by QR</h4><p>Scan to pay merchants instantly — no account numbers.</p></div>
-      <div class="svc rev" style="--d:.18s;"><span class="go"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg></span><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg></div><h4>Voice &amp; your language</h4><p>Send a voice note in Pidgin, Yoruba, Igbo or Hausa — Zitch gets it.</p></div>
-    </div>
-  </div>
-</section>
-
-<section class="block" id="fx" style="padding-top:0;" data-screen-label="Currencies">
-  <div class="wrap">
-    <div class="fx-band rev">
-      <div>
-        <span class="eyebrow">Also in your wallet</span>
-        <h2>Multi-currency, when you need it.</h2>
-        <p>Hold dollars, pounds and Canadian dollars beside your naira, and convert at honest, time-boxed rates — in the app or by chat.</p>
-      </div>
-      <div class="rate-grid">
-        <div class="rate-cell"><span class="flag">🇺🇸</span><span class="pair">NGN → USD</span><span class="rt num">₦1,485.20</span></div>
-        <div class="rate-cell"><span class="flag">🇬🇧</span><span class="pair">NGN → GBP</span><span class="rt num">₦1,872.45</span></div>
-        <div class="rate-cell"><span class="flag">🇨🇦</span><span class="pair">NGN → CAD</span><span class="rt num">₦1,082.10</span></div>
-        <div class="rate-cell"><span class="flag">🇨🇳</span><span class="pair">NGN → CNY</span><span class="rt num">₦206.84</span></div>
-      </div>
-    </div>
-  </div>
-</section>
-
-
-<div class="sec-band" id="security" data-screen-label="Security">
-  <div class="wrap band-in">
-    <div class="band-item rev"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><div><h4>PIN on every kobo</h4><p>AI can draft a transfer, but only your PIN can move money. One wrong PIN cancels the whole flow.</p></div></div>
-    <div class="band-item rev" style="--d:.08s;"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div><div><h4>Bank-grade KYC</h4><p>BVN, NIN and face verification keep your account yours — and keep fraudsters out.</p></div></div>
-    <div class="band-item rev" style="--d:.16s;"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div><div><h4>Every action audited</h4><p>An append-only ledger records every movement and every admin action. Nothing happens off the record.</p></div></div>
-  </div>
-</div>
-
-<section class="block faq" id="faq" data-screen-label="FAQ">
+<!-- ============ FAQ ============ -->
+<section class="block" id="faq" data-screen-label="FAQ">
   <div class="wrap">
     <div class="sec-head rev">
       <span class="eyebrow">FAQ</span>
-      <h2>Questions, answered.</h2>
-      <p>Everything you need to know about banking with Zitch. Still stuck? <a href="mailto:support@zitch.ng">Email support@zitch.ng</a>.</p>
+      <h2>Questions, answered</h2>
     </div>
-    <div class="faq-list rev">
-      <details class="faq-item">
-        <summary>Is Zitch a licensed and safe place to keep my money?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
-        <div class="faq-a"><p>Zitch operates in partnership with CBN-licensed financial institutions, and customer funds are held with regulated partners. Every transaction is protected by your secret PIN, bank-grade BVN/NIN and face verification, and an append-only audit trail records every movement.</p></div>
-      </details>
-      <details class="faq-item">
-        <summary>How do I open a Zitch account?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
-        <div class="faq-a"><p>Download the Zitch app from the App Store or Google Play, sign up with your phone number, verify the OTP, set a password and a 4-digit PIN, and you're ready. Opening an account takes a few minutes.</p></div>
-      </details>
-      <details class="faq-item">
-        <summary>What can I do on Zitch?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
-        <div class="faq-a"><p>Send money to any Nigerian bank, buy airtime and data on all networks, pay electricity and cable bills, buy exam pins, fund betting wallets, get a virtual dollar card, grow your savings, and hold and convert NGN, USD, GBP, CAD and CNY.</p></div>
-      </details>
-      <details class="faq-item">
-        <summary>How does WhatsApp banking work, and is it secure?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
-        <div class="faq-a"><p>Link your phone number once, then bank by chatting with Zitch on WhatsApp in plain language — for example, “send 5k to my brother John.” Zitch can draft the transaction, but no money ever moves until you approve it with your fingerprint, Face ID or PIN.</p></div>
-      </details>
-      <details class="faq-item">
-        <summary>How fast are transfers and bill payments?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
-        <div class="faq-a"><p>Zitch-to-Zitch transfers are instant, transfers to other Nigerian banks arrive in seconds, and airtime, data and electricity tokens are usually delivered within a few seconds.</p></div>
-      </details>
-      <details class="faq-item">
-        <summary>How do I get help or contact Zitch support?<span class="faq-x"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span></summary>
-        <div class="faq-a"><p>You can reach the Zitch team on WhatsApp, by email at <a href="mailto:support@zitch.ng">support@zitch.ng</a>, or by phone at <a href="tel:+2348166938327">08166938327</a>, 8am to 8pm daily. You can also follow @zitchng on <a href="https://instagram.com/zitchng" target="_blank" rel="noopener">Instagram</a> and <a href="https://facebook.com/zitchng" target="_blank" rel="noopener">Facebook</a> for updates.</p></div>
-      </details>
+    <div class="faq">
+      <details class="qa rev"><summary>What is Zitch?<span class="chev"><i data-lucide="chevron-down"></i></span></summary><div class="a">Zitch is a Nigerian bill-payment and VTU (virtual top-up) platform. From one app you can buy airtime and data, print recharge PINs, renew cable TV, pay electricity and internet bills, buy exam PINs and fund betting wallets.</div></details>
+      <details class="qa rev"><summary>Which networks and billers are supported?<span class="chev"><i data-lucide="chevron-down"></i></span></summary><div class="a">Airtime and data on MTN, Airtel, Glo and 9mobile; DStv, GOtv and StarTimes for cable TV; all major electricity distribution companies; leading internet providers; WAEC, JAMB and NECO for exam PINs; and popular betting platforms.</div></details>
+      <details class="qa rev"><summary>How fast is delivery?<span class="chev"><i data-lucide="chevron-down"></i></span></summary><div class="a">Airtime, data and recharge PINs are delivered instantly. Electricity tokens and cable activations typically arrive within seconds of a successful payment.</div></details>
+      <details class="qa rev"><summary>Is my money and data safe?<span class="chev"><i data-lucide="chevron-down"></i></span></summary><div class="a">Every payment is protected by your transaction PIN, and all data moves over encrypted connections. Wallet funding is handled by trusted, licensed payment partners — we never store your card details.</div></details>
+      <details class="qa rev"><summary>What happens if a transaction fails?<span class="chev"><i data-lucide="chevron-down"></i></span></summary><div class="a">Failed transactions are automatically reversed to your Zitch wallet, usually within minutes. If a reversal is ever delayed, our support team will resolve it for you.</div></details>
+      <details class="qa rev"><summary>How do I fund my wallet?<span class="chev"><i data-lucide="chevron-down"></i></span></summary><div class="a">Fund instantly by bank transfer to your dedicated account number, by debit card, or via USSD — all through our secure payment partners.</div></details>
     </div>
   </div>
 </section>
 
-<section class="cta" id="cta" data-screen-label="CTA">
-  <img class="cta-rib" src="assets/brand/zitch-ribbon2.png" alt="" loading="lazy" decoding="async" />
+<!-- ============ CONTACT ============ -->
+<section class="block tint" id="contact" data-screen-label="Contact">
+  <div class="wrap">
+    <div class="contact-wrap">
+      <div class="rev">
+        <span class="eyebrow">Contact & support</span>
+        <h2 style="font-family:var(--font-display);font-weight:800;font-size:clamp(28px,3.4vw,40px);letter-spacing:-.02em;line-height:1.12;margin-top:14px;">We're here to help</h2>
+        <p style="font-size:16px;line-height:1.6;color:var(--fg-2);margin-top:14px;max-width:440px;">Reach the Zitch team any time. We typically respond within a few hours during business days.</p>
+        <div class="contact-list">
+          <div class="contact-item"><div class="ic"><i data-lucide="mail"></i></div><div><div class="k">Email</div><div class="val"><span class="ph">support@zitch.ng</span></div></div></div>
+          <div class="contact-item"><div class="ic"><i data-lucide="phone"></i></div><div><div class="k">Phone & WhatsApp</div><div class="val"><span class="ph">+234 800 000 0000</span></div></div></div>
+          <div class="contact-item"><div class="ic"><i data-lucide="map-pin"></i></div><div><div class="k">Office</div><div class="val"><span class="ph">1 Example Close, Victoria Island, Lagos, Nigeria</span></div></div></div>
+          <div class="contact-item"><div class="ic"><i data-lucide="clock"></i></div><div><div class="k">Support hours</div><div class="val">Monday – Saturday, 8:00am – 8:00pm WAT</div></div></div>
+        </div>
+      </div>
+      <form class="form rev" style="--d:.1s" id="contactForm">
+        <div class="field"><label for="cf-name">Full name</label><input id="cf-name" type="text" placeholder="Adaeze Okonkwo" required /></div>
+        <div class="field"><label for="cf-email">Email address</label><input id="cf-email" type="email" placeholder="you@example.com" required /></div>
+        <div class="field"><label for="cf-msg">How can we help?</label><textarea id="cf-msg" placeholder="Tell us what you need…" required></textarea></div>
+        <button class="btn btn-primary" type="submit">Send message</button>
+        <div class="note" id="cf-note">We'll reply to your email within one business day.</div>
+      </form>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CTA ============ -->
+<section class="cta" id="get" data-screen-label="Get the app">
   <div class="cta-in">
-    <h2 class="rev">Join xx+ people<br />moving money the easy way.</h2>
-    <p class="rev" style="--d:.08s;">Open an account in minutes, link your WhatsApp, and your money goes wherever your conversations go.</p>
-    <div class="row rev" style="--d:.16s;">
-      <a class="store lt" href="https://apps.apple.com" aria-label="Download on the App Store">
-        <svg width="23" height="23" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 1.43c.09 1.16-.34 2.3-1.07 3.17-.76.9-2 1.57-3.04 1.49-.11-1.1.41-2.28 1.13-3.04.79-.86 2.12-1.52 2.98-1.62zM20.9 17.07c-.55 1.27-.82 1.84-1.53 2.96-1 1.56-2.4 3.51-4.15 3.52-1.55.02-1.95-.97-4.06-.95-2.1.01-2.55.97-4.1.96-1.75-.02-3.08-1.77-4.08-3.34-2.8-4.38-3.1-9.52-1.37-12.25 1.22-1.94 3.15-3.07 4.96-3.07 1.84 0 3 .98 4.52.98 1.48 0 2.38-.98 4.5-.98 1.62 0 3.33.86 4.55 2.36-4 2.18-3.35 7.85.76 9.81z"/></svg>
-        <span class="txt"><span class="sub">Download on the</span><span class="main">App Store</span></span>
+    <h2>Everything you pay for, in one app.</h2>
+    <p>Download Zitch free and buy airtime, data, cable, power and more — in seconds.</p>
+    <div class="stores">
+      <a class="store light" href="#" aria-label="Download on the App Store">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 1.43c.09 1.16-.34 2.3-1.07 3.17-.76.9-2 1.57-3.04 1.49-.11-1.1.41-2.28 1.13-3.04.79-.86 2.12-1.52 2.98-1.62zM20.9 17.07c-.55 1.27-.82 1.84-1.53 2.96-1 1.56-2.4 3.51-4.15 3.52-1.55.02-1.95-.97-4.06-.95-2.1.01-2.55.97-4.1.96-1.75-.02-3.08-1.77-4.08-3.34-2.8-4.38-3.1-9.52-1.37-12.25 1.22-1.94 3.15-3.07 4.96-3.07 1.84 0 3 .98 4.52.98 1.48 0 2.38-.98 4.5-.98 1.62 0 3.33.86 4.55 2.36-4 2.18-3.35 7.85.76 9.81z"/></svg>
+        <span class="txt"><span class="s">Download on the</span><span class="m">App Store</span></span>
       </a>
-      <a class="store lt" href="https://play.google.com" aria-label="Get it on Google Play">
-        <svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg>
-        <span class="txt"><span class="sub">Get it on</span><span class="main">Google Play</span></span>
+      <a class="store light" href="#" aria-label="Get it on Google Play">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg>
+        <span class="txt"><span class="s">Get it on</span><span class="m">Google Play</span></span>
       </a>
-      <a class="btn btn-wa" style="height:56px;" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" target="_blank" rel="noopener">Bank on WhatsApp</a>
     </div>
   </div>
 </section>
 
+<!-- ============ FOOTER ============ -->
 <footer data-screen-label="Footer">
   <div class="wrap">
     <div class="foot-grid">
       <div class="foot-brand">
-        <img src="assets/brand/zitch-ribbon2.png" alt="Zitch" loading="lazy" decoding="async" />
-        <p>Zitch is a Nigerian fintech for payments, multi-currency wallets and WhatsApp banking. ₦xx+ moved by xx+ users.</p>
-        <p>Ketu, Lagos, Nigeria<br /><a href="mailto:support@zitch.ng">support@zitch.ng</a><br /><a href="tel:+2348166938327">08166938327</a></p>
-        <div class="foot-social">
-          <a href="https://instagram.com/zitchng" target="_blank" rel="noopener" aria-label="Zitch on Instagram"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5.5"/><circle cx="12" cy="12" r="4.2"/><circle cx="17.6" cy="6.4" r="1.1" fill="currentColor" stroke="none"/></svg></a>
-          <a href="https://facebook.com/zitchng" target="_blank" rel="noopener" aria-label="Zitch on Facebook"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M22 12.06C22 6.5 17.52 2 12 2S2 6.5 2 12.06c0 5 3.66 9.15 8.44 9.94v-7.03H7.9v-2.9h2.54V9.85c0-2.51 1.49-3.9 3.78-3.9 1.09 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56v1.87h2.78l-.44 2.9h-2.34V22c4.78-.79 8.44-4.94 8.44-9.94z"/></svg></a>
-          <a href="mailto:support@zitch.ng" aria-label="Email Zitch support"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></a>
+        <a class="brand" href="#top"><img class="mark" src="uploads/zitch-logo.png" alt="Zitch" /><span class="word">Zitch</span></a>
+        <p>A Nigerian bill-payment platform for airtime, data, recharge PINs, cable TV, electricity, internet, exam PINs and betting wallet top-ups.</p>
+        <div class="foot-store">
+          <a class="store" href="#get" aria-label="App Store"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16.37 1.43c.09 1.16-.34 2.3-1.07 3.17-.76.9-2 1.57-3.04 1.49-.11-1.1.41-2.28 1.13-3.04.79-.86 2.12-1.52 2.98-1.62zM20.9 17.07c-.55 1.27-.82 1.84-1.53 2.96-1 1.56-2.4 3.51-4.15 3.52-1.55.02-1.95-.97-4.06-.95-2.1.01-2.55.97-4.1.96-1.75-.02-3.08-1.77-4.08-3.34-2.8-4.38-3.1-9.52-1.37-12.25 1.22-1.94 3.15-3.07 4.96-3.07 1.84 0 3 .98 4.52.98 1.48 0 2.38-.98 4.5-.98 1.62 0 3.33.86 4.55 2.36-4 2.18-3.35 7.85.76 9.81z"/></svg><span class="txt"><span class="s">on the</span><span class="m">App Store</span></span></a>
+          <a class="store" href="#get" aria-label="Google Play"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M3.61 1.81 13.69 12 3.61 22.19c-.37-.2-.61-.6-.61-1.08V2.89c0-.48.24-.88.61-1.08zM14.75 13.07l2.4 2.42-10.1 5.84 7.7-8.26zM17.15 8.51l-2.4 2.42-7.7-8.26 10.1 5.84zM18.51 9.3l2.86 1.65c.84.49.84 1.61 0 2.1l-2.86 1.65L15.8 12l2.71-2.7z"/></svg><span class="txt"><span class="s">on</span><span class="m">Google Play</span></span></a>
         </div>
       </div>
-      <div><h5>Product</h5><ul><li><a href="#whatsapp">WhatsApp banking</a></li><li><a href="#services">The app</a></li><li><a href="#fx">Currencies</a></li><li><a href="#faq">FAQ</a></li><li><a href="prototype.html">Open the web app</a></li></ul></div>
-      <div><h5>Company</h5><ul><li><a href="#">About us</a></li><li><a href="#">Careers</a></li><li><a href="mailto:support@zitch.ng">Support</a></li></ul></div>
-      <div><h5>Legal</h5><ul><li><a href="privacy.html">Privacy policy</a></li><li><a href="terms.html">Terms of use</a></li><li><a href="privacy.html#cookies">Cookie policy</a></li></ul></div>
+      <div>
+        <h5>Services</h5>
+        <ul>
+          <li><a href="#services">Airtime & data</a></li>
+          <li><a href="#services">Cable & TV</a></li>
+          <li><a href="#services">Electricity</a></li>
+          <li><a href="#services">Recharge PINs</a></li>
+          <li><a href="#services">Exam PINs</a></li>
+          <li><a href="#services">Betting funding</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Company</h5>
+        <ul>
+          <li><a href="#why">Why Zitch</a></li>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="#contact">Contact us</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5>Legal</h5>
+        <ul>
+          <li><a href="terms.html">Terms &amp; Conditions</a></li>
+          <li><a href="privacy.html">Privacy Policy</a></li>
+          <li><a href="terms.html#refunds">Refund Policy</a></li>
+          <li><a href="#contact">Support</a></li>
+        </ul>
+      </div>
     </div>
     <div class="foot-base">
-      <span>© 2026 Zitch Technologies Limited · Financial services are provided in partnership with CBN-licensed institutions.</span>
+      <span>© 2026 Zitch. Operated by <span class="ph">Zitch Technologies Ltd</span> (<span class="ph">RC 0000000</span>), <span class="ph">Lagos, Nigeria</span>.</span>
       <span>🇳🇬 Made for Nigeria</span>
     </div>
   </div>
 </footer>
 
-<!-- Floating WhatsApp portal button -->
-<a class="wa-fab" href="https://wa.me/2348166938327?text=Hi%20Zitch%2C%20I%27d%20like%20to%20get%20started" aria-label="Bank on WhatsApp" target="_blank" rel="noopener"><span class="fab-pulse"></span><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.76-.87-2.03-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.26-.46-2.4-1.48-.88-.79-1.48-1.76-1.65-2.06-.17-.3-.02-.46.13-.61.13-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.5 0 1.47 1.07 2.9 1.22 3.1.15.2 2.1 3.2 5.1 4.49.71.31 1.27.49 1.7.63.72.23 1.37.2 1.88.12.58-.09 1.76-.72 2.01-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35M12.05 21.79h-.01a9.8 9.8 0 0 1-5-1.37l-.36-.21-3.72.98.99-3.63-.23-.37a9.8 9.8 0 0 1-1.5-5.22c0-5.42 4.41-9.83 9.84-9.83a9.77 9.77 0 0 1 9.82 9.84c0 5.42-4.4 9.83-9.83 9.83m8.36-18.19A11.8 11.8 0 0 0 12.04 0C5.5 0 .19 5.32.19 11.86c0 2.09.55 4.13 1.58 5.93L.1 24l6.36-1.67a11.8 11.8 0 0 0 5.58 1.42h.01c6.54 0 11.86-5.32 11.86-11.86 0-3.17-1.23-6.15-3.49-8.39"/></svg></a>
-
+<script src="https://unpkg.com/lucide@latest"></script>
 <script>
-  (function(){
-    var reveal = function(el){ el.classList.add('vis'); };
-    if (!('IntersectionObserver' in window)) {
-      document.querySelectorAll('.rev').forEach(reveal);
-      return;
-    }
-    var io = new IntersectionObserver(function(entries){
-      entries.forEach(function(e){
-        if (e.isIntersecting){ reveal(e.target); io.unobserve(e.target); }
-      });
-    }, { threshold: 0.12 });
-    document.querySelectorAll('.rev').forEach(function(el){ io.observe(el); });
-    // The hero push notification is decorative: never block taps, and remove it
-    // entirely after its slide-out (also covers reduced-motion users, where the
-    // CSS animation doesn't run and it would otherwise sit over the app header).
-    var push = document.querySelector('.push');
-    if (push) setTimeout(function(){ push.style.display = 'none'; }, 10500);
-    // Safety net: if IO misbehaves (hidden iframe, prerender, background tab),
-    // force-reveal anything still hidden so content can never stay invisible.
-    setTimeout(function(){
-      document.querySelectorAll('.rev:not(.vis)').forEach(function(el){
-        var r = el.getBoundingClientRect();
-        if (r.top < (window.innerHeight || 800) * 1.2) reveal(el);
-      });
-    }, 1200);
-    setTimeout(function(){
-      document.querySelectorAll('.rev:not(.vis)').forEach(reveal);
-    }, 3500);
-  })();
+  // Lucide icons
+  function drawIcons(){ if (window.lucide) lucide.createIcons(); }
+  drawIcons();
 
-  // Plaid-style layered parallax: hero depth objects respond to the cursor and
-  // scroll, with a gentle idle float, each at its own depth. Disabled for
-  // reduced-motion; paused while the hero is off-screen.
+  // Theme toggle (persisted)
   (function(){
-    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var hero = document.querySelector('.hero');
-    var items = [].slice.call(document.querySelectorAll('.hero-3d [data-par]'));
-    if (reduce || !hero || !items.length) return;
-    items.forEach(function(el, i){ el._d = parseFloat(el.getAttribute('data-depth')) || 0.1; el._ph = i * 1.3; });
-    var tx = 0, ty = 0, cx = 0, cy = 0, sc = window.pageYOffset || 0, raf = 0, on = true;
-    window.addEventListener('mousemove', function(e){
-      var r = hero.getBoundingClientRect();
-      tx = (e.clientX - r.left) / r.width - 0.5;
-      ty = (e.clientY - r.top) / r.height - 0.5;
-    }, { passive: true });
-    window.addEventListener('scroll', function(){ sc = window.pageYOffset || 0; }, { passive: true });
-    function tick(t){
-      cx += (tx - cx) * 0.08; cy += (ty - cy) * 0.08;
-      var time = (t || 0) / 1000;
-      for (var i = 0; i < items.length; i++){
-        var el = items[i], d = el._d;
-        var fx = cx * d * 46;
-        var fy = cy * d * 46 + Math.sin(time * 0.6 + el._ph) * d * 22 - sc * d * 0.18;
-        el.style.transform = 'translate3d(' + fx.toFixed(2) + 'px,' + fy.toFixed(2) + 'px,0)';
-      }
-      raf = on ? requestAnimationFrame(tick) : 0;
-    }
-    if ('IntersectionObserver' in window){
-      new IntersectionObserver(function(es){
-        es.forEach(function(e){
-          on = e.isIntersecting;
-          if (on && !raf) raf = requestAnimationFrame(tick);
-          else if (!on && raf){ cancelAnimationFrame(raf); raf = 0; }
-        });
-      }, { threshold: 0 }).observe(hero);
-    }
-    raf = requestAnimationFrame(tick);
-  })();
-
-  // Services grid: spotlight one icon at a time with a 3D flip, advancing to the
-  // next every 5s. Skipped for reduced-motion users; paused when the section is
-  // off-screen or the tab is hidden so it never animates needlessly.
-  (function(){
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-    var icons = [].slice.call(document.querySelectorAll('#services .svc .ic'));
-    if (icons.length < 2) return;
-    icons.forEach(function(ic){
-      ic.addEventListener('animationend', function(){ ic.classList.remove('flip3d'); });
-    });
-    var i = -1, timer = null, inView = false;
-    function step(){
-      i = (i + 1) % icons.length;
-      var ic = icons[i];
-      ic.classList.remove('flip3d');
-      void ic.offsetWidth;            // reflow so the animation re-triggers each time
-      ic.classList.add('flip3d');
-    }
-    function sync(){
-      var go = inView && !document.hidden;
-      if (go && !timer){ step(); timer = setInterval(step, 5000); }
-      else if (!go && timer){ clearInterval(timer); timer = null; }
-    }
-    var sec = document.getElementById('services');
-    if (sec && 'IntersectionObserver' in window){
-      new IntersectionObserver(function(es){ inView = es[0].isIntersecting; sync(); },
-        { threshold: 0.15 }).observe(sec);
-    } else { inView = true; sync(); }
-    document.addEventListener('visibilitychange', sync);
-  })();
-</script>
-<script>
-  // Light / dark theme toggle (persists; syncs the embedded app's theme)
-  (function(){
-    var btn = document.getElementById('thmBtn');
-    if (!btn) return;
-    var SUN = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>';
-    var MOON = '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
-    function apply(m, sync){
+    var btn = document.getElementById('themeBtn');
+    var SUN = '<i data-lucide="sun"></i>', MOON = '<i data-lucide="moon"></i>';
+    function apply(m){
       document.body.setAttribute('data-theme', m);
       btn.innerHTML = m === 'dark' ? SUN : MOON;
-      try {
-        localStorage.setItem('zland-theme', m);
-        if (sync && localStorage.getItem('z-theme') !== m){
-          localStorage.setItem('z-theme', m);
-          var f = document.querySelector('.app-live');
-          if (f && f.contentWindow) f.contentWindow.location.reload();
-        }
-      } catch (e) {}
+      drawIcons();
+      try { localStorage.setItem('zvtu-theme', m); } catch(e){}
     }
     var init = 'light';
-    try { init = localStorage.getItem('zland-theme') || 'light'; } catch (e) {}
-    apply(init, false);
+    try { init = localStorage.getItem('zvtu-theme') || 'light'; } catch(e){}
+    apply(init);
     btn.addEventListener('click', function(){
-      apply(document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark', true);
+      apply(document.body.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
     });
   })();
-</script>
-<script>
+
   // Mobile menu
   (function(){
-    var menu = document.getElementById('mMenu');
-    var open = document.getElementById('burgerBtn');
-    var close = document.getElementById('mClose');
-    if (!menu || !open) return;
+    var menu = document.getElementById('mMenu'),
+        open = document.getElementById('burgerBtn'),
+        close = document.getElementById('mClose');
+    if (!menu) return;
     open.addEventListener('click', function(){ menu.classList.add('open'); });
     close.addEventListener('click', function(){ menu.classList.remove('open'); });
-    menu.querySelectorAll('nav a, .m-ctas a').forEach(function(a){
-      a.addEventListener('click', function(){ menu.classList.remove('open'); });
+    menu.querySelectorAll('a').forEach(function(a){ a.addEventListener('click', function(){ menu.classList.remove('open'); }); });
+  })();
+
+  // Contact form (demo)
+  (function(){
+    var f = document.getElementById('contactForm'), note = document.getElementById('cf-note');
+    if (!f) return;
+    f.addEventListener('submit', function(e){
+      e.preventDefault();
+      f.querySelector('button').textContent = 'Message sent ✓';
+      note.textContent = 'Thanks — we\'ve received your message and will reply by email soon.';
     });
   })();
-</script>
-<script>
-  // WhatsApp live demo — confirm → authorize (Fingerprint / Face ID / PIN) → receipt
+
+  // Reveal on scroll
   (function(){
-    var body = document.getElementById('waBody'), chips = document.getElementById('waChips'),
-        input = document.getElementById('waIn'), send = document.getElementById('waSend');
-    if (!body) return;
-    var st = { bal: 482350.75, usd: 120, gbp: 85.50, pending: null, pid: 0 };
-    var RATE = { USD: 1485.20 };
-    var KNOWN = { john: 'John Adeyemi', kemi: 'Kemi Balogun', tunde: 'Tunde Eze' };
-    var IC = {
-      finger: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 11a3 3 0 0 0-3 3c0 2.2-.3 4.2-1 6"/><path d="M15 13.7c0 2.5-.3 4.6-.8 6.3"/><path d="M6.2 8.8A7 7 0 0 1 19 12c0 1.2-.06 2.4-.2 3.5"/><path d="M4 13c.4-1 .6-2.3.6-3.5a7 7 0 0 1 2-4.2"/></svg>',
-      face: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M9 9h.01M15 9h.01"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/></svg>',
-      pin: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>'
-    };
-
-    function naira(n){ return '\u20a6' + n.toLocaleString('en-NG', { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 }); }
-    function time(){ var d = new Date(), h = d.getHours() % 12 || 12, m = ('0' + d.getMinutes()).slice(-2); return h + ':' + m; }
-    function dateStr(){ var d = new Date(); return d.toLocaleDateString('en-NG', { month: 'short', day: 'numeric', year: 'numeric' }) + ' \u00b7 ' + time() + (new Date().getHours() >= 12 ? ' PM' : ' AM'); }
-    function ref(){ return 'ZTC-' + Math.floor(88000 + Math.random() * 9000) + '-' + 'AKXTBQ'.charAt(Math.floor(Math.random() * 6)) + 'KQZRMN'.charAt(Math.floor(Math.random() * 6)); }
-    function cap(s){ return s.charAt(0).toUpperCase() + s.slice(1); }
-    function scrollDown(){ body.scrollTop = body.scrollHeight; }
-    function note(cls, html){ var d = document.createElement('div'); d.className = 'chat-note ' + cls; d.innerHTML = html; body.appendChild(d); scrollDown(); }
-
-    function addMsg(who, content, isHTML){
-      var d = document.createElement('div'); d.className = 'msg ' + who;
-      if (isHTML) { d.innerHTML = content; } else { d.appendChild(document.createTextNode(content)); }
-      var t = document.createElement('span'); t.className = 'tick';
-      t.innerHTML = time() + (who === 'you' ? ' <em class="ck">\u2713\u2713</em>' : '');
-      d.appendChild(t); body.appendChild(d); scrollDown();
-      return d;
-    }
-    function bot(html, delay){
-      var ty = document.createElement('div'); ty.className = 'msg bot typing';
-      ty.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
-      body.appendChild(ty); scrollDown();
-      setTimeout(function(){ ty.remove(); addMsg('bot', html, true); }, delay || (700 + Math.random() * 500));
-    }
-    function parseAmt(t, def){
-      var k = t.match(/(\d[\d,]*(?:\.\d+)?)\s*k\b/); if (k) return parseFloat(k[1].replace(/,/g, '')) * 1000;
-      var m = t.match(/(\d[\d,]*(?:\.\d+)?)/); if (m) { var v = parseFloat(m[1].replace(/,/g, '')); if (v >= 50) return v; }
-      return def;
-    }
-    function chipSet(items){
-      chips.innerHTML = '';
-      items.forEach(function(it){
-        var b = document.createElement('button'); b.type = 'button'; b.textContent = it.l;
-        b.onclick = it.fn; chips.appendChild(b);
-      });
-    }
-    function renderChips(){
-      if (st.pending && !st.pending.mode){
-        chipSet([
-          { l: '\ud83d\udc46 Fingerprint', fn: function(){ authorize('finger'); } },
-          { l: 'Face ID', fn: function(){ authorize('face'); } },
-          { l: 'Use PIN', fn: function(){ authorize('pin'); } },
-          { l: 'cancel', fn: function(){ handle('cancel'); } }
-        ]);
-      } else if (st.pending && st.pending.mode === 'pin'){
-        chipSet([
-          { l: 'Enter PIN \u00b7 1234', fn: function(){ handle('1234'); } },
-          { l: 'cancel', fn: function(){ handle('cancel'); } }
-        ]);
-      } else {
-        chipSet([{ l: '📋 Choose service', fn: serviceMenu }].concat(
-          ['send 5000 to 9011223344 opay', 'balance', 'airtime 1k', 'convert 100k to USD'].map(function(c){
-            return { l: c, fn: function(){ handle(c); } };
-          })
-        ));
-      }
-    }
-    function authBtns(pid){
-      return '<div class="wabtns">' +
-        '<button type="button" data-auth="finger" data-pid="' + pid + '">' + IC.finger + ' Pay with Fingerprint</button>' +
-        '<button type="button" data-auth="face" data-pid="' + pid + '">' + IC.face + ' Pay with Face ID</button>' +
-        '<button type="button" data-auth="pin" data-pid="' + pid + '">' + IC.pin + ' Enter PIN</button>' +
-        '</div>';
-    }
-    body.addEventListener('click', function(e){
-      var b = e.target.closest('[data-auth]');
-      if (b && st.pending && +b.dataset.pid === st.pid) authorize(b.dataset.auth);
-    });
-
-    function authorize(mode){
-      if (!st.pending) return;
-      if (mode === 'pin'){
-        st.pending.mode = 'pin'; renderChips();
-        bot(IC.pin + ' Enter your 4-digit PIN to authorize. <i>(demo \u2014 any 4 digits work)</i>');
-        return;
-      }
-      var label = mode === 'finger' ? 'Fingerprint' : 'Face ID';
-      var d = addMsg('bot', '<span class="scan busy">' + IC[mode] + '</span> ' + (mode === 'finger' ? 'Touch the sensor\u2026 verifying fingerprint' : 'Hold still\u2026 scanning face'), true);
-      setTimeout(function(){
-        var tick = d.querySelector('.tick');
-        d.innerHTML = '<span class="scan">' + IC[mode] + '</span> <b>' + label + ' verified</b> \u00b7 Adaeze Okonkwo';
-        if (tick) d.appendChild(tick);
-        settle(label); scrollDown();
-      }, 1600);
-    }
-    function receipt(o){
-      var rows = o.rows.map(function(r){ return '<div><span>' + r[0] + '</span><b' + (r[2] ? ' class="rc-mono"' : '') + '>' + r[1] + '</b></div>'; }).join('');
-      return 'Here\u2019s your receipt \ud83e\uddfe' +
-        '<div class="receipt">' +
-        '<div class="rc-top"><img src="assets/brand/zitch-ribbon2.png" alt="" />ZITCH \u00b7 TRANSACTION RECEIPT<span class="rc-ok">\u2713 SUCCESS</span></div>' +
-        '<div class="rc-amt">' + o.amt + '</div>' +
-        '<div class="rc-sub">' + o.sub + '</div>' +
-        '<div class="rc-rows">' + rows + '</div>' +
-        '<div class="rc-foot">Zitch \u00b7 Licensed by the CBN \u00b7 Deposits insured by the NDIC</div>' +
-        '</div>';
-    }
-    function settle(method){
-      var p = st.pending; if (!p) return;
-      st.pending = null; renderChips();
-      var rf = ref();
-      if (p.type === 'transfer'){
-        st.bal -= p.amt;
-        bot(receipt({ amt: naira(p.amt), sub: 'Bank transfer \u00b7 via WhatsApp', rows: [
-          ['To', p.name], ['Bank', p.bank || 'GTBank'], ['Account', p.acct || '\u00b7\u00b7\u00b7\u00b71234'],
-          ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['New balance', naira(st.bal)]
-        ]}), 1100);
-      } else if (p.type === 'bill'){
-        st.bal -= p.amt;
-        bot(receipt({ amt: naira(p.amt), sub: (p.biller || 'Electricity') + ' \u00b7 via WhatsApp', rows: [
-          ['Biller', p.biller || 'IKEDC Prepaid'], ['Meter token', '3942-1180-5567-2031', 1],
-          ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['New balance', naira(st.bal)]
-        ]}), 1100);
-      } else if (p.type === 'airtime'){
-        st.bal -= p.amt;
-        bot(receipt({ amt: naira(p.amt), sub: (p.label || 'MTN airtime') + ' \u00b7 via WhatsApp', rows: [
-          ['Phone', '0803 \u00b7\u00b7\u00b7 4421'], ['Network', 'MTN Nigeria'],
-          ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['New balance', naira(st.bal)]
-        ]}), 1100);
-      } else if (p.type === 'convert'){
-        var got = p.amt / RATE.USD; st.bal -= p.amt; st.usd += got;
-        bot(receipt({ amt: '$' + got.toFixed(2), sub: 'Currency conversion \u00b7 NGN \u2192 USD', rows: [
-          ['Debited', naira(p.amt)], ['Rate', '$1 = \u20a61,485.20'],
-          ['Reference', rf, 1], ['Date', dateStr()], ['Authorized by', method], ['USD wallet', '$' + st.usd.toFixed(2)]
-        ]}), 1100);
-      }
-    }
-    function askAuth(p, intro){
-      st.pid++; st.pending = p; renderChips();
-      bot(intro + '<br>How would you like to pay?' + authBtns(st.pid));
-    }
-    function menu(){
-      bot('I can help with:<br>1\ufe0f\u20e3 Balance<br>2\ufe0f\u20e3 Send money<br>3\ufe0f\u20e3 Airtime &amp; data<br>4\ufe0f\u20e3 Convert currency<br>Reply with a number, tap <b>Choose service</b> \u2014 or just type it how you\'d say it.');
-    }
-    function serviceMenu(){
-      bot('\ud83d\udca1 <b>Choose a service</b> \u2014 tap one, or just type / paste what you want to do.' +
-        '<div class="wabtns">' +
-        '<button type="button" data-svc="send 5000 to 9011223344 opay"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="8 7 17 7 17 16"/></svg> Transfer Money</button>' +
-        '<button type="button" data-svc="airtime 1000"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><line x1="10" y1="18" x2="14" y2="18"/></svg> Airtime</button>' +
-        '<button type="button" data-svc="buy 2gb data"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5a11 11 0 0 1 14 0"/><path d="M2 9a16 16 0 0 1 20 0"/><path d="M8.5 16a6 6 0 0 1 7 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg> Data</button>' +
-        '<button type="button" data-svc="pay electricity 5000"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Bills Payment</button>' +
-        '<button type="button" data-svc="ajo"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> Ajo Group Savings</button>' +
-        '</div>');
-    }
-    body.addEventListener('click', function(e){
-      var s = e.target.closest('[data-svc]');
-      if (s && !st.pending) handle(s.dataset.svc);
-    });
-    function handle(raw){
-      var text = String(raw).trim(); if (!text) return;
-      if (st.pending){
-        if (/cancel/i.test(text)){ addMsg('you', text); st.pending = null; renderChips(); bot('Cancelled \u2014 nothing was sent.'); return; }
-        if (/^\d{4}$/.test(text)){ addMsg('you', '\u2022\u2022\u2022\u2022'); settle('PIN'); return; }
-        addMsg('you', text);
-        bot('Tap <b>Fingerprint</b>, <b>Face ID</b> or <b>Enter PIN</b> above to authorize \u2014 or reply <b>cancel</b>.');
-        return;
-      }
-      addMsg('you', text);
-      var t = text.toLowerCase();
-      // Continue a transfer that was waiting on an amount
-      if (st.awaitAmt){
-        var aw = st.awaitAmt, awAmt = parseAmt(t, 0);
-        if (awAmt >= 50){ st.awaitAmt = null; askAuth({ type:'transfer', amt:awAmt, name:aw.name, bank:aw.bank, acct:aw.acct }, 'Send <b>' + naira(awAmt) + '</b> to <b>' + aw.name + '</b> \u00b7 ' + aw.bank + '?'); return; }
-      }
-      // AI paste \u2014 a standalone 10-digit number is a bank account: verify & pay
-      var acctM = t.match(/\b(\d{10})\b/);
-      if (acctM){
-        var acct = acctM[1], amtP = parseAmt(t.replace(acct, ''), 0);
-        var BANKS = { opay:'OPay (PAYCOM)', moniepoint:'Moniepoint MFB', monie:'Moniepoint MFB', palmpay:'Palmpay', gtbank:'GTBank', gtb:'GTBank', access:'Access Bank', zenith:'Zenith Bank', uba:'UBA', kuda:'Kuda MFB', first:'First Bank', wema:'Wema Bank', fidelity:'Fidelity Bank', rubies:'Rubies MFB' };
-        var bankName = 'OPay (PAYCOM)';
-        Object.keys(BANKS).forEach(function(k){ if (t.indexOf(k) > -1) bankName = BANKS[k]; });
-        var benName = acct === '9011223344' ? 'Ada Okafor' : 'Verified Account Holder';
-        var dv = addMsg('bot', '<span class="scan busy">' + IC.pin + '</span> Verifying beneficiary account\u2026', true);
-        setTimeout(function(){
-          var tk = dv.querySelector('.tick');
-          dv.innerHTML = '\ud83d\udc64 <b>Beneficiary found</b>' +
-            '<div class="rcpt"><div><span>Name</span><b>' + benName + '</b></div>' +
-            '<div><span>Bank</span><b>' + bankName + '</b></div>' +
-            '<div><span>Account</span><b>' + acct + '</b></div></div>';
-          if (tk) dv.appendChild(tk); scrollDown();
-          if (amtP >= 50){
-            askAuth({ type:'transfer', amt:amtP, name:benName, bank:bankName, acct:acct }, 'Send <b>' + naira(amtP) + '</b> to <b>' + benName + '</b>?');
-          } else {
-            st.awaitAmt = { name:benName, bank:bankName, acct:acct };
-            bot('How much should I send to <b>' + benName + '</b>? Just type the amount \u2014 e.g. <b>5000</b>.');
-          }
-        }, 1500);
-        return;
-      }
-      // Bills
-      if (t.indexOf('electric') > -1 || t.indexOf('bill') > -1 || t.indexOf('ikedc') > -1 || t.indexOf('disco') > -1){
-        var bAmt = parseAmt(t, 5000);
-        askAuth({ type:'bill', amt:bAmt, biller:'IKEDC Prepaid' },
-          '\ud83e\uddfe <b>IKEDC Prepaid</b> \u00b7 Meter 0451 \u00b7\u00b7\u00b7 2290<div class="rcpt"><div><span>Amount</span><b>' + naira(bAmt) + '</b></div><div><span>Token to</span><b>0451 \u00b7\u00b7\u00b7 2290</b></div></div>');
-        return;
-      }
-      // Ajo / group savings
-      if (t.indexOf('ajo') > -1 || t.indexOf('group savings') > -1 || t.indexOf('esusu') > -1){
-        bot('\ud83d\udc65 <b>Ajo group savings</b><br>Create a savings circle, invite members, and Zitch auto-collects each round and pays out on schedule \u2014 every contribution PIN-approved. <i>Reply</i> <b>create ajo</b> <i>to set one up.</i>');
-        return;
-      }
-      if (/^(hi|hello|hey)\b/.test(t)){ bot('Hi Adaeze \ud83d\udc4b I\'m Zitch on WhatsApp. Try <b>send 5k to my brother John</b>, paste <b>send 5000 to 9011223344 opay</b>, or tap <b>Choose service</b>.'); return; }
-      if (t.indexOf('balance') > -1 || t === '1'){ bot('\ud83d\udcbc Your wallets:<br>NGN ' + naira(st.bal) + ' \u00b7 USD $' + st.usd.toFixed(2) + ' \u00b7 GBP \u00a3' + st.gbp.toFixed(2)); return; }
-      if (t.indexOf('rate') > -1){ bot('\ud83d\udcb1 Today\'s rates:<br>\ud83c\uddfa\ud83c\uddf8 $1 = \u20a61,485.20<br>\ud83c\uddec\ud83c\udde7 \u00a31 = \u20a61,872.45<br>\ud83c\udde8\ud83c\udde6 C$1 = \u20a61,082.10<br>\ud83c\udde8\ud83c\uddf3 \u00a51 = \u20a6206.84 <i>(quotes only)</i>'); return; }
-      if (t.indexOf('send') > -1 || t === '2'){
-        if (t === '2'){ bot('Who should receive it? Try: <b>send 5k to John</b>'); return; }
-        var amt = parseAmt(t, 5000);
-        var m = t.match(/to (?:my \w+ )?([a-z]+)/);
-        var name = m ? (KNOWN[m[1]] || cap(m[1]) + ' (saved beneficiary)') : 'John Adeyemi';
-        askAuth({ type: 'transfer', amt: amt, name: name },
-          'Got it \ud83d\udc4d I found <b>' + name + '</b> in your beneficiaries.' +
-          '<div class="rcpt"><div><span>To</span><b>' + name + '</b></div>' +
-          '<div><span>Bank</span><b>GTBank \u00b7\u00b7\u00b7\u00b71234</b></div>' +
-          '<div><span>Amount</span><b>' + naira(amt) + '</b></div>' +
-          '</div>');
-        return;
-      }
-      if (t.indexOf('airtime') > -1 || t.indexOf('data') > -1 || t === '3'){
-        var isData = t.indexOf('data') > -1;
-        var a = parseAmt(t, isData ? 1500 : 1000);
-        askAuth({ type: 'airtime', amt: a, label: isData ? 'MTN data bundle' : 'MTN airtime' },
-          'MTN <b>' + naira(a) + (isData ? ' data bundle' : ' airtime') + '</b> to <b>0803 \u00b7\u00b7\u00b7 4421</b> (your linked number).');
-        return;
-      }
-      if (t.indexOf('convert') > -1 || t.indexOf('dollar') > -1 || t.indexOf('usd') > -1 || t === '4'){
-        var c = parseAmt(t, 100000);
-        askAuth({ type: 'convert', amt: c },
-          '\ud83d\udcb1 Quote: <b>' + naira(c) + ' \u2192 $' + (c / RATE.USD).toFixed(2) + '</b> @ \u20a61,485.20/$. Valid 60s, single-use.');
-        return;
-      }
-      menu();
-    }
-
-    var userInteracted = false;
-    function markInteract(){ userInteracted = true; }
-    [body, chips, input, send].forEach(function(el){ if (el) el.addEventListener('click', markInteract); });
-    input.addEventListener('keydown', markInteract);
-    send.addEventListener('click', function(){ handle(input.value); input.value = ''; input.focus(); });
-    input.addEventListener('keydown', function(e){ if (e.key === 'Enter'){ handle(input.value); input.value = ''; toggleSendIcon(); } });
-    function toggleSendIcon(){
-      var has = input.value.trim().length > 0;
-      var mic = send.querySelector('.ic-mic'), snd = send.querySelector('.ic-send');
-      if (mic && snd){ mic.style.display = has ? 'none' : 'block'; snd.style.display = has ? 'block' : 'none'; }
-    }
-    input.addEventListener('input', toggleSendIcon);
-    renderChips();
-    note('date', 'Today');
-    note('enc', 'This business uses a secure service from Meta to manage this chat. Tap to learn more.');
-    setTimeout(function(){
-      bot('Hi Adaeze \ud83d\udc4b This is the <b>real Zitch flow</b> in demo mode. Type it, <b>paste it</b>, or tap <b>Choose service</b> \u2014 e.g. paste <b>send 5000 to 9011223344 opay</b> and I\'ll find the account; then approve with <b>Fingerprint</b>, <b>Face ID</b> or <b>PIN</b> for an instant receipt. \u2728', 900);
-    }, 600);
-    setTimeout(function(){ if (!userInteracted) handle('send 5000 to 9011223344 opay'); }, 3200);
-    setTimeout(function(){ if (!userInteracted && st.pending) authorize('finger'); }, 7000);
+    var els = document.querySelectorAll('.rev');
+    if (!('IntersectionObserver' in window)) { els.forEach(function(el){ el.classList.add('vis'); }); return; }
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){ if (en.isIntersecting){ en.target.classList.add('vis'); io.unobserve(en.target); } });
+    }, { threshold:.12 });
+    els.forEach(function(el){ io.observe(el); });
+    setTimeout(function(){ document.querySelectorAll('.rev:not(.vis)').forEach(function(el){ el.classList.add('vis'); }); }, 2600);
   })();
 </script>
 <style id="__om-edit-overrides"></style>

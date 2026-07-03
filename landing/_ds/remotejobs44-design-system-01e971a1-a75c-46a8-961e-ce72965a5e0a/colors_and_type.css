@@ -1,0 +1,265 @@
+/* ============================================================
+   RemoteJobs44 Design System — Colors & Type
+   Source of truth: zitch-systems/remotejobs44 (Next.js + Tailwind)
+   - app/layout.tsx        — font + CSS-var inline definitions
+   - app/app/globals.css   — base/component layer
+   - tailwind.config.js    — brand/accent scales, type ramp, radii, shadow
+   ============================================================ */
+
+/* ---------- 1. Local webfonts (bundled in /fonts) ------------------
+   Sora (display) + DM Sans (body). The TTFs include the full glyph
+   set the production app needs, including ₦ (U+20A6). */
+
+@font-face {
+  font-family: 'Sora';
+  src: url('fonts/Sora-VariableFont_wght.ttf') format('truetype-variations'),
+       url('fonts/Sora-VariableFont_wght.ttf') format('truetype');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  src: url('fonts/DMSans-VariableFont_opsz_wght.ttf') format('truetype-variations'),
+       url('fonts/DMSans-VariableFont_opsz_wght.ttf') format('truetype');
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  src: url('fonts/DMSans-Italic-VariableFont_opsz_wght.ttf') format('truetype-variations'),
+       url('fonts/DMSans-Italic-VariableFont_opsz_wght.ttf') format('truetype');
+  font-weight: 100 1000;
+  font-style: italic;
+  font-display: swap;
+}
+
+:root {
+  /* ---------- TYPEFACES ---------- */
+  --font-display: 'Sora',    system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-body:    'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:    ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ---------- BRAND PALETTE — "Deep Ocean" blue
+     The repo's tailwind.config defines a green scale, but globals.css
+     overrides every brand-* utility to blue with !important. Blue wins. */
+  --brand-50:  #eff6ff;
+  --brand-100: #dbeafe;
+  --brand-200: #bfdbfe;
+  --brand-300: #93c5fd;
+  --brand-400: #60a5fa;
+  --brand-500: #3b82f6;
+  --brand-600: #2563eb;   /* primary action, links, focus rings           */
+  --brand-700: #1d4ed8;   /* primary button hover / heavy text-on-light   */
+  --brand-800: #1e3a5f;   /* dark-mode surface tier 1 ("deep ocean")     */
+  --brand-900: #0f1e38;   /* dark-mode surface tier 2                    */
+  --brand-950: #060e1f;   /* darkest tone                                */
+  --brand:     var(--brand-600);
+
+  /* ---------- ACCENT — "Sunrise orange" ---------- */
+  --accent:        #f97316; /* logo dot + featured top stripe + saved icon */
+  --accent-light:  #fbbf46;
+  --accent-dark:   #d48a0a;
+
+  /* ---------- NEUTRALS / SURFACES (LIGHT) ----------
+     The app uses the "stone" palette by name but actually swaps in slate
+     hex values for backgrounds. We keep both groups available. */
+  --bg-app:      #f8faff;  /* page background (light)                 */
+  --bg-section:  #f1f5f9;  /* subtle alternate band (stone-50/slate)  */
+  --bg-card:     #ffffff;
+  --border-1:    #e8edf5;  /* card border                              */
+  --border-2:    #e2e8f0;  /* input/chip border                        */
+  --border-3:    #f1f5f9;  /* hairline divider                         */
+
+  --fg-1:        #0f172a;  /* primary text                             */
+  --fg-2:        #475569;  /* secondary / body                         */
+  --fg-3:        #64748b;  /* tertiary                                 */
+  --fg-4:        #94a3b8;  /* placeholder / meta                       */
+  --fg-5:        #cbd5e1;  /* disabled / scrollbar                     */
+
+  /* ---------- SEMANTIC ---------- */
+  --success:     #1ea05e;
+  --success-bg:  #edfaf2;
+  --warning:     #f59e0b;
+  --warning-bg:  #fef3c7;
+  --danger:      #ef4444;
+  --danger-bg:   #fee2e2;
+  --info:        var(--brand-600);
+
+  /* ---------- TYPE RAMP (from tailwind.config.js) ---------- */
+  --fs-2xs:  10px;
+  --fs-xs:   11px;
+  --fs-sm:   13px;
+  --fs-base: 15px;
+  --fs-md:   17px;
+  --fs-lg:   20px;
+  --fs-xl:   24px;
+  --fs-2xl:  30px;
+  --fs-3xl:  38px;
+  --fs-4xl:  50px;
+  --fs-5xl:  64px;
+
+  --lh-tight:  1.05;  /* @kind font */
+  --lh-snug:   1.15;  /* @kind font */
+  --lh-normal: 1.5;   /* @kind font */
+  --lh-relaxed:1.6;   /* @kind font */
+  --lh-loose:  1.75;  /* @kind font */
+
+  --fw-light:    300; /* @kind font */
+  --fw-regular:  400; /* @kind font */
+  --fw-medium:   500; /* @kind font */
+  --fw-semibold: 600; /* @kind font */
+  --fw-bold:     700; /* @kind font */
+  --fw-extrabold:800; /* @kind font */
+
+  --tracking-tight:  -0.02em; /* @kind font */
+  --tracking-normal: 0;       /* @kind font */
+  --tracking-wide:   0.06em;  /* @kind font */ /* badge / eyebrow */
+  --tracking-wider:  0.1em;   /* @kind font */ /* uppercase mini-label */
+
+  /* ---------- RADII ---------- */
+  --radius-xs:  4px;
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  16px;   /* default for nav, panels */
+  --radius-xl:  24px;
+  --radius-2xl: 32px;
+  --radius-pill: 9999px;
+
+  /* ---------- SHADOWS (brand-tinted blue) ---------- */
+  --shadow-sm-brand: 0 1px 4px rgba(37, 99, 235, 0.06);
+  --shadow-md-brand: 0 4px 20px rgba(37, 99, 235, 0.16);
+  --shadow-lg-brand: 0 8px 32px rgba(37, 99, 235, 0.18);
+  --shadow-xl-brand: 0 16px 56px rgba(37, 99, 235, 0.22);
+
+  /* ---------- SPACING (4px base) ---------- */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---------- LAYOUT ---------- */
+  --container-max: 1440px;    /* @kind spacing */
+  --header-height: 68px;      /* @kind spacing */
+  --bottom-nav-height: 68px;  /* @kind spacing */
+
+  /* ---------- MOTION ---------- */
+  --ease-spring:  cubic-bezier(0.34, 1.56, 0.64, 1); /* @kind other */
+  --ease-out:     ease;   /* @kind other */
+  --dur-fast:     150ms;  /* @kind other */
+  --dur-normal:   200ms;  /* @kind other */
+  --dur-slow:     300ms;  /* @kind other */
+}
+
+/* ---------- 2. Dark mode (auto via [data-theme="dark"] or .dark) ---- */
+.dark, [data-theme="dark"] {
+  --bg-app:     #0a1628;
+  --bg-section: #0f1e38;
+  --bg-card:    #111c35;
+  --border-1:   #1e2d4a;
+  --border-2:   #1e3a5f;
+  --border-3:   #0f1e38;
+
+  --fg-1: #e2e8f4;
+  --fg-2: #cbd5e1;
+  --fg-3: #94a3b8;
+  --fg-4: #64748b;
+  --fg-5: #334155;
+
+  --brand:  var(--brand-500);
+}
+
+/* ============================================================
+   3. SEMANTIC ELEMENT STYLES
+   Use these on real elements; tweak via the CSS vars above.
+   ============================================================ */
+html { color-scheme: light dark; }
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  font-size: var(--fs-base);
+  line-height: var(--lh-relaxed);
+  color: var(--fg-1);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, h5, h6, .h1, .h2, .h3, .h4, .h5 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-extrabold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--fg-1);
+  margin: 0;
+  text-wrap: balance;
+}
+
+h1, .h1 { font-size: var(--fs-4xl); line-height: var(--lh-tight); }
+h2, .h2 { font-size: var(--fs-2xl); line-height: var(--lh-snug);  }
+h3, .h3 { font-size: var(--fs-xl);  line-height: 1.25;            }
+h4, .h4 { font-size: var(--fs-lg);  line-height: 1.3;             font-weight: var(--fw-bold); }
+h5, .h5 { font-size: var(--fs-md);  line-height: 1.4;             font-weight: var(--fw-bold); }
+
+p          { margin: 0 0 var(--space-4); color: var(--fg-2); }
+small, .meta { font-size: var(--fs-xs); color: var(--fg-4); }
+strong     { font-weight: var(--fw-bold); }
+a          { color: var(--brand-700); text-decoration: none; }
+a:hover    { text-decoration: underline; }
+
+code, kbd, pre {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* Eyebrow — uppercase mini-label that appears above headers */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+  color: var(--fg-4);
+}
+
+/* Highlight — used in hero headline ("starts here") */
+.text-highlight {
+  position: relative;
+  color: var(--brand-600);
+  display: inline-block;
+}
+.text-highlight::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 2px 0;
+  height: 3px;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  opacity: 0.2;
+}
+
+/* Pill badge */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+  background: var(--brand-50);
+  color: var(--brand-700);
+}

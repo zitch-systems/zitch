@@ -3,185 +3,305 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Privacy and Data Protection Policy — Zitch</title>
-<meta name="description" content="How Zitch Technologies Limited collects, uses, protects and shares your personal and financial data across the Zitch app, website and WhatsApp banking service." />
-<meta name="robots" content="index, follow" />
-<meta name="theme-color" content="#00847B" />
-<link rel="canonical" href="https://zitch.ng/privacy.html" />
-<link rel="icon" type="image/png" sizes="64x64" href="assets/brand/zitch-icon-64.png" />
-<link rel="icon" type="image/png" sizes="512x512" href="assets/brand/zitch-icon.png" />
-<link rel="apple-touch-icon" href="assets/brand/zitch-icon.png" />
+<link rel="icon" type="image/png" href="uploads/zitch-logo.png" />
+<link rel="apple-touch-icon" href="uploads/zitch-logo.png" />
+<title>Privacy Policy — Zitch</title>
+<meta name="description" content="How Zitch collects, uses and protects your personal information." />
+<!-- NOTE: Bracketed / dotted-underlined values are placeholders — replace the legal entity name,
+     RC number, address, e-mail addresses and phone number, and confirm with legal counsel before publishing. -->
+<link rel="stylesheet" href="_ds/remotejobs44-design-system-01e971a1-a75c-46a8-961e-ce72965a5e0a/colors_and_type.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet" />
 <style>
-  /* System-font fallback only for the Naira sign (U+20A6). */
-  @font-face{font-family:'ZNairaSys';src:local('-apple-system'),local('BlinkMacSystemFont'),local('Segoe UI Variable'),local('Segoe UI'),local('Roboto'),local('Helvetica Neue'),local('Arial');unicode-range:U+20A6;}
-  :root{--teal:#23B1A8;--teal-deep:#00847B;--navy:#02344A;--ink:#000000;--t2:#46535B;--line:#E3EAED;--paper:#F7FAFB;
-        --disp:'ZNairaSys','Plus Jakarta Sans',sans-serif;--body:'ZNairaSys','Inter',system-ui,sans-serif;}
+  :root{--wrap:1080px;
+    /* ===== Zitch teal brand — overrides the design-system blue ===== */
+    --brand-50:#E6F7F4;--brand-100:#C2EDE7;--brand-200:#8FDDD4;--brand-300:#54C9BD;
+    --brand-400:#2BBAAF;--brand-500:#12A99B;--brand-600:#0FA295;--brand-700:#00847B;
+    --brand-800:#00615A;--brand-900:#043C37;--brand-950:#04221F;--brand:var(--brand-600);
+    --accent:#F5A623;--accent-light:#FBC85A;--accent-dark:#D48A0A;
+    --bg-app:#F4FAF9;--bg-section:#E9F5F2;--bg-card:#FFFFFF;
+    --border-1:#DCEDE9;--border-2:#CFE5E0;--border-3:#E9F5F2;
+    --shadow-sm-brand:0 1px 4px rgba(0,132,123,.08);
+    --shadow-md-brand:0 4px 20px rgba(0,132,123,.18);
+    --shadow-lg-brand:0 8px 32px rgba(0,132,123,.20);
+    --shadow-xl-brand:0 16px 56px rgba(0,132,123,.24);
+  }
+  [data-theme="dark"]{
+    --bg-app:#04211D;--bg-section:#062B26;--bg-card:#0A362F;
+    --border-1:#123F38;--border-2:#174B42;--border-3:#0B2E29;--brand:var(--brand-400);
+  }
   *{box-sizing:border-box;}
-  body{margin:0;font-family:var(--body);color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;font-feature-settings:"kern" 1,"liga" 1;}
-  a{color:var(--teal-deep);}
-  .topbar{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);z-index:5;}
-  .topbar .in{max-width:880px;margin:0 auto;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;}
-  .brand{display:flex;align-items:center;gap:9px;font-family:var(--disp);font-weight:700;letter-spacing:.14em;color:var(--navy);text-decoration:none;}
-  .brand img{height:24px;display:block;}
-  .back{font-size:14px;font-weight:600;text-decoration:none;color:var(--teal-deep);}
-  main{max-width:880px;margin:0 auto;padding:42px 22px 70px;}
-  h1{font-family:var(--disp);color:var(--navy);font-size:30px;line-height:1.25;text-align:center;margin:0 0 8px;}
-  h2{font-family:var(--disp);color:var(--navy);font-size:21px;margin:34px 0 10px;}
-  h3{font-family:var(--disp);color:var(--navy);font-size:17px;margin:24px 0 8px;}
-  p,li{font-size:15.5px;line-height:1.75;color:var(--t2);}
-  p b,li b{color:var(--ink);}
-  ul{padding-left:24px;}
-  footer{border-top:1px solid var(--line);background:var(--paper);}
-  footer .in{max-width:880px;margin:0 auto;padding:22px;font-size:13.5px;color:var(--t2);display:flex;flex-wrap:wrap;gap:8px 22px;}
-  footer a{color:var(--teal-deep);text-decoration:none;}
-  @media (max-width:480px){h1{font-size:24px;} main{padding-top:28px;}}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--bg-app);color:var(--fg-1);font-family:var(--font-body);}
+  a{color:var(--brand-700);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  svg,img{display:block;}
+  [data-lucide]{width:20px;height:20px;stroke-width:1.75;}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px;}
+
+  .brand{display:inline-flex;align-items:center;gap:11px;}
+  .brand .mark{width:34px;height:34px;border-radius:10px;object-fit:cover;display:block;flex-shrink:0;}
+  .brand .word{font-family:var(--font-display);font-weight:800;font-size:20px;letter-spacing:-.02em;color:var(--fg-1);}
+
+  header.nav{position:sticky;top:0;z-index:70;background:rgba(244,250,249,.92);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border-bottom:1px solid var(--border-1);}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;gap:20px;height:66px;}
+  .nav-right{display:flex;align-items:center;gap:10px;}
+  .back{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-display);font-weight:600;font-size:14px;color:var(--fg-2);}
+  .back:hover{color:var(--brand-700);text-decoration:none;}
+  .back [data-lucide]{width:16px;height:16px;}
+  .icon-btn{width:42px;height:42px;border-radius:11px;border:1.5px solid var(--border-2);background:transparent;color:var(--fg-2);cursor:pointer;display:grid;place-items:center;}
+  .icon-btn:hover{border-color:var(--brand-500);color:var(--brand-700);}
+
+  .title-band{border-bottom:1px solid var(--border-1);background:var(--bg-card);position:relative;overflow:hidden;}
+  .title-band::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 70% 80% at 20% -20%,rgba(15,162,149,.10),transparent 70%);pointer-events:none;}
+  .title-in{position:relative;padding:56px 0 44px;}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);}
+  .title-in h1{font-family:var(--font-display);font-weight:800;font-size:clamp(32px,4.4vw,50px);letter-spacing:-.025em;line-height:1.05;color:var(--fg-1);margin:14px 0 0;}
+  .updated{display:inline-flex;align-items:center;gap:8px;margin-top:18px;font-size:13.5px;color:var(--fg-3);background:var(--bg-section);border:1px solid var(--border-1);padding:7px 14px;border-radius:999px;}
+  .updated [data-lucide]{width:15px;height:15px;color:var(--brand-600);}
+  .lead{font-size:16.5px;line-height:1.65;color:var(--fg-2);max-width:640px;margin-top:20px;}
+
+  .doc{display:grid;grid-template-columns:238px 1fr;gap:52px;padding:52px 0 80px;align-items:start;}
+  .toc{position:sticky;top:88px;}
+  .toc .h{font-family:var(--font-display);font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-4);margin-bottom:14px;}
+  .toc ol{list-style:none;margin:0;padding:0;display:grid;gap:2px;}
+  .toc a{display:block;padding:7px 12px;border-radius:9px;font-size:13.5px;line-height:1.35;color:var(--fg-2);border-left:2px solid transparent;transition:background .15s,color .15s,border-color .15s;}
+  .toc a:hover{background:var(--bg-section);color:var(--brand-700);text-decoration:none;}
+  .toc a.active{color:var(--brand-700);background:var(--brand-50);border-left-color:var(--brand-600);font-weight:600;}
+
+  .content{max-width:720px;}
+  .content section{scroll-margin-top:88px;margin-bottom:38px;}
+  .content h2{font-family:var(--font-display);font-weight:700;font-size:22px;letter-spacing:-.01em;color:var(--fg-1);margin:0 0 14px;display:flex;gap:12px;align-items:baseline;}
+  .content h2 .num{font-size:14px;font-weight:700;color:var(--brand-600);font-variant-numeric:tabular-nums;flex-shrink:0;}
+  .content h3{font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--fg-1);margin:22px 0 8px;}
+  .content p{font-size:15.5px;line-height:1.68;color:var(--fg-2);margin:0 0 14px;}
+  .content ul{margin:0 0 14px;padding-left:20px;}
+  .content li{font-size:15.5px;line-height:1.62;color:var(--fg-2);margin-bottom:8px;}
+  .content strong{color:var(--fg-1);font-weight:600;}
+  .callout{background:var(--brand-50);border:1.5px solid var(--brand-100);border-left:3px solid var(--brand-600);border-radius:12px;padding:16px 18px;margin:0 0 14px;}
+  .callout p{margin:0;color:var(--brand-800);font-size:14.5px;}
+  .ph{border-bottom:1px dotted var(--fg-4);}
+
+  footer{background:var(--brand-900);color:#93a4c4;padding:40px 0;font-size:13.5px;}
+  .foot-in{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;}
+  .foot-links{display:flex;gap:22px;flex-wrap:wrap;}
+  .foot-links a{color:#93a4c4;}
+  .foot-links a:hover{color:#fff;text-decoration:none;}
+  .foot-in .brand .word{color:#fff;}
+
+  @media (max-width:900px){
+    .doc{grid-template-columns:1fr;gap:0;}
+    .toc{position:static;margin-bottom:36px;padding:18px 18px 8px;background:var(--bg-section);border:1px solid var(--border-1);border-radius:14px;}
+    .toc ol{grid-template-columns:1fr 1fr;gap:0 14px;}
+  }
+  @media (max-width:560px){
+    .wrap{padding:0 18px;}
+    .toc ol{grid-template-columns:1fr;}
+    .back span{display:none;}
+  }
+
+  body[data-theme="dark"] header.nav{background:rgba(5,32,28,.85);}
+  body[data-theme="dark"] .title-band{background:var(--bg-card);}
+  body[data-theme="dark"] .callout{background:rgba(15,162,149,.14);border-color:var(--brand-800);}
+  body[data-theme="dark"] .callout p{color:var(--brand-200);}
 </style>
 </head>
-<body>
-<div class="topbar"><div class="in">
-  <a class="brand" href="index.html"><img src="assets/brand/zitch-ribbon2.png" alt="Zitch" />ZITCH</a>
-  <a class="back" href="index.html">&larr; Back to home</a>
-</div></div>
-<main>
-<h1>ZITCH TECHNOLOGIES LIMITED<br>PRIVACY AND DATA PROTECTION POLICY</h1>
+<body data-screen-label="Privacy Policy">
 
-<p style="text-align:center"><b>Version 2.0 — Effective 12 June 2026</b><br>(This version replaces the policy dated July 2023)</p>
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="index.html"><img class="mark" src="uploads/zitch-logo.png" alt="Zitch" /><span class="word">Zitch</span></a>
+    <div class="nav-right">
+      <a class="back" href="index.html"><i data-lucide="arrow-left"></i><span>Back to site</span></a>
+      <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+    </div>
+  </div>
+</header>
 
-<h2>1. Introduction</h2>
-<p>Your data and your trust matter to us. We are Zitch, and we keep our promises.</p>
-<p>This Privacy and Data Protection Policy (the “<b>Policy</b>”) explains how Zitch Technologies Limited (RC [insert RC number]) of Ketu, Lagos State, Nigeria (“<b>Zitch</b>”, “<b>we</b>”, “<b>us</b>” or “<b>our</b>”), together with Zitch Technologies Multipurpose Cooperative Society Limited (the “<b>Cooperative</b>”, registered under the Co-operative Societies Law of Lagos State with registration number [insert registration number]), collects, uses, shares, stores and protects your personal data when you use:</p>
-<ul>
-<li>the Zitch mobile application (the “<b>App</b>”);</li>
-<li>our website and web pages (the “<b>Site</b>”);</li>
-<li>our WhatsApp banking channel operated from our verified business number (the “<b>WhatsApp Channel</b>”); and</li>
-<li>any related products, services or support channels (together, the “<b>Services</b>”).</li>
-</ul>
-<p>We process personal data in accordance with the <b>Nigeria Data Protection Act, 2023</b> (the “<b>NDPA</b>”), the General Application and Implementation Directive issued by the Nigeria Data Protection Commission (the “<b>NDPC</b>”), and other applicable laws, including the Central Bank of Nigeria (“<b>CBN</b>”) regulations and the Money Laundering (Prevention and Prohibition) Act, 2022 (together, the “<b>Data Protection Requirements</b>”).</p>
-<p>For the purposes of the NDPA, Zitch Technologies Limited is the data controller of your personal data. Questions about this Policy or our data practices should be directed to our Data Protection Officer (“<b>DPO</b>”) using the contact details in Section 17.</p>
+<div class="title-band">
+  <div class="wrap title-in">
+    <span class="eyebrow">Legal</span>
+    <h1>Privacy Policy</h1>
+    <div class="updated"><i data-lucide="calendar"></i> Last updated: 3 July 2026</div>
+    <p class="lead">This policy explains what personal information Zitch collects when you use our bill-payment platform, how we use and protect it, and the rights you have over it.</p>
+  </div>
+</div>
 
-<h2>2. Who This Policy Covers</h2>
-<p>This Policy applies to every living individual whose personal data we process, including:</p>
-<ul>
-<li><b>Customers:</b> anyone who registers for or uses a Zitch account, wallet, payment, bill-payment, savings, loan, card, currency-conversion or WhatsApp banking service, including members of the Cooperative;</li>
-<li><b>Recipients and related individuals:</b> beneficiaries of transfers, guarantors or referees for loans, next of kin, authorised signatories and directors or beneficial owners of business customers;</li>
-<li><b>Prospective customers and visitors:</b> people who start but do not complete registration, contact our support channels, visit the Site, or interact with us on social media; and</li>
-<li><b>Suppliers, partners and staff:</b> to the extent we hold personal data about individuals at our vendors, partners and within our own team.</li>
-</ul>
-<p>If you give us personal data about another person (for example, a transfer beneficiary’s account details or a loan referee’s phone number), you confirm that you are authorised to do so and that you have directed them to this Policy.</p>
+<div class="wrap doc">
+  <nav class="toc" aria-label="Table of contents">
+    <div class="h">On this page</div>
+    <ol>
+      <li><a href="#intro">1. Who we are</a></li>
+      <li><a href="#collect">2. Information we collect</a></li>
+      <li><a href="#use">3. How we use it</a></li>
+      <li><a href="#basis">4. Legal basis</a></li>
+      <li><a href="#share">5. When we share it</a></li>
+      <li><a href="#payments">6. Payment information</a></li>
+      <li><a href="#retention">7. Data retention</a></li>
+      <li><a href="#security">8. How we protect it</a></li>
+      <li><a href="#cookies">9. Cookies & analytics</a></li>
+      <li><a href="#rights">10. Your rights</a></li>
+      <li><a href="#children">11. Children</a></li>
+      <li><a href="#transfers">12. International transfers</a></li>
+      <li><a href="#changes">13. Changes to this policy</a></li>
+      <li><a href="#contact">14. Contact us</a></li>
+    </ol>
+  </nav>
 
-<h2>3. The Personal Data We Collect</h2>
-<p><b>(a) Identity and Know-Your-Customer (KYC) data.</b> Full legal name, date of birth, gender, nationality, residential address, phone number, email address, photograph, government-issued identification, Bank Verification Number (“<b>BVN</b>”), National Identification Number (“<b>NIN</b>”), occupation and source of funds, and any other information required to verify your identity, assign your account tier and comply with CBN customer due-diligence rules.</p>
-<p><b>(b) Biometric data.</b> Where required by law or for security, we collect facial images and liveness-detection data when you complete identity verification and when you authorise high-value transactions that require step-up face verification. Fingerprint or face unlock used to open the App is processed <i>on your device by your phone’s operating system</i>; we receive only confirmation that the check passed and never receive or store those device biometrics.</p>
-<p><b>(c) Financial and transaction data.</b> Wallet balances (including foreign-currency balances), your dedicated virtual account number, transaction records (transfers, deposits, airtime, mobile data, cable TV, electricity, betting-account funding, examination PINs, currency conversions, fixed savings plans, loan disbursements and repayments, and virtual card transactions), counterparty details, transaction references and timestamps, fees charged, and credit history and credit scores obtained from licensed credit bureaus.</p>
-<p><b>(d) Technical and device data.</b> Device type and model, operating system, app version, IP address, device identifiers, push-notification tokens, network and approximate location information derived from your IP address, and security log data.</p>
-<p><b>(e) Usage and behavioural data.</b> Features you use, screens you visit, in-app settings, customer segments, and behavioural signals we analyse to detect fraud, money laundering, terrorism financing and other suspicious activity.</p>
-<p><b>(f) Communications data.</b> Messages you exchange with us through in-app support, email, phone, social media and the WhatsApp Channel (WhatsApp messages are also processed by Meta Platforms under WhatsApp’s own terms), together with survey and feedback responses. Calls may be recorded for security, quality and training where permitted by law.</p>
-<p><b>(g) Marketing preferences.</b> Your opt-in and opt-out records. Marketing broadcasts on our channels are sent on an opt-in basis only.</p>
-<p>We do not knowingly collect data from anyone under 18, and we do not collect more data than we need for the purposes described in this Policy.</p>
+  <main class="content">
+    <section id="intro">
+      <h2><span class="num">01</span> Who we are</h2>
+      <p>This Privacy Policy applies to the Zitch mobile app, website and related services (the "Platform"), operated by <span class="ph">Zitch Technologies Ltd</span> (<span class="ph">RC 0000000</span>), <span class="ph">1 Example Close, Victoria Island, Lagos, Nigeria</span> ("Zitch", "we", "us"). We are the data controller for the personal information described here.</p>
+      <p>We handle personal data in line with the Nigeria Data Protection Act and applicable regulations. This policy should be read together with our <a href="terms.html">Terms & Conditions</a>.</p>
+    </section>
 
-<h2>4. How We Obtain Your Data</h2>
-<ul>
-<li><b>Directly from you</b> — when you register, complete KYC, transact, save, borrow, contact support or communicate with us on any channel;</li>
-<li><b>Automatically</b> — from the devices and connections you use to access the Services, and through cookies and similar technologies on the Site (see Section 12);</li>
-<li><b>From third parties</b> — identity-verification and KYC providers (for BVN, NIN and facial verification), licensed credit bureaus, our CBN-licensed banking and payment partners, bill-payment and value-added-service aggregators, card issuing partners, fraud-prevention services, law-enforcement and government agencies, and publicly available sources; and</li>
-<li><b>Through our relationship with you</b> — information we learn from the way you use the Services.</li>
-</ul>
+    <section id="collect">
+      <h2><span class="num">02</span> Information we collect</h2>
+      <h3>Information you give us</h3>
+      <ul>
+        <li><strong>Account details</strong> — your name, phone number, email address and password.</li>
+        <li><strong>Identity information</strong> — where required to verify you or meet legal obligations, details such as date of birth or a government identifier.</li>
+        <li><strong>Transaction details</strong> — the phone numbers, meter numbers, smartcard/IUC numbers, billers and amounts you use to make payments.</li>
+        <li><strong>Support messages</strong> — anything you send us when you contact support.</li>
+      </ul>
+      <h3>Information we collect automatically</h3>
+      <ul>
+        <li><strong>Usage & device data</strong> — app/site interactions, device type, operating system, and approximate location derived from your IP address.</li>
+        <li><strong>Log & security data</strong> — records used to keep your account safe and detect fraud.</li>
+      </ul>
+    </section>
 
-<h2>5. Why We Process Your Data and Our Lawful Bases</h2>
-<p>We process personal data only where a lawful basis under Section 25 of the NDPA applies:</p>
-<p><b>(a) Performance of a contract</b> — to open and operate your account and wallet; verify your identity and assign your transaction tier; execute transfers and bill payments (airtime, data, cable TV, electricity, betting-account funding and examination PINs); provide currency conversion and multi-currency balances; create and pay out fixed savings plans; assess, disburse and collect loans; issue and operate virtual cards; provide the WhatsApp Channel; and respond to your instructions and support requests.</p>
-<p><b>(b) Legal and regulatory obligations</b> — to conduct customer due diligence, sanctions and politically-exposed-person screening; monitor, detect and report suspicious transactions to the Nigerian Financial Intelligence Unit and other competent authorities; keep statutory records; respond to lawful requests from regulators, law enforcement, courts and tax authorities; and comply with CBN, NDPC, Corporate Affairs Commission and cooperative-society requirements applicable to us and the Cooperative.</p>
-<p><b>(c) Legitimate interests</b> — to secure our systems and prevent fraud and account takeover (including real-time automated monitoring); to analyse usage and improve our products; to enforce our terms and recover amounts owed; and to manage our business. Where we rely on legitimate interests, we ensure they are not overridden by your interests and fundamental rights.</p>
-<p><b>(d) Consent</b> — for marketing communications (opt-in only), optional features, and any processing where the law requires consent. You may withdraw consent at any time without affecting the lawfulness of processing carried out before withdrawal.</p>
-<p><b>(e) Vital interests</b> — in rare cases, to protect your life or physical safety or that of another person.</p>
+    <section id="use">
+      <h2><span class="num">03</span> How we use your information</h2>
+      <p>We use your information to:</p>
+      <ul>
+        <li>create and manage your account and Wallet;</li>
+        <li>process your transactions and deliver the value you buy;</li>
+        <li>verify your identity and prevent fraud, money laundering and abuse;</li>
+        <li>provide customer support and resolve disputes and reversals;</li>
+        <li>send service messages such as receipts, alerts and security notices;</li>
+        <li>improve and secure the Platform; and</li>
+        <li>send promotional messages where you have agreed to receive them — you can opt out at any time.</li>
+      </ul>
+    </section>
 
-<h2>6. Automated Decision-Making and Profiling</h2>
-<p>We use automated processing, including data-science and machine-learning tools, to:</p>
-<ul>
-<li>assess loan eligibility, set lending limits and price credit;</li>
-<li>detect and block fraudulent or suspicious activity in real time, which may result in a transaction being declined or an account being temporarily restricted; and</li>
-<li>understand customer segments and improve the Services.</li>
-</ul>
-<p>Where a decision based solely on automated processing produces legal or similarly significant effects for you (for example, a declined loan), you have the right to request human review of the decision, to express your point of view, and to contest the decision by contacting our DPO. Our AI-assisted customer-service features operate under human oversight, and sensitive actions on your account always require your own authorisation (such as your PIN or biometric confirmation).</p>
+    <section id="basis">
+      <h2><span class="num">04</span> Legal basis for processing</h2>
+      <p>Depending on the activity, we rely on: <strong>performance of our contract</strong> with you (to deliver the Services), <strong>your consent</strong> (for example, marketing), <strong>legal obligations</strong> (such as anti-fraud and record-keeping duties), and our <strong>legitimate interests</strong> in operating and protecting the Platform. You can withdraw consent at any time where processing is based on it.</p>
+    </section>
 
-<h2>7. Who We Share Your Data With</h2>
-<p>We do not sell your personal data. We share it only as described below and only to the extent necessary:</p>
-<ul>
-<li><b>Banking and payment partners:</b> CBN-licensed banks, microfinance banks and payment service providers that hold customer funds, issue virtual accounts and process deposits, transfers and card transactions;</li>
-<li><b>Service aggregators:</b> licensed bill-payment and value-added-service providers that deliver airtime, mobile data, cable TV, electricity tokens, betting-account funding and examination PINs you request;</li>
-<li><b>Identity, KYC and fraud-prevention providers:</b> for BVN/NIN verification, facial matching, liveness checks, sanctions screening and fraud detection;</li>
-<li><b>Credit bureaus:</b> licensed Nigerian credit bureaus, to obtain your credit history when you apply for a loan and to report loan performance, including defaults, as required by CBN rules;</li>
-<li><b>Card schemes and issuing partners:</b> to issue and operate virtual cards;</li>
-<li><b>Communications providers:</b> SMS, email, push-notification and messaging providers (including Meta Platforms for the WhatsApp Channel) used to send you one-time passcodes, transaction alerts and service messages;</li>
-<li><b>Technology providers:</b> cloud hosting, data storage, analytics and security vendors that process data on our documented instructions under contracts meeting NDPA requirements;</li>
-<li><b>Regulators, law enforcement and courts:</b> including the CBN, NDPC, Nigerian Financial Intelligence Unit, Special Control Unit against Money Laundering, tax authorities and other competent authorities, where required or permitted by law;</li>
-<li><b>Professional advisers:</b> auditors, lawyers and insurers, under duties of confidentiality;</li>
-<li><b>The Cooperative and our affiliates:</b> for the administration of savings and loan products provided through the Cooperative; and</li>
-<li><b>Business transfers:</b> a buyer or merger partner if we sell, transfer or reorganise our business, subject to this Policy.</li>
-</ul>
-<p>We also share data where you have given permission — for example, when you ask us to make your data available to another organisation through our application programming interfaces (APIs).</p>
+    <section id="share">
+      <h2><span class="num">05</span> When we share your information</h2>
+      <p>We do <strong>not</strong> sell your personal information. We share it only as needed to run the Platform:</p>
+      <ul>
+        <li><strong>Billers</strong> — the network, disco, pay-TV or exam body that must receive your details to fulfil a transaction (e.g. the phone or meter number).</li>
+        <li><strong>Payment Partners</strong> — licensed processors that handle your wallet funding.</li>
+        <li><strong>Service providers</strong> — vetted vendors (e.g. cloud hosting, communications, analytics) that process data on our behalf under confidentiality obligations.</li>
+        <li><strong>Legal & regulatory</strong> — authorities where we are required by law, or to prevent fraud or protect our rights and users.</li>
+        <li><strong>Business transfers</strong> — a successor entity if Zitch is involved in a merger, acquisition or reorganisation, subject to this policy.</li>
+      </ul>
+    </section>
 
-<h2>8. International Transfers</h2>
-<p>Some of our technology and service providers store or process data outside Nigeria (for example, cloud hosting infrastructure). Where personal data is transferred outside Nigeria, we do so in accordance with Sections 41 to 43 of the NDPA: we transfer only to jurisdictions providing an adequate level of protection or subject to appropriate safeguards (such as binding contractual clauses imposing NDPA-equivalent obligations), or otherwise with your consent or as permitted by law. You may contact the DPO for information about the safeguards we use.</p>
+    <section id="payments">
+      <h2><span class="num">06</span> Payment information</h2>
+      <div class="callout"><p>Card and bank payments are processed by our licensed Payment Partners. <strong>Zitch does not store your full card number, CVV or bank credentials.</strong> Those details are handled directly by the payment processor under their own security standards.</p></div>
+      <p>We keep a record of your transactions (amounts, billers, references and status) so we can provide receipts, support and reversals, and to meet our legal obligations.</p>
+    </section>
 
-<h2>9. How We Protect Your Data</h2>
-<p>We apply technical and organisational measures appropriate to the risks of our processing, including encryption of data in transit, secure storage of credentials, transaction PIN protection, role-based access controls on a need-to-know basis, append-only audit logging of sensitive operations, continuous security monitoring, staff confidentiality obligations and vendor due diligence. Processors acting for us must commit contractually to equivalent protections.</p>
-<p>No system is completely secure. If a personal data breach occurs that is likely to result in a risk to your rights and freedoms, we will notify the NDPC and, where required, affected individuals within the timelines prescribed by the NDPA. You also play a role: never share your password, PIN or one-time passcodes with anyone — including anyone claiming to work for Zitch. We will never ask for them.</p>
+    <section id="retention">
+      <h2><span class="num">07</span> Data retention</h2>
+      <p>We keep your information for as long as your account is active and for as long afterwards as we need to meet legal, accounting, tax and fraud-prevention requirements. When information is no longer needed, we securely delete or anonymise it.</p>
+    </section>
 
-<h2>10. How Long We Keep Your Data</h2>
-<p>We keep personal data only for as long as necessary for the purposes described in this Policy and to meet our legal obligations. In particular:</p>
-<ul>
-<li>customer identification and transaction records are retained for at least five (5) years after the transaction or the end of the customer relationship, as required by Nigerian anti-money-laundering law;</li>
-<li>audit and security logs are retained in append-only form for the period required for regulatory, dispute-resolution and security purposes; and</li>
-<li>marketing preference records are kept while your opt-in remains active and for a reasonable period afterwards to evidence compliance.</li>
-</ul>
-<p>When retention is no longer required, we securely delete or irreversibly anonymise the data.</p>
+    <section id="security">
+      <h2><span class="num">08</span> How we protect your information</h2>
+      <p>We use technical and organisational measures to protect your data, including encryption of data in transit, PIN-protected transactions, access controls and monitoring. No system is completely secure, so we also encourage you to protect your PIN and password and to tell us right away about anything suspicious.</p>
+    </section>
 
-<h2>11. Your Rights</h2>
-<p>Subject to the conditions and exemptions in the NDPA, you have the right to:</p>
-<ul>
-<li><b>Access</b> — obtain confirmation that we process your data and receive a copy of it;</li>
-<li><b>Rectification</b> — have inaccurate or incomplete data corrected;</li>
-<li><b>Erasure</b> — request deletion of data we no longer have a lawful basis to keep (note that statutory retention periods, such as the five-year financial-records rule, may delay deletion);</li>
-<li><b>Restriction</b> — request that we limit processing in certain circumstances;</li>
-<li><b>Portability</b> — receive data you provided to us in a structured, commonly used, machine-readable format and have it transmitted to another controller where technically feasible;</li>
-<li><b>Objection</b> — object to processing based on legitimate interests, and to direct marketing at any time;</li>
-<li><b>Withdraw consent</b> — at any time, where processing is based on consent;</li>
-<li><b>Automated decisions</b> — not to be subject to a decision based solely on automated processing that significantly affects you, and to request human review as described in Section 6; and</li>
-<li><b>Complain</b> — lodge a complaint with us (Section 17) or with the Nigeria Data Protection Commission (www.ndpc.gov.ng).</li>
-</ul>
-<p>To exercise any right, contact the DPO. We will respond within the period prescribed by the NDPA and may need to verify your identity first. Exercising your rights is free of charge, except where requests are manifestly unfounded or excessive.</p>
+    <section id="cookies">
+      <h2><span class="num">09</span> Cookies & analytics</h2>
+      <p>Our website uses cookies and similar technologies to keep you signed in, remember preferences and understand how the site is used so we can improve it. You can control cookies through your browser settings; disabling some cookies may affect how the site works.</p>
+    </section>
 
-<h2 id="cookies">12. Cookies and Similar Technologies</h2>
-<p>The Site uses cookies and similar technologies that are strictly necessary for it to function, and — with your consent where required — analytics cookies that help us understand how the Site is used so we can improve it. You can manage or delete cookies through your browser settings; disabling essential cookies may affect how the Site works. The App may use equivalent technologies (such as device identifiers) for security, fraud prevention and performance.</p>
+    <section id="rights">
+      <h2><span class="num">10</span> Your rights</h2>
+      <p>Subject to applicable law, you have the right to:</p>
+      <ul>
+        <li>access the personal information we hold about you;</li>
+        <li>ask us to correct inaccurate or incomplete information;</li>
+        <li>ask us to delete your information where there is no lawful reason to keep it;</li>
+        <li>object to or restrict certain processing, and withdraw consent;</li>
+        <li>request a copy of certain information in a portable format; and</li>
+        <li>lodge a complaint with the relevant data-protection authority.</li>
+      </ul>
+      <p>To exercise any of these rights, email <span class="ph">privacy@zitch.ng</span>. We may need to verify your identity before we act on a request.</p>
+    </section>
 
-<h2>13. Marketing and Communications</h2>
-<p>We send marketing messages — including broadcasts on the WhatsApp Channel — only if you have opted in, and you can opt out at any time through the channel itself, your App settings or by contacting support. Opting out of marketing does not stop service messages we must send you, such as one-time passcodes, transaction alerts, security notices, loan repayment reminders and savings maturity notifications.</p>
+    <section id="children">
+      <h2><span class="num">11</span> Children</h2>
+      <p>Zitch is not intended for anyone under 18. We do not knowingly collect personal information from children. If you believe a child has provided us information, contact us and we will remove it.</p>
+    </section>
 
-<h2>14. Children</h2>
-<p>The Services are intended for individuals aged 18 and above. We do not knowingly collect personal data from anyone under 18, and we do not open accounts for minors. If we become aware that we hold data collected from a person under 18, we will delete it. If you believe a minor has provided us with personal data, please contact the DPO.</p>
+    <section id="transfers">
+      <h2><span class="num">12</span> International transfers</h2>
+      <p>Some of our service providers may process data outside Nigeria. Where that happens, we take steps to ensure your information receives a level of protection consistent with applicable data-protection law.</p>
+    </section>
 
-<h2>15. Third-Party Sites and Services</h2>
-<p>The Services may contain links to third-party websites and services (for example, betting operators whose accounts you fund, or WhatsApp itself). Those third parties have their own privacy policies, and we are not responsible for their processing of your data. We encourage you to read their policies before providing data to them.</p>
+    <section id="changes">
+      <h2><span class="num">13</span> Changes to this policy</h2>
+      <p>We may update this policy from time to time. We will change the "Last updated" date above and, for material changes, notify you in the app or by email. Please review it periodically.</p>
+    </section>
 
-<h2>16. Changes to This Policy</h2>
-<p>We may revise this Policy from time to time. The current version will always be published on the Site and in the App, with its effective date. If we make a material change you would not reasonably expect, we will notify you in advance through the App, email or SMS and give you at least thirty (30) days to raise objections before the change takes effect. If you do not agree with a change, you may close your account; continued use of the Services after the effective date constitutes acceptance. Please note that if you object to processing that is necessary for the Services or required by law, we may be unable to continue providing some or all of the Services to you.</p>
+    <section id="contact">
+      <h2><span class="num">14</span> Contact us</h2>
+      <p>For privacy questions or to exercise your rights, contact:</p>
+      <ul>
+        <li>Data protection: <span class="ph">privacy@zitch.ng</span></li>
+        <li>Support: <span class="ph">support@zitch.ng</span></li>
+        <li>Phone / WhatsApp: <span class="ph">+234 800 000 0000</span></li>
+        <li>Address: <span class="ph">1 Example Close, Victoria Island, Lagos, Nigeria</span></li>
+      </ul>
+    </section>
+  </main>
+</div>
 
-<h2>17. Contact Us — Data Protection Officer</h2>
-<p>Zitch Technologies Limited<br>
-Attention: Data Protection Officer<br>
-Ketu, Lagos State, Nigeria<br>
-Email: support@zitch.ng (mark your message “Attention: DPO”)<br>
-Phone: 08166938327</p>
-<p>If you are not satisfied with our response, you may lodge a complaint with the Nigeria Data Protection Commission at www.ndpc.gov.ng.</p>
-</main>
-<footer><div class="in">
-  <span>&copy; 2026 Zitch Technologies Limited &middot; Ketu, Lagos, Nigeria</span>
-  <span><a href="mailto:support@zitch.ng">support@zitch.ng</a></span>
-  <span><a href="tel:+2348166938327">08166938327</a></span>
-  <span><a href="https://instagram.com/zitchng" target="_blank" rel="noopener">Instagram @zitchng</a></span>
-</div></footer>
+<footer>
+  <div class="wrap foot-in">
+    <a class="brand" href="index.html"><img class="mark" src="uploads/zitch-logo.png" alt="Zitch" /><span class="word">Zitch</span></a>
+    <div class="foot-links">
+      <a href="index.html">Home</a>
+      <a href="terms.html">Terms & Conditions</a>
+      <a href="index.html#contact">Contact</a>
+      <span>© 2026 Zitch</span>
+    </div>
+  </div>
+</footer>
+
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>
+  function drawIcons(){ if (window.lucide) lucide.createIcons(); }
+  drawIcons();
+  (function(){
+    var btn = document.getElementById('themeBtn');
+    var SUN = '<i data-lucide="sun"></i>', MOON = '<i data-lucide="moon"></i>';
+    function apply(m){ document.body.setAttribute('data-theme', m); btn.innerHTML = m==='dark'?SUN:MOON; drawIcons(); try{localStorage.setItem('zvtu-theme',m);}catch(e){} }
+    var init='light'; try{init=localStorage.getItem('zvtu-theme')||'light';}catch(e){}
+    apply(init);
+    btn.addEventListener('click', function(){ apply(document.body.getAttribute('data-theme')==='dark'?'light':'dark'); });
+  })();
+  (function(){
+    var links = [].slice.call(document.querySelectorAll('.toc a'));
+    var map = {}; links.forEach(function(a){ map[a.getAttribute('href').slice(1)]=a; });
+    var secs = [].slice.call(document.querySelectorAll('.content section'));
+    if (!('IntersectionObserver' in window)) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (en.isIntersecting){ links.forEach(function(l){ l.classList.remove('active'); }); if (map[en.target.id]) map[en.target.id].classList.add('active'); }
+      });
+    }, { rootMargin:'-40% 0px -55% 0px', threshold:0 });
+    secs.forEach(function(s){ io.observe(s); });
+  })();
+</script>
 </body>
 </html>
