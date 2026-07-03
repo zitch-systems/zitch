@@ -226,6 +226,22 @@ export const Btn = ({
   );
 };
 
+// ---- Toggle switch ----
+// Shared on/off switch used across settings and the security screens.
+export const Toggle = ({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) => {
+  const { c } = useTheme();
+  return (
+    <Pressable
+      onPress={disabled ? undefined : () => onChange(!on)}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: on, disabled: !!disabled }}
+      style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}
+    >
+      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
+    </Pressable>
+  );
+};
+
 // ---- Money text ----
 export const Money = ({
   amount,
@@ -407,6 +423,7 @@ export const Sheet = ({
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   // On fold/tablet, cap the sheet width and centre it so it reads as a card
   // rather than stretching across the whole display. Full-width on phones.
   const maxW = width >= 600 ? 560 : undefined;
@@ -423,8 +440,10 @@ export const Sheet = ({
           borderTopRightRadius: 28,
           padding: 20,
           paddingTop: 10,
-          paddingBottom: 26,
-          maxHeight: '88%',
+          // Clear the home indicator / gesture bar so the sheet's bottom content
+          // (the PIN keypad's last row) isn't flush against the screen edge.
+          paddingBottom: 26 + insets.bottom,
+          maxHeight: '90%',
         }}
       >
         <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />

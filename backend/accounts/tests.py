@@ -170,6 +170,32 @@ class CredentialSecurityTests(TestCase):
             res, _ = self.post("/api/set-password/", {"access_token": token, "password": pw})
             self.assertEqual(res.status_code, 400)
 
+    def test_change_password_requires_current(self):
+        # Once an account HAS a password, changing it needs the current one, so a
+        # stolen session token alone can't overwrite it. (First-time onboarding,
+        # where no password exists yet, stays exempt.)
+        user, token = make_user("08070000007", "chg@zitch.test")
+        user.set_password("Oldpass123")
+        user.save(update_fields=["password"])
+
+        # No current password -> refused, password untouched.
+        res, body = self.post("/api/set-password/", {"access_token": token, "password": "Newpass456"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "current_password_required")
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Oldpass123"))
+
+        # Wrong current password -> refused.
+        res, _ = self.post("/api/set-password/", {
+            "access_token": token, "password": "Newpass456", "current_password": "nope12345"})
+        self.assertEqual(res.status_code, 403)
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Oldpass123"))
+
+        # Correct current password -> changed.
+        res, _ = self.post("/api/set-password/", {
+            "access_token": token, "password": "Newpass456", "current_password": "Oldpass123"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Newpass456"))
+
     def test_set_pin_requires_auth_and_sets_owner(self):
         res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "1357"})
         self.assertEqual(res.status_code, 401)
