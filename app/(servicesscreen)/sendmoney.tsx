@@ -6,7 +6,7 @@ import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { isBiometricAvailable, authenticate, biometricLabel, setBiometricEnabled } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram } from '@/components/design/flowkit';
+import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram, BankLogo } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -16,7 +16,7 @@ const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
 const LARGE_TXN = 100000;
 type Step = null | 'confirm' | 'pin';
-type Bank = { code: string; name: string; color: string };
+type Bank = { code: string; name: string; color: string; logo?: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; initials: string; color: string };
 type BankMatch = { bank: string; bank_name: string; name: string };
 
@@ -47,6 +47,7 @@ const SendMoney = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);  // queued by the rail, not yet confirmed
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
 
@@ -169,6 +170,14 @@ const SendMoney = () => {
 
   const idemKey = useRef('');  // stable across retries of one transfer attempt
 
+  // A change to ANY transfer detail is a new spend — drop the retained key so
+  // the next attempt mints a fresh one. We deliberately KEEP the key across a
+  // byte-identical retry (so a timed-out-but-delivered attempt replays
+  // server-side instead of double-debiting); but if the user edits the amount,
+  // account, bank, recipient, mode or note, reusing that key would replay the
+  // PRIOR transfer and render a false success for the edited one.
+  useEffect(() => { idemKey.current = ''; }, [amt, acct, bank?.code, mode, picked?.id, identifier, note]);
+
   // After a PIN-approved transfer, offer (once) to approve future payments with
   // Face ID / fingerprint instead of the PIN. The money PIN is cached only after
   // a fresh biometric scan, so the PinPad's biometric shortcut then appears. This
@@ -233,8 +242,13 @@ const SendMoney = () => {
         return;
       }
 
-      if (res.success) {
+      // `pending` = the rail accepted and QUEUED the payout (money already left
+      // the wallet); it carries no `success` field. Treat it as a completed
+      // attempt — NOT a failure — so it never falls into the else branch that
+      // would mint a fresh key and let a retry debit a second time.
+      if (res.success || res.pending) {
         idemKey.current = '';
+        setPending(!res.success && !!res.pending);
         if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
         setStep(null);   // close the PIN sheet FIRST…
         reload();
@@ -244,7 +258,14 @@ const SendMoney = () => {
         setTimeout(() => { setDone(true); offerBiometricPay(pin); }, 300);
       }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
-      else { idemKey.current = ''; notify('Error', res.message || 'Transfer failed'); setStep(null); }
+      else {
+        // Only a definitive backend rejection mints a new key. On a connectivity
+        // failure (`offline`) the request may have been delivered, so the key is
+        // KEPT — a retry then replays server-side instead of debiting twice.
+        if (!res.offline) idemKey.current = '';
+        notify('Error', res.message || 'Transfer failed');
+        setStep(null);
+      }
     } catch {
       notify('Error', 'Something went wrong. Please try again later.'); setStep(null);
     } finally { setBusy(false); }
@@ -259,8 +280,10 @@ const SendMoney = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Money sent"
-          message={`${money(amount)} sent to ${finalName || 'recipient'}.`}
+          title={pending ? 'Transfer processing' : 'Money sent'}
+          message={pending
+            ? `${money(amount)} to ${finalName || 'recipient'} is processing and will be confirmed shortly.`
+            : `${money(amount)} sent to ${finalName || 'recipient'}.`}
           rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />
@@ -295,19 +318,20 @@ const SendMoney = () => {
           <Field label="Account number" value={acct} onChangeText={(v) => setAcct(v.replace(/\D/g, '').slice(0, 10))} keyboardType="number-pad" placeholder="Enter 10-digit account number" prefix={<ZIcon name="bank" size={18} color={c.ink3} />} />
           <View style={{ height: 14 }} />
           <Pressable onPress={() => setBankSheet(true)}>
+            {/* While auto-detecting, the field shows the small branded Zitch
+                loader in place of the text (no "Detecting…" copy). */}
             <Field
               label="Bank"
               value={bank?.name || ''}
               editable={false}
-              placeholder={resolvingBank ? 'Detecting…' : 'Auto-detected from account — or tap to choose'}
-              prefix={bank ? <View style={{ width: 18, height: 18, borderRadius: 5, backgroundColor: bank.color }} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
+              loading={resolvingBank}
+              placeholder="Auto-detected from account — or tap to choose"
+              prefix={bank ? <BankLogo name={bank.name} color={bank.color} logo={bank.logo} size={26} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
               suffix={<ZIcon name="down" size={16} color={c.ink3} />}
               pointerEvents="none"
             />
           </Pressable>
-          {resolvingBank ? (
-            <Text style={{ color: c.ink3, fontFamily: font.medium, fontSize: 12.5, marginTop: 8 }}>Detecting bank…</Text>
-          ) : matches.length > 1 ? (
+          {resolvingBank ? null : matches.length > 1 ? (
             <View style={{ marginTop: 8 }}>
               <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Found at more than one bank — pick the right one:</Text>
               {matches.map((m) => (
@@ -334,10 +358,12 @@ const SendMoney = () => {
         </>
       )}
 
+      {/* Amount: the field leads, with the quick presets as a slim pill row of
+          suggestions underneath (was a dominant 2×3 grid above the field). */}
       <Label>Amount</Label>
-      <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
       <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
-      <View style={{ height: 6 }} />
+      <View style={{ height: 10 }} />
+      <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
       <BalanceHint amount={amount} balance={balance} />
 
       <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
@@ -376,9 +402,7 @@ const SendMoney = () => {
         ) : (
           filteredBanks.map((b, i) => (
             <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
-              <View style={{ width: 36, height: 36, borderRadius: 11, backgroundColor: b.color, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 13 }}>{(b.name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase()}</Text>
-              </View>
+              <BankLogo name={b.name} color={b.color} logo={b.logo} size={36} />
               <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
               {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
             </Pressable>
@@ -397,8 +421,10 @@ const SendMoney = () => {
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        {/* No negative top margin — inside the sheet's ScrollView it clips the
+            subtitle's top edge under the title. */}
         {!busy && (
-          <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+          <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
             {`Confirm transfer of ${money(amount)}`}
           </Text>
         )}

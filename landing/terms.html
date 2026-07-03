@@ -3,209 +3,352 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Terms of Use — Zitch</title>
-<meta name="description" content="The terms governing your use of the Zitch app, website and WhatsApp banking service, operated by Zitch Technologies Limited in Nigeria." />
-<meta name="robots" content="index, follow" />
-<meta name="theme-color" content="#00847B" />
-<link rel="canonical" href="https://zitch.ng/terms.html" />
-<link rel="icon" type="image/png" sizes="64x64" href="assets/brand/zitch-icon-64.png" />
-<link rel="icon" type="image/png" sizes="512x512" href="assets/brand/zitch-icon.png" />
-<link rel="apple-touch-icon" href="assets/brand/zitch-icon.png" />
+<link rel="icon" type="image/png" href="uploads/zitch-logo.png" />
+<link rel="apple-touch-icon" href="uploads/zitch-logo.png" />
+<title>Terms & Conditions — Zitch</title>
+<meta name="description" content="The Terms & Conditions governing use of the Zitch bill-payment and VTU platform." />
+<!-- NOTE: Bracketed / dotted-underlined values are placeholders — replace the legal entity name,
+     RC number, address, e-mail addresses and phone number, and confirm with legal counsel before publishing. -->
+<link rel="stylesheet" href="_ds/remotejobs44-design-system-01e971a1-a75c-46a8-961e-ce72965a5e0a/colors_and_type.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet" />
 <style>
-  /* System-font fallback only for the Naira sign (U+20A6). */
-  @font-face{font-family:'ZNairaSys';src:local('-apple-system'),local('BlinkMacSystemFont'),local('Segoe UI Variable'),local('Segoe UI'),local('Roboto'),local('Helvetica Neue'),local('Arial');unicode-range:U+20A6;}
-  :root{--teal:#23B1A8;--teal-deep:#00847B;--navy:#02344A;--ink:#000000;--t2:#46535B;--line:#E3EAED;--paper:#F7FAFB;
-        --disp:'ZNairaSys','Plus Jakarta Sans',sans-serif;--body:'ZNairaSys','Inter',system-ui,sans-serif;}
+  :root{--wrap:1080px;
+    /* ===== Zitch teal brand — overrides the design-system blue ===== */
+    --brand-50:#E6F7F4;--brand-100:#C2EDE7;--brand-200:#8FDDD4;--brand-300:#54C9BD;
+    --brand-400:#2BBAAF;--brand-500:#12A99B;--brand-600:#0FA295;--brand-700:#00847B;
+    --brand-800:#00615A;--brand-900:#043C37;--brand-950:#04221F;--brand:var(--brand-600);
+    --accent:#F5A623;--accent-light:#FBC85A;--accent-dark:#D48A0A;
+    --bg-app:#F4FAF9;--bg-section:#E9F5F2;--bg-card:#FFFFFF;
+    --border-1:#DCEDE9;--border-2:#CFE5E0;--border-3:#E9F5F2;
+    --shadow-sm-brand:0 1px 4px rgba(0,132,123,.08);
+    --shadow-md-brand:0 4px 20px rgba(0,132,123,.18);
+    --shadow-lg-brand:0 8px 32px rgba(0,132,123,.20);
+    --shadow-xl-brand:0 16px 56px rgba(0,132,123,.24);
+  }
+  [data-theme="dark"]{
+    --bg-app:#04211D;--bg-section:#062B26;--bg-card:#0A362F;
+    --border-1:#123F38;--border-2:#174B42;--border-3:#0B2E29;--brand:var(--brand-400);
+  }
   *{box-sizing:border-box;}
-  body{margin:0;font-family:var(--body);color:var(--ink);background:#fff;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;text-rendering:optimizeLegibility;font-feature-settings:"kern" 1,"liga" 1;}
-  a{color:var(--teal-deep);}
-  .topbar{position:sticky;top:0;background:#fff;border-bottom:1px solid var(--line);z-index:5;}
-  .topbar .in{max-width:880px;margin:0 auto;padding:14px 22px;display:flex;align-items:center;justify-content:space-between;}
-  .brand{display:flex;align-items:center;gap:9px;font-family:var(--disp);font-weight:700;letter-spacing:.14em;color:var(--navy);text-decoration:none;}
-  .brand img{height:24px;display:block;}
-  .back{font-size:14px;font-weight:600;text-decoration:none;color:var(--teal-deep);}
-  main{max-width:880px;margin:0 auto;padding:42px 22px 70px;}
-  h1{font-family:var(--disp);color:var(--navy);font-size:30px;line-height:1.25;text-align:center;margin:0 0 8px;}
-  h2{font-family:var(--disp);color:var(--navy);font-size:21px;margin:34px 0 10px;}
-  h3{font-family:var(--disp);color:var(--navy);font-size:17px;margin:24px 0 8px;}
-  p,li{font-size:15.5px;line-height:1.75;color:var(--t2);}
-  p b,li b{color:var(--ink);}
-  ul{padding-left:24px;}
-  footer{border-top:1px solid var(--line);background:var(--paper);}
-  footer .in{max-width:880px;margin:0 auto;padding:22px;font-size:13.5px;color:var(--t2);display:flex;flex-wrap:wrap;gap:8px 22px;}
-  footer a{color:var(--teal-deep);text-decoration:none;}
-  @media (max-width:480px){h1{font-size:24px;} main{padding-top:28px;}}
+  html{scroll-behavior:smooth;}
+  body{margin:0;background:var(--bg-app);color:var(--fg-1);font-family:var(--font-body);}
+  a{color:var(--brand-700);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  svg,img{display:block;}
+  [data-lucide]{width:20px;height:20px;stroke-width:1.75;}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px;}
+
+  /* brand */
+  .brand{display:inline-flex;align-items:center;gap:11px;}
+  .brand .mark{width:34px;height:34px;border-radius:10px;object-fit:cover;display:block;flex-shrink:0;}
+  .brand .word{font-family:var(--font-display);font-weight:800;font-size:20px;letter-spacing:-.02em;color:var(--fg-1);}
+
+  /* header */
+  header.nav{position:sticky;top:0;z-index:70;background:rgba(244,250,249,.92);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);border-bottom:1px solid var(--border-1);}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;gap:20px;height:66px;}
+  .nav-right{display:flex;align-items:center;gap:10px;}
+  .back{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-display);font-weight:600;font-size:14px;color:var(--fg-2);}
+  .back:hover{color:var(--brand-700);text-decoration:none;}
+  .back [data-lucide]{width:16px;height:16px;}
+  .icon-btn{width:42px;height:42px;border-radius:11px;border:1.5px solid var(--border-2);background:transparent;color:var(--fg-2);cursor:pointer;display:grid;place-items:center;}
+  .icon-btn:hover{border-color:var(--brand-500);color:var(--brand-700);}
+
+  /* title band */
+  .title-band{border-bottom:1px solid var(--border-1);background:var(--bg-card);position:relative;overflow:hidden;}
+  .title-band::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 70% 80% at 20% -20%,rgba(15,162,149,.10),transparent 70%);pointer-events:none;}
+  .title-in{position:relative;padding:56px 0 44px;}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);}
+  .title-in h1{font-family:var(--font-display);font-weight:800;font-size:clamp(32px,4.4vw,50px);letter-spacing:-.025em;line-height:1.05;color:var(--fg-1);margin:14px 0 0;}
+  .updated{display:inline-flex;align-items:center;gap:8px;margin-top:18px;font-size:13.5px;color:var(--fg-3);background:var(--bg-section);border:1px solid var(--border-1);padding:7px 14px;border-radius:999px;}
+  .updated [data-lucide]{width:15px;height:15px;color:var(--brand-600);}
+  .lead{font-size:16.5px;line-height:1.65;color:var(--fg-2);max-width:640px;margin-top:20px;}
+
+  /* layout */
+  .doc{display:grid;grid-template-columns:238px 1fr;gap:52px;padding:52px 0 80px;align-items:start;}
+  .toc{position:sticky;top:88px;}
+  .toc .h{font-family:var(--font-display);font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-4);margin-bottom:14px;}
+  .toc ol{list-style:none;margin:0;padding:0;counter-reset:t;display:grid;gap:2px;}
+  .toc a{display:block;padding:7px 12px;border-radius:9px;font-size:13.5px;line-height:1.35;color:var(--fg-2);border-left:2px solid transparent;transition:background .15s,color .15s,border-color .15s;}
+  .toc a:hover{background:var(--bg-section);color:var(--brand-700);text-decoration:none;}
+  .toc a.active{color:var(--brand-700);background:var(--brand-50);border-left-color:var(--brand-600);font-weight:600;}
+
+  .content{max-width:720px;}
+  .content section{scroll-margin-top:88px;margin-bottom:38px;}
+  .content h2{font-family:var(--font-display);font-weight:700;font-size:22px;letter-spacing:-.01em;color:var(--fg-1);margin:0 0 14px;display:flex;gap:12px;align-items:baseline;}
+  .content h2 .num{font-size:14px;font-weight:700;color:var(--brand-600);font-variant-numeric:tabular-nums;flex-shrink:0;}
+  .content h3{font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--fg-1);margin:22px 0 8px;}
+  .content p{font-size:15.5px;line-height:1.68;color:var(--fg-2);margin:0 0 14px;}
+  .content ul{margin:0 0 14px;padding-left:20px;}
+  .content li{font-size:15.5px;line-height:1.62;color:var(--fg-2);margin-bottom:8px;}
+  .content strong{color:var(--fg-1);font-weight:600;}
+  .callout{background:var(--brand-50);border:1.5px solid var(--brand-100);border-left:3px solid var(--brand-600);border-radius:12px;padding:16px 18px;margin:0 0 14px;}
+  .callout p{margin:0;color:var(--brand-800);font-size:14.5px;}
+  .ph{border-bottom:1px dotted var(--fg-4);}
+
+  /* footer */
+  footer{background:var(--brand-900);color:#93a4c4;padding:40px 0;font-size:13.5px;}
+  .foot-in{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;}
+  .foot-links{display:flex;gap:22px;flex-wrap:wrap;}
+  .foot-links a{color:#93a4c4;}
+  .foot-links a:hover{color:#fff;text-decoration:none;}
+  .foot-in .brand .word{color:#fff;}
+
+  @media (max-width:900px){
+    .doc{grid-template-columns:1fr;gap:0;}
+    .toc{position:static;margin-bottom:36px;padding:18px 18px 8px;background:var(--bg-section);border:1px solid var(--border-1);border-radius:14px;}
+    .toc ol{grid-template-columns:1fr 1fr;gap:0 14px;}
+  }
+  @media (max-width:560px){
+    .wrap{padding:0 18px;}
+    .toc ol{grid-template-columns:1fr;}
+    .back span{display:none;}
+  }
+
+  body[data-theme="dark"] header.nav{background:rgba(5,32,28,.85);}
+  body[data-theme="dark"] .title-band{background:var(--bg-card);}
+  body[data-theme="dark"] .callout{background:rgba(15,162,149,.14);border-color:var(--brand-800);}
+  body[data-theme="dark"] .callout p{color:var(--brand-200);}
 </style>
 </head>
-<body>
-<div class="topbar"><div class="in">
-  <a class="brand" href="index.html"><img src="assets/brand/zitch-ribbon2.png" alt="Zitch" />ZITCH</a>
-  <a class="back" href="index.html">&larr; Back to home</a>
-</div></div>
-<main>
-<h1>ZITCH TECHNOLOGIES LIMITED<br>TERMS OF USE</h1>
+<body data-screen-label="Terms & Conditions">
 
-<p style="text-align:center"><b>Version 2.0 — Effective 12 June 2026</b><br>(This version replaces the terms dated July 2023)</p>
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="index.html"><img class="mark" src="uploads/zitch-logo.png" alt="Zitch" /><span class="word">Zitch</span></a>
+    <div class="nav-right">
+      <a class="back" href="index.html"><i data-lucide="arrow-left"></i><span>Back to site</span></a>
+      <button class="icon-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+    </div>
+  </div>
+</header>
 
-<h2>1. Who We Are and Agreement to These Terms</h2>
-<p>Welcome to Zitch. These Terms of Use (the “<b>Terms</b>”) are a binding agreement between you and Zitch Technologies Limited (RC [insert RC number]), a private limited company incorporated in Nigeria with its office at Ketu, Lagos State, Nigeria (“<b>Zitch</b>”, “<b>we</b>”, “<b>us</b>” or “<b>our</b>”). Savings and loan products are provided through Zitch Technologies Multipurpose Cooperative Society Limited (the “<b>Cooperative</b>”), registered under the Co-operative Societies Law of Lagos State with registration number [insert registration number], and are available to registered members of the Cooperative as described in Sections 8 and 9.</p>
-<p>These Terms govern your use of:</p>
-<ul>
-<li>the Zitch mobile application (the “<b>App</b>”);</li>
-<li>our website and web pages (the “<b>Site</b>”);</li>
-<li>our WhatsApp banking channel operated from our verified business number (the “<b>WhatsApp Channel</b>”); and</li>
-<li>the products and services described in Section 6 (together, the “<b>Services</b>”).</li>
-</ul>
-<p>By creating an account, accessing or using any of the Services, you accept these Terms and our Privacy and Data Protection Policy (the “<b>Privacy Policy</b>”), which forms part of these Terms. If you do not agree, do not use the Services. Please read these Terms carefully and keep a copy for your records.</p>
+<div class="title-band">
+  <div class="wrap title-in">
+    <span class="eyebrow">Legal</span>
+    <h1>Terms & Conditions</h1>
+    <div class="updated"><i data-lucide="calendar"></i> Last updated: 3 July 2026</div>
+    <p class="lead">These Terms govern your access to and use of the Zitch bill-payment and virtual top-up (VTU) platform. Please read them carefully — by creating an account or using Zitch, you agree to them.</p>
+  </div>
+</div>
 
-<h2>2. Regulatory Status</h2>
-<p>Zitch Technologies Limited is a technology company; it is not a bank. Wallet, deposit, transfer and card services are delivered in partnership with financial institutions and payment service providers licensed by the Central Bank of Nigeria (“<b>CBN</b>”) [insert names of licensed partners and licence details]. Bill payments and value-added services are delivered through licensed service aggregators. Savings and loan products are provided through the Cooperative to its registered members. Customer funds are held with our licensed partner institutions.</p>
+<div class="wrap doc">
+  <!-- TOC -->
+  <nav class="toc" aria-label="Table of contents">
+    <div class="h">On this page</div>
+    <ol>
+      <li><a href="#about">1. About these Terms</a></li>
+      <li><a href="#definitions">2. Definitions</a></li>
+      <li><a href="#eligibility">3. Eligibility</a></li>
+      <li><a href="#account">4. Your account</a></li>
+      <li><a href="#services">5. Our services</a></li>
+      <li><a href="#wallet">6. Wallet & funding</a></li>
+      <li><a href="#transactions">7. Transactions & delivery</a></li>
+      <li><a href="#pricing">8. Fees, pricing & cashback</a></li>
+      <li><a href="#refunds">9. Refunds & reversals</a></li>
+      <li><a href="#use">10. Acceptable use</a></li>
+      <li><a href="#thirdparty">11. Third-party billers</a></li>
+      <li><a href="#ip">12. Intellectual property</a></li>
+      <li><a href="#liability">13. Disclaimers & liability</a></li>
+      <li><a href="#suspension">14. Suspension & termination</a></li>
+      <li><a href="#changes">15. Changes to these Terms</a></li>
+      <li><a href="#law">16. Governing law</a></li>
+      <li><a href="#contact">17. Contact us</a></li>
+    </ol>
+  </nav>
 
-<h2>3. Eligibility and Account Registration</h2>
-<p>(a) You may use the Services only if you are at least <b>18 years old</b>, resident in Nigeria, and have full legal capacity to enter into a binding contract. The Services are not directed at persons in any jurisdiction where their use would be unlawful.</p>
-<p>(b) To register, you must provide accurate, current and complete information, including your name, phone number and email address, and complete identity verification. You agree to keep your information up to date at all times.</p>
-<p>(c) You may register and operate only one personal account. You confirm that you are opening the account for yourself and not on behalf of an undisclosed third party, and that you have the legal right to any account, funds or financial information you connect to the Services.</p>
-<p>(d) By using savings or loan products, you apply to become (or confirm that you are) a member of the Cooperative and agree to be bound by its bye-laws, which we will make available to you.</p>
+  <!-- CONTENT -->
+  <main class="content">
+    <section id="about">
+      <h2><span class="num">01</span> About these Terms</h2>
+      <p>These Terms & Conditions ("Terms") are a legal agreement between you ("you", "the user") and <span class="ph">Zitch Technologies Ltd</span>, a company registered in Nigeria (<span class="ph">RC 0000000</span>) with its office at <span class="ph">1 Example Close, Victoria Island, Lagos</span> ("Zitch", "we", "us", "our"). They apply to your use of the Zitch mobile app, website and related services (together, the "Platform").</p>
+      <p>If you do not agree with these Terms, please do not use the Platform. Your continued use means you accept these Terms and our <a href="privacy.html">Privacy Policy</a>, which forms part of this agreement.</p>
+      <div class="callout"><p><strong>Zitch is a bill-payment and VTU service — not a bank.</strong> We help you buy airtime, data and PINs and pay bills. We do not take deposits, pay interest, or provide banking, lending or investment services.</p></div>
+    </section>
 
-<h2>4. Identity Verification (KYC), Tiers and Limits</h2>
-<p>(a) We are required by law to verify your identity. Depending on your account tier, this includes your Bank Verification Number (BVN), National Identification Number (NIN), photographic identification and facial (selfie/liveness) verification.</p>
-<p>(b) Your account tier determines your transaction limits. As at the effective date: Tier 1 (basic registration) has a per-transaction limit of ₦50,000; Tier 2 (BVN <i>or</i> NIN verified) has a per-transaction limit of ₦200,000; Tier 3 (BVN <i>and</i> NIN verified) has a per-transaction limit of ₦5,000,000. Limits may change in line with regulation and risk policy; the limits applicable to you are displayed in the App.</p>
-<p>(c) Single transactions at or above a published threshold require additional step-up verification, including facial verification, before they will be processed.</p>
-<p>(d) We may decline to open an account, restrict an account, or request further documentation at any time where required for legal, regulatory or risk reasons.</p>
+    <section id="definitions">
+      <h2><span class="num">02</span> Definitions</h2>
+      <ul>
+        <li><strong>"Wallet"</strong> — the prepaid balance you hold on the Platform, used only to purchase the services we offer.</li>
+        <li><strong>"Services"</strong> — airtime, mobile data, recharge-card PINs, cable/TV subscriptions, electricity payments, internet subscriptions, exam PINs, betting-wallet funding and other bill payments made available on the Platform.</li>
+        <li><strong>"Biller"</strong> — a third-party provider (e.g. a mobile network, electricity distribution company or pay-TV operator) whose value or service you purchase through Zitch.</li>
+        <li><strong>"Payment Partner"</strong> — a licensed payment processor we use to accept wallet funding.</li>
+        <li><strong>"Transaction PIN"</strong> — the secret code you set to authorise payments.</li>
+      </ul>
+    </section>
 
-<h2>5. Your Security Obligations</h2>
-<p>(a) You are responsible for maintaining the confidentiality and security of your login credentials, password, transaction PIN, one-time passcodes (OTPs) and any device used to access the Services (together, your “<b>Security Details</b>”).</p>
-<p>(b) Never share your Security Details with anyone. Zitch staff will <b>never</b> ask for your PIN, password or OTP. Any instruction received through your account using your Security Details is treated as authorised by you.</p>
-<p>(c) If your device is lost or stolen, or you believe your Security Details are compromised or that someone has transferred money from your account without permission, you must notify us immediately through the App or the support contacts in Section 22 and contact your mobile network provider to suspend service to a lost SIM. We may then suspend access to protect you. You are responsible for transactions completed before such notification where we have acted on properly authenticated instructions.</p>
-<p>(d) Where you enable fingerprint or face unlock, anyone whose biometrics are enrolled on your device may be able to access your account; you accept this risk.</p>
+    <section id="eligibility">
+      <h2><span class="num">03</span> Eligibility</h2>
+      <p>To use Zitch you must:</p>
+      <ul>
+        <li>be at least <strong>18 years old</strong> and able to enter a binding contract;</li>
+        <li>be resident in, or transacting for services within, Nigeria;</li>
+        <li>provide accurate, current and complete information when registering; and</li>
+        <li>use the Platform only for lawful purposes and in line with these Terms.</li>
+      </ul>
+      <p>We may ask you to verify your identity to comply with applicable law. You are responsible for keeping your details up to date.</p>
+    </section>
 
-<h2>6. The Services</h2>
-<p>We currently offer the services below. We may add, change, suspend or withdraw services or features (including limits and supported providers, billers, currencies and platforms) with notice where required.</p>
+    <section id="account">
+      <h2><span class="num">04</span> Your account</h2>
+      <p>You need an account to use most Services. You are responsible for all activity that happens under your account, and for keeping your login details and Transaction PIN confidential.</p>
+      <ul>
+        <li>Keep one account per person; do not share, sell or transfer your account.</li>
+        <li>Never disclose your PIN, one-time passwords (OTPs) or password to anyone — Zitch staff will never ask for them.</li>
+        <li>Tell us immediately at <span class="ph">support@zitch.ng</span> if you suspect unauthorised access.</li>
+      </ul>
+      <p>We may refuse, suspend or close an account that provides false information, or that we reasonably believe is being used for fraud or other prohibited activity.</p>
+    </section>
 
-<h3>6.1 Wallet and Funding</h3>
-<p>Your Zitch wallet records your electronic money balance. You may fund it by bank transfer to your dedicated virtual account or through other supported funding methods shown in the App. Wallet balances are not interest-bearing unless expressly stated. Funds are held with our licensed partner institutions.</p>
+    <section id="services">
+      <h2><span class="num">05</span> Our services</h2>
+      <p>Through the Platform you can, subject to availability:</p>
+      <ul>
+        <li>buy <strong>airtime</strong> and <strong>mobile data</strong> on MTN, Airtel, Glo and 9mobile;</li>
+        <li>generate <strong>recharge-card PINs</strong> and printable vouchers, including bulk purchases for resellers;</li>
+        <li>renew <strong>cable/TV subscriptions</strong> (DStv, GOtv, StarTimes and similar);</li>
+        <li>pay <strong>electricity</strong> bills and buy prepaid tokens from distribution companies;</li>
+        <li>pay for <strong>internet and broadband</strong> subscriptions;</li>
+        <li>buy <strong>exam PINs</strong> (such as WAEC, JAMB and NECO); and</li>
+        <li>fund supported <strong>betting wallets</strong>.</li>
+      </ul>
+      <p>Available Services, Billers and limits may change from time to time. We do not guarantee that any particular Biller or Service will always be available.</p>
+    </section>
 
-<h3>6.2 Transfers and Payments</h3>
-<p>(a) You can send money to bank accounts and other supported destinations in Nigeria. A transfer is authorised when you confirm it with your Security Details (PIN, biometric confirmation and/or OTP), and once executed it is generally <b>irrevocable</b>.</p>
-<p>(b) You are solely responsible for the accuracy of beneficiary details. If you send money to a wrong account, we will make reasonable efforts, in line with banking practice, to assist with recovery, but we cannot guarantee recovery and are not liable for losses caused by incorrect details you provided.</p>
-<p>(c) Transfers may be delayed, declined or reversed where required for fraud-prevention, compliance or regulatory reasons, or where a payment system or partner institution fails or delays. Where a debited transfer definitively fails, we will re-credit your wallet.</p>
+    <section id="wallet">
+      <h2><span class="num">06</span> Wallet & funding</h2>
+      <p>Your Wallet is a <strong>prepaid balance</strong> that exists only to let you buy the Services above. It is not a bank account, does not earn interest, and is not covered by any deposit-insurance scheme.</p>
+      <ul>
+        <li>You can fund your Wallet by bank transfer, debit card or USSD through our Payment Partners.</li>
+        <li>Funding is credited once we receive confirmation from the Payment Partner.</li>
+        <li>We may set minimum and maximum funding and transaction limits, and may hold or review a transaction we consider unusual or high-risk.</li>
+      </ul>
+    </section>
 
-<h3>6.3 Bill Payments and Value-Added Services (VTU)</h3>
-<p>(a) You can buy airtime and mobile data, pay for cable TV (e.g. DStv, GOtv, Startimes) and electricity, and purchase other listed services. These are delivered by third-party billers and licensed aggregators; we act as your facilitator.</p>
-<p>(b) Where a purchase remains pending because a provider has not confirmed delivery, we automatically re-query it at regular intervals and will either confirm delivery or, where the purchase definitively fails, refund your wallet in full. A purchase confirmed delivered by the provider (for example, airtime credited or an electricity token issued) is final and non-refundable through us; complaints about service quality must be directed to the biller.</p>
-<p>(c) You are responsible for entering the correct meter number, smartcard number, phone number or account reference. We are not liable for value delivered to a wrong but valid reference you supplied.</p>
+    <section id="transactions">
+      <h2><span class="num">07</span> Transactions & delivery</h2>
+      <p>You authorise each payment with your Transaction PIN. Once authorised, most Services are delivered instantly or within a few minutes.</p>
+      <div class="callout"><p><strong>Please check your details carefully.</strong> You are responsible for entering the correct phone number, meter number, smartcard number, IUC, biller and amount. Value delivered to a correct-but-unintended recipient because of your input error cannot always be recovered.</p></div>
+      <p>Where a Biller's system is slow or offline, delivery may be delayed. If value is not delivered, see <a href="#refunds">Refunds & reversals</a> below.</p>
+    </section>
 
-<h3>6.4 Examination PINs</h3>
-<p>You can purchase examination result-checking PINs and similar digital vouchers (e.g. WAEC). Once a PIN or voucher has been generated and delivered to you, the sale is final and non-refundable, as the value cannot be recalled. Undelivered or failed purchases are refunded to your wallet under Section 6.3(b).</p>
+    <section id="pricing">
+      <h2><span class="num">08</span> Fees, pricing & cashback</h2>
+      <p>Opening and keeping a Wallet is free, and there are no monthly subscription fees. You pay only for the value you buy, plus any service or convenience fee shown to you <strong>before</strong> you confirm a transaction.</p>
+      <ul>
+        <li>Cashback and discounts (for example on airtime and data) are promotional, may change, and may be withdrawn at any time.</li>
+        <li>Prices for third-party value (airtime, tokens, subscriptions, PINs) are set by the Billers and can change without notice.</li>
+        <li>Reseller and bulk rates, where offered, are subject to separate terms we may provide to you.</li>
+      </ul>
+    </section>
 
-<h3>6.5 Betting Account Funding</h3>
-<p>(a) You can fund accounts you hold with third-party betting platforms (e.g. Bet9ja, SportyBet). Zitch does not operate, sponsor or promote gambling; we only transmit your funding instruction to the platform you select. Your relationship with the betting operator, including winnings, withdrawals and disputes, is governed solely by that operator’s terms.</p>
-<p>(b) You must be 18 or older and the holder of the betting account you fund. Funding confirmed delivered to your betting account is final. Please gamble responsibly.</p>
+    <section id="refunds">
+      <h2><span class="num">09</span> Refunds & reversals</h2>
+      <p>If a transaction fails after your Wallet is debited and no value is delivered, we will <strong>automatically reverse</strong> the amount to your Wallet, usually within minutes.</p>
+      <ul>
+        <li>If an auto-reversal has not appeared within <strong>24 hours</strong>, contact <span class="ph">support@zitch.ng</span> with your transaction reference and we will investigate.</li>
+        <li>Successfully delivered value (e.g. airtime sent, a token generated, a subscription activated) is generally <strong>not refundable</strong>, including where you entered incorrect details.</li>
+        <li>Disputes should be raised within <strong>30 days</strong> of the transaction. We may need to confirm the outcome with the relevant Biller or Payment Partner before resolving a claim.</li>
+      </ul>
+    </section>
 
-<h3>6.6 Currency Conversion and Multi-Currency Balances</h3>
-<p>(a) Where available, you can hold supported foreign-currency balances and convert between supported currencies (which may include USD, GBP, EUR, CNY and CAD) and Naira.</p>
-<p>(b) Exchange rates shown to you include our margin. A quoted rate is <b>single-use and time-limited</b>: it applies only to the specific conversion quoted and expires if not confirmed within the displayed validity window or if you change the amount.</p>
-<p>(c) Currency corridors depend on market conditions, liquidity and regulation. We may suspend, limit or discontinue any corridor (including settlement in specific currencies) at any time without liability, and conversions are subject to applicable CBN foreign-exchange rules. Settlement timelines for some currencies may vary and will be displayed where applicable.</p>
+    <section id="use">
+      <h2><span class="num">10</span> Acceptable use</h2>
+      <p>You agree not to use the Platform to:</p>
+      <ul>
+        <li>commit fraud, launder money, finance terrorism, or handle proceeds of crime;</li>
+        <li>use stolen, unauthorised or another person's payment instrument;</li>
+        <li>resell Services except where we expressly allow it;</li>
+        <li>abuse promotions, exploit pricing errors, or use bots to game the Platform;</li>
+        <li>attempt to hack, disrupt, reverse-engineer or overload our systems; or</li>
+        <li>breach any applicable law or any Biller's or Payment Partner's rules.</li>
+      </ul>
+      <p>We may report suspected criminal activity to the relevant authorities and cooperate with investigations.</p>
+    </section>
 
-<h3>6.7 Fixed Savings (Fixed Save)</h3>
-<p>(a) Fixed Save plans are provided through the Cooperative to its members. When you create a plan, the principal is debited from your wallet immediately and locked for the period you select.</p>
-<p>(b) Interest is simple and annualised, calculated as principal × annual rate × (days ÷ 365). The annual rate for each available lock period is displayed in the App before you confirm, and the rate shown at creation applies for the full term of that plan.</p>
-<p>(c) <b>Funds cannot be withdrawn before the maturity date.</b> At maturity, principal plus accrued interest is automatically credited to your wallet — you do not need to take any action, and payout occurs even if you do not open the App.</p>
-<p>(d) Savings with the Cooperative are member savings; they are not bank deposits and are not insured by the Nigeria Deposit Insurance Corporation.</p>
+    <section id="thirdparty">
+      <h2><span class="num">11</span> Third-party billers</h2>
+      <p>Zitch acts as an intermediary that passes your instruction and payment to the relevant Biller. The underlying service (network coverage, electricity supply, TV programming, exam registration, etc.) is provided by that third party and governed by their own terms.</p>
+      <p>We are not responsible for a Biller's downtime, service quality, pricing, or refusal to deliver, except to the extent we are required by law. Where value is not delivered because of a Biller failure, our responsibility is limited to reversing the affected amount to your Wallet.</p>
+    </section>
 
-<h3>6.8 Loans</h3>
-<p>(a) Loans are provided through the Cooperative to eligible members. Eligibility, loan limits and pricing are assessed using automated credit assessment, which may include your account history, savings behaviour and credit-bureau information. You may request human review of an automated decline as described in the Privacy Policy.</p>
-<p>(b) Interest is flat and disclosed before you accept: interest = principal × monthly rate × (tenure in days ÷ 30). The total repayable amount, tenure and due date are displayed before you confirm. By accepting a loan you authorise repayment from your wallet, including automatic deduction of due amounts from incoming wallet funds.</p>
-<p>(c) If you fail to repay by the due date, we may: apply default charges as disclosed in the App; restrict your account and access to other Services; set off amounts you owe against your wallet balance and matured savings; report your default to licensed credit bureaus (which will affect your credit record and access to credit from other lenders); and engage in lawful recovery action. We will send you repayment reminders, but non-receipt of a reminder does not excuse late payment.</p>
-<p>(d) Do not borrow more than you can repay. Loans are subject to responsible-lending checks and may be declined.</p>
+    <section id="ip">
+      <h2><span class="num">12</span> Intellectual property</h2>
+      <p>The Zitch name, logo, app, website, designs and content are owned by us or our licensors and are protected by law. You may use the Platform for its intended purpose but may not copy, modify, distribute or create derivative works from it without our written permission. Biller names and logos are the property of their respective owners and are used only to identify the Services available.</p>
+    </section>
 
-<h3>6.9 Virtual Cards</h3>
-<p>(a) Where available, you can request a virtual payment card issued by our card-issuing partner. Cards are funded exclusively from your Zitch wallet, and card transactions, fees and any applicable foreign-exchange charges are disclosed in the App.</p>
-<p>(b) You must use cards lawfully and only for your own transactions. We or the issuer may decline transactions, or suspend or cancel a card, for security, compliance or risk reasons. Chargebacks and merchant disputes are processed under the applicable card-scheme rules and timelines; we will assist you but cannot guarantee outcomes.</p>
+    <section id="liability">
+      <h2><span class="num">13</span> Disclaimers & limitation of liability</h2>
+      <p>The Platform is provided on an "as is" and "as available" basis. We work hard to keep it running smoothly but do not guarantee it will always be uninterrupted, error-free or secure.</p>
+      <p>To the fullest extent permitted by law, Zitch is not liable for indirect, incidental or consequential losses, or for loss caused by a Biller, Payment Partner, network or event beyond our reasonable control. Our total liability for any claim relating to a transaction is limited to the value of that transaction.</p>
+      <p>Nothing in these Terms excludes liability that cannot be excluded under Nigerian law.</p>
+    </section>
 
-<h3>6.10 WhatsApp Banking and AI Assistance</h3>
-<p>(a) The WhatsApp Channel lets you check balances, make payments and access support by messaging our verified business number. Only messages with our verified number are from us; we are not responsible for impostor numbers, and you should report them to us.</p>
-<p>(b) Some responses on our channels are generated with the assistance of artificial intelligence under human oversight. Sensitive transactions always require authorisation with your Security Details. WhatsApp is operated by Meta Platforms; your use of WhatsApp itself is subject to WhatsApp’s terms and privacy policy, and you accept the inherent risks of instructing us through a third-party messaging service, including access by anyone who can unlock your phone or WhatsApp account.</p>
+    <section id="suspension">
+      <h2><span class="num">14</span> Suspension & termination</h2>
+      <p>You may stop using Zitch at any time and ask us to close your account. We may suspend or terminate your access — with notice where practicable — if you breach these Terms, if required by law, or to protect the Platform, other users or third parties. On closure, any legitimate remaining Wallet balance will be returned to you through a verified method, subject to any lawful holds.</p>
+    </section>
 
-<h2>7. Fees and Charges</h2>
-<p>Our fees — including transfer fees, bill-payment fees, currency-conversion margins, card fees and loan charges — are displayed in the App before you confirm each transaction, and a current schedule of fees is available in the App [and at insert URL]. We may change fees with prior notice through the App or other channels; your continued use after the effective date constitutes acceptance. Taxes and levies imposed by law (such as stamp duty or electronic money transfer levy, where applicable) may be deducted in addition.</p>
+    <section id="changes">
+      <h2><span class="num">15</span> Changes to these Terms</h2>
+      <p>We may update these Terms from time to time. When we make material changes, we will update the "Last updated" date and, where appropriate, notify you in the app or by email. Continuing to use the Platform after a change means you accept the updated Terms.</p>
+    </section>
 
-<h2>8. Anti-Money-Laundering, Sanctions and Monitoring</h2>
-<p>(a) We comply with the Money Laundering (Prevention and Prohibition) Act 2022, the Terrorism (Prevention and Prohibition) Act 2022, CBN AML/CFT regulations and applicable sanctions regimes. We screen customers and transactions, monitor activity, and report suspicious transactions to the Nigerian Financial Intelligence Unit and other authorities without notice to you, as the law requires.</p>
-<p>(b) You agree to provide, on request, information and documents evidencing your identity, source of funds or the purpose of a transaction. We may delay, decline or reverse transactions, or freeze, restrict or close accounts, where required by law, regulatory directive, court order or our reasonable risk assessment, and we will not be liable for losses arising from such lawful action.</p>
+    <section id="law">
+      <h2><span class="num">16</span> Governing law & disputes</h2>
+      <p>These Terms are governed by the laws of the Federal Republic of Nigeria. We would like to resolve any concern directly first, so please contact us. If a dispute cannot be resolved amicably, it will be subject to the jurisdiction of the courts of Nigeria.</p>
+    </section>
 
-<h2>9. Prohibited Use</h2>
-<p>You must not, and must not attempt to: (a) use the Services for any unlawful purpose, including fraud, money laundering, terrorism financing, tax evasion, dealing in prohibited goods, or processing payments for unlicensed gambling or unlicensed foreign-exchange dealing; (b) use the Services on behalf of an undisclosed third party or open accounts with false or stolen identities; (c) interfere with, damage, overload, scrape, data-mine, reverse engineer, decompile or attempt to gain unauthorised access to the Services, other users’ accounts or our systems; (d) introduce malware or circumvent security or transaction limits (including by structuring transactions); (e) infringe the rights of any third party or post or transmit unlawful, defamatory or infringing content through our channels; or (f) resell or commercially exploit the Services without our written consent. Breach of this Section may result in immediate suspension or termination, reversal of transactions, reporting to authorities, and recovery of our losses from you.</p>
+    <section id="contact">
+      <h2><span class="num">17</span> Contact us</h2>
+      <p>Questions about these Terms? Reach us at:</p>
+      <ul>
+        <li>Email: <span class="ph">support@zitch.ng</span> (support) · <span class="ph">legal@zitch.ng</span> (legal)</li>
+        <li>Phone / WhatsApp: <span class="ph">+234 800 000 0000</span></li>
+        <li>Address: <span class="ph">1 Example Close, Victoria Island, Lagos, Nigeria</span></li>
+      </ul>
+    </section>
+  </main>
+</div>
 
-<h2>10. Intellectual Property and Licence</h2>
-<p>We grant you a personal, non-exclusive, non-transferable, revocable licence to use the App and Site for your own lawful, personal use in accordance with these Terms. All content and software comprising the Services — including text, graphics, logos, product names, designs, interfaces and code — belong to Zitch or our licensors and are protected by intellectual-property laws. Except as expressly permitted, you may not copy, modify, publish, transmit, distribute, sell, create derivative works from or otherwise exploit any part of the Services, and you must not remove or alter any proprietary notices. You acquire no ownership rights by using the Services.</p>
+<footer>
+  <div class="wrap foot-in">
+    <a class="brand" href="index.html"><img class="mark" src="uploads/zitch-logo.png" alt="Zitch" /><span class="word">Zitch</span></a>
+    <div class="foot-links">
+      <a href="index.html">Home</a>
+      <a href="privacy.html">Privacy Policy</a>
+      <a href="index.html#contact">Contact</a>
+      <span>© 2026 Zitch</span>
+    </div>
+  </div>
+</footer>
 
-<h2>11. Electronic Communications and Records</h2>
-<p>You consent to receive agreements, notices, disclosures, alerts and other communications from us electronically — in-app, by push notification, email, SMS or the WhatsApp Channel — and you agree that electronic communications satisfy any legal requirement for writing. You agree that electronic records of your instructions and transactions, including our system logs, are admissible evidence of those instructions and transactions. A printed version of these Terms and of any electronic notice is admissible in judicial or administrative proceedings to the same extent as ordinary business records. You are responsible for keeping your contact details current so that you receive our communications.</p>
-
-<h2>12. Third-Party Sites and Services</h2>
-<p>The Services may contain links to, or be delivered in part through, third-party websites, platforms and organisations (including billers, betting operators, card schemes, app stores and WhatsApp). Third parties are not under our control, we are not responsible for their content or services, and a link does not imply endorsement. Your dealings with third parties are at your own risk and subject to their terms. Where a product you request is delivered by a third party with whom we contract, you consent to our sharing with them the information needed to deliver it, as described in the Privacy Policy.</p>
-
-<h2>13. Service Availability and Changes</h2>
-<p>(a) We aim to keep the Services available at all times but do not guarantee uninterrupted availability. Maintenance, upgrades, telecommunications failures, payment-system outages, partner downtime and events beyond our reasonable control may cause interruptions, delays or errors.</p>
-<p>(b) We may establish or change features, products, providers and limits, and may end your login session after a period of inactivity or apply other reasonable protective measures. Where a change materially disadvantages you, we will give reasonable prior notice through the App or other channels. If you do not accept a change, you may stop using the Services and close your account; continued use after the effective date constitutes acceptance.</p>
-
-<h2>14. Suspension, Termination and Dormancy</h2>
-<p>(a) <b>By you:</b> You may close your account at any time through the App or by contacting support, after repaying outstanding loans and fees. We will return your available wallet balance to a bank account in your name, subject to law. Fixed Save plans continue to their maturity dates and pay out as described in Section 6.7 unless otherwise required by law.</p>
-<p>(b) <b>By us:</b> We may suspend or terminate your access to all or part of the Services, with notice where practicable, if: you breach these Terms; we are required to do so by law, a regulator or a court; we reasonably suspect fraud, illegality or a security risk; your account is used in a way that may cause loss or liability to us or others; or we discontinue the Services. Where lawful, we will return your available balance after deducting amounts you owe.</p>
-<p>(c) <b>Dormancy:</b> Accounts inactive for an extended period may be classified dormant and restricted in line with applicable regulation; balances remain yours and can be reclaimed by completing reactivation checks.</p>
-<p>(d) <b>Death:</b> On receiving satisfactory evidence of a customer’s death, we will restrict the account and release balances to the personal representatives upon presentation of probate or letters of administration, or as otherwise required by law.</p>
-<p>(e) Sections that by their nature should survive termination (including accrued obligations, Sections 9–11 and 15–21) survive.</p>
-
-<h2>15. Complaints</h2>
-<p>If something goes wrong, contact us first — through in-app support, the WhatsApp Channel or the contacts in Section 22. We will acknowledge your complaint within two (2) business days and aim to resolve it within fourteen (14) days; complex cases may take longer, and we will keep you informed. If you are dissatisfied with our resolution of a complaint relating to a financial service, you may escalate to the Consumer Protection Department of the Central Bank of Nigeria. Complaints about personal data are handled as described in the Privacy Policy and may be escalated to the Nigeria Data Protection Commission.</p>
-
-<h2>16. Disclaimers</h2>
-<p>TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE SERVICES AND ALL INFORMATION, SOFTWARE, PRODUCTS AND RELATED GRAPHICS ARE PROVIDED “AS IS” AND “AS AVAILABLE”, WITHOUT WARRANTY OR CONDITION OF ANY KIND, AND WE DISCLAIM ALL IMPLIED WARRANTIES AND CONDITIONS, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. WE DO NOT WARRANT THAT THE SERVICES WILL BE UNINTERRUPTED, TIMELY, SECURE OR ERROR-FREE, AND INFORMATION DISPLAYED MAY OCCASIONALLY CONTAIN INACCURACIES OR TYPOGRAPHICAL ERRORS WHICH WE MAY CORRECT. NOTHING ON THE SERVICES CONSTITUTES FINANCIAL, INVESTMENT, LEGAL OR TAX ADVICE.</p>
-
-<h2>17. Limitation of Liability</h2>
-<p>(a) TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, WE SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY OR PUNITIVE DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, DATA, GOODWILL OR ANTICIPATED SAVINGS, ARISING OUT OF OR IN CONNECTION WITH THE SERVICES, WHETHER BASED ON CONTRACT, TORT (INCLUDING NEGLIGENCE), STRICT LIABILITY OR OTHERWISE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.</p>
-<p>(b) TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, OUR TOTAL AGGREGATE LIABILITY FOR ALL CLAIMS ARISING IN CONNECTION WITH THE SERVICES SHALL NOT EXCEED THE GREATER OF (i) THE AMOUNT OF THE TRANSACTION GIVING RISE TO THE CLAIM AND (ii) THE TOTAL FEES YOU PAID TO US IN THE TWELVE (12) MONTHS PRECEDING THE EVENT GIVING RISE TO THE CLAIM.</p>
-<p>(c) Nothing in these Terms excludes or limits liability that cannot be excluded or limited under Nigerian law, including liability for fraud or wilful misconduct, or affects your statutory rights as a consumer, including under the Federal Competition and Consumer Protection Act 2018 and applicable CBN consumer-protection regulations. We are not liable for losses caused by your breach of these Terms, your failure to safeguard your Security Details, incorrect transaction details you provided, or events beyond our reasonable control.</p>
-
-<h2>18. Indemnification</h2>
-<p>You agree to indemnify, defend and hold harmless Zitch, the Cooperative and our respective officers, directors, employees, agents and partners from and against losses, costs, liabilities and expenses (including reasonable legal fees) arising out of or relating to: your use or misuse of the Services; content or instructions you submit; your breach of these Terms; your violation of any law or regulation; or your infringement of any rights of a third party. We reserve the right, at our own cost, to assume the exclusive defence and control of any matter otherwise subject to indemnification by you, in which case you agree to cooperate with our defence.</p>
-
-<h2>19. Dispute Resolution, Governing Law and Individual Capacity</h2>
-<p>(a) These Terms and any dispute or claim arising out of or in connection with them or the Services are governed by the laws of the Federal Republic of Nigeria.</p>
-<p>(b) Before formal proceedings, the parties shall first attempt in good faith to resolve any dispute through our complaints process (Section 15) and direct negotiation for at least thirty (30) days.</p>
-<p>(c) If the dispute is not resolved, the parties shall refer it to mediation at the Lagos Multi-Door Courthouse. If mediation fails to resolve the dispute within sixty (60) days of referral, the dispute shall be finally resolved by arbitration under the Arbitration and Mediation Act 2023, by a sole arbitrator appointed in accordance with that Act, seated in Lagos, Nigeria, and conducted in English. Judgment on the award may be entered in any court of competent jurisdiction.</p>
-<p>(d) Nothing in this Section prevents either party from seeking urgent injunctive or protective relief in the courts of Nigeria, or limits any right you may have to refer a complaint to the CBN, the NDPC or another competent regulator, or to pursue any claim that applicable law does not permit to be arbitrated.</p>
-<p>(e) TO THE EXTENT PERMITTED BY LAW, DISPUTES SHALL BE CONDUCTED ON AN INDIVIDUAL BASIS ONLY: EACH PARTY MAY BRING CLAIMS AGAINST THE OTHER ONLY IN ITS INDIVIDUAL CAPACITY AND NOT AS A PLAINTIFF OR MEMBER IN ANY PURPORTED CLASS, COLLECTIVE OR REPRESENTATIVE PROCEEDING, AND THE ARBITRATOR MAY NOT CONSOLIDATE THE CLAIMS OF MORE THAN ONE PERSON.</p>
-
-<h2>20. Changes to These Terms</h2>
-<p>We may amend these Terms from time to time. The current version, with its effective date, will always be available in the App and on the Site, and it supersedes all previous versions. For material changes we will give you prior notice through the App, email, SMS or the WhatsApp Channel. If you do not agree to a change, stop using the Services and close your account before the change takes effect; your continued use after the effective date constitutes acceptance.</p>
-
-<h2>21. General</h2>
-<p>(a) <b>Entire agreement.</b> These Terms, together with the Privacy Policy, the fee schedule, any product-specific terms presented to you in the App and, for Cooperative products, the Cooperative’s bye-laws, constitute the entire agreement between you and us regarding the Services and supersede all prior communications and proposals, whether electronic, oral or written.</p>
-<p>(b) <b>Severability.</b> If any provision of these Terms is held invalid or unenforceable, it will be replaced by a valid, enforceable provision that most closely matches the intent of the original, and the remainder will continue in effect.</p>
-<p>(c) <b>No waiver.</b> Our failure to enforce any provision is not a waiver of our right to do so later.</p>
-<p>(d) <b>Assignment.</b> You may not assign or transfer your rights or obligations under these Terms. We may assign our rights and obligations to an affiliate or in connection with a merger, acquisition or sale of assets, with notice to you.</p>
-<p>(e) <b>No agency.</b> Nothing in these Terms creates any joint venture, partnership, employment or agency relationship between you and Zitch.</p>
-<p>(f) <b>Force majeure.</b> We are not liable for failure or delay in performance caused by events beyond our reasonable control, including acts of God, strikes, civil unrest, war, regulatory action, power or telecommunications failures, and failures of payment systems or third-party providers.</p>
-<p>(g) <b>Compliance with requests.</b> Nothing in these Terms derogates from our right to comply with governmental, court and law-enforcement requests or requirements relating to your use of the Services.</p>
-<p>(h) <b>Language.</b> It is the express wish of the parties that these Terms and all related documents be drawn up in English.</p>
-
-<h2>22. Contact Us</h2>
-<p>Zitch Technologies Limited<br>
-Ketu, Lagos State, Nigeria<br>
-Email: support@zitch.ng<br>
-Phone / WhatsApp: 08166938327<br>
-Instagram: @zitchng (instagram.com/zitchng)<br>
-In-app: Help &amp; Support</p>
-</main>
-<footer><div class="in">
-  <span>&copy; 2026 Zitch Technologies Limited &middot; Ketu, Lagos, Nigeria</span>
-  <span><a href="mailto:support@zitch.ng">support@zitch.ng</a></span>
-  <span><a href="tel:+2348166938327">08166938327</a></span>
-  <span><a href="https://instagram.com/zitchng" target="_blank" rel="noopener">Instagram @zitchng</a></span>
-</div></footer>
+<script src="https://unpkg.com/lucide@latest"></script>
+<script>
+  function drawIcons(){ if (window.lucide) lucide.createIcons(); }
+  drawIcons();
+  (function(){
+    var btn = document.getElementById('themeBtn');
+    var SUN = '<i data-lucide="sun"></i>', MOON = '<i data-lucide="moon"></i>';
+    function apply(m){ document.body.setAttribute('data-theme', m); btn.innerHTML = m==='dark'?SUN:MOON; drawIcons(); try{localStorage.setItem('zvtu-theme',m);}catch(e){} }
+    var init='light'; try{init=localStorage.getItem('zvtu-theme')||'light';}catch(e){}
+    apply(init);
+    btn.addEventListener('click', function(){ apply(document.body.getAttribute('data-theme')==='dark'?'light':'dark'); });
+  })();
+  // Active TOC highlight
+  (function(){
+    var links = [].slice.call(document.querySelectorAll('.toc a'));
+    var map = {}; links.forEach(function(a){ var id=a.getAttribute('href').slice(1); map[id]=a; });
+    var secs = [].slice.call(document.querySelectorAll('.content section'));
+    if (!('IntersectionObserver' in window)) return;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (en.isIntersecting){ links.forEach(function(l){ l.classList.remove('active'); }); if (map[en.target.id]) map[en.target.id].classList.add('active'); }
+      });
+    }, { rootMargin:'-40% 0px -55% 0px', threshold:0 });
+    secs.forEach(function(s){ io.observe(s); });
+  })();
+</script>
 </body>
 </html>

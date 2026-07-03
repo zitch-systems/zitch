@@ -125,7 +125,7 @@ const Loans = () => {
       </View>
 
       <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN">
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Repay ${active ? money(Number(active.outstanding)) : ''} from your wallet`}
         </Text>
         <PinPad onComplete={(p) => repay(p)} busy={busy} error={pinError} />

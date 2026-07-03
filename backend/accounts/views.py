@@ -310,6 +310,16 @@ def set_password(request):
     """
     user = request.user_obj
     password = request.data.get("password") or ""
+    # Changing an EXISTING password requires the current one, so a stolen session
+    # token alone can't overwrite it. First-time onboarding runs set-password
+    # before any real password exists — a freshly-created user's password hash is
+    # the empty string (has_usable_password() is True for ""), so gate on a
+    # NON-EMPTY usable hash to exempt the first set while covering every change.
+    if user.password and user.has_usable_password():
+        current = request.data.get("current_password") or ""
+        if not (current and user.check_password(current)):
+            return fail("Enter your current password to change it",
+                        status=403, code="current_password_required")
     weak = _weak_password(password, user)
     if weak:
         return fail(weak)

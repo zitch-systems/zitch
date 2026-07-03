@@ -17,7 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import AmbientBackground from '@/components/design/AmbientBackground';
-import { Loading } from '@/components/design/Loading';
+import { Loading, LoadingMark } from '@/components/design/Loading';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
@@ -226,6 +226,22 @@ export const Btn = ({
   );
 };
 
+// ---- Toggle switch ----
+// Shared on/off switch used across settings and the security screens.
+export const Toggle = ({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) => {
+  const { c } = useTheme();
+  return (
+    <Pressable
+      onPress={disabled ? undefined : () => onChange(!on)}
+      accessibilityRole="switch"
+      accessibilityState={{ checked: on, disabled: !!disabled }}
+      style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}
+    >
+      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
+    </Pressable>
+  );
+};
+
 // ---- Money text ----
 export const Money = ({
   amount,
@@ -321,6 +337,7 @@ export const Field = ({
   editable = true,
   pointerEvents,
   autoCapitalize,
+  loading = false,
 }: {
   label?: string;
   value?: string;
@@ -334,6 +351,9 @@ export const Field = ({
   editable?: boolean;
   pointerEvents?: 'none' | 'auto' | 'box-none';
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  // While true, the input area shows the small branded Zitch loader in place of
+  // the value/placeholder (e.g. the Send-money bank field while auto-detecting).
+  loading?: boolean;
 }) => {
   const { c } = useTheme();
   const [show, setShow] = useState(false);
@@ -356,6 +376,16 @@ export const Field = ({
         }}
       >
         {prefix}
+        {loading ? (
+          <View
+            style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+            accessible
+            accessibilityRole="progressbar"
+            accessibilityLabel="Loading"
+          >
+            <LoadingMark size={22} />
+          </View>
+        ) : (
         <TextInput
           editable={editable}
           value={value}
@@ -368,6 +398,7 @@ export const Field = ({
           autoCapitalize={autoCapitalize}
           style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
         />
+        )}
         {secureTextEntry ? (
           <Pressable onPress={() => setShow((s) => !s)} hitSlop={10} accessibilityLabel={show ? 'Hide password' : 'Show password'}>
             <ZIcon name={show ? 'eyeoff' : 'eye'} size={20} color={c.ink3} />
@@ -392,6 +423,7 @@ export const Sheet = ({
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   // On fold/tablet, cap the sheet width and centre it so it reads as a card
   // rather than stretching across the whole display. Full-width on phones.
   const maxW = width >= 600 ? 560 : undefined;
@@ -408,8 +440,10 @@ export const Sheet = ({
           borderTopRightRadius: 28,
           padding: 20,
           paddingTop: 10,
-          paddingBottom: 26,
-          maxHeight: '88%',
+          // Clear the home indicator / gesture bar so the sheet's bottom content
+          // (the PIN keypad's last row) isn't flush against the screen edge.
+          paddingBottom: 26 + insets.bottom,
+          maxHeight: '90%',
         }}
       >
         <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
@@ -496,7 +530,10 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
     }
   };
   const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
-  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
+  // Row-based key layout: each row of three stretches edge-to-edge (with even
+  // gaps) so the keypad lines up with the sheet's own padding instead of
+  // floating on a fixed-width island with mismatched margins.
+  const keyRows: string[][] = [['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9'], ['bio', '0', 'del']];
   // While a submission is in flight, replace the keypad with the branded
   // loading animation — the moment the correct PIN is entered (or the biometric
   // clears) the sheet cuts straight to the same loader used across the app,
@@ -566,53 +603,40 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
           {error}
         </Text>
       ) : null}
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', maxWidth: 280, alignSelf: 'center' }}>
-        {keys.map((k, i) =>
-          k === '' ? (
-            bioKind ? (
-              <View key={i} style={{ width: '33.33%', padding: 7 }}>
+      <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center', gap: 10 }}>
+        {keyRows.map((row, ri) => (
+          <View key={ri} style={{ flexDirection: 'row', gap: 10 }}>
+            {row.map((k) =>
+              k === 'bio' && !bioKind ? (
+                <View key={k} style={{ flex: 1, height: 62 }} />
+              ) : (
                 <Pressable
-                  onPress={useBiometric}
+                  key={k}
                   disabled={busy}
-                  style={{
-                    height: 64,
-                    borderRadius: 18,
-                    backgroundColor: c.surface,
+                  onPress={() => (k === 'del' ? del() : k === 'bio' ? useBiometric() : press(k))}
+                  style={({ pressed }) => ({
+                    flex: 1,
+                    height: 62,
+                    borderRadius: 16,
+                    backgroundColor: pressed ? c.surface3 : c.surface,
                     borderWidth: 1,
                     borderColor: c.line,
                     alignItems: 'center',
                     justifyContent: 'center',
-                  }}
+                  })}
                 >
-                  <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={26} color={c.brand} />
+                  {k === 'del' ? (
+                    <ZIcon name="left" size={24} color={c.ink1} />
+                  ) : k === 'bio' ? (
+                    <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={26} color={c.brand} />
+                  ) : (
+                    <Text style={{ fontSize: 24, fontFamily: font.bold, color: c.ink1 }}>{k}</Text>
+                  )}
                 </Pressable>
-              </View>
-            ) : (
-              <View key={i} style={{ width: '33.33%', height: 64 }} />
-            )
-          ) : (
-            <View key={i} style={{ width: '33.33%', padding: 7 }}>
-              <Pressable
-                onPress={() => (k === 'del' ? del() : press(k))}
-                style={{
-                  height: 64,
-                  borderRadius: 18,
-                  backgroundColor: c.surface,
-                  borderWidth: 1,
-                  borderColor: c.line,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                {k === 'del' ? (
-                  <ZIcon name="left" size={24} color={c.ink1} />
-                ) : (
-                  <Text style={{ fontSize: 24, fontFamily: font.bold, color: c.ink1 }}>{k}</Text>
-                )}
-              </Pressable>
-            </View>
-          )
-        )}
+              )
+            )}
+          </View>
+        ))}
       </View>
     </View>
   );
@@ -643,8 +667,10 @@ export const PinSheet = ({
   const { c } = useTheme();
   return (
     <Sheet open={open} onClose={onClose} title={title}>
+      {/* No negative top margin: the subtitle renders inside the sheet's
+          ScrollView, so pulling it up clips its top edge against the title. */}
       {!busy && (
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {subtitle}
         </Text>
       )}

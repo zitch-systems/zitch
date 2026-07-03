@@ -43,9 +43,14 @@ def _names_match(shown: str, resolved: str) -> bool:
 
 @api
 def list_banks(request):
-    """POST /api/transfers/banks/ -> {banks: [{code, name, color}]}"""
-    banks = Bank.objects.filter(active=True)
-    return ok(banks=[{"code": b.code, "name": b.name, "color": b.color} for b in banks])
+    """POST /api/transfers/banks/ -> {banks: [{code, name, color, logo}]}
+
+    Popular (high-volume) banks lead the list so the picker shows the banks
+    almost everyone sends to before the long alphabetical tail.
+    """
+    banks = Bank.objects.filter(active=True).order_by("-popular", "name")
+    return ok(banks=[{"code": b.code, "name": b.name, "color": b.color, "logo": b.logo}
+                     for b in banks])
 
 
 @api

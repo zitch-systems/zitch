@@ -112,6 +112,13 @@ services:
         sync: false
       - key: MONO_WEBHOOK_SECRET
         sync: false
+      # DEMO/PILOT ONLY — serves the SIMULATED bank-link flow (the app's
+      # "Simulate" sheet) while no Mono keys are set: no real bank is contacted
+      # and no real money moves, but the link flow is testable in a production
+      # build. !! Set to "false" (or delete) the moment MONO_SECRET_KEY goes
+      # live — leaving it on would keep serving fake links to real users.
+      - key: MONO_SIMULATION
+        value: "true"
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).

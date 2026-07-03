@@ -1,5 +1,5 @@
-import React from 'react';
-import { View, Text, Pressable, Image } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, Pressable, Image, ScrollView } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
@@ -47,24 +47,68 @@ export const Segmented = ({
   );
 };
 
-// 3-per-row quick amount chips.
+// Quick amount presets — one horizontally-scrollable row of compact pills
+// (replaces the old 3-per-row grid of boxy chips, which dominated the screen
+// and pushed the actual amount field below the fold).
 export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; value: string; onPick: (a: string) => void }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginBottom: 12 }}>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={{ marginBottom: 12, flexGrow: 0 }}
+      contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
+    >
       {amounts.map((a) => {
         const on = String(value) === String(a);
         return (
-          <View key={a} style={{ width: '33.33%', padding: 5 }}>
-            <Pressable
-              onPress={() => onPick(String(a))}
-              style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
-            >
-              <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{a.toLocaleString()}</Text>
-            </Pressable>
-          </View>
+          <Pressable
+            key={a}
+            onPress={() => onPick(String(a))}
+            style={{
+              paddingHorizontal: 16,
+              paddingVertical: 9,
+              borderRadius: 999,
+              backgroundColor: on ? c.brand : c.surface,
+              borderWidth: 1.5,
+              borderColor: on ? c.brand : c.line,
+            }}
+          >
+            <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink2, fontVariant: ['tabular-nums'] }}>
+              <Naira />{a.toLocaleString()}
+            </Text>
+          </Pressable>
         );
       })}
+    </ScrollView>
+  );
+};
+
+// Bank logo badge: the bank's real logo (served by the API) on a white tile,
+// falling back to a colored monogram square when there's no logo URL or the
+// image fails to load — the picker never shows a blank/broken image.
+export const BankLogo = ({ name, color, logo, size = 36 }: { name: string; color: string; logo?: string; size?: number }) => {
+  const { c } = useTheme();
+  // Track WHICH uri failed (not a plain boolean): the same mounted instance is
+  // reused when the user switches banks (e.g. the field prefix), and one bank's
+  // broken logo must not blank out the next bank's working one.
+  const [failedUri, setFailedUri] = useState('');
+  if (logo && failedUri !== logo) {
+    return (
+      <View
+        style={{
+          width: size, height: size, borderRadius: size * 0.3, backgroundColor: '#fff',
+          borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+        }}
+      >
+        <Image source={{ uri: logo }} onError={() => setFailedUri(logo)} resizeMode="contain" style={{ width: size * 0.72, height: size * 0.72 }} />
+      </View>
+    );
+  }
+  const initials = (name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase() || 'BK';
+  return (
+    <View style={{ width: size, height: size, borderRadius: size * 0.3, backgroundColor: color || c.brand, alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: size * 0.36 }}>{initials}</Text>
     </View>
   );
 };

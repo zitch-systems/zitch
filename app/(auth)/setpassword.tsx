@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
-import { router, Link } from 'expo-router';
+import { router, Link, useLocalSearchParams } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
-import { Screen, Field, Btn } from '@/components/design/ui';
+import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
 const Rule = ({ ok, text }: { ok: boolean; text: string }) => {
@@ -24,16 +24,23 @@ const Rule = ({ ok, text }: { ok: boolean; text: string }) => {
 
 const SetPassword = () => {
   const { c } = useTheme();
+  // `change=1` (from Security → Password) turns this into a CHANGE flow: the
+  // current password is required and, on success, we return to Security rather
+  // than continuing onboarding.
+  const params = useLocalSearchParams<{ change?: string }>();
+  const isChange = params.change === '1';
   const [isUpdating, setIsUpdating] = useState(false);
   const [token, setToken] = useState('');
-  const [form, setForm] = useState({ password1: '', password2: '' });
+  const [form, setForm] = useState({ current: '', password1: '', password2: '' });
 
   const p1 = form.password1;
   const eight = p1.length >= 8;
   const hasAlpha = /[A-Za-z]/.test(p1);
   const hasNum = /[0-9]/.test(p1);
+  const hasSpecial = /[^A-Za-z0-9]/.test(p1);
   const tally = p1 !== '' && p1 === form.password2;
-  const canSubmit = eight && hasAlpha && hasNum && tally;
+  const currentOk = !isChange || form.current.length > 0;
+  const canSubmit = eight && hasAlpha && hasNum && hasSpecial && tally && currentOk;
 
   useEffect(() => {
     getToken().then((t) => t && setToken(t));
@@ -46,10 +53,19 @@ const SetPassword = () => {
     }
     setIsUpdating(true);
     try {
-      const response = await apiPost('/api/set-password/', { password: p1 });
+      const body: Record<string, string> = { password: p1 };
+      if (isChange) body.current_password = form.current;
+      const response = await apiPost('/api/set-password/', body);
       const result = await response.json();
       if (response.ok) {
-        router.replace('/setpin');
+        if (isChange) {
+          notify('Password changed', 'Your account password has been updated.');
+          router.back();
+        } else {
+          router.replace('/setpin');
+        }
+      } else if (result.code === 'current_password_required') {
+        notify('Error', 'Your current password is incorrect.');
       } else {
         notify('Error', result.message || 'Could not set your password');
       }
@@ -62,21 +78,37 @@ const SetPassword = () => {
 
   return (
     <Screen>
-      <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 8 }}>
-        <ZMark size={44} />
-      </View>
-      <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1 }}>Set up password</Text>
-      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 22, fontFamily: font.regular }}>
-        Create a strong password for your account
-      </Text>
+      {isChange ? (
+        <Header title="Change password" sub="Confirm your current password, then set a new one" onBack={() => router.back()} />
+      ) : (
+        <>
+          <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 8 }}>
+            <ZMark size={44} />
+          </View>
+          <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1 }}>Set up password</Text>
+          <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 22, fontFamily: font.regular }}>
+            Create a strong password for your account
+          </Text>
+        </>
+      )}
 
       <View style={{ gap: 16 }}>
+        {isChange && (
+          <Field
+            label="Current password"
+            value={form.current}
+            onChangeText={(e) => setForm({ ...form, current: e })}
+            secureTextEntry
+            placeholder="Enter current password"
+            prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+          />
+        )}
         <Field
-          label="Password"
+          label={isChange ? 'New password' : 'Password'}
           value={form.password1}
           onChangeText={(e) => setForm({ ...form, password1: e })}
           secureTextEntry
-          placeholder="Enter password"
+          placeholder={isChange ? 'Enter new password' : 'Enter password'}
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
@@ -93,18 +125,21 @@ const SetPassword = () => {
         <Rule ok={eight} text="Must be at least 8 characters" />
         <Rule ok={hasAlpha} text="Must include an alphabet (Aa-Zz)" />
         <Rule ok={hasNum} text="Must include a number (0-9)" />
+        <Rule ok={hasSpecial} text="Must include a special character (!@#$…)" />
       </View>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label="Continue" disabled={!canSubmit || isUpdating} onPress={handleUpdate} />
+        <Btn label={isChange ? 'Change password' : 'Continue'} disabled={!canSubmit || isUpdating} onPress={handleUpdate} />
       </View>
-      <Text style={{ fontSize: 12, color: c.ink3, marginTop: 14, lineHeight: 18, fontFamily: font.regular }}>
-        By continuing you agree to our{' '}
-        <Link href={PRIVACY_URL as any}>
-          <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy & Terms</Text>
-        </Link>
-        .
-      </Text>
+      {!isChange && (
+        <Text style={{ fontSize: 12, color: c.ink3, marginTop: 14, lineHeight: 18, fontFamily: font.regular }}>
+          By continuing you agree to our{' '}
+          <Link href={PRIVACY_URL as any}>
+            <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy & Terms</Text>
+          </Link>
+          .
+        </Text>
+      )}
     </Screen>
   );
 };
