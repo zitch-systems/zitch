@@ -79,8 +79,11 @@ const GetLoan = () => {
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
+        // Only a definitive backend rejection mints a new key. On a connectivity
+        // failure (`offline`) the request may have been delivered, so the key is
+        // KEPT — a retry then replays server-side instead of disbursing twice.
+        if (!res.offline) idemKey.current = '';
         notify('Error', res.message || 'Loan request failed');
-        idemKey.current = '';
         setStep(null);
       }
     } catch {

@@ -166,11 +166,18 @@ def payout(request):
     # a demo stub, not a verified real account. Never drive the LIVE payout rail
     # from one — that would move real wallet money to an unverified/fake number.
     # Fully-mock dev/pilot (payout rail also mock) stays allowed so the flow is
-    # testable; only the dangerous sim-link + live-rail mismatch is refused.
+    # testable. The provenance check is on the ROW, not the current config: a
+    # stub linked during the pilot must stay refused after real Mono keys go
+    # live, since it was never verified against a real bank.
     from utility.providers import payout_live
-    if not mono.mono_live() and payout_live():
-        return fail("Payouts to a linked bank need a live bank connection.",
-                    status=409, code="simulation")
+    if payout_live():
+        if mono.is_mock_account(acct_obj.mono_account_id):
+            return fail("This linked account was added in demo mode and can't "
+                        "receive payouts. Remove it and link your bank again.",
+                        status=409, code="simulation")
+        if not mono.mono_live():
+            return fail("Payouts to a linked bank need a live bank connection.",
+                        status=409, code="simulation")
 
     acct = (acct_obj.account_number or "").strip()
     if len(acct) != 10:

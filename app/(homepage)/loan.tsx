@@ -70,6 +70,10 @@ const Loans = () => {
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
+        // A definitive rejection mints a new key (replaying a FAILED row 409s
+        // forever); a connectivity failure (`offline`) keeps it so a retry
+        // replays server-side instead of debiting twice.
+        if (!res.offline) idemKey.current = '';
         setPinOpen(false);
         notify('Error', res.message || 'Repayment failed');
       }

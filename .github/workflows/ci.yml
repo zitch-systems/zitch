@@ -7,6 +7,11 @@ on:
   pull_request:
     paths-ignore: ['landing/**', 'docs/**', '**/*.md']
 
+# Least privilege: every job only reads the repo. Nothing here writes to the
+# repo, packages, or deployments, so the default write token is unnecessary.
+permissions:
+  contents: read
+
 # Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
 concurrency:
   group: ci-${{ github.ref }}
@@ -100,6 +105,11 @@ jobs:
       - run: pip install -r requirements.txt
       - name: System check
         run: python manage.py check
+      - name: Deploy checks
+        # The production-settings audit (SECURE_*, cookies, HSTS, DEBUG…). CI runs
+        # with DEBUG off (see env above), so this validates what prod actually boots
+        # with. Fails only on errors; warnings print for review.
+        run: python manage.py check --deploy
       - name: Migrations are complete
         run: python manage.py makemigrations --check --dry-run
       - name: Migrate + seed (SQLite)
@@ -108,6 +118,43 @@ jobs:
           python manage.py seed_plans
       - name: Tests
         run: python manage.py test
+
+  security:
+    name: Security (secrets + dependency audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # Secret scan — gitleaks as a pinned release binary (not the marketplace
+      # action, which the org's GitHub-authored-only actions policy would block
+      # and which needs a license key for orgs). The default shallow checkout
+      # means this scans the current tree + tip commit, which is the contract:
+      # no new secret lands on main. Blocking.
+      - name: Secret scan (gitleaks)
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/gitleaks.tgz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks detect --source . --no-banner --redact
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.11"
+      # Python dependency audit — resolves the requirement floors as pip would
+      # today and checks the result against the vulnerability DBs. Clean as of
+      # the cryptography>=48.0.1 / Pillow>=12.2 floors, so this is blocking.
+      - name: pip-audit
+        run: |
+          pip install --quiet pip-audit
+          pip-audit -r backend/requirements.txt --no-deps
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "20"
+      # npm audit is ADVISORY (continue-on-error) for now: the tree carries ~60
+      # known vulns rooted in the EOL Expo SDK 51 / RN 0.74 toolchain, which only
+      # the SDK upgrade can clear. Flip this to blocking after that upgrade.
+      - name: npm audit (advisory until the Expo SDK upgrade)
+        continue-on-error: true
+        run: npm audit --package-lock-only --omit=dev --audit-level=high
 
   app:
     name: App (Expo)
