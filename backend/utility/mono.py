@@ -36,6 +36,15 @@ from .providers import mock_disabled_in_prod
 REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
+# Mock/simulated links are branded with this account-id prefix forever, so a row
+# created before real Mono keys went live stays identifiable as unverified.
+MOCK_ACCOUNT_PREFIX = "mock_acct_"
+
+
+def is_mock_account(account_id: str) -> bool:
+    """Whether a stored mono_account_id was minted by the mock/simulated flow."""
+    return (account_id or "").startswith(MOCK_ACCOUNT_PREFIX)
+
 
 def mono_live() -> bool:
     """Whether Mono has a secret key configured (live, non-mock)."""
@@ -110,7 +119,7 @@ def exchange_token(code: str) -> dict:
         if _mock_blocked():
             return {"success": False, "message": "Bank linking is not configured"}
         seed = hashlib.sha256((code or "x").encode()).hexdigest()[:16]
-        return {"success": True, "mock": True, "account_id": f"mock_acct_{seed}"}
+        return {"success": True, "mock": True, "account_id": f"{MOCK_ACCOUNT_PREFIX}{seed}"}
     try:
         resp = _post("/v2/accounts/auth", {"code": code})
         data = resp.json()

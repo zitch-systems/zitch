@@ -11,7 +11,11 @@ services:
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
     # Render can't see -> "no open ports detected" and the deploy times out. Render
     # injects PORT (default 10000, which the health check targets).
-    startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000}"
+    # 2 workers x 4 threads so one slow provider call (Kora/Monnify/VTU do
+    # network I/O in-request) can't stall every other request; --timeout bounds
+    # a hung worker. Sized for the 512MB free/starter tiers. NOTE: with more
+    # than one worker, set REDIS_URL so rate limits share one cache (see below).
+    startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 2 --threads 4 --timeout 60"
     healthCheckPath: /healthz
     envVars:
       - key: DJANGO_SECRET_KEY
@@ -178,6 +182,16 @@ services:
         sync: false
       - key: LLM_MODEL
         sync: false
+      # Error reporting — blank keeps Sentry off (the SDK never initializes).
+      # Set the project DSN here to activate it (PII is never sent).
+      - key: SENTRY_DSN
+        sync: false
+      # Shared cache — REQUIRED for accurate rate limits / idempotency fallback
+      # once gunicorn runs more than one worker (it does, see startCommand).
+      # Point at a Render Key Value (or any Redis) instance; blank falls back to
+      # per-process LocMem, which a single worker tolerates but two do not.
+      - key: REDIS_URL
+        sync: false
 
   # Daily Fixed Save maturity sweep — pays out matured plans, including for
   # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
@@ -226,6 +240,28 @@ services:
 
   # (The zitch-reconcile-wema cron was removed when Wema was archived — restore it
   # from docs/wema-migration.md if the Wema rail is ever resumed.)
+
+  # Ledger <-> balance integrity check — recomputes every wallet from the
+  # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
+  # on any drift. Read-only apart from one AuditLog row per run. Also requires a
+  # paid plan (cron has no free tier).
+  - type: cron
+    name: zitch-integrity-check
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "30 2 * * *"   # 02:30 UTC daily, after the maturity sweep
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py integrity_check --fail-nonzero"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
 
 databases:
   - name: zitch-db

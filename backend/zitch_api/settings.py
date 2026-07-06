@@ -415,6 +415,21 @@ if _PROD and (WHATSAPP["TOKEN"] or WHATSAPP["PHONE_NUMBER_ID"]):
     if not WHATSAPP["VERIFY_TOKEN"]:
         raise ImproperlyConfigured("WHATSAPP_VERIFY_TOKEN must be set when the WhatsApp channel is live (webhook handshake).")
 
+# --- Cache ------------------------------------------------------------------
+# Rate limits, the idempotency-fallback bucket, and the WhatsApp throttle all sit
+# on Django's cache, which is only correct across gunicorn workers when the cache
+# is SHARED. Point CACHES at Redis by setting REDIS_URL; the default stays the
+# in-process LocMem cache (single worker / dev) so no extra infra is required to
+# boot. Tests always use LocMem for isolation.
+REDIS_URL = os.environ.get("REDIS_URL", "")
+if REDIS_URL and not TESTING:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+        }
+    }
+
 # --- Logging --------------------------------------------------------------
 # A fintech must be able to answer "who tried to brute-force this account / which
 # payout failed / why did this 500" after the fact. Render (and most PaaS)

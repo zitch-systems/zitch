@@ -245,6 +245,19 @@ class BanklinkPayoutTests(TestCase):
         self.assertEqual(r.json().get("code"), "simulation")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
 
+    def test_payout_blocked_for_sim_created_account_after_mono_goes_live(self):
+        # A row linked under SIMULATION stays a demo stub forever (mock_acct_ id).
+        # Flipping real Mono keys on later must NOT make it payable — it was never
+        # verified against a real bank. The guard is on the row, not the config.
+        lid = self._link()
+        with patch("utility.mono.mono_live", return_value=True), \
+             patch("utility.providers.payout_live", return_value=True):
+            r = self._post("/api/banklink/payout/",
+                           {"linked_id": lid, "amount": "10000", "pin": "1234"})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.json().get("code"), "simulation")
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
+
     def test_payout_rejected_when_account_maps_to_multiple_banks(self):
         # An ambiguous NUBAN (valid at two banks, possibly different holders) must
         # not be routed by guessing matches[0] — reject and keep the wallet whole.

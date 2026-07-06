@@ -80,7 +80,9 @@ const Cards = () => {
       const res = await apiJson('/api/cards/fund/', { card_id: card.id, amount: fundAmt, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) { idemKey.current = ''; setFundPin(false); setPinError(''); setCard(res.card); setFundAmt(''); reloadWallet(); notify('Success', 'Card funded'); }
       else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') { setPinError(res.message || 'Incorrect PIN'); }
-      else { idemKey.current = ''; setFundPin(false); notify('Error', res.message || 'Funding failed'); }
+      // Keep the key on a connectivity failure (`offline`) — the request may have
+      // been delivered, so a retry replays server-side instead of debiting twice.
+      else { if (!res.offline) idemKey.current = ''; setFundPin(false); notify('Error', res.message || 'Funding failed'); }
     } catch { setFundPin(false); notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
