@@ -265,7 +265,8 @@ def _webhook_rows(limit=40) -> list:
     return rows
 
 
-_RECON_RUNS = {"recon.vtu_run": "zitch-reconcile-vtu", "recon.maturities_run": "zitch-maturities"}
+_RECON_RUNS = {"recon.vtu_run": "zitch-reconcile-vtu", "recon.maturities_run": "zitch-maturities",
+               "recon.monnify_payouts_run": "zitch-reconcile-payouts"}
 
 
 def _recon_rows(limit=20) -> list:

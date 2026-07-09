@@ -241,6 +241,42 @@ services:
   # (The zitch-reconcile-wema cron was removed when Wema was archived — restore it
   # from docs/wema-migration.md if the Wema rail is ever resumed.)
 
+  # Monnify payout reconciliation — a safety net behind the disbursement webhook:
+  # poll single-transfer status for any bank payout left PENDING and settle
+  # (SUCCESS) or reverse (FAILED/REVERSED) it, so a missed webhook never leaves a
+  # transfer debited forever. No-op unless Monnify is the payout rail. Also requires
+  # a paid plan (cron has no free tier). Runs every 10 minutes. NOTE: this service
+  # needs its OWN Monnify keys (crons are separate from the web service) to query
+  # disbursement status — set MONNIFY_* below in the Render dashboard, and the same
+  # egress IP applies (whitelist this cron's IP too if it differs from the web app).
+  - type: cron
+    name: zitch-reconcile-payouts
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "*/10 * * * *"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py reconcile_payouts"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      - key: MONNIFY_API_KEY
+        sync: false
+      - key: MONNIFY_SECRET_KEY
+        sync: false
+      - key: MONNIFY_CONTRACT_CODE
+        sync: false
+      - key: MONNIFY_WALLET_ACCOUNT
+        sync: false
+      - key: MONNIFY_BASE_URL
+        sync: false
+
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
   # on any drift. Read-only apart from one AuditLog row per run. Also requires a

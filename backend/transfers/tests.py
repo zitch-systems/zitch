@@ -1,9 +1,11 @@
 ﻿"""Tests for bank transfer (payout) + saved beneficiaries."""
 import json
 from decimal import Decimal
+from io import StringIO
 from unittest.mock import patch
 
-from django.test import Client, TestCase
+from django.core.management import call_command
+from django.test import Client, TestCase, override_settings
 
 from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
@@ -290,3 +292,72 @@ class BankTransferTests(TestCase):
                          content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
+
+
+class MonnifyPayoutReconcileTests(TestCase):
+    """The reconcile_payouts poller settles/reverses PENDING payouts when a Monnify
+    disbursement webhook is missed — the safety net behind the webhook."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010009001", "recon@zitch.test", balance="50000")
+        self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
+
+    def balance(self):
+        return get_or_create_wallet(self.user).balance
+
+    def _pending_payout(self):
+        # A payout the rail ACCEPTED but left PENDING (awaiting the webhook): the
+        # wallet stays debited and the row is flagged for reconciliation.
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "pending"}):
+            res = self.client.post("/api/transfers/send/", data=json.dumps({
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            }), content_type="application/json")
+        ref = res.json()["reference"]
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
+        self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
+        return ref
+
+    def _run(self):
+        call_command("reconcile_payouts", "--older-than-minutes", "0", stdout=StringIO())
+
+    def test_settles_pending_payout_when_status_success(self):
+        ref = self._pending_payout()
+        with patch("utility.monnify.verify_payout", return_value={"success": True, "status": "success"}):
+            self._run()
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
+        self.assertEqual(self.balance(), Decimal("40000"))  # settled, not refunded
+
+    def test_reverses_pending_payout_when_status_failed(self):
+        ref = self._pending_payout()
+        with patch("utility.monnify.verify_payout", return_value={"success": False, "status": "failed"}):
+            self._run()
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
+        self.assertEqual(self.balance(), Decimal("50000"))  # refunded
+
+    def test_leaves_still_pending_payout_untouched(self):
+        ref = self._pending_payout()
+        with patch("utility.monnify.verify_payout",
+                   return_value={"success": False, "pending": True, "status": "pending"}):
+            self._run()
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
+        self.assertEqual(self.balance(), Decimal("40000"))  # untouched
+
+    def test_unreachable_status_leaves_pending(self):
+        # A query that can't reach Monnify must NOT reverse money — leave PENDING.
+        ref = self._pending_payout()
+        with patch("utility.monnify.verify_payout",
+                   return_value={"success": False, "message": "unreachable"}):
+            self._run()
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
+        self.assertEqual(self.balance(), Decimal("40000"))
+
+    @override_settings(PAYOUT_PROVIDER="wema")
+    def test_does_not_query_when_wema_is_payout_rail(self):
+        ref = self._pending_payout()
+        with patch("utility.monnify.verify_payout") as mv:
+            self._run()
+        mv.assert_not_called()
+        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
