@@ -105,6 +105,12 @@ services:
       # for live disbursements.
       - key: MONNIFY_WALLET_ACCOUNT
         sync: false
+      # HTTPS forward proxy all Monnify calls exit through, so Monnify sees one
+      # whitelistable static IP (e.g. a DigitalOcean box) instead of Render's own
+      # egress. scheme://user:pass@host:port. Required for disbursements when the
+      # whitelisted IP isn't Render's egress. Verify via /payout-diagnose.
+      - key: MONNIFY_PROXY_URL
+        sync: false
       - key: MONNIFY_BASE_URL
         sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
@@ -273,6 +279,8 @@ services:
       - key: MONNIFY_CONTRACT_CODE
         sync: false
       - key: MONNIFY_WALLET_ACCOUNT
+        sync: false
+      - key: MONNIFY_PROXY_URL
         sync: false
       - key: MONNIFY_BASE_URL
         sync: false

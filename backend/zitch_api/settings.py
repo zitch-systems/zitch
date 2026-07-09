@@ -243,6 +243,12 @@ MONNIFY = {
     # Merchant wallet NUBAN that funds outbound transfers (the sourceAccountNumber
     # on a disbursement). Required for live payouts.
     "WALLET_ACCOUNT": os.environ.get("MONNIFY_WALLET_ACCOUNT", ""),
+    # HTTPS forward proxy (scheme://user:pass@host:port) that ALL Monnify calls exit
+    # through, so Monnify sees one whitelistable static IP (e.g. a DigitalOcean box)
+    # instead of the host's (Render's) own outbound IP. REQUIRED for disbursements
+    # when the whitelisted IP isn't the app's own egress. Blank => call Monnify
+    # directly. See utility.monnify._proxies.
+    "PROXY_URL": os.environ.get("MONNIFY_PROXY_URL", ""),
     "SIMULATION": env_bool("MONNIFY_SIMULATION", False),
 }
 # Wema / ALAT (Banking-as-a-Service) — the target rail for the full migration
