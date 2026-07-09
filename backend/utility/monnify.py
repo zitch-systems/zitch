@@ -76,7 +76,7 @@ def _monnify_token() -> str:
         resp = requests.post(
             f"{m['BASE_URL']}/api/v1/auth/login",
             headers={"Authorization": f"Basic {basic}"},
-            timeout=_AUTH_TIMEOUT,
+            timeout=_AUTH_TIMEOUT, proxies=_proxies(),
         )
         rb = (resp.json() or {}).get("responseBody", {}) or {}
     except (requests.RequestException, ValueError):
@@ -96,6 +96,14 @@ def _auth_headers() -> dict | None:
     if not token:
         return None
     return {"Authorization": f"Bearer {token}"}
+
+
+def _proxies() -> dict | None:
+    """Route Monnify egress through MONNIFY_PROXY_URL when set, so Monnify sees
+    one whitelistable static IP instead of the host's (e.g. Render's shared)
+    outbound range. Blank => call Monnify directly, unchanged."""
+    url = settings.MONNIFY.get("PROXY_URL")
+    return {"https": url, "http": url} if url else None
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +142,7 @@ def payment_initialize(email: str, amount_naira, reference: str, *,
                 "redirectUrl": redirect_url or m.get("REDIRECT_URL", ""),
                 "paymentMethods": ["CARD", "ACCOUNT_TRANSFER"],
             },
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -167,6 +175,7 @@ def payment_verify(reference: str) -> dict:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v1/merchant/transactions/query",
             params={"paymentReference": reference}, headers=headers, timeout=REQUEST_TIMEOUT,
+            proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -246,7 +255,7 @@ def create_virtual_account(account_reference: str, account_name: str, customer_e
     try:
         resp = requests.post(
             f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts",
-            json=body, headers=headers, timeout=REQUEST_TIMEOUT,
+            json=body, headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         out = _parse_reserved(resp.json())
         if not out["success"]:
@@ -270,7 +279,7 @@ def get_virtual_account(account_reference: str) -> dict:
     try:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts/{account_reference}",
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         return _parse_reserved(resp.json())
     except requests.RequestException as exc:
@@ -307,7 +316,8 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     body = {"bvn": bvn, "name": name, "dateOfBirth": date_of_birth, "mobileNo": mobile}
     try:
         resp = requests.post(f"{m['BASE_URL']}/api/v1/vas/bvn-details-match",
-                             json=body, headers=headers, timeout=REQUEST_TIMEOUT)
+                             json=body, headers=headers, timeout=REQUEST_TIMEOUT,
+                             proxies=_proxies())
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
         ok = bool(data.get("requestSuccessful"))
@@ -335,7 +345,8 @@ def verify_nin(nin: str) -> dict:
     m = settings.MONNIFY
     try:
         resp = requests.post(f"{m['BASE_URL']}/api/v1/vas/nin-details",
-                             json={"nin": nin}, headers=headers, timeout=REQUEST_TIMEOUT)
+                             json={"nin": nin}, headers=headers, timeout=REQUEST_TIMEOUT,
+                             proxies=_proxies())
         data = resp.json()
         return {"success": bool(data.get("requestSuccessful")), "raw": data,
                 "message": data.get("responseMessage", "")}
@@ -378,7 +389,7 @@ def deallocate_virtual_account(account_reference: str) -> dict:
     try:
         resp = requests.delete(
             f"{m['BASE_URL']}/api/v1/bank-transfer/reserved-accounts/reference/{account_reference}",
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         data = resp.json() if resp.content else {}
         return {"success": bool(data.get("requestSuccessful")),

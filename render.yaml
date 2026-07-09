@@ -107,6 +107,12 @@ services:
         sync: false
       - key: MONNIFY_BASE_URL
         sync: false
+      # Optional: routes Monnify calls through an HTTPS forward proxy
+      # (scheme://user:pass@host:port on a box with a static IP) so a rail that
+      # *does* require IP whitelisting sees one dedicated address instead of
+      # Render's shared outbound range. Blank => call Monnify directly (default).
+      - key: MONNIFY_PROXY_URL
+        sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
       # defaults to https://api.withmono.com in code.
