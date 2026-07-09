@@ -250,10 +250,6 @@ MONNIFY = {
     "CONTRACT_CODE": os.environ.get("MONNIFY_CONTRACT_CODE", ""),
     "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
     "SIMULATION": env_bool("MONNIFY_SIMULATION", False),
-    # Optional HTTPS forward proxy (scheme://user:pass@host:port) that all
-    # Monnify calls exit through — gives Monnify one static IP to whitelist
-    # instead of Render's shared outbound range. Blank => call Monnify directly.
-    "PROXY_URL": os.environ.get("MONNIFY_PROXY_URL", ""),
 }
 # Wema / ALAT (Banking-as-a-Service) — the target rail for the full migration
 # (funding accounts, payout, name-enquiry, balance; later VAS/cards/KYC). Azure
