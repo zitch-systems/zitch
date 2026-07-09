@@ -592,7 +592,7 @@ def _parse_vas(data: dict, reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics — mirrors kora/mono/monnify diagnostics
+# Diagnostics — mirrors mono/monnify diagnostics
 # ---------------------------------------------------------------------------
 def _trim(raw, limit: int = 500):
     """Short, printable form of a provider response for a diagnostic (no secrets —

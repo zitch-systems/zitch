@@ -22,7 +22,7 @@ rule respected: everything additive, no schema rewrites, no API breaks.
 | Observability: Sentry | already wired in settings (DSN-gated, PII off) |
 | Biometric transaction approval (mobile) | biometric-first PinPad + settings toggle |
 | Screen-capture protection, PIN hardening (mobile) | earlier hardening PRs |
-| Webhook signature verification | Kora + Monnify (HMAC-SHA512) fail closed in prod |
+| Webhook signature verification | Monnify (HMAC-SHA512) fails closed in prod |
 
 ## ➕ Added in this batch
 

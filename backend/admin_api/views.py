@@ -242,7 +242,7 @@ def _audit_row(a) -> dict:
     }
 
 
-_WEBHOOK_SOURCES = {"kora": "Kora", "kora_disbursement": "Kora",
+_WEBHOOK_SOURCES = {"monnify": "Monnify", "monnify_disbursement": "Monnify",
                     "whatsapp": "Meta WA", "vtung": "VTU.ng"}
 
 
@@ -473,7 +473,7 @@ def bootstrap(request):
 
     # Float = platform liability we actually hold per currency (real).
     from wallet.models import CurrencyWallet
-    float_rows = [{"cur": "NGN", "sym": "₦", "bal": _num(total_ngn), "provider": "Kora"}]
+    float_rows = [{"cur": "NGN", "sym": "₦", "bal": _num(total_ngn), "provider": "Monnify"}]
     for c in ["USD", "GBP", "CAD"]:
         bal = CurrencyWallet.objects.filter(currency=c).aggregate(s=Sum("balance"))["s"] or Decimal("0")
         float_rows.append({"cur": c, "sym": {"USD": "$", "GBP": "£", "CAD": "C$"}[c], "bal": _num(bal), "provider": "Fincra"})
@@ -488,7 +488,7 @@ def bootstrap(request):
 
     fincra_live = bool(dj_settings.FINCRA.get("SECRET_KEY"))
     providers = [
-        {"name": "Kora", "role": "Funding & payouts", "status": _st(payout_live()), "uptime": "—"},
+        {"name": "Monnify", "role": "Funding & payouts", "status": _st(payout_live()), "uptime": "—"},
         {"name": "VTU.ng", "role": "Airtime · data · bills", "status": _st(vtu_live()), "uptime": "—"},
         {"name": "Fincra", "role": "FX rates & settlement", "status": _st(fincra_live), "uptime": "—"},
         {"name": "Meta WhatsApp", "role": "Chat channel", "status": _st(wa_live()), "uptime": "—"},
@@ -708,7 +708,7 @@ def txn_requery(request):
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
     if is_bank_payout(txn):
-        # A bank transfer settles via the Kora payout webhook, not a VTU
+        # A bank transfer settles via the Monnify payout webhook, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
         return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
     status = settle_or_refund(txn, vtu_requery(txn.reference))

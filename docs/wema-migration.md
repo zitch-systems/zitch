@@ -1,8 +1,8 @@
 # Wema / ALAT migration — ⚠️ ARCHIVED (2026-07)
 
 **Status: parked.** The production rails are locked to **Monnify** (wallet funding,
-dedicated accounts, BVN/NIN KYC), **Kora** (bank payout + name enquiry, vNIN), and
-**VTU.ng** (airtime/data/bills); face/liveness stays on Prembly. All Wema code is
+dedicated accounts, bank payout + name enquiry, BVN/NIN KYC) and **VTU.ng**
+(airtime/data/bills); face/liveness + vNIN stay on Prembly. All Wema code is
 retained, opt-in only — nothing routes to Wema unless a `*_PROVIDER` env is
 explicitly set to `wema`. Leave those blank.
 
@@ -84,7 +84,7 @@ small transfer. `/healthz` should show `payout_provider: "wema"`.
    sender's `wallet.account_number` as `source_account`); the shared `WEMA_SOURCE_ACCOUNT`
    pool is only a fallback for a sender who has no Wema NUBAN yet (mixed migration). A live
    payout with neither fails closed (refundable). Note: to pay out via Wema a user must
-   have a Wema NUBAN with balance — during migration, a user who funded via Monnify/Kora
+   have a Wema NUBAN with balance — during migration, a user who funded via Monnify
    (no Wema NUBAN) can't be paid out from the pool unless `WEMA_SOURCE_ACCOUNT` is funded.
 2. **`securityInfo` construction.** The encryption scheme (algorithm / what is signed /
    key material) is not in the OpenAPI. Implement in `utility.wema._security_info` once

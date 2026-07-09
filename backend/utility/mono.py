@@ -1,6 +1,6 @@
-"""Mono (open banking) integration — link an external bank to the Zitch wallet.
+﻿"""Mono (open banking) integration â€” link an external bank to the Zitch wallet.
 
-Covers what the banklink app needs, mirroring the conventions in utility.kora:
+Covers what the banklink app needs, mirroring the conventions in utility.Monnify:
 
 - Account linking: exchange the Mono Connect auth code for a permanent account id.
 - Account data: details, balance, transactions of a linked account.
@@ -14,12 +14,12 @@ URL is ``https://api.withmono.com``. Every function returns ``{"success": bool, 
 Amounts: Mono works in KOBO; helpers convert to/from naira at the boundary.
 
 MOCK mode: when ``MONO_SECRET_KEY`` is blank the calls simulate success so the
-flow is testable offline — EXCEPT in production (DEBUG off), where money /
+flow is testable offline â€” EXCEPT in production (DEBUG off), where money /
 account-linking calls fail closed via ``providers.mock_disabled_in_prod`` so a
 misconfigured deploy never fakes a link or a funding.
 
 VERIFY-BEFORE-LIVE: endpoint paths and field names follow Mono's published API
-(https://docs.mono.co) but can't be exercised from CI — confirm each against the
+(https://docs.mono.co) but can't be exercised from CI â€” confirm each against the
 dashboard before go-live. The MOCK paths are the source of truth until a real key
 is configured.
 """
@@ -55,7 +55,7 @@ def mono_simulation() -> bool:
     """Whether bank-linking SIMULATION is explicitly enabled (MONO_SIMULATION).
 
     When on, the mock flow is served even in production (so a real build can test
-    the full link/fund flow without Mono keys) — no real bank is contacted and no
+    the full link/fund flow without Mono keys) â€” no real bank is contacted and no
     real money moves. Off by default; never auto-fakes a link on a misconfigured
     live deploy.
     """
@@ -78,7 +78,7 @@ def _url(path: str) -> str:
 
 
 def _ok(data: dict) -> bool:
-    """Mono's envelope status — "successful" (v1/v2) or a truthy boolean."""
+    """Mono's envelope status â€” "successful" (v1/v2) or a truthy boolean."""
     s = data.get("status")
     return s is True or str(s).lower() in ("successful", "success", "true") or bool(data.get("data"))
 
@@ -192,7 +192,7 @@ def get_transactions(account_id: str, page: int = 1) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# DirectPay — fund the Zitch wallet from a linked bank
+# DirectPay â€” fund the Zitch wallet from a linked bank
 # ---------------------------------------------------------------------------
 def initiate_directpay(amount_naira, reference: str, *, email: str = "", name: str = "",
                        redirect_url: str = "") -> dict:
@@ -245,7 +245,7 @@ def verify_webhook(payload: dict, signature: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics — mirrors providers.kora_diagnostics
+# Diagnostics â€” mirrors providers.Monnify_diagnostics
 # ---------------------------------------------------------------------------
 def mono_diagnostics() -> dict:
     """Structured Mono connectivity self-test (no secrets)."""
@@ -257,7 +257,7 @@ def mono_diagnostics() -> dict:
     if not mono_live():
         if mono_simulation():
             out["status"] = "simulation"
-            out["hint"] = ("MONO_SIMULATION is ON — the mock link/fund flow is served even in "
+            out["hint"] = ("MONO_SIMULATION is ON â€” the mock link/fund flow is served even in "
                            "production. No real bank is contacted and no real money moves. Set "
                            "MONO_SECRET_KEY and turn MONO_SIMULATION off to go live.")
             return out

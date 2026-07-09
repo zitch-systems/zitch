@@ -1,7 +1,7 @@
-"""Reconcile VTU / betting / exam purchases left PENDING by a provider timeout.
+﻿"""Reconcile VTU / betting / exam purchases left PENDING by a provider timeout.
 
 When a purchase send times out the outcome is unknown, so the ledger row is held
-PENDING (money still debited, flagged ``meta.reconcile``) instead of refunded —
+PENDING (money still debited, flagged ``meta.reconcile``) instead of refunded â€”
 refunding a purchase that actually went through would leak money. This command
 requeries each such transaction by its reference (the provider's idempotency key)
 and settles it: marked Successful if delivered, or refunded if it definitively
@@ -28,8 +28,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         cutoff = timezone.now() - timedelta(minutes=options["older_than_minutes"])
-        # VTU.ng purchases only — bank-transfer payouts share the PENDING+reconcile
-        # shape but are settled by the Kora payout webhook, never a VTU
+        # VTU.ng purchases only â€” bank-transfer payouts share the PENDING+reconcile
+        # shape but are settled by the Monnify payout webhook, never a VTU
         # requery (which would hit the wrong provider for a foreign reference).
         pending = pending_vtu_purchases(cutoff)
         total = pending.count()

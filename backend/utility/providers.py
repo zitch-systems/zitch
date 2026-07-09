@@ -1,16 +1,17 @@
 """Third-party integration layer.
 
-Providers: Kora/Korapay (payments — funding, virtual accounts, payouts, and KYC
-BVN/NIN/vNIN; client in utility/kora.py), VTU.ng (airtime/data/cable/electricity/
+Providers: Monnify (payments — funding, virtual accounts, payouts, and KYC
+BVN/NIN; client in utility/monnify.py), VTU.ng (airtime/data/cable/electricity/
 betting), Sendchamp (SMS/OTP), Resend (email/OTP), Prembly/IdentityPass (face /
-liveness KYC only), Fincra (FX). Each function returns {"success": bool, ...}.
+liveness KYC + vNIN lookup), Fincra (FX). Each function returns {"success": bool, ...}.
 When the relevant key is blank it runs in MOCK mode and simulates success so the
 whole app flow is testable without an external account — EXCEPT in production
 (DEBUG off), where money/identity mocks fail closed (see mock_disabled_in_prod)
 so a misconfigured deploy never fakes a money movement.
 
 The funding_* / payout_* / card_* / verify_* wrappers are the stable, provider-
-agnostic contract the views and services call; they delegate to the Kora client.
+agnostic contract the views and services call; they delegate to the Monnify client
+(Wema stays opt-in via the *_PROVIDER env vars).
 """
 import hashlib
 import logging
@@ -232,6 +233,33 @@ def kyc_verify_nin_document(image: str) -> dict:
         return {"success": False, "message": f"KYC provider unreachable: {exc}"}
 
 
+def kyc_verify_vnin(vnin: str) -> dict:
+    """Verify a Virtual NIN (16-char tokenised NIN) via Prembly.
+
+    vNIN is the tokenised NIN NIMC recommends over the raw NIN. Monnify has no vNIN
+    product, so this lookup lives on Prembly (already integrated for liveness). MOCK
+    accepts offline; LIVE fails closed in production without keys, like every other
+    identity check. VERIFY-BEFORE-LIVE: confirm the exact vNIN endpoint/field names
+    on the Prembly dashboard before relying on this."""
+    if not vnin or len(vnin) != 16:
+        return {"success": False, "message": "Virtual NIN must be 16 characters"}
+    if not _prembly_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Identity verification is temporarily unavailable"}
+        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/vnin",
+            json={"number": vnin}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        d = data.get("data", {}) or {}
+        return {"success": bool(data.get("status")) and bool(d), "raw": data,
+                "first_name": d.get("first_name", ""), "last_name": d.get("last_name", "")}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"KYC provider unreachable: {exc}"}
+
+
 def kyc_verify_face(selfie: str = "") -> dict:
     """Liveness / selfie-match — the gate for large transfers.
 
@@ -296,72 +324,39 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC — Kora Identity (BVN / NIN / vNIN)
+# KYC — BVN / NIN (Monnify) and vNIN (Prembly)
 #
-# verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points
-# the rest of the app calls; they delegate to Kora (utility.kora). The selfie /
-# liveness step (kyc_verify_face, in the Prembly block above) stays on Prembly —
-# Kora has no liveness check. Each fails closed in production when Kora has no
-# keys, so a money app never mock-passes identity on a misconfigured deploy;
-# dev/tests keep the offline mock.
+# verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
+# rest of the app calls. BVN/NIN delegate to Monnify (utility.monnify), keeping
+# identity on the same rail that mints the funding account; vNIN has no Monnify
+# product, so it delegates to Prembly (kyc_verify_vnin above), which also handles
+# the selfie/liveness step. Each fails closed in production when unkeyed, so a money
+# app never mock-passes identity on a misconfigured deploy; dev/tests keep the mock.
 # ---------------------------------------------------------------------------
-def _kora_kyc_live() -> bool:
-    from . import kora
-    return kora.kora_live()
-
-
 def kyc_provider() -> str:
-    """The BVN/NIN backend — 'monnify' or 'kora'. Explicit KYC_PROVIDER wins;
-    blank => Monnify when its keys/simulation are set (identity stays on the same
-    rail that mints the funding account), else Kora. vNIN always stays on Kora
-    (Monnify has no vNIN product)."""
+    """The BVN/NIN backend — 'monnify' (Monnify is the sole rail). Retained so any
+    caller/diagnostic that reads the selector keeps working."""
     choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
-    if choice in ("monnify", "kora"):
-        return choice
-    from . import monnify
-    # LIVE keys only — MONNIFY_SIMULATION must never move identity checks off a
-    # live-keyed Kora rail onto a mock (simulation exists for the fund-in demo;
-    # identity always fails closed in production without real keys).
-    if monnify.monnify_live():
-        return "monnify"
-    return "kora"
+    return choice if choice == "monnify" else "monnify"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via the selected KYC rail.
-
-    Monnify runs a details-MATCH (uses the supplied name/DOB/phone); Kora's lookup
-    is number-based. Each fails closed in production without keys; dev/tests mock."""
-    if kyc_provider() == "monnify":
-        from . import monnify
-        return monnify.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
-    from . import kora
-    if not kora.kora_live() and mock_disabled_in_prod():
-        return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    return kora.verify_bvn(bvn)
+    """Verify a BVN via Monnify's details-MATCH (uses the supplied name/DOB/phone).
+    Fails closed in production without keys; dev/tests mock."""
+    from . import monnify
+    return monnify.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
 def verify_nin(nin: str) -> dict:
-    """Verify a NIN via the selected KYC rail. Fails closed in prod without keys."""
-    if kyc_provider() == "monnify":
-        from . import monnify
-        return monnify.verify_nin(nin)
-    from . import kora
-    if not kora.kora_live() and mock_disabled_in_prod():
-        return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    return kora.verify_nin(nin)
+    """Verify a NIN via Monnify. Fails closed in prod without keys."""
+    from . import monnify
+    return monnify.verify_nin(nin)
 
 
 def verify_vnin(vnin: str) -> dict:
-    """Verify a Virtual NIN (16-char tokenised NIN).
-
-    Only Kora exposes a vNIN lookup among the configured backends, so this routes
-    to Kora directly. Fails closed in production when Kora has no keys; dev/tests
-    keep the offline mock."""
-    from . import kora
-    if not kora.kora_live() and mock_disabled_in_prod():
-        return {"success": False, "message": "Identity verification is temporarily unavailable"}
-    return kora.verify_vnin(vnin)
+    """Verify a Virtual NIN (16-char tokenised NIN) via Prembly (Monnify has no vNIN
+    product). Fails closed in production when unkeyed; dev/tests keep the mock."""
+    return kyc_verify_vnin(vnin)
 
 
 # ---------------------------------------------------------------------------
@@ -538,86 +533,69 @@ def fx_execute(quote_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Money-movement rail — Kora (funding / virtual accounts / payouts)
+# Money-movement rail — Monnify (funding / virtual accounts / payouts)
 #
 # The funding_* / payout_* wrappers are the provider-agnostic contract the views
-# and services call; they delegate to the Kora client (utility.kora). Kora is the
-# sole rail. The *_provider() selectors are retained (returning "kora") so any
-# remaining callers keep working. Kora pay-in/payout webhooks land on the
-# wallet/transfers webhook routes.
+# and services call; they delegate to the Monnify client (utility.monnify). Monnify
+# is the sole rail; Wema stays opt-in via the *_PROVIDER env vars. The *_provider()
+# selectors are retained (returning "monnify") so any remaining callers keep
+# working. Monnify pay-in credits arrive on /api/fund/monnify/webhook/ and payout
+# terminal states on /api/transfers/webhook/.
 # ---------------------------------------------------------------------------
-def _kora_live() -> bool:
-    from . import kora
-    return kora.kora_live()
-
-
 def _wema_live() -> bool:
     from . import wema
     return wema.wema_live()
 
 
 def payment_provider() -> str:
-    """The wallet FUND-IN rail — 'wema', 'monnify' or 'kora'. Explicit
-    PAYMENT_PROVIDER wins; blank => auto (Monnify if its keys/simulation are set,
-    else Kora). Wema funds by bank transfer to an OTP-provisioned NUBAN (no hosted
-    checkout, no webhook — deposits are reconciled by the reconcile_wema poller),
-    so it is opt-in only (never auto-selected)."""
+    """The wallet FUND-IN rail — 'wema' or 'monnify'. Explicit PAYMENT_PROVIDER
+    wins; blank => 'monnify' (the sole default rail). Wema funds by bank transfer
+    to an OTP-provisioned NUBAN (no hosted checkout, no webhook — deposits are
+    reconciled by the reconcile_wema poller), so it is opt-in only."""
     choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
-    if choice in ("wema", "monnify", "kora"):
+    if choice in ("wema", "monnify"):
         return choice
-    from . import monnify
-    if monnify.monnify_live() or monnify.monnify_simulation():
-        return "monnify"
-    return "kora"
+    return "monnify"
 
 
 def payout_provider() -> str:
-    """The bank-payout + recipient name-enquiry rail — 'wema' or 'kora'.
+    """The bank-payout + recipient name-enquiry rail — 'wema' or 'monnify'.
 
-    Explicit PAYOUT_PROVIDER wins; blank => 'kora' (payouts stay on Kora until
-    Wema is opted in, so this changes nothing until you flip the env var)."""
+    Explicit PAYOUT_PROVIDER wins; blank => 'monnify' (the sole default rail).
+    Payouts move to Wema only when PAYOUT_PROVIDER=wema is set."""
     choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
-    if choice in ("wema", "kora"):
+    if choice in ("wema", "monnify"):
         return choice
-    return "kora"
+    return "monnify"
 
 
 def payout_live() -> bool:
     """Whether the selected payout rail has live keys (else MOCK)."""
     if payout_provider() == "wema":
         return _wema_live()
-    return _kora_live()
+    from . import monnify
+    return monnify.monnify_live()
 
 
 def card_provider() -> str:
-    """'issuer' (the generic CARD_ISSUER) or 'kora' — the virtual-card backend."""
+    """'issuer' — the generic CARD_ISSUER is the sole virtual-card backend (Monnify
+    issues no cards). Retained as a selector so callers keep working."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
-    if choice in ("issuer", "kora"):
-        return choice
-    if _card_issuer_live():
-        return "issuer"
-    if _kora_live():
-        return "kora"
-    return "issuer"
+    return choice if choice == "issuer" else "issuer"
 
 
-# --- Funding (wallet top-up) dispatch — Monnify or Kora, per payment_provider() ---
+# --- Funding (wallet top-up) dispatch — Monnify or Wema, per payment_provider() ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
     """Start a hosted-checkout funding charge -> {success, authorization_url}."""
-    prov = payment_provider()
-    if prov == "wema":
+    if payment_provider() == "wema":
         # Wema/ALAT has no hosted checkout — funding is by bank transfer to the
         # user's NUBAN (credited by the reconcile_wema poller). Fail gracefully.
         return {"success": False,
                 "message": "Top up by bank transfer to your account number."}
-    if prov == "monnify":
-        from . import monnify
-        return monnify.payment_initialize(email, amount_naira, reference,
-                                          name=name, redirect_url=redirect_url)
-    from . import kora
-    return kora.payment_initialize(email, amount_naira, reference,
-                                   name=name, redirect_url=redirect_url)
+    from . import monnify
+    return monnify.payment_initialize(email, amount_naira, reference,
+                                      name=name, redirect_url=redirect_url)
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
@@ -628,11 +606,8 @@ def funding_verify(reference: str, provider: str = "") -> dict:
     if prov == "wema":
         # Wema deposits are credited by the reconcile poller, not a verify call.
         return {"success": False, "message": "Wema funding is credited automatically on receipt."}
-    if prov == "monnify":
-        from . import monnify
-        return monnify.payment_verify(reference)
-    from . import kora
-    return kora.payment_verify(reference)
+    from . import monnify
+    return monnify.payment_verify(reference)
 
 
 def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
@@ -642,49 +617,40 @@ def funding_account_reserve(account_reference: str, account_name: str, customer_
     Returns {success, account_number, bank_name, account_name, reference} so
     wallet.services.ensure_reserved_account stays agnostic.
     """
-    prov = payment_provider()
-    if prov == "wema":
+    if payment_provider() == "wema":
         # Wema can't mint an account synchronously — it needs a BVN/NIN + OTP
         # round-trip driven by the /api/wallet/wema/* endpoints. Signal that so
         # ensure_reserved_account leaves the wallet numberless (the OTP flow fills
         # it) rather than surfacing a hard error.
         return {"success": False, "otp_required": True,
                 "message": "Verify the OTP to finish setting up your account."}
-    if prov == "monnify":
-        from . import monnify
-        return monnify.create_virtual_account(account_reference, account_name, customer_email,
-                                              customer_name, bvn=bvn, nin=nin)
-    from . import kora
-    return kora.create_virtual_account(account_reference, account_name, customer_email,
-                                       customer_name, bvn=bvn, nin=nin)
+    from . import monnify
+    return monnify.create_virtual_account(account_reference, account_name, customer_email,
+                                          customer_name, bvn=bvn, nin=nin)
 
 
 def funding_account_get(account_reference: str) -> dict:
     """Fetch an existing dedicated account (duplicate recovery), per rail."""
-    prov = payment_provider()
-    if prov == "wema":
+    if payment_provider() == "wema":
         # Wema accounts are provisioned by the OTP endpoints, not a synchronous
-        # lookup — never fall through to Kora's get_virtual_account (wrong rail).
+        # lookup — never fall through to Monnify's get (wrong rail).
         return {"success": False, "otp_required": True,
                 "message": "Verify the OTP to finish setting up your account."}
-    if prov == "monnify":
-        from . import monnify
-        return monnify.get_virtual_account(account_reference)
-    from . import kora
-    return kora.get_virtual_account(account_reference)
+    from . import monnify
+    return monnify.get_virtual_account(account_reference)
 
 
-# --- Payout (bank transfer) dispatch — Wema or Kora, per payout_provider() ---
+# --- Payout (bank transfer) dispatch — Monnify or Wema, per payout_provider() ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
     """Recipient name enquiry via the selected payout rail.
 
-    Returns {success, name, ...}. Both Kora and Wema resolve by
+    Returns {success, name, ...}. Both Monnify and Wema resolve by
     (account_number, bank_code); no securityInfo is needed for enquiry."""
     if payout_provider() == "wema":
         from . import wema
         return wema.resolve_account(account_number, bank_code)
-    from . import kora
-    return kora.resolve_account(account_number, bank_code)
+    from . import monnify
+    return monnify.resolve_account(account_number, bank_code)
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
@@ -694,15 +660,15 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
     both rails yield success/processing/pending — execute_payout treats
     PROCESSING/PENDING as not-yet-confirmed.
 
-    `bank_name` is optional for Kora (routes by code) but sent to Wema, whose
+    `bank_name` is optional for Monnify (routes by code) but sent to Wema, whose
     ProcessClientTransfer takes destinationBankName alongside the code.
 
-    MONEY-FLOW (per-user-balance model): a Wema payout debits the SENDER's own
-    NUBAN — `source_account`, which execute_payout passes as the sender's
-    wallet.account_number. It falls back to the shared WEMA_SOURCE_ACCOUNT pool
-    only for a sender who has no Wema NUBAN yet (mixed migration), and fails closed
-    (refundable) on a live call with neither, rather than sending an empty
-    sourceAccountNumber. `source_account` is ignored by Kora (routes by code)."""
+    MONEY-FLOW: Monnify draws from the pooled merchant wallet (MONNIFY_WALLET_ACCOUNT),
+    so `source_account` (the sender's own NUBAN) is ignored on the Monnify rail. On
+    Wema (per-user-balance model) it debits the SENDER's own NUBAN — `source_account`,
+    which execute_payout passes as the sender's wallet.account_number — falling back
+    to the shared WEMA_SOURCE_ACCOUNT pool only for a sender who has no Wema NUBAN
+    yet, and failing closed (refundable) on a live call with neither."""
     if payout_provider() == "wema":
         from . import wema
         src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
@@ -715,42 +681,26 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
             destination_bank_code=bank_code, destination_bank_name=bank_name,
             destination_name=account_name,
         )
-    from . import kora
-    return kora.disburse(amount_naira, reference, narration, bank_code,
-                         account_number, account_name)
+    from . import monnify
+    return monnify.disburse(amount_naira, reference, narration, bank_code,
+                            account_number, account_name, customer_name=account_name)
 
 
 # --- Virtual card dispatch ---
-# Kora issues cards in two steps (cardholder -> card) and has no PAN-reveal
-# endpoint, so card_reveal degrades gracefully on Kora. The generic CARD_ISSUER
-# path is unchanged. VERIFY-BEFORE-LIVE for the Kora card endpoints (see kora.py).
+# The generic CARD_ISSUER is the sole card backend (Monnify issues no cards). When
+# no issuer is configured the calls mock in dev/test and fail closed in production
+# (see issue_card / card_secure_details).
 def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:
-    if card_provider() == "kora":
-        from . import kora
-        ch = kora.create_cardholder(holder, email or f"{customer_ref}@zitch.app")
-        if not ch.get("success"):
-            return ch
-        return kora.create_card(ch["reference"])
     return issue_card(holder, customer_ref)
 
 
 def card_set_status(card_token: str, active: bool) -> dict:
-    if card_provider() == "kora":
-        from . import kora
-        return kora.set_card_status(card_token, active)
     return set_card_status(card_token, active)
 
 
 def card_fund(card_token: str, amount) -> dict:
-    if card_provider() == "kora":
-        from . import kora
-        return kora.fund_card(card_token, amount)
     return fund_card(card_token, amount)
 
 
 def card_reveal(card_token: str) -> dict:
-    if card_provider() == "kora":
-        # Kora exposes card details (masked) but no full PAN/CVV reveal endpoint.
-        return {"success": False,
-                "message": "Card detail reveal isn't available on this card provider"}
     return card_secure_details(card_token)

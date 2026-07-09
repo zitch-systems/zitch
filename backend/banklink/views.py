@@ -1,4 +1,4 @@
-"""Open-banking (Mono) endpoints: link an external bank, view it, and fund the
+﻿"""Open-banking (Mono) endpoints: link an external bank, view it, and fund the
 wallet from it via DirectPay.
 
 Account login happens entirely in Mono's Connect widget client-side; only the
@@ -43,7 +43,7 @@ def _serialize(a: LinkedBankAccount) -> dict:
 @require_user
 def connect(request):
     """POST /api/banklink/connect/ {access_token, code}
-    -> {success, account} — exchange a Mono Connect auth code and link the account.
+    -> {success, account} â€” exchange a Mono Connect auth code and link the account.
     """
     user = request.user_obj
     code = (request.data.get("code") or "").strip()
@@ -127,7 +127,7 @@ def fund(request):
     if amount is None:
         return fail("Enter a valid amount")
     if amount < 100:
-        return fail("Minimum funding amount is ₦100")
+        return fail("Minimum funding amount is â‚¦100")
 
     reference = make_reference("ZMONO")
     FundingIntent.objects.create(user=user, reference=reference, amount=amount,
@@ -149,7 +149,7 @@ def payout(request):
 
     Move money OUT of the Zitch wallet to the user's own linked bank account
     (PIN-verified). Reuses the transfers payout rail (detect bank -> execute_payout),
-    so balance/limit/idempotency guards and the Kora settlement webhook all apply.
+    so balance/limit/idempotency guards and the Monnify settlement webhook all apply.
     """
     user, data = request.user_obj, request.data
 
@@ -164,7 +164,7 @@ def payout(request):
 
     # A linked account created under Mono SIMULATION (no live bank connection) is
     # a demo stub, not a verified real account. Never drive the LIVE payout rail
-    # from one — that would move real wallet money to an unverified/fake number.
+    # from one â€” that would move real wallet money to an unverified/fake number.
     # Fully-mock dev/pilot (payout rail also mock) stays allowed so the flow is
     # testable. The provenance check is on the ROW, not the current config: a
     # stub linked during the pilot must stay refused after real Mono keys go
@@ -187,7 +187,7 @@ def payout(request):
     if amount is None:
         return fail("Enter a valid amount")
     if amount < 100:
-        return fail("Minimum payout is ₦100")
+        return fail("Minimum payout is â‚¦100")
 
     limit_err = check_send_limits(user, amount)
     if limit_err:
@@ -208,7 +208,7 @@ def payout(request):
     if not matches:
         return fail("Couldn't route a payout to this bank. Please try a normal transfer.", status=400)
     if len(matches) > 1:
-        # A NUBAN can be a valid account at more than one bank — for DIFFERENT
+        # A NUBAN can be a valid account at more than one bank â€” for DIFFERENT
         # holders (see detect_account_banks). For a "fund your OWN linked account"
         # flow we must never guess matches[0], which could disburse to a stranger;
         # send the user to a normal transfer where they pick the bank explicitly.
@@ -240,7 +240,7 @@ def payout(request):
 
 @csrf_exempt
 def webhook(request):
-    """POST /api/banklink/webhook/ — Mono callback.
+    """POST /api/banklink/webhook/ â€” Mono callback.
 
     Verifies the shared-secret header, then: marks accounts active on
     account_connected, and credits the wallet (idempotently) on a successful

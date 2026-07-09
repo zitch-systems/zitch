@@ -1,4 +1,4 @@
-"""Tests for bank transfer (payout) + saved beneficiaries."""
+﻿"""Tests for bank transfer (payout) + saved beneficiaries."""
 import json
 from decimal import Decimal
 from unittest.mock import patch
@@ -36,7 +36,7 @@ class BankTransferTests(TestCase):
 
     def test_live_resolution_blocks_name_mismatch(self):
         # With a LIVE name enquiry, an account whose real holder differs from the
-        # name the user confirmed must be BLOCKED — no debit. (Guards the reported
+        # name the user confirmed must be BLOCKED â€” no debit. (Guards the reported
         # "account mismatch but the transfer went through".)
         with patch("transfers.views.payout_resolve_account",
                    return_value={"success": True, "name": "JANE SMITH"}):
@@ -66,7 +66,7 @@ class BankTransferTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["banks"][0]["code"], "gtb")
         # The picker renders a hosted logo (with a monogram fallback), so the
-        # payload must always carry the field — blank when unset.
+        # payload must always carry the field â€” blank when unset.
         self.assertIn("logo", body["banks"][0])
 
     def test_detect_sweeps_only_popular_banks_when_flagged(self):
@@ -112,7 +112,7 @@ class BankTransferTests(TestCase):
         self.assertEqual(len(body["matches"]), 1)
 
     def test_resolve_flags_mock_when_name_enquiry_not_live(self):
-        # Without a live Kora name-enquiry rail the detection is a placeholder, so
+        # Without a live Monnify name-enquiry rail the detection is a placeholder, so
         # the response must carry `mock: true` and the app won't auto-fill it as a
         # verified bank/holder (which looked like "mis-detection").
         from django.core.cache import cache
@@ -174,7 +174,7 @@ class BankTransferTests(TestCase):
 
     def test_pending_payout_is_not_settled(self):
         # A rail that returns PENDING (queued / awaiting auth) must NOT be settled
-        # as Successful — the row stays Pending (money debited, flagged for the
+        # as Successful â€” the row stays Pending (money debited, flagged for the
         # webhook) and the response says "processing", not "sent".
         with patch("transfers.services.payout_send",
                    return_value={"success": True, "status": "PENDING"}):
@@ -192,7 +192,7 @@ class BankTransferTests(TestCase):
 
     def test_pending_payout_excluded_from_vtu_reconcile_sweep(self):
         """Regression: a PENDING bank payout shares the reconcile+OUT shape with a
-        VTU purchase, but must NOT be swept by the VTU.ng requery — that would
+        VTU purchase, but must NOT be swept by the VTU.ng requery â€” that would
         query the wrong provider for a reference VTU.ng never saw (risking a wrong
         refund/settle). It is settled only by the disbursement webhook."""
         from datetime import timedelta
@@ -239,9 +239,9 @@ class BankTransferTests(TestCase):
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
             })
         ref = body["reference"]
-        event = {"event": "transfer.success", "data": {"reference": ref}}
+        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": ref}}
         self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
+                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
 
     def test_send_refunds_when_payout_fails(self):
@@ -267,16 +267,16 @@ class BankTransferTests(TestCase):
         ref = body["reference"]
         self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
 
-        event = {"event": "transfer.failed", "data": {"reference": ref, "status": "failed"}}
+        event = {"eventType": "FAILED_DISBURSEMENT", "eventData": {"reference": ref, "status": "failed"}}
         r = self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
+                             content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.balance(), Decimal("50000"))  # refunded by the webhook
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
 
-        # Duplicate webhook (Kora retry) must not double-refund.
+        # Duplicate webhook (Monnify retry) must not double-refund.
         self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
+                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("50000"))
 
     def test_disbursement_webhook_ignores_success_event(self):
@@ -285,8 +285,8 @@ class BankTransferTests(TestCase):
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
             "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
         })
-        event = {"event": "transfer.success", "data": {"reference": body["reference"]}}
+        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": body["reference"]}}
         self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
+                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)

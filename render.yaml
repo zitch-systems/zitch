@@ -11,7 +11,7 @@ services:
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
     # Render can't see -> "no open ports detected" and the deploy times out. Render
     # injects PORT (default 10000, which the health check targets).
-    # 2 workers x 4 threads so one slow provider call (Kora/Monnify/VTU do
+    # 2 workers x 4 threads so one slow provider call (Monnify/VTU do
     # network I/O in-request) can't stall every other request; --timeout bounds
     # a hung worker. Sized for the 512MB free/starter tiers. NOTE: with more
     # than one worker, set REDIS_URL so rate limits share one cache (see below).
@@ -38,32 +38,25 @@ services:
           name: zitch-db
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
-      # Money rail — Kora (Korapay): funding, virtual accounts, payouts, balances,
-      # BVN/NIN/vNIN identity, card issuing. One base URL serves both modes; the
-      # key prefix (sk_test_/sk_live_) selects test vs live. Blank SECRET_KEY =>
-      # mock mode. Diagnose with `manage.py kora_check`. BASE_URL defaults to
-      # https://api.korapay.com/merchant in code. Set the Kora dashboard webhooks
-      # to /api/fund/webhook/ (pay-in) and /api/transfers/webhook/ (payout).
-      - key: KORA_SECRET_KEY
+      # Money rail is Monnify (see the MONNIFY_* block below) — funding, virtual
+      # accounts, payouts + name enquiry, and BVN/NIN identity. vNIN + face are on
+      # Prembly; cards on the generic CARD_ISSUER.
+      # Optional: enables /payout-diagnose?token=... and /monnify-diagnose browser
+      # self-tests (also gated by WEMA_DIAG_TOKEN).
+      - key: DIAG_TOKEN
         sync: false
-      - key: KORA_PUBLIC_KEY
-        sync: false
-      # Optional: enables /kora-diagnose?token=... browser self-test.
-      - key: KORA_DIAG_TOKEN
-        sync: false
-      # Virtual-card backend: "kora" or "issuer" (generic CARD_ISSUER); blank => auto.
+      # Virtual-card backend: "issuer" (generic CARD_ISSUER) — the sole backend; blank => issuer.
       - key: CARD_PROVIDER
         sync: false
-      # Wallet FUND-IN rail: "monnify" or "kora"; blank => auto (Monnify if its keys
-      # are set, else Kora).
+      # Wallet FUND-IN rail: "monnify" (default) or "wema"; blank => monnify.
       - key: PAYMENT_PROVIDER
         sync: false
-      # Bank-PAYOUT + recipient name-enquiry rail: blank => kora (the production
+      # Bank-PAYOUT + recipient name-enquiry rail: blank => monnify (the production
       # choice). "wema" exists but is ARCHIVED — do not set it.
       - key: PAYOUT_PROVIDER
         sync: false
-      # BVN/NIN KYC rail: blank => auto (Monnify when its keys are set — the
-      # production choice — else Kora). vNIN + face stay on Kora/Prembly.
+      # BVN/NIN KYC rail: "monnify" (the sole rail); blank => monnify. vNIN + face
+      # are on Prembly.
       - key: KYC_PROVIDER
         sync: false
       # ---------------------------------------------------------------------
@@ -94,16 +87,23 @@ services:
         sync: false
       - key: WEMA_SIMULATION
         sync: false
-      # Monnify (fund-in): dedicated virtual accounts + hosted checkout. Reserved-
-      # account collections need NO IP whitelisting. Blank keys => mock; set
-      # MONNIFY_SIMULATION=true to test the fund-in flow in a real build without live
-      # keys (no real money). BASE_URL: live https://api.monnify.com, sandbox
-      # https://sandbox.monnify.com. Set the Monnify webhook to /api/fund/monnify/webhook/.
+      # Monnify — the sole money rail: fund-in (dedicated virtual accounts + hosted
+      # checkout) AND payouts (disbursements) + name enquiry. Collections need NO IP
+      # whitelisting, but DISBURSEMENTS DO: whitelist this service's egress IP in the
+      # Monnify dashboard (Settings > API) — confirm it via /payout-diagnose. Blank
+      # keys => mock; MONNIFY_SIMULATION=true tests the fund-in flow without live keys
+      # (no real money; payouts still fail closed). BASE_URL: live
+      # https://api.monnify.com, sandbox https://sandbox.monnify.com. Webhooks:
+      # /api/fund/monnify/webhook/ (pay-in) and /api/transfers/webhook/ (payout).
       - key: MONNIFY_API_KEY
         sync: false
       - key: MONNIFY_SECRET_KEY
         sync: false
       - key: MONNIFY_CONTRACT_CODE
+        sync: false
+      # Merchant wallet NUBAN payouts are drawn from (sourceAccountNumber). Required
+      # for live disbursements.
+      - key: MONNIFY_WALLET_ACCOUNT
         sync: false
       - key: MONNIFY_BASE_URL
         sync: false

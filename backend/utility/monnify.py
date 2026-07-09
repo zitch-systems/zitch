@@ -1,9 +1,17 @@
-"""Monnify (fund-in) integration — dedicated virtual accounts + hosted checkout.
+"""Monnify integration — the single money-movement rail for Zitch.
 
-Scope: WALLET FUNDING only. Monnify mints a permanent NUBAN per user that funds
-the wallet by bank transfer (no IP whitelisting needed for collections), and can
-also open a hosted checkout page. Bank PAYOUTS and recipient NAME ENQUIRY stay on
-Kora (see utility.kora) — this module deliberately has no disbursement path.
+Scope: WALLET FUNDING (collections) AND BANK PAYOUTS (disbursements). Monnify mints
+a permanent NUBAN per user that funds the wallet by bank transfer, opens a hosted
+checkout page, and — via the Disbursement API — sends money out and does recipient
+name enquiry. Monnify is the sole money-movement rail (Wema stays opt-in).
+
+NETWORK NOTE: Monnify *collections* (funding / reserved accounts) need NO IP
+whitelisting, but Monnify *disbursements* (payouts) DO — the calling server's
+egress IP must be whitelisted in the Monnify dashboard (Settings > API), OR 2FA/OTP
+must be authorized per transfer. Zitch uses the IP-whitelist model: a static egress
+IP (see the DigitalOcean/Render setup) is whitelisted, so single transfers complete
+without an OTP round-trip. Use ``egress_ip()`` / ``disbursement_diagnostics()`` to
+confirm the IP Monnify sees matches the whitelisted one.
 
 Auth: OAuth login — Basic base64(apiKey:secretKey) -> bearer access token (~1h),
 cached. Base URL: live https://api.monnify.com, sandbox https://sandbox.monnify.com.
@@ -213,7 +221,7 @@ def create_virtual_account(account_reference: str, account_name: str, customer_e
     a BVN/NIN (CBN) for a dedicated account. MOCK fabricates a deterministic NUBAN
     so the flow is testable; production without keys fails closed (never fabricates
     a NUBAN a user could send real money to). Signature matches
-    providers.funding_account_reserve / kora.create_virtual_account.
+    providers.funding_account_reserve.
     """
     if not monnify_live():
         if _mock_blocked():
@@ -278,12 +286,205 @@ def get_virtual_account(account_reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Payouts / disbursements — the "sender" rail (Monnify Disbursement API)
+#
+# Unlike collections, disbursements REQUIRE the caller's egress IP to be
+# whitelisted in the Monnify dashboard (or 2FA/OTP per transfer). Zitch uses the
+# IP-whitelist model: a single transfer completes without an OTP round-trip when
+# the server IP is whitelisted. Money is drawn from the merchant's Monnify wallet
+# (``sourceAccountNumber`` = MONNIFY_WALLET_ACCOUNT), not a per-user NUBAN.
+#
+# resolve_account / disburse / verify_payout mirror the provider-agnostic contract
+# in utility.providers (payout_resolve_account / payout_send). Money calls fail
+# closed in production when unkeyed (mock_disabled_in_prod) — a simulated payout is
+# never served, even with MONNIFY_SIMULATION on (that flag is for the fund-in demo
+# only). Dev/tests keep the offline mock so the flow stays testable.
+# ---------------------------------------------------------------------------
+def _source_account(source_account: str = "") -> str:
+    """The disbursement source: the caller's override, else the configured
+    merchant wallet (MONNIFY_WALLET_ACCOUNT)."""
+    return (source_account or settings.MONNIFY.get("WALLET_ACCOUNT", "") or "").strip()
+
+
+def resolve_account(account_number: str, bank_code: str) -> dict:
+    """Recipient name enquiry: (account number, bank code) -> account holder name.
+
+    GET /api/v1/disbursements/account/validate. MOCK returns a stub name in
+    dev/tests; fails closed in production without keys (never presents a fabricated
+    name as verified). Shape matches providers.payout_resolve_account.
+    """
+    if not monnify_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Name enquiry is not configured"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    try:
+        resp = requests.get(
+            f"{m['BASE_URL']}/api/v1/disbursements/account/validate",
+            params={"accountNumber": account_number, "bankCode": bank_code},
+            headers=headers, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        name = rb.get("accountName", "") or ""
+        ok = bool(data.get("requestSuccessful")) and bool(name)
+        if not ok:
+            log.info("monnify_resolve_miss bank=%s acct_tail=%s msg=%s",
+                     bank_code, account_number[-4:], data.get("responseMessage"))
+        return {"success": ok, "name": name, "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def disburse(amount_naira, reference: str, narration: str, bank_code: str,
+             account_number: str, account_name: str, *,
+             source_account: str = "", customer_email: str = "",
+             customer_name: str = "") -> dict:
+    """Single bank payout via Monnify's Disbursement API.
+
+    POST /api/v2/disbursements/single. Returns {success, status, reference}:
+    ``SUCCESS`` => sent; ``PENDING``/``PROCESSING`` => accepted, the disbursement
+    webhook settles it later; an OTP/authorization status means 2FA is still ON
+    (we don't do the OTP flow) — treated as not-sent so the caller refunds and the
+    misconfig surfaces. Anything else is a failure the caller refunds.
+
+    Draws from the merchant Monnify wallet (``sourceAccountNumber``); fails closed
+    on a live call with no wallet configured rather than sending an empty source.
+    """
+    if not monnify_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Payouts are not configured"}
+        return {"success": True, "mock": True, "status": "success"}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    src = _source_account(source_account)
+    if not src:
+        log.warning("monnify_disburse_no_source ref=%s", reference)
+        return {"success": False,
+                "message": "Payouts are temporarily unavailable — please try again shortly."}
+    m = settings.MONNIFY
+    body = {
+        "amount": float(amount_naira),  # Monnify amounts are in naira
+        "reference": reference,
+        "narration": narration or "Zitch transfer",
+        "destinationBankCode": bank_code,
+        "destinationAccountNumber": account_number,
+        "currency": "NGN",
+        "sourceAccountNumber": src,
+    }
+    try:
+        resp = requests.post(
+            f"{m['BASE_URL']}/api/v2/disbursements/single",
+            json=body, headers=headers, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        status = str(rb.get("status", "")).lower()
+        ok = bool(data.get("requestSuccessful"))
+        if ok and status == "success":
+            return {"success": True, "status": "success",
+                    "reference": rb.get("reference", reference), "raw": data}
+        if ok and status in ("pending", "processing", "in_progress"):
+            return {"success": True, "status": "pending",
+                    "reference": rb.get("reference", reference), "raw": data}
+        if status in ("otp_email_dispatch", "pending_authorization"):
+            # 2FA is enabled on the account but Zitch runs the IP-whitelist model
+            # (no OTP flow). Don't leave money in limbo — fail closed with a fix hint.
+            log.warning("monnify_disburse_needs_otp ref=%s status=%s", reference, status)
+            return {"success": False, "status": status,
+                    "message": "Payout blocked: disable 2FA and whitelist the server IP in Monnify."}
+        log.warning("monnify_disburse_failed ref=%s code=%s msg=%s",
+                    reference, data.get("responseCode"), data.get("responseMessage"))
+        return {"success": False, "status": status,
+                "message": data.get("responseMessage", "Transfer not completed"), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def verify_payout(reference: str) -> dict:
+    """Confirm a payout by our reference. GET /api/v2/disbursements/single/summary.
+
+    Returns the {success, pending, status} shape the reconciler expects: SUCCESS =>
+    settled; PENDING/PROCESSING => still unknown (retry later); FAILED/REVERSED =>
+    a definitive failure the caller reverses."""
+    if not monnify_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Payouts are not configured"}
+        return {"success": True, "mock": True, "status": "success"}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    try:
+        resp = requests.get(
+            f"{m['BASE_URL']}/api/v2/disbursements/single/summary",
+            params={"reference": reference}, headers=headers, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        status = str(rb.get("status", "")).lower()
+        if status == "success":
+            return {"success": True, "status": status, "raw": data}
+        if status in ("pending", "processing", "in_progress", ""):
+            return {"success": False, "pending": True, "status": status or "pending", "raw": data}
+        return {"success": False, "status": status, "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def get_wallet_balance(account_number: str = "") -> dict:
+    """Read the merchant disbursement wallet balance.
+
+    GET /api/v2/disbursements/wallet-balance?accountNumber=. Payouts fail on an
+    empty wallet no matter how correct the code is, so this is the money-side
+    counterpart to monnify_probe."""
+    if not monnify_live():
+        return {"success": True, "mock": True, "available_balance": 0}
+    headers = _auth_headers()
+    if headers is None:
+        return {"success": False, "message": "Monnify authentication failed"}
+    m = settings.MONNIFY
+    src = _source_account(account_number)
+    try:
+        resp = requests.get(
+            f"{m['BASE_URL']}/api/v2/disbursements/wallet-balance",
+            params={"accountNumber": src}, headers=headers, timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+        rb = data.get("responseBody", {}) or {}
+        return {"success": bool(data.get("requestSuccessful")),
+                "available_balance": rb.get("availableBalance"),
+                "ledger_balance": rb.get("ledgerBalance"), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def egress_ip() -> dict:
+    """Report the server's public egress IP — the address Monnify sees on a
+    disbursement call, which MUST be whitelisted in the dashboard.
+
+    Queries a public IP-echo service (no secrets). Use it to confirm the running
+    server presents the same static IP you whitelisted on Monnify; a mismatch is
+    the #1 cause of live payout rejections on shared hosts (e.g. Render)."""
+    try:
+        resp = requests.get("https://api.ipify.org", params={"format": "json"}, timeout=10)
+        return {"success": resp.ok, "egress_ip": (resp.json() or {}).get("ip", "")}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"Could not determine egress IP: {exc}"}
+
+
+# ---------------------------------------------------------------------------
 # KYC — BVN details-match + NIN lookup (Monnify VAS)
 #
 # The production KYC rail: Monnify validates the BVN against the holder's name /
 # DOB / phone (details-match) and looks up NIN records, keeping identity on the
-# same provider that mints the funding account. vNIN stays on Kora (Monnify has
-# no vNIN product). Mock when unkeyed; fails closed in prod via _mock_blocked.
+# same provider that mints the funding account. vNIN (Virtual NIN) has no Monnify
+# product — it is verified via Prembly (see providers.kyc_verify_vnin). Mock when
+# unkeyed; fails closed in prod via _mock_blocked.
 # ---------------------------------------------------------------------------
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
     """Verify a BVN via Monnify's details-match (POST /api/v1/vas/bvn-details-match).
@@ -362,7 +563,7 @@ def verify_webhook(body: bytes, signature: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics — mirrors kora_diagnostics / mono_diagnostics
+# Diagnostics — mirrors mono_diagnostics
 # ---------------------------------------------------------------------------
 def deallocate_virtual_account(account_reference: str) -> dict:
     """Deallocate (release) a reserved account by our accountReference —
@@ -457,4 +658,45 @@ def monnify_diagnostics() -> dict:
     out["status"] = "configured"
     out["hint"] = ("Keys present. Verify init/query/reserved-account field names and set the webhook "
                    "to /api/fund/monnify/webhook/ in the Monnify dashboard before go-live.")
+    return out
+
+
+def disbursement_diagnostics() -> dict:
+    """Structured Monnify PAYOUT self-test (no secrets) — the sender-side probe.
+
+    Reports the server's egress IP (must be whitelisted on Monnify), whether auth
+    works, whether the merchant wallet is configured + its balance, and a sample
+    name-enquiry. Each step names the fix. Use this to VERIFY an IP-whitelist setup
+    end-to-end: if egress_ip doesn't match what you whitelisted, live payouts fail.
+    """
+    m = settings.MONNIFY
+    out = {
+        "egress": egress_ip(),  # the IP Monnify sees — must be whitelisted
+        "wallet_account_set": bool(m.get("WALLET_ACCOUNT")),
+        "monnify_live": monnify_live(),
+    }
+    if not monnify_live():
+        out["status"] = "keys_incomplete"
+        out["hint"] = ("Set the Monnify keys to test payouts. Whitelist the egress IP above in the "
+                       "Monnify dashboard (Settings > API) and set MONNIFY_WALLET_ACCOUNT.")
+        return out
+    if not out["wallet_account_set"]:
+        out["status"] = "no_wallet"
+        out["hint"] = "Set MONNIFY_WALLET_ACCOUNT (the merchant wallet NUBAN payouts are drawn from)."
+        return out
+    bal = get_wallet_balance()
+    out["auth_ok"] = bool(bal.get("success"))
+    out["wallet_balance"] = bal.get("available_balance")
+    if not out["auth_ok"]:
+        out["status"] = "auth_or_ip_failed"
+        out["hint"] = ("Wallet-balance read failed — either the keys are wrong, or (most likely for a "
+                       "shared host) the egress IP above is NOT whitelisted on Monnify. Whitelist it, "
+                       "then retry.")
+        return out
+    res = resolve_account("0000000000", "058")
+    out["sample_enquiry"] = {"resolved": bool(res.get("success")), "name": res.get("name", ""),
+                             "message": (res.get("raw") or {}).get("responseMessage") or res.get("message", "")}
+    out["status"] = "ok"
+    out["hint"] = ("Auth + wallet read work and the egress IP authenticates — the IP-whitelist payout "
+                   "path is live. (The sample enquiry uses a dummy account; a miss there is expected.)")
     return out

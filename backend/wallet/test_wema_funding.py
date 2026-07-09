@@ -54,7 +54,7 @@ class WemaWalletProvisioningTests(TestCase):
         w = Wallet.objects.get(user=self.user)
         self.assertEqual(w.account_number, b2["account_number"])
         self.assertEqual(w.account_reference, wema_account_reference(self.user))
-        # Echoing the BVN lifts KYC / tier, mirroring the Kora account flow.
+        # Echoing the BVN lifts KYC / tier, mirroring the Monnify account flow.
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
 
@@ -70,7 +70,7 @@ class WemaWalletProvisioningTests(TestCase):
 
     def test_account_create_starts_otp_flow_on_wema(self):
         # The app's existing "Get my account" endpoint must drive the Wema OTP
-        # round-trip (not the one-step Kora reserve) when Wema is the funding rail.
+        # round-trip (not the one-step Monnify reserve) when Wema is the funding rail.
         r = self._post("/api/wallet/account/create/", {"bvn": "22222222222"})
         self.assertEqual(r.status_code, 200)
         b = r.json()

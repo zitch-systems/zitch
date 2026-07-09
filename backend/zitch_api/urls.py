@@ -15,7 +15,7 @@ def health(_request):
     wired without exposing them. Served at /healthz so the marketing landing
     page can own "/". (The platform health check points at /healthz.)
     """
-    from utility.providers import (_kora_live, _prembly_live, kyc_provider, payment_provider,
+    from utility.providers import (_prembly_live, kyc_provider, payment_provider,
                                     payout_live, payout_provider, vas_provider, vtu_live)
     from utility import monnify
 
@@ -23,9 +23,9 @@ def health(_request):
         "funding_provider": payment_provider(),   # which rail funds the wallet (monnify default)
         "funding_monnify": monnify.monnify_live(),
         "funding_monnify_simulation": monnify.monnify_simulation(),
-        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (kora default)
+        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (monnify default)
         "payout_live": payout_live(),             # selected payout rail has live keys
-        "payments_kora": _kora_live(),            # Kora keys present (payout/enquiry/funding fallback)
+        "payout_monnify_wallet_set": bool(settings.MONNIFY.get("WALLET_ACCOUNT")),  # source wallet for disbursements
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
         # Wema/ALAT is ARCHIVED: opt-in code retained (see docs/wema-migration.md),
         # nothing routes to it unless a *_PROVIDER env is explicitly set to "wema".
@@ -70,34 +70,25 @@ def robots_txt(_request):
     return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
 
 
-def kora_diagnose(request):
-    """GET /kora-diagnose?token=<KORA_DIAG_TOKEN>[&account=&bank=]
+def payout_diagnose(request):
+    """GET /payout-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
 
-    A browser-accessible Kora connectivity self-test for hosts without shell
-    access (e.g. Render's free tier). Mirrors the `kora_check` management command:
-    reports config + auth + a sample name-enquiry with Kora's real message, so
-    'nothing works' becomes a precise fix. Returns NO secrets.
+    Browser-accessible Monnify PAYOUT self-test for hosts without shell access
+    (e.g. Render). Reports the server's EGRESS IP (which must be whitelisted on
+    Monnify for disbursements), whether auth + the merchant wallet read work, and a
+    sample name-enquiry — turning a rejected live payout into a precise fix. Returns
+    NO secrets. Use it to VERIFY that the static IP you whitelisted matches the IP
+    the server actually presents.
 
-    Opt-in and protected: 404 unless KORA_DIAG_TOKEN is set, and it must be
-    supplied as ?token= (constant-time compared). Set the env var to any secret,
-    redeploy, then visit the URL — no shell needed.
+    Opt-in + protected: 404 unless DIAG_TOKEN (or WEMA_DIAG_TOKEN) is set, supplied
+    as ?token= (constant-time compared).
     """
-    import hmac
-    import os
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    from utility.monnify import disbursement_diagnostics
 
-    diag_token = os.environ.get("KORA_DIAG_TOKEN", "").strip()
-    if not diag_token:
-        return JsonResponse(
-            {"detail": "Set KORA_DIAG_TOKEN (any secret value) in the environment to enable this."},
-            status=404,
-        )
-    if not hmac.compare_digest(request.GET.get("token", "").strip(), diag_token):
-        return JsonResponse({"detail": "forbidden"}, status=403)
-    from utility.kora import kora_diagnostics
-
-    account = "".join(c for c in request.GET.get("account", "") if c.isdigit())[:10] or "0000000000"
-    bank = "".join(c for c in request.GET.get("bank", "") if c.isalnum())[:10] or "058"
-    return JsonResponse({"kora": kora_diagnostics(account, bank)})
+    return JsonResponse({"payout": disbursement_diagnostics()})
 
 
 def wema_diagnose(request):
@@ -220,7 +211,7 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
-    path("kora-diagnose", kora_diagnose),
+    path("payout-diagnose", payout_diagnose),
     path("wema-diagnose", wema_diagnose),
     path("monnify-diagnose", monnify_diagnose),
     path("vtu-diagnose", vtu_diagnose),

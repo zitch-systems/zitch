@@ -1,4 +1,4 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -12,11 +12,11 @@ from django.db import models
 class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="wallet")
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
-    # Dedicated (reserved) virtual account — a permanent NUBAN the user funds by
-    # bank transfer, minted via Kora once KYC supplies a BVN/NIN. `account_number`
+    # Dedicated (reserved) virtual account â€” a permanent NUBAN the user funds by
+    # bank transfer, minted via Monnify once KYC supplies a BVN/NIN. `account_number`
     # / `bank_name` are the primary account shown in the app; `bank_accounts` holds
-    # the full list when Kora issues one per partner bank; `account_reference` is
-    # our stable key with Kora (used to match the funding webhook back to a user).
+    # the full list when Monnify issues one per partner bank; `account_reference` is
+    # our stable key with Monnify (used to match the funding webhook back to a user).
     account_number = models.CharField(max_length=20, blank=True, default="")
     account_name = models.CharField(max_length=120, blank=True, default="")
     bank_name = models.CharField(max_length=80, blank=True, default="")
@@ -32,7 +32,7 @@ class Wallet(models.Model):
             models.CheckConstraint(check=models.Q(balance__gte=0), name="wallet_balance_non_negative"),
             # A reserved (virtual) account belongs to exactly one wallet. The
             # funding webhook maps an inbound transfer to a wallet by these, so
-            # the DB must guarantee they're unique — otherwise a bug or bad data
+            # the DB must guarantee they're unique â€” otherwise a bug or bad data
             # could credit the wrong user, or two wallets could be provisioned
             # with the same account. Scoped to non-empty so un-provisioned
             # wallets (the default "") are unconstrained.
@@ -49,7 +49,7 @@ class Wallet(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.user} · ₦{self.balance}"
+        return f"{self.user} Â· â‚¦{self.balance}"
 
 
 class Transaction(models.Model):
@@ -73,7 +73,7 @@ class Transaction(models.Model):
     direction = models.CharField(max_length=3, choices=DIRECTIONS, default=OUT)
     transaction_status = models.CharField(max_length=12, choices=STATUSES, default=PENDING)
     reference = models.CharField(max_length=64, unique=True, db_index=True)
-    # Free-form details (meter token, recipient, plan, provider response…).
+    # Free-form details (meter token, recipient, plan, provider responseâ€¦).
     meta = models.JSONField(default=dict, blank=True)
     # Client-supplied key making a spend idempotent: a retried or duplicated
     # request with the same key won't debit the wallet or call the provider
@@ -92,7 +92,7 @@ class Transaction(models.Model):
             # Amounts are always positive; `direction` carries the sign. A DB
             # check keeps a zero/negative amount from ever entering the ledger.
             models.CheckConstraint(check=models.Q(amount__gt=0), name="txn_amount_positive"),
-            # One ledger row per (user, idempotency_key) when a key is supplied —
+            # One ledger row per (user, idempotency_key) when a key is supplied â€”
             # the DB backstop for the dedupe, even under a concurrent race.
             models.UniqueConstraint(
                 fields=["user", "idempotency_key"],
@@ -105,12 +105,12 @@ class Transaction(models.Model):
         """Enforce ledger immutability for the money-defining fields.
 
         A row's ``amount``, ``direction`` and ``currency`` are fixed at creation
-        and must never change — no legitimate flow rewrites them (settlement and
+        and must never change â€” no legitimate flow rewrites them (settlement and
         reversal only move ``transaction_status`` and annotate ``meta``). Blocking
         them here turns a bug or a stray ``Transaction.objects.get(...).save()``
         that would silently corrupt balances-vs-ledger into a loud error.
 
-        (ORM-level guard; a queryset ``.update()`` bypasses ``save()`` — back it
+        (ORM-level guard; a queryset ``.update()`` bypasses ``save()`` â€” back it
         with a Postgres BEFORE UPDATE trigger in production for defence in depth.)
         """
         if self.pk:
@@ -128,7 +128,7 @@ class Transaction(models.Model):
 
     def __str__(self):
         sign = "+" if self.direction == self.IN else "-"
-        return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"
+        return f"{self.service} {sign}â‚¦{self.amount} ({self.transaction_status})"
 
 
 class FundingIntent(models.Model):
@@ -147,7 +147,7 @@ class FundingIntent(models.Model):
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
     credited = models.BooleanField(default=False)
-    # Free-form context, e.g. {"provider": "kora"} — records which rail started
+    # Free-form context, e.g. {"provider": "Monnify"} â€” records which rail started
     # the charge so verify confirms against the same one.
     meta = models.JSONField(default=dict, blank=True)
     created = models.DateTimeField(auto_now_add=True)
@@ -157,11 +157,11 @@ class FundingIntent(models.Model):
         ordering = ["-created"]
 
     def __str__(self):
-        return f"{self.user} · ₦{self.amount} · {self.status}"
+        return f"{self.user} Â· â‚¦{self.amount} Â· {self.status}"
 
 
 class CurrencyWallet(models.Model):
-    """A non-NGN balance the user holds (USD / GBP / CAD …).
+    """A non-NGN balance the user holds (USD / GBP / CAD â€¦).
 
     NGN stays in `Wallet` (all existing money code uses it); this table covers FX
     holdings, one row per (user, currency). A DB check keeps balances non-negative.
@@ -180,12 +180,12 @@ class CurrencyWallet(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.user} · {self.currency} {self.balance}"
+        return f"{self.user} Â· {self.currency} {self.balance}"
 
 
 class FxQuote(models.Model):
     """A time-boxed FX quote (Fincra). Execution is valid only until `expires_at`,
-    and a `used` quote can't run again — so a stale rate is never settled and a
+    and a `used` quote can't run again â€” so a stale rate is never settled and a
     quote is spent at most once (alongside the ledger idempotency key)."""
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="fx_quotes")

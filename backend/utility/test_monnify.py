@@ -6,7 +6,8 @@ Layers, none needing real Monnify credentials:
 - Simulated LIVE: utility.monnify.requests is patched so functions build the real
   request and parse Monnify's {requestSuccessful, responseBody} envelope.
 - Webhook: HMAC-SHA512 signature verify + idempotent reserved-account crediting.
-Payouts + name enquiry stay on Kora — this module has no disbursement path.
+Payouts + name enquiry are also Monnify (utility.monnify.disburse / resolve_account);
+disbursement routing is covered in utility.test_provider_dispatch.
 """
 import hashlib
 import hmac
@@ -218,13 +219,14 @@ class PaymentProviderSelectionTests(SimpleTestCase):
         with override_settings(PAYMENT_PROVIDER="monnify"):
             self.assertEqual(providers.payment_provider(), "monnify")
 
-    def test_explicit_kora(self):
-        with override_settings(PAYMENT_PROVIDER="kora"):
-            self.assertEqual(providers.payment_provider(), "kora")
+    def test_explicit_wema(self):
+        with override_settings(PAYMENT_PROVIDER="wema"):
+            self.assertEqual(providers.payment_provider(), "wema")
 
-    def test_auto_defaults_kora_without_monnify(self):
+    def test_auto_defaults_monnify_without_keys(self):
+        # Monnify is the sole default rail even before its keys are set.
         with override_settings(PAYMENT_PROVIDER="", MONNIFY={**NOKEY, "SIMULATION": False}):
-            self.assertEqual(providers.payment_provider(), "kora")
+            self.assertEqual(providers.payment_provider(), "monnify")
 
     def test_auto_picks_monnify_when_live(self):
         with override_settings(PAYMENT_PROVIDER="", MONNIFY=MONNIFY_LIVE):

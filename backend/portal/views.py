@@ -200,7 +200,7 @@ def _providers() -> list:
     from utility.providers import _prembly_live, payout_live, vtu_live
 
     rows = [
-        ("Kora", "Funding & payouts", payout_live()),
+        ("Monnify", "Funding & payouts", payout_live()),
         ("VTU.ng", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
@@ -362,7 +362,7 @@ def txn_requery(request):
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
     if is_bank_payout(txn):
-        # A bank transfer settles via the Kora payout webhook, not a VTU
+        # A bank transfer settles via the Monnify payout webhook, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
         return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
     result = vtu_requery(txn.reference)
@@ -406,7 +406,7 @@ def fx(request):
             "vol24": float(vol),
             "settle": _corridor_enabled(ccy),
         })
-    float_rows = [{"cur": "NGN", "bal": float(Wallet.objects.aggregate(v=Sum("balance"))["v"] or 0), "provider": "Kora"}]
+    float_rows = [{"cur": "NGN", "bal": float(Wallet.objects.aggregate(v=Sum("balance"))["v"] or 0), "provider": "Monnify"}]
     for row in CurrencyWallet.objects.values("currency").annotate(v=Sum("balance")).order_by("currency"):
         float_rows.append({"cur": row["currency"], "bal": float(row["v"] or 0), "provider": "Fincra"})
     return ok(margin=int(margin), rates=rates, float=float_rows)

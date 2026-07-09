@@ -84,6 +84,6 @@ reports whether simulation is on.
 | `POST /api/banklink/webhook/` | Mono callback (signature-verified) |
 
 `payout/` reuses the same `execute_payout` rail as normal bank transfers, so the
-balance / send-limit / daily-limit / idempotency guards and the Kora settlement
+balance / send-limit / daily-limit / idempotency guards and the Monnify settlement
 webhook all apply. It routes by detecting the bank for the linked account number
 (the linked record stores the bank name, not a routable code).

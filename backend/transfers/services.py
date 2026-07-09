@@ -28,7 +28,7 @@ def detect_account_banks(account_number: str) -> list[dict]:
     match; a number that's a valid account at two banks (different holders) returns
     both. Cached briefly per account number so a re-resolve/retry doesn't re-sweep.
 
-    MOCK mode (no Kora keys) returns a single deterministic match — fanning out
+    MOCK mode (no payout keys) returns a single deterministic match — fanning out
     there would make every bank "match" the stub — so the flow stays testable.
     """
     from concurrent.futures import ThreadPoolExecutor
@@ -109,7 +109,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     except InsufficientFunds:
         raise PayoutError("insufficient", "Insufficient wallet balance.")
 
-    # Wema per-user-balance model: debit the sender's own NUBAN (ignored by Kora).
+    # Wema per-user-balance model: debit the sender's own NUBAN (ignored by Monnify,
+    # which draws from the pooled merchant wallet).
     sender_source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
                          bank.bank_code, account_number, name, bank_name=bank.name,

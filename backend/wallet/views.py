@@ -10,7 +10,6 @@ from common.http import (
 )
 from common.ratelimit import ratelimit
 from utility.providers import funding_initialize, funding_verify, payment_provider
-from utility import kora as kora_provider
 from utility import monnify as monnify_provider
 from utility import wema as wema_provider
 
@@ -18,7 +17,6 @@ from .models import FundingIntent, Wallet
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
-    credit_kora_virtual_account_funding,
     ensure_reserved_account,
     existing_for_key,
     get_or_create_wallet,
@@ -66,7 +64,7 @@ def wallet_account(request):
     A fast, side-effect-free read of the user's dedicated funding account: it never
     calls the provider on load. (A reserve needs the raw BVN, which we never store,
     so a read-time attempt can't succeed — it would only hang the Add-money page on
-    a slow Kora call.) Provisioning is explicit: at BVN verification time, or via
+    a slow Monnify call.) Provisioning is explicit: at BVN verification time, or via
     /api/wallet/account/create/, both of which have the BVN in hand.
     """
     wallet = get_or_create_wallet(request.user_obj)
@@ -100,14 +98,14 @@ def wallet_account_create(request):
         bvn_verified, nin_verified}
 
     The one-step "get my account" / KYC flow: the BVN (or NIN) is handed to
-    Kora's reserved-account onboarding, which validates it (CBN rules — Kora
+    Monnify's reserved-account onboarding, which validates it (CBN rules — Monnify
     won't issue a dedicated account for a number that fails its own KYC) and issues
     the NUBAN. On success the user is marked KYC-verified for that identifier and
     their tier recomputed, so a single BVN both provisions the virtual wallet
     account AND lifts their limit. Only a BVN is required (NIN accepted as an
     alternative). Idempotent: returns the existing account on a repeat call.
 
-    Note: we deliberately do NOT gate on the separate Kora identity-match
+    Note: we deliberately do NOT gate on the separate Monnify BVN details-match
     product here — a contract may not have it enabled, and gating on it would block
     account creation even though reserved-account onboarding does its own BVN check.
     """
@@ -139,9 +137,9 @@ def wallet_account_create(request):
 
     wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
     if not wallet.account_number:
-        # Surface Kora's actual reason (also logged as kora_vba_failed) so
+        # Surface Monnify's actual reason (also logged as monnify_reserve_failed) so
         # the failure is self-diagnosing in the app: "authentication failed" points
-        # at the keys/KORA_SECRET_KEY, a name/BVN mismatch points at the data, and
+        # at the keys/MONNIFY_API_KEY, a name/BVN mismatch points at the data, and
         # "not configured" means the reserved-account product isn't enabled.
         reason = getattr(wallet, "reserve_error", "") or ""
         msg = "We couldn't create your account. Check that your BVN is correct and matches your name, then try again."
@@ -171,7 +169,7 @@ def wallet_account_create(request):
 
 
 # ------------------- WEMA / ALAT wallet provisioning (OTP) -------------------
-# Wema mints a dedicated NUBAN via a BVN/NIN + OTP round-trip (unlike Kora's
+# Wema mints a dedicated NUBAN via a BVN/NIN + OTP round-trip (unlike Monnify's
 # one-step reserved account), and exposes NO inbound-credit webhook — deposits to
 # the NUBAN are detected by the reconcile_wema poller. These three endpoints drive
 # the OTP flow; they are gated on Wema being the funding rail (or configured).
@@ -224,7 +222,7 @@ def wema_wallet_verify_otp(request):
     Step 2: validate the OTP, then fetch + persist the created NUBAN (marked with a
     WEMA account_reference so the reconcile poller sweeps it for deposits). If the
     identifier is echoed, the user is marked KYC-verified and their tier lifted —
-    mirroring the Kora account flow.
+    mirroring the Monnify account flow.
     """
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
@@ -324,7 +322,7 @@ def transaction_history(request):
     )
 
 
-# ----------------------- WALLET FUNDING (Kora) -----------------------
+# ----------------------- WALLET FUNDING (Monnify) -----------------------
 @api
 @ratelimit("fund_initialize", limit=20, window=60)
 @require_user
@@ -333,8 +331,7 @@ def fund_initialize(request):
     -> {success, reference, authorization_url}
 
     The app opens authorization_url in a browser. The wallet is credited only
-    after the Kora payment rail confirms
-    payment (verify endpoint and/or webhook).
+    after the payment rail confirms payment (verify endpoint and/or webhook).
     """
     user = request.user_obj
     amount = parse_amount(request.data.get("amount"))
@@ -383,48 +380,6 @@ def fund_verify(request):
     settle_funding(reference, result.get("amount_naira"))  # idempotent
     wallet = get_or_create_wallet(request.user_obj)
     return ok(success=True, wallet=str(wallet.balance), message="Wallet funded")
-
-
-@csrf_exempt
-def fund_webhook(request):
-    """POST /api/fund/webhook/ — Kora (Korapay) pay-in callback.
-
-    Verifies x-korapay-signature (HMAC-SHA256 over the payload `data` object),
-    then credits idempotently. A `charge.success` with our `reference` settles
-    its FundingIntent; one carrying virtual-account details (a spontaneous
-    transfer with no intent) credits via the account mapping. Always 200 on
-    accepted events so Kora stops retrying.
-    """
-    if request.method != "POST":
-        return fail("Method not allowed", status=405)
-    try:
-        event = json.loads(request.body or b"{}")
-    except (ValueError, TypeError):
-        return fail("Invalid payload", status=400)
-
-    signature = request.headers.get("x-korapay-signature", "")
-    if not kora_provider.verify_webhook(event, signature):
-        log.warning("kora_webhook_bad_signature has_header=%s body_len=%s",
-                    bool(signature), len(request.body or b""))
-        return fail("Invalid signature", status=401)
-
-    etype = event.get("event", "")
-    data = event.get("data", {}) or {}
-    if etype == "charge.success":
-        reference = data.get("reference", "") or data.get("payment_reference", "")
-        amount = data.get("amount")
-        # A dedicated-account transfer has no FundingIntent; settle_funding is a
-        # no-op for it, so fall back to the account mapping.
-        if reference and settle_funding(reference, amount) is None:
-            credit_kora_virtual_account_funding(data)
-        log.info("kora_webhook event=%s ref=%s amount=%s", etype, reference, amount)
-    else:
-        log.info("kora_webhook ignored_event=%s", etype)
-    from whatsapp.ops import record_audit
-    record_audit("webhook.kora", actor_type="system",
-                 target=data.get("reference", ""),
-                 after={"event": etype, "signature": "verified"})
-    return ok(status=True)
 
 
 @csrf_exempt

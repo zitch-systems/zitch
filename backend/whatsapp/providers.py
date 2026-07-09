@@ -1,4 +1,4 @@
-"""WhatsApp Cloud API egress + inbound signature check.
+﻿"""WhatsApp Cloud API egress + inbound signature check.
 
 Mirrors the rest of Zitch: with no WHATSAPP_TOKEN the channel runs in MOCK mode
 (outbound is logged, inbound signatures are accepted) so the whole flow is
@@ -34,18 +34,18 @@ def flows_live() -> bool:
 def verify_signature(raw_body: bytes, header: str) -> bool:
     """Validate Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body).
 
-    With no APP_SECRET configured (mock mode) we accept, matching how the Kora
-    webhook behaves without keys — so tests and local runs work unsigned.
+    With no APP_SECRET configured (mock mode) we accept, matching how the Monnify
+    webhook behaves without keys â€” so tests and local runs work unsigned.
     """
     secret = _cfg().get("APP_SECRET", "")
     if not secret:
-        # Accept unsigned ONLY when the channel is in mock mode (no live creds) —
+        # Accept unsigned ONLY when the channel is in mock mode (no live creds) â€”
         # then Meta isn't actually wired and there's no real callback to forge.
         # Once the channel is LIVE we fail closed (reject) on a missing secret, and
         # settings.py raises at boot if APP_SECRET is unset while live, so a
         # production WhatsApp channel can never silently accept a forged callback
         # that would impersonate a linked user's number. (Independent of DEBUG, so
-        # the test runner — which forces DEBUG=False — still exercises mock mode.)
+        # the test runner â€” which forces DEBUG=False â€” still exercises mock mode.)
         return not wa_live()
     if not header or not header.startswith("sha256="):
         return False
@@ -99,7 +99,7 @@ def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
 
 
 def send_buttons(msisdn: str, body: str, buttons: list) -> dict:
-    """Interactive reply-buttons message (max 3). ``buttons`` = [(id, title), ...] —
+    """Interactive reply-buttons message (max 3). ``buttons`` = [(id, title), ...] â€”
     tapping one delivers the id back to the webhook, so ids should be the exact
     text the router already understands (e.g. "airtime")."""
     payload = {"type": "interactive", "interactive": {
@@ -111,7 +111,7 @@ def send_buttons(msisdn: str, body: str, buttons: list) -> dict:
 
 def send_list(msisdn: str, body: str, rows: list,
               button_label: str = "Choose", section_title: str = "Options") -> dict:
-    """Interactive list message (max 10 rows). ``rows`` = [(id, title, description)] —
+    """Interactive list message (max 10 rows). ``rows`` = [(id, title, description)] â€”
     tapping a row delivers its id to the webhook (ids = text the router expects)."""
     payload = {"type": "interactive", "interactive": {
         "type": "list", "body": {"text": body[:1024]},
@@ -125,7 +125,7 @@ def send_list(msisdn: str, body: str, rows: list,
 
 def send_flow(msisdn: str, flow_token: str, header: str, body: str,
               screen: str, screen_data: dict, cta: str = "") -> dict:
-    """Send an interactive Flow message — the secure PIN pad. Opens directly to
+    """Send an interactive Flow message â€” the secure PIN pad. Opens directly to
     `screen` with `screen_data` (flow_action=navigate); the screen's submit does
     a data_exchange to our endpoint. `flow_token` ties the Flow session back to
     the pending money action. MOCK mode logs and returns success."""
