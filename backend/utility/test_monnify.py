@@ -220,6 +220,17 @@ class MonnifyDisburseTests(SimpleTestCase):
 
     @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
     @patch("utility.monnify.requests.post")
+    def test_disburse_sends_destination_account_name(self, mock_post, _auth):
+        # Monnify's single-transfer API rejects a payload without the holder name
+        # ("destination account name is required"), so disburse MUST include it.
+        mock_post.return_value = _resp({"requestSuccessful": True,
+                                        "responseBody": {"status": "SUCCESS"}})
+        monnify.disburse(1000, "ZP-N", "n", "058", "0000000000", "ADA EZE")
+        body = mock_post.call_args.kwargs["json"]
+        self.assertEqual(body["destinationAccountName"], "ADA EZE")
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
     def test_explicit_rejection_is_definitive_failure(self, mock_post, _auth):
         mock_post.return_value = _resp({"requestSuccessful": False, "responseMessage": "Invalid account"})
         r = monnify.disburse(1000, "ZP-RJ", "n", "058", "0000000000", "ADA EZE")
