@@ -318,6 +318,25 @@ def _source_account(source_account: str = "") -> str:
     return (source_account or settings.MONNIFY.get("WALLET_ACCOUNT", "") or "").strip()
 
 
+def _norm_status(rb: dict) -> str:
+    """Monnify's responseBody.status, lowercased with space/hyphen separators
+    collapsed to underscores ("IN PROGRESS" / "in-progress" -> "in_progress"),
+    so classification never misses a variant spelling of the same state."""
+    s = str(rb.get("status", "") or "").strip().lower()
+    return "_".join(s.replace("-", " ").split())
+
+
+# Statuses Monnify reports when a disbursement was ACCEPTED but has not (yet)
+# delivered. Everything here (and any status we don't recognise on an accepted
+# request) means "in flight": hold the debit and let the webhook / reconciler
+# settle or reverse it on the true outcome.
+_DISBURSE_IN_FLIGHT = ("pending", "processing", "in_progress", "awaiting_processing", "queued")
+# Terminal failure statuses (mirrors reconcile_payouts._REVERSED): the transfer
+# definitively did not deliver, so refunding the sender is safe.
+_DISBURSE_TERMINAL_FAIL = ("failed", "reversed", "expired", "cancelled", "declined",
+                           "rejected", "returned")
+
+
 def resolve_account(account_number: str, bank_code: str) -> dict:
     """Recipient name enquiry: (account number, bank code) -> account holder name.
 
@@ -406,24 +425,52 @@ def disburse(amount_naira, reference: str, narration: str, bank_code: str,
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
-        status = str(rb.get("status", "")).lower()
+        status = _norm_status(rb)
         ok = bool(data.get("requestSuccessful"))
         if ok and status == "success":
             return {"success": True, "status": "success",
                     "reference": rb.get("reference", reference), "raw": data}
-        if ok and status in ("pending", "processing", "in_progress"):
-            return {"success": True, "status": "pending",
-                    "reference": rb.get("reference", reference), "raw": data}
-        if status in ("otp_email_dispatch", "pending_authorization"):
+        if status in ("otp_email_dispatch", "pending_authorization", "pending_batch_authorization"):
             # 2FA is enabled on the account but Zitch runs the IP-whitelist model
-            # (no OTP flow). Don't leave money in limbo â€” fail closed with a fix hint.
+            # (no OTP flow). The transfer can never be authorized, so it will never
+            # execute â€” refunding is safe. Fail closed with a fix hint.
             log.warning("monnify_disburse_needs_otp ref=%s status=%s", reference, status)
             return {"success": False, "status": status,
                     "message": "Payout blocked: disable 2FA and whitelist the server IP in Monnify."}
+        if ok and status in _DISBURSE_TERMINAL_FAIL:
+            # Accepted request, terminal transfer state: definitively not delivered.
+            # responseMessage on an ACCEPTED request is the literal string "success"
+            # (it describes the API call, not the transfer) â€” never surface it.
+            log.warning("monnify_disburse_terminal ref=%s status=%s", reference, status)
+            return {"success": False, "status": status,
+                    "message": rb.get("message") or "The bank could not complete this transfer.",
+                    "raw": data}
+        if ok:
+            # Accepted and in flight â€” PENDING/PROCESSING/IN_PROGRESS/AWAITING_
+            # PROCESSING, or a status this code doesn't recognise. Monnify HAS the
+            # transfer, so this must NEVER fall through to the definitive-failure
+            # branch: that refunded a maybe-delivered payout (double-spend) and
+            # showed the user "Error / success" (the responseMessage passthrough).
+            # Hold the debit; the webhook / payout reconciler settles or reverses it.
+            if status not in _DISBURSE_IN_FLIGHT:
+                log.warning("monnify_disburse_unrecognized_status ref=%s status=%s", reference, status)
+            return {"success": True, "status": "pending",
+                    "reference": rb.get("reference", reference), "raw": data}
+        # requestSuccessful is false: Monnify REJECTED the request outright â€” the
+        # transfer was not executed, so the caller's refund is safe.
         log.warning("monnify_disburse_failed ref=%s code=%s msg=%s",
                     reference, data.get("responseCode"), data.get("responseMessage"))
+        message = (data.get("responseMessage") or "").strip()
+        if "duplicate" in message.lower():
+            # Monnify's duplicate-transfer guard (same amount + destination
+            # re-submitted within its window). Raw guard text ("Duplicate request.
+            # Please try again later") reads like an app bug â€” tell the user what
+            # actually happened and what to do.
+            message = ("This looks like a repeat of a transfer you just made. "
+                       "Check your transaction history first; if it isn't there, "
+                       "wait a minute and try again.")
         return {"success": False, "status": status,
-                "message": data.get("responseMessage", "Transfer not completed"), "raw": data}
+                "message": message or "Transfer not completed", "raw": data}
     except requests.RequestException as exc:
         # Ambiguous outcome on a non-idempotent disbursement POST: the request may
         # have reached Monnify and executed even though we never saw the response
@@ -456,10 +503,10 @@ def verify_payout(reference: str) -> dict:
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
-        status = str(rb.get("status", "")).lower()
+        status = _norm_status(rb)
         if status == "success":
             return {"success": True, "status": status, "raw": data}
-        if status in ("pending", "processing", "in_progress", ""):
+        if status in _DISBURSE_IN_FLIGHT or status == "":
             return {"success": False, "pending": True, "status": status or "pending", "raw": data}
         return {"success": False, "status": status, "raw": data}
     except requests.RequestException as exc:

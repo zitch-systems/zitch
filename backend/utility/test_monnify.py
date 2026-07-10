@@ -237,6 +237,70 @@ class MonnifyDisburseTests(SimpleTestCase):
         self.assertFalse(r["success"])
         self.assertFalse(r.get("pending"))       # definitive -> caller refunds
 
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_accepted_unrecognized_status_is_held_not_failed(self, mock_post, _auth):
+        # requestSuccessful=true means Monnify HAS the transfer (its responseMessage
+        # is the literal "success" — an API-call echo, not the transfer state). A
+        # status this code doesn't recognise must map to a pending HOLD: the old
+        # fall-through to the definitive-failure branch refunded a maybe-delivered
+        # payout (double-spend) and surfaced "Error / success" in the app.
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseCode": "0",
+                                        "responseBody": {"status": "AWAITING_PROCESSING",
+                                                         "reference": "ZP-AW"}})
+        r = monnify.disburse(1000, "ZP-AW", "n", "058", "0000000000", "ADA EZE")
+        self.assertTrue(r["success"])            # accepted -> caller HOLDS the debit
+        self.assertEqual(r["status"], "pending")
+        self.assertNotEqual(r.get("message", "").lower(), "success")
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_accepted_status_variant_spelling_maps_to_pending(self, mock_post, _auth):
+        # "IN PROGRESS" (space) is the same state as IN_PROGRESS.
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"status": "IN PROGRESS"}})
+        r = monnify.disburse(1000, "ZP-IP", "n", "058", "0000000000", "ADA EZE")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["status"], "pending")
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_accepted_terminal_failure_never_echoes_success(self, mock_post, _auth):
+        # An accepted request whose transfer state is terminal-failed must refund —
+        # and must never show the request-level "success" echo as the error text.
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"status": "FAILED"}})
+        r = monnify.disburse(1000, "ZP-TF", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertFalse(r.get("pending"))       # definitive -> caller refunds
+        self.assertNotEqual(r["message"].strip().lower(), "success")
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_rejected_duplicate_gets_actionable_message(self, mock_post, _auth):
+        # Monnify's duplicate-transfer guard fires when a just-made transfer is
+        # re-submitted; the raw guard text reads like an app bug. The user should be
+        # pointed at their history instead.
+        mock_post.return_value = _resp({"requestSuccessful": False,
+                                        "responseMessage": "Duplicate request. Please try again later"})
+        r = monnify.disburse(1000, "ZP-DUP", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertFalse(r.get("pending"))
+        self.assertIn("history", r["message"])
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_pending_batch_authorization_fails_closed_with_hint(self, mock_post, _auth):
+        # 2FA-gated statuses are never executed (no OTP flow) -> safe to refund,
+        # with the misconfig called out.
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"status": "PENDING_BATCH_AUTHORIZATION"}})
+        r = monnify.disburse(1000, "ZP-2FA", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertFalse(r.get("pending"))
+        self.assertIn("2FA", r["message"])
+
 
 @override_settings(DEBUG=False, TESTING=False)
 class MonnifySimulationTests(SimpleTestCase):

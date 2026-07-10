@@ -185,7 +185,14 @@ def bank_transfer(request):
             )
         if exc.kind == "insufficient":
             return fail("Insufficient wallet balance", status=402)
-        return fail(exc.message, status=502)
+        # Provider messages pass through to the user, but an API-call-level echo
+        # ("success" is Monnify's responseMessage whenever the REQUEST succeeded)
+        # or an empty string would render a nonsense "Error / success" dialog on
+        # app builds that show the message raw — replace those with a real sentence.
+        message = (exc.message or "").strip()
+        if not message or message.lower() in ("success", "successful"):
+            message = "Transfer could not be completed. Please try again."
+        return fail(message, status=502)
 
     from wallet.services import get_or_create_wallet
     wallet = get_or_create_wallet(user)
