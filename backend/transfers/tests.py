@@ -317,6 +317,38 @@ class BankTransferTests(TestCase):
         self.assertFalse(
             Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
+    def test_accepted_unknown_status_holds_debit_and_reports_pending(self):
+        """CRITICAL: a payout Monnify ACCEPTED but reported with a status this code
+        doesn't recognise must be treated exactly like PENDING — debit held,
+        response pending — not as a failure. Misclassifying it refunded an
+        in-flight transfer (double-spend) and showed the user "Error / success"."""
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "pending", "reference": "X"}):
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("pending"))
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)
+        self.assertTrue(txn.meta.get("reconcile"))
+        self.assertEqual(self.balance(), Decimal("40000"))  # held, not refunded
+
+    def test_provider_success_echo_is_never_shown_as_the_error(self):
+        """A definitive provider rejection whose message is the request-level
+        "success" echo must not reach the app as the error text (the
+        "Error / success" dialog) — the view substitutes a real sentence."""
+        with patch("transfers.services.payout_send",
+                   return_value={"success": False, "message": "success"}):
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 502)
+        self.assertNotEqual(body["message"].strip().lower(), "success")
+        self.assertEqual(self.balance(), Decimal("50000"))  # definitive -> refunded
+
     def test_reconcile_flag_committed_before_provider_call(self):
         """A crash between the debit commit and the settle write must leave a row the
         payout sweep (meta__reconcile=True) can still find. Assert the committed
