@@ -246,9 +246,13 @@ const SendMoney = () => {
       // the wallet); it carries no `success` field. Treat it as a completed
       // attempt — NOT a failure — so it never falls into the else branch that
       // would mint a fresh key and let a retry debit a second time.
-      if (res.success || res.pending) {
+      if (res.success || res.pending || res.duplicate) {
+        // `success`   = transfer confirmed sent
+        // `pending`   = rail queued it (money already left wallet, webhook confirms later)
+        // `duplicate` = server replayed a prior completed attempt (idempotent replay)
+        //               — the transfer DID go through; show the receipt, not an error.
         idemKey.current = '';
-        setPending(!res.success && !!res.pending);
+        setPending(!res.success && !!res.pending && !res.duplicate);
         if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
         setStep(null);   // close the PIN sheet FIRST…
         reload();
@@ -263,7 +267,13 @@ const SendMoney = () => {
         // failure (`offline`) the request may have been delivered, so the key is
         // KEPT — a retry then replays server-side instead of debiting twice.
         if (!res.offline) idemKey.current = '';
-        notify('Error', res.message || 'Transfer failed');
+        // Guard against the server echoing a success-sounding message (e.g.
+        // "Already processed" / "success") inside an error path — show a
+        // generic fallback so the dialog never reads "Error / success".
+        const errMsg = (res.message && !/^success$/i.test(res.message.trim()))
+          ? res.message
+          : 'Transfer could not be completed. Please try again.';
+        notify('Error', errMsg);
         setStep(null);
       }
     } catch {
