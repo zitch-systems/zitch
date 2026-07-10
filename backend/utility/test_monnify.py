@@ -264,9 +264,10 @@ class MonnifyDisburseTests(SimpleTestCase):
         self.assertTrue(r["success"])
         self.assertEqual(r["status"], "pending")
 
+    @patch("utility.monnify.get_wallet_balance", return_value={"success": True, "available_balance": 999999})
     @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
     @patch("utility.monnify.requests.post")
-    def test_accepted_terminal_failure_never_echoes_success(self, mock_post, _auth):
+    def test_accepted_terminal_failure_never_echoes_success(self, mock_post, _auth, _bal):
         # An accepted request whose transfer state is terminal-failed must refund —
         # and must never show the request-level "success" echo as the error text.
         mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
@@ -275,6 +276,46 @@ class MonnifyDisburseTests(SimpleTestCase):
         self.assertFalse(r["success"])
         self.assertFalse(r.get("pending"))       # definitive -> caller refunds
         self.assertNotEqual(r["message"].strip().lower(), "success")
+
+    @patch("utility.monnify.get_wallet_balance")
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_terminal_failure_passes_through_monnify_reason(self, mock_post, _auth, mock_bal):
+        # When Monnify DOES attach a reason to the failed transfer, show that —
+        # and don't bother probing the float.
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"status": "FAILED",
+                                                         "transactionDescription": "Beneficiary bank unavailable"}})
+        r = monnify.disburse(1000, "ZP-TR", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertEqual(r["message"], "Beneficiary bank unavailable")
+        mock_bal.assert_not_called()
+
+    @patch("utility.monnify.get_wallet_balance", return_value={"success": True, "available_balance": 120.5})
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_reasonless_terminal_failure_names_empty_float(self, mock_post, _auth, _bal):
+        # A FAILED transfer with no reason + a merchant float below the amount is
+        # an ops problem, not a bank problem — say "temporarily unavailable" so the
+        # user doesn't keep retrying a transfer that cannot succeed.
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"status": "FAILED"}})
+        r = monnify.disburse(1000, "ZP-FL", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertFalse(r.get("pending"))
+        self.assertIn("temporarily unavailable", r["message"])
+
+    @patch("utility.monnify.get_wallet_balance", return_value={"success": False, "message": "boom"})
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_reasonless_terminal_failure_survives_balance_probe_error(self, mock_post, _auth, _bal):
+        # The float probe is best-effort: if it errors, the generic bank message
+        # still comes back (never a crash, never the "success" echo).
+        mock_post.return_value = _resp({"requestSuccessful": True, "responseMessage": "success",
+                                        "responseBody": {"status": "DECLINED"}})
+        r = monnify.disburse(1000, "ZP-BE", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertIn("could not complete", r["message"])
 
     @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
     @patch("utility.monnify.requests.post")
