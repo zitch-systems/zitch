@@ -93,10 +93,20 @@ const SendMoney = () => {
 
   // Auto-detect on a 10-digit account. Keyed on acct only, so the bank it sets
   // (or a manual pick) doesn't re-trigger it; editing the account re-detects.
+  // Fast path: if the same account is already in prior beneficiaries (a past
+  // successful payout wrote it there), fill the bank + holder name from that
+  // row — no name-enquiry round-trip, no spinner. Makes "send again" feel instant.
   useEffect(() => {
     if (mode !== 'bank') return;
     setBank(null); setBankName(''); setBankErr(''); setMatches([]);
     if (acct.length !== 10) return;
+    const ben = beneficiaries.find((b) => b.bank_name !== 'Zitch' && b.account_number === acct);
+    const known = ben && banks.find((x) => x.name === ben.bank_name);
+    if (ben && known) {
+      setBank(known);
+      setBankName(ben.name);
+      return;
+    }
     let cancelled = false;
     setResolvingBank(true);
     const t = setTimeout(async () => {
@@ -303,6 +313,13 @@ const SendMoney = () => {
 
   const filteredBens = beneficiaries.filter((b) => (b.name + ' ' + b.account_number).toLowerCase().includes(query.toLowerCase()));
   const filteredBanks = banks.filter((b) => b.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
+  // "Sent before" suggestions: as the user types 4+ digits, surface up to 3
+  // prior bank beneficiaries whose account number starts with what they've
+  // typed. Tap fills the field, which triggers the fast-path effect above to
+  // populate bank + holder — no scroll to the saved-beneficiaries row needed.
+  const acctSuggestions = mode === 'bank' && !picked && acct.length >= 4 && acct.length < 10
+    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && b.account_number.startsWith(acct)).slice(0, 3)
+    : [];
 
   return (
     <Screen>
@@ -326,6 +343,20 @@ const SendMoney = () => {
       ) : mode === 'bank' ? (
         <>
           <Field label="Account number" value={acct} onChangeText={(v) => setAcct(v.replace(/\D/g, '').slice(0, 10))} keyboardType="number-pad" placeholder="Enter 10-digit account number" prefix={<ZIcon name="bank" size={18} color={c.ink3} />} />
+          {acctSuggestions.length > 0 && (
+            <View style={{ marginTop: 8 }}>
+              <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Sent before</Text>
+              {acctSuggestions.map((b) => (
+                <Pressable key={b.id} onPress={() => setAcct(b.account_number)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
+                  <Monogram text={b.initials} color={b.color} size={32} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.name}</Text>
+                    <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12 }}>{b.account_number} · {b.bank_name}</Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          )}
           <View style={{ height: 14 }} />
           <Pressable onPress={() => setBankSheet(true)}>
             {/* While auto-detecting, the field shows the small branded Zitch
