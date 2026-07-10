@@ -38,37 +38,27 @@ workflows:
           ./gradlew assembleRelease
     artifacts:
       - android/app/build/outputs/**/*.apk
-    # Auto-build when app code lands on main. Trigger manually anytime from the
-    # dashboard ("Start new build" → android-apk). The changeset filter that
-    # avoids burning free build minutes on irrelevant changes lives in the
-    # workflow-level `when:` below.
+    # Build on every push to main, AND on demand from the dashboard
+    # ("Start new build" → android-apk).
+    #
+    # NOTE: the previous `when: changeset` filter (only build when app/ etc.
+    # changed) was removed — it also skipped manually-started builds in this
+    # setup, so backend-only work on main left no way to produce an APK without
+    # a code change. Builds now always run. If free build minutes become tight,
+    # re-add a changeset filter for AUTO builds only, or move to a cheaper
+    # `linux_x2` instance.
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
           include: true
-    # `when` is a workflow-level key (sibling of `triggering`, not a child of
-    # it). With a changeset filter it skips webhook-triggered builds whose
-    # changes don't touch any of these paths, so landing/docs/backend-only
-    # changes don't burn free build minutes.
-    when:
-      changeset:
-        includes:
-          - 'app'
-          - 'components'
-          - 'lib'
-          - 'assets'
-          - 'package.json'
-          - 'package-lock.json'
-          - 'app.json'
-          - 'eas.json'
-          - 'codemagic.yaml'
-    # Optional — email the APK link when the build finishes:
-    # publishing:
-    #   email:
-    #     recipients:
-    #       - you@example.com
-    #     notify:
-    #       success: true
-    #       failure: true
+    # Email the APK download link when a build finishes (so you don't have to
+    # dig it out of the dashboard artifacts).
+    publishing:
+      email:
+        recipients:
+          - teyokensax1@gmail.com
+        notify:
+          success: true
+          failure: true
