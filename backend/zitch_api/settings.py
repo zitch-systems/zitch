@@ -244,6 +244,11 @@ MONNIFY = {
     # on a disbursement). Required for live payouts.
     "WALLET_ACCOUNT": os.environ.get("MONNIFY_WALLET_ACCOUNT", ""),
     "SIMULATION": env_bool("MONNIFY_SIMULATION", False),
+    # Static-IP forward proxy (scheme://user:pass@host:port) that ALL Monnify calls
+    # exit through, so Monnify sees one whitelistable IP. REQUIRED when the host has
+    # no fixed egress IP of its own and Monnify's IP whitelisting is on (it gates the
+    # whole account API, auth login included). Blank => call Monnify directly.
+    "PROXY_URL": os.environ.get("MONNIFY_PROXY_URL", ""),
 }
 # Wema / ALAT (Banking-as-a-Service) — the target rail for the full migration
 # (funding accounts, payout, name-enquiry, balance; later VAS/cards/KYC). Azure

@@ -13,6 +13,13 @@ IP (see the DigitalOcean/Render setup) is whitelisted, so single transfers compl
 without an OTP round-trip. Use ``egress_ip()`` / ``disbursement_diagnostics()`` to
 confirm the IP Monnify sees matches the whitelisted one.
 
+When the app host has no fixed egress IP of its own (e.g. Render's shared /24, which
+providers won't whitelist), set MONNIFY_PROXY_URL to a static-IP forward proxy whose
+IP is whitelisted; EVERY Monnify call — auth login included — then exits through it
+(see ``_proxies()``). Once Monnify's IP whitelisting is on it gates the whole account
+API, so without this a non-whitelisted host fails even the OAuth login ("Monnify
+authentication failed"). Blank => call Monnify directly.
+
 Auth: OAuth login — Basic base64(apiKey:secretKey) -> bearer access token (~1h),
 cached. Base URL: live https://api.monnify.com, sandbox https://sandbox.monnify.com.
 Amounts are in NAIRA (not kobo). Every function returns {"success": bool, ...}.
@@ -84,7 +91,7 @@ def _monnify_token() -> str:
         resp = requests.post(
             f"{m['BASE_URL']}/api/v1/auth/login",
             headers={"Authorization": f"Basic {basic}"},
-            timeout=_AUTH_TIMEOUT,
+            timeout=_AUTH_TIMEOUT, proxies=_proxies(),
         )
         rb = (resp.json() or {}).get("responseBody", {}) or {}
     except (requests.RequestException, ValueError):
@@ -104,6 +111,20 @@ def _auth_headers() -> dict | None:
     if not token:
         return None
     return {"Authorization": f"Bearer {token}"}
+
+
+def _proxies() -> dict | None:
+    """Egress proxy for EVERY Monnify call (including the OAuth login), so Monnify
+    sees one whitelistable static IP instead of the host's shared outbound range.
+
+    Monnify's disbursement model is IP-whitelist based, and once IP whitelisting is
+    enabled it gates the whole API surface for the account — auth login included —
+    so a call from a non-whitelisted IP fails at the token fetch with "Monnify
+    authentication failed". Point MONNIFY_PROXY_URL at a static-IP forward proxy
+    (scheme://user:pass@host:port) whose IP is whitelisted on Monnify. Blank =>
+    call Monnify directly (correct for a host whose own egress IP is whitelisted)."""
+    url = settings.MONNIFY.get("PROXY_URL")
+    return {"https": url, "http": url} if url else None
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +163,7 @@ def payment_initialize(email: str, amount_naira, reference: str, *,
                 "redirectUrl": redirect_url or m.get("REDIRECT_URL", ""),
                 "paymentMethods": ["CARD", "ACCOUNT_TRANSFER"],
             },
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -175,6 +196,7 @@ def payment_verify(reference: str) -> dict:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v1/merchant/transactions/query",
             params={"paymentReference": reference}, headers=headers, timeout=REQUEST_TIMEOUT,
+            proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -254,7 +276,7 @@ def create_virtual_account(account_reference: str, account_name: str, customer_e
     try:
         resp = requests.post(
             f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts",
-            json=body, headers=headers, timeout=REQUEST_TIMEOUT,
+            json=body, headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         out = _parse_reserved(resp.json())
         if not out["success"]:
@@ -278,7 +300,7 @@ def get_virtual_account(account_reference: str) -> dict:
     try:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v2/bank-transfer/reserved-accounts/{account_reference}",
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         return _parse_reserved(resp.json())
     except requests.RequestException as exc:
@@ -325,7 +347,7 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v1/disbursements/account/validate",
             params={"accountNumber": account_number, "bankCode": bank_code},
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -379,7 +401,7 @@ def disburse(amount_naira, reference: str, narration: str, bank_code: str,
     try:
         resp = requests.post(
             f"{m['BASE_URL']}/api/v2/disbursements/single",
-            json=body, headers=headers, timeout=REQUEST_TIMEOUT,
+            json=body, headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -423,6 +445,7 @@ def verify_payout(reference: str) -> dict:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v2/disbursements/single/summary",
             params={"reference": reference}, headers=headers, timeout=REQUEST_TIMEOUT,
+            proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -453,6 +476,7 @@ def get_wallet_balance(account_number: str = "") -> dict:
         resp = requests.get(
             f"{m['BASE_URL']}/api/v2/disbursements/wallet-balance",
             params={"accountNumber": src}, headers=headers, timeout=REQUEST_TIMEOUT,
+            proxies=_proxies(),
         )
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
@@ -464,15 +488,19 @@ def get_wallet_balance(account_number: str = "") -> dict:
 
 
 def egress_ip() -> dict:
-    """Report the server's public egress IP — the address Monnify sees on a
-    disbursement call, which MUST be whitelisted in the dashboard.
+    """Report the public egress IP Monnify actually sees on a disbursement call —
+    which MUST be whitelisted in the dashboard.
 
-    Queries a public IP-echo service (no secrets). Use it to confirm the running
-    server presents the same static IP you whitelisted on Monnify; a mismatch is
-    the #1 cause of live payout rejections on shared hosts (e.g. Render)."""
+    Queries a public IP-echo service THROUGH THE SAME proxy Monnify calls use
+    (``_proxies()``), so with MONNIFY_PROXY_URL set this returns the static proxy
+    IP (what Monnify sees), not the host's own egress. Use it to confirm the value
+    presented to Monnify matches the whitelisted IP; a mismatch is the #1 cause of
+    live payout rejections on shared hosts (e.g. Render)."""
     try:
-        resp = requests.get("https://api.ipify.org", params={"format": "json"}, timeout=10)
-        return {"success": resp.ok, "egress_ip": (resp.json() or {}).get("ip", "")}
+        resp = requests.get("https://api.ipify.org", params={"format": "json"},
+                            timeout=10, proxies=_proxies())
+        return {"success": resp.ok, "egress_ip": (resp.json() or {}).get("ip", ""),
+                "via_proxy": bool(_proxies())}
     except requests.RequestException as exc:
         return {"success": False, "message": f"Could not determine egress IP: {exc}"}
 
@@ -508,7 +536,8 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     body = {"bvn": bvn, "name": name, "dateOfBirth": date_of_birth, "mobileNo": mobile}
     try:
         resp = requests.post(f"{m['BASE_URL']}/api/v1/vas/bvn-details-match",
-                             json=body, headers=headers, timeout=REQUEST_TIMEOUT)
+                             json=body, headers=headers, timeout=REQUEST_TIMEOUT,
+                             proxies=_proxies())
         data = resp.json()
         rb = data.get("responseBody", {}) or {}
         ok = bool(data.get("requestSuccessful"))
@@ -536,7 +565,8 @@ def verify_nin(nin: str) -> dict:
     m = settings.MONNIFY
     try:
         resp = requests.post(f"{m['BASE_URL']}/api/v1/vas/nin-details",
-                             json={"nin": nin}, headers=headers, timeout=REQUEST_TIMEOUT)
+                             json={"nin": nin}, headers=headers, timeout=REQUEST_TIMEOUT,
+                             proxies=_proxies())
         data = resp.json()
         return {"success": bool(data.get("requestSuccessful")), "raw": data,
                 "message": data.get("responseMessage", "")}
@@ -579,7 +609,7 @@ def deallocate_virtual_account(account_reference: str) -> dict:
     try:
         resp = requests.delete(
             f"{m['BASE_URL']}/api/v1/bank-transfer/reserved-accounts/reference/{account_reference}",
-            headers=headers, timeout=REQUEST_TIMEOUT,
+            headers=headers, timeout=REQUEST_TIMEOUT, proxies=_proxies(),
         )
         data = resp.json() if resp.content else {}
         return {"success": bool(data.get("requestSuccessful")),

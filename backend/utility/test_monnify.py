@@ -193,6 +193,66 @@ class MonnifyLiveTests(SimpleTestCase):
         self.assertFalse(monnify.verify_webhook(body, ""))
 
 
+# Monnify's IP whitelisting gates the whole account API (auth login included), so
+# once it's on, EVERY call from a non-whitelisted host fails. When MONNIFY_PROXY_URL
+# is set, every Monnify request — the OAuth login and the disbursement calls — must
+# carry proxies= so it exits through the whitelisted static IP. These lock that in:
+# the regression that removed the proxy plumbing while payouts depended on it must
+# not pass CI again.
+_PROXY = "http://u:p@10.0.0.9:8888"
+MONNIFY_PROXIED = {**MONNIFY_LIVE, "WALLET_ACCOUNT": "9900000001", "PROXY_URL": _PROXY}
+
+
+@override_settings(MONNIFY=MONNIFY_PROXIED)
+class MonnifyEgressProxyTests(SimpleTestCase):
+    _EXPECT = {"https": _PROXY, "http": _PROXY}
+
+    @patch("utility.monnify.cache")
+    @patch("utility.monnify.requests.post")
+    def test_auth_login_routes_through_proxy(self, mock_post, mock_cache):
+        mock_cache.get.return_value = None
+        mock_post.return_value = _resp({"responseBody": {"accessToken": "tok", "expiresIn": 3000}})
+        self.assertEqual(monnify._monnify_token(), "tok")
+        # The OAuth login is the call that fails first when the IP isn't whitelisted.
+        self.assertEqual(mock_post.call_args.kwargs["proxies"], self._EXPECT)
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_disburse_routes_through_proxy(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": True,
+                                        "responseBody": {"status": "SUCCESS", "reference": "ZP-1"}})
+        r = monnify.disburse(1000, "ZP-1", "test", "058", "0000000000", "ADA EZE")
+        self.assertTrue(r["success"])
+        self.assertEqual(mock_post.call_args.kwargs["proxies"], self._EXPECT)
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.get")
+    def test_resolve_account_routes_through_proxy(self, mock_get, _auth):
+        mock_get.return_value = _resp({"requestSuccessful": True,
+                                       "responseBody": {"accountName": "ADA EZE"}})
+        r = monnify.resolve_account("0000000000", "058")
+        self.assertTrue(r["success"])
+        self.assertEqual(mock_get.call_args.kwargs["proxies"], self._EXPECT)
+
+    @patch("utility.monnify.requests.get")
+    def test_egress_ip_reports_proxied_ip(self, mock_get):
+        # egress_ip must ALSO go through the proxy, else it reports the host's own IP
+        # and misleads the operator into thinking the wrong address is whitelisted.
+        mock_get.return_value = _resp({"ip": "68.183.254.113"})
+        out = monnify.egress_ip()
+        self.assertEqual(mock_get.call_args.kwargs["proxies"], self._EXPECT)
+        self.assertTrue(out["via_proxy"])
+
+    @override_settings(MONNIFY={**MONNIFY_LIVE, "WALLET_ACCOUNT": "9900000001"})  # no PROXY_URL
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_blank_proxy_url_calls_direct(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": True,
+                                        "responseBody": {"status": "SUCCESS"}})
+        monnify.disburse(1000, "ZP-2", "test", "058", "0000000000", "ADA EZE")
+        self.assertIsNone(mock_post.call_args.kwargs["proxies"])  # direct, unchanged
+
+
 @override_settings(DEBUG=False, TESTING=False)
 class MonnifySimulationTests(SimpleTestCase):
     """Prod without keys fails closed; MONNIFY_SIMULATION serves the mock flow."""

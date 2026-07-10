@@ -107,6 +107,15 @@ services:
         sync: false
       - key: MONNIFY_BASE_URL
         sync: false
+      # Static-IP forward proxy (scheme://user:pass@host:port) that ALL Monnify
+      # calls exit through — set this when this service has no fixed egress IP of
+      # its own (Render's outbound /24 is shared and Monnify won't whitelist it).
+      # Point it at a small box with a whitelisted static IP. Once Monnify's IP
+      # whitelisting is on it gates the whole account API (auth login included), so
+      # without this, live payouts AND name enquiry fail with "Monnify
+      # authentication failed". Confirm the IP via /payout-diagnose. Blank => direct.
+      - key: MONNIFY_PROXY_URL
+        sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
       # defaults to https://api.withmono.com in code.
