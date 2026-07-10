@@ -101,7 +101,15 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     try:
         txn = debit(
             user, amount, f"Transfer to {name}",
-            meta={"account": account_number, "bank": bank.name, "note": note},
+            # Pre-flag `reconcile` ATOMICALLY with the debit, BEFORE the provider
+            # call (mirroring run_provider_purchase). The debit commits on its own,
+            # with no lock held across the network I/O, so a worker crash between the
+            # send and the settle write would otherwise orphan a committed PENDING
+            # row the payout sweep (filters meta__reconcile=True) could never find —
+            # money debited, never settled or reversed. Cleared below only on a
+            # definitively delivered result.
+            meta={"account": account_number, "bank": bank.name, "note": note,
+                  "reconcile": True},
             idempotency_key=idempotency_key,
         )
     except DuplicateTransaction:
@@ -115,23 +123,31 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
                          bank.bank_code, account_number, name, bank_name=bank.name,
                          source_account=sender_source)
-    if not result.get("success"):
+
+    delivered = (result.get("success")
+                 and (result.get("status") or "").upper() not in ("PENDING", "PROCESSING"))
+    if delivered:
+        # Confirmed sent — settle now and clear the reconcile flag.
+        meta = dict(txn.meta or {})
+        meta.pop("reconcile", None)
+        txn.meta = meta
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status", "meta"])
+    elif result.get("success") or result.get("pending"):
+        # Accepted-but-queued (PENDING/PROCESSING), OR an AMBIGUOUS outcome — a send
+        # timeout / lost response on the non-idempotent disburse POST, where Monnify
+        # may already have paid the recipient. HOLD the debit: never refund a
+        # maybe-delivered transfer (that would drain the float and, on retry, double-
+        # pay). The row stays PENDING with the reconcile flag pre-set above; the
+        # disbursement webhook or the payout reconciler (verify_payout) settles it
+        # (settle_payout) or reverses it (reverse_transfer) once the outcome is known.
+        # The caller reports "processing", not "sent".
+        pass
+    else:
+        # Definitive rejection (validation error / OTP-required misconfig): the
+        # transfer was NOT executed, so refunding the sender is safe.
         refund(txn)
         raise PayoutError("provider", result.get("message", "Transfer failed"))
-
-    if (result.get("status") or "").upper() in ("PENDING", "PROCESSING"):
-        # Accepted by the rail but not yet confirmed (queued / awaiting auth). Keep
-        # the row PENDING and flag it for the disbursement webhook + reconciliation
-        # rather than claiming success — the money stays debited, and the webhook
-        # later settles it (settle_payout) or reverses it (reverse_transfer). This
-        # avoids telling the user "sent" for money that may not have moved.
-        meta = dict(txn.meta or {})
-        meta["reconcile"] = True
-        txn.meta = meta
-        txn.save(update_fields=["meta"])
-    else:
-        txn.transaction_status = Transaction.SUCCESS
-        txn.save(update_fields=["transaction_status"])
 
     # Auto-save / dedupe the beneficiary for next time.
     Beneficiary.objects.get_or_create(

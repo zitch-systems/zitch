@@ -193,6 +193,40 @@ class MonnifyLiveTests(SimpleTestCase):
         self.assertFalse(monnify.verify_webhook(body, ""))
 
 
+# A disbursement POST is NON-idempotent: a lost response doesn't mean the transfer
+# didn't happen. disburse() must distinguish an AMBIGUOUS network outcome (pending ->
+# caller HOLDS the debit) from a definitive Monnify rejection (caller refunds).
+# Getting this wrong drains the merchant float (the timeout double-spend bug).
+@override_settings(MONNIFY={**MONNIFY_LIVE, "WALLET_ACCOUNT": "9900000001"})
+class MonnifyDisburseTests(SimpleTestCase):
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_timeout_returns_pending_not_failure(self, mock_post, _auth):
+        import requests as _rq
+        mock_post.side_effect = _rq.exceptions.ReadTimeout("timed out")
+        r = monnify.disburse(1000, "ZP-TO", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])            # ambiguous -> HOLD, never refund
+        self.assertEqual(r["status"], "pending")
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_delivered_is_success(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": True,
+                                        "responseBody": {"status": "SUCCESS", "reference": "ZP-OK"}})
+        r = monnify.disburse(1000, "ZP-OK", "n", "058", "0000000000", "ADA EZE")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["status"], "success")
+
+    @patch("utility.monnify._auth_headers", return_value={"Authorization": "Bearer t"})
+    @patch("utility.monnify.requests.post")
+    def test_explicit_rejection_is_definitive_failure(self, mock_post, _auth):
+        mock_post.return_value = _resp({"requestSuccessful": False, "responseMessage": "Invalid account"})
+        r = monnify.disburse(1000, "ZP-RJ", "n", "058", "0000000000", "ADA EZE")
+        self.assertFalse(r["success"])
+        self.assertFalse(r.get("pending"))       # definitive -> caller refunds
+
+
 @override_settings(DEBUG=False, TESTING=False)
 class MonnifySimulationTests(SimpleTestCase):
     """Prod without keys fails closed; MONNIFY_SIMULATION serves the mock flow."""
