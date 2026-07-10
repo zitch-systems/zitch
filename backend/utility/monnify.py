@@ -35,6 +35,7 @@ be exercised from CI â€” confirm against the dashboard before go-live.
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import secrets
 
@@ -337,6 +338,17 @@ _DISBURSE_TERMINAL_FAIL = ("failed", "reversed", "expired", "cancelled", "declin
                            "rejected", "returned")
 
 
+def _failure_detail(rb: dict) -> str:
+    """The human reason Monnify attached to a failed transfer, if any. The field
+    name varies across its payloads (sync response vs summary vs webhook echo),
+    so probe the known carriers in order."""
+    for field in ("message", "transactionDescription", "comment", "failureReason"):
+        value = str(rb.get(field) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def resolve_account(account_number: str, bank_code: str) -> dict:
     """Recipient name enquiry: (account number, bank code) -> account holder name.
 
@@ -441,9 +453,31 @@ def disburse(amount_naira, reference: str, narration: str, bank_code: str,
             # Accepted request, terminal transfer state: definitively not delivered.
             # responseMessage on an ACCEPTED request is the literal string "success"
             # (it describes the API call, not the transfer) â€” never surface it.
-            log.warning("monnify_disburse_terminal ref=%s status=%s", reference, status)
+            # Log the WHOLE responseBody: Monnify often fails a transfer with no
+            # reason field at all, and this line is then the only forensic record
+            # of what it actually said.
+            detail = _failure_detail(rb)
+            log.warning("monnify_disburse_terminal ref=%s status=%s body=%s",
+                        reference, status, json.dumps(rb, default=str)[:2000])
+            if not detail:
+                # No reason given. The classic cause of an instantly-FAILED
+                # disbursement is an empty merchant float â€” read the wallet balance
+                # so the ops log names the real problem and the user isn't told to
+                # retry a transfer that cannot succeed until the float is topped up.
+                balance = get_wallet_balance().get("available_balance")
+                log.warning("monnify_disburse_terminal_float ref=%s available=%s amount=%s",
+                            reference, balance, amount_naira)
+                try:
+                    if balance is not None and float(balance) < float(amount_naira):
+                        log.error("monnify_float_insufficient available=%s amount=%s",
+                                  balance, amount_naira)
+                        detail = ("Transfers are temporarily unavailable right now. "
+                                  "Please try again shortly.")
+                except (TypeError, ValueError):
+                    pass
             return {"success": False, "status": status,
-                    "message": rb.get("message") or "The bank could not complete this transfer.",
+                    "message": detail or "The bank could not complete this transfer. "
+                                         "Please try again shortly.",
                     "raw": data}
         if ok:
             # Accepted and in flight â€” PENDING/PROCESSING/IN_PROGRESS/AWAITING_
