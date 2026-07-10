@@ -175,7 +175,14 @@ def bank_transfer(request):
         txn = execute_payout(user, amount, acct, bank, name, note=note, idempotency_key=key)
     except PayoutError as exc:
         if exc.kind == "duplicate":
-            return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
+            # Try to replay the original outcome (idempotent_replay returns ok(success=True, duplicate=True)).
+            # If the prior row isn't found yet (race between debit write and this read),
+            # return a clear duplicate signal with duplicate=True so the frontend treats it
+            # as "already processed" instead of showing "Error / success".
+            return idempotent_replay(existing_for_key(user, key)) or fail(
+                "This transfer was already submitted. Check your transaction history.",
+                status=409, code="duplicate", duplicate=True,
+            )
         if exc.kind == "insufficient":
             return fail("Insufficient wallet balance", status=402)
         return fail(exc.message, status=502)
