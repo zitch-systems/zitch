@@ -363,6 +363,13 @@ def disburse(amount_naira, reference: str, narration: str, bank_code: str,
     (we don't do the OTP flow) â€” treated as not-sent so the caller refunds and the
     misconfig surfaces. Anything else is a failure the caller refunds.
 
+    A NETWORK error (timeout / lost response) is AMBIGUOUS on this non-idempotent
+    POST -- Monnify may already have executed the transfer -- so it returns
+    ``{"success": False, "pending": True, "status": "pending"}`` (NOT a hard
+    failure); the caller HOLDS the debit and the payout reconciler / webhook later
+    settles or reverses it. Refunding here would leak money on a transfer that
+    actually went through.
+
     Draws from the merchant Monnify wallet (``sourceAccountNumber``); fails closed
     on a live call with no wallet configured rather than sending an empty source.
     """
@@ -414,7 +421,14 @@ def disburse(amount_naira, reference: str, narration: str, bank_code: str,
         return {"success": False, "status": status,
                 "message": data.get("responseMessage", "Transfer not completed"), "raw": data}
     except requests.RequestException as exc:
-        return _unreachable(exc)
+        # Ambiguous outcome on a non-idempotent disbursement POST: the request may
+        # have reached Monnify and executed even though we never saw the response
+        # (read timeout / dropped connection). Signal PENDING so the caller holds
+        # the debit instead of refunding a maybe-delivered transfer; the payout
+        # reconciler requeries verify_payout to settle or reverse it.
+        log.warning("monnify_disburse_unreachable ref=%s err=%s", reference, exc)
+        return {"success": False, "pending": True, "status": "pending",
+                "reference": reference, "message": "Transfer is processing"}
 
 
 def verify_payout(reference: str) -> dict:

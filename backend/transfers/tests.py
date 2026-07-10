@@ -293,6 +293,64 @@ class BankTransferTests(TestCase):
         self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
 
+    def test_ambiguous_send_timeout_holds_debit_never_refunds(self):
+        """CRITICAL: a network timeout on the non-idempotent disburse POST is
+        AMBIGUOUS — Monnify may already have paid the recipient. The debit MUST be
+        HELD (PENDING + reconcile), never refunded. Refunding here drains the float
+        (recipient keeps the money, sender made whole) and a retry double-pays. The
+        reconcile flag then lets reconcile_payouts settle/reverse it on the true
+        outcome."""
+        with patch("transfers.services.payout_send",
+                   return_value={"success": False, "pending": True, "status": "pending",
+                                 "message": "Transfer is processing"}):
+            res, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("pending"))
+        self.assertFalse(body.get("success"))
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.transaction_status, Transaction.PENDING)  # held, not settled
+        self.assertTrue(txn.meta.get("reconcile"))                     # sweepable
+        self.assertEqual(self.balance(), Decimal("40000"))             # debited, NOT refunded
+        self.assertFalse(
+            Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
+
+    def test_reconcile_flag_committed_before_provider_call(self):
+        """A crash between the debit commit and the settle write must leave a row the
+        payout sweep (meta__reconcile=True) can still find. Assert the committed
+        PENDING row already carries the flag at the moment payout_send is invoked —
+        i.e. it is pre-flagged with the debit, not after the call."""
+        seen = {}
+
+        def spy(*args, **kwargs):
+            row = Transaction.objects.get(reference=args[1])  # args[1] == reference
+            seen["reconcile"] = (row.meta or {}).get("reconcile")
+            seen["status"] = row.transaction_status
+            return {"success": True, "status": "success"}
+
+        with patch("transfers.services.payout_send", side_effect=spy):
+            self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertTrue(seen["reconcile"])                     # flagged BEFORE the send
+        self.assertEqual(seen["status"], Transaction.PENDING)
+
+    def test_delivered_payout_clears_reconcile_flag(self):
+        """A confirmed-delivered payout is settled AND its reconcile flag cleared, so
+        the reconciler never needlessly requeries a completed transfer."""
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            _, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
+        self.assertNotIn("reconcile", txn.meta or {})
+
 
 class MonnifyPayoutReconcileTests(TestCase):
     """The reconcile_payouts poller settles/reverses PENDING payouts when a Monnify
