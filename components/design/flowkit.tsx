@@ -37,7 +37,10 @@ export const Segmented = ({
         const on = value === o.v;
         return (
           <Pressable key={o.v} onPress={() => onChange(o.v)} style={{ flex: 1 }}>
-            <View style={{ alignItems: 'center', paddingVertical: 10, borderRadius: 11, backgroundColor: on ? c.surface : 'transparent' }}>
+            {/* Pill radius = container radius (14) − padding (4) = 10, so the active
+                pill's corners nest cleanly inside the track instead of poking past
+                its rounded edge. alignSelf:'stretch' keeps the pill full-tab-width. */}
+            <View style={{ alignSelf: 'stretch', alignItems: 'center', paddingVertical: 10, borderRadius: 10, backgroundColor: on ? c.surface : 'transparent' }}>
               <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? c.brand : c.ink3 }}>{o.label}</Text>
             </View>
           </Pressable>

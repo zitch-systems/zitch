@@ -420,14 +420,12 @@ const SendMoney = () => {
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title={busy ? 'Processing transfer' : 'Enter your PIN'}>
         {/* No negative top margin — inside the sheet's ScrollView it clips the
             subtitle's top edge under the title. */}
-        {!busy && (
-          <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
-            {`Confirm transfer of ${money(amount)}`}
-          </Text>
-        )}
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+          {busy ? 'Sending your money — hold on a moment…' : `Confirm transfer of ${money(amount)}`}
+        </Text>
         <PinPad onComplete={(p, bio) => send(p, !!bio)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>

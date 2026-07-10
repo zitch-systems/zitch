@@ -392,6 +392,10 @@ def disburse(amount_naira, reference: str, narration: str, bank_code: str,
         "narration": narration or "Zitch transfer",
         "destinationBankCode": bank_code,
         "destinationAccountNumber": account_number,
+        # Monnify's single-transfer API REQUIRES the resolved holder name — without
+        # it the call fails with "destination account name is required". The caller
+        # already ran name enquiry, so pass it through.
+        "destinationAccountName": account_name,
         "currency": "NGN",
         "sourceAccountNumber": src,
     }
