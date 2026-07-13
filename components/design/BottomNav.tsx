@@ -25,7 +25,7 @@ const RIGHT: { name: string; icon: string; label: string }[] = [
 const openWhatsApp = () => {
   const url = `https://wa.me/${BANK_WHATSAPP}?text=${encodeURIComponent('Hi Zitch 👋')}`;
   Linking.openURL(url).catch(() =>
-    notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.'),
+    notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.', 'error'),
   );
 };
 

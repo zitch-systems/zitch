@@ -24,8 +24,11 @@ const Loans = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
   const [token, setToken] = useState('');
-  const [limit, setLimit] = useState(500000);
-  const [available, setAvailable] = useState(500000);
+  // Start at 0 so the pre-load (and API-failure) state is honest — never a
+  // fabricated credit line. The real limit/available overwrite these once
+  // /api/loans/status/ returns.
+  const [limit, setLimit] = useState(0);
+  const [available, setAvailable] = useState(0);
   const [active, setActive] = useState<ActiveLoan | null>(null);
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);

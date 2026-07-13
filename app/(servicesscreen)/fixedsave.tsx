@@ -58,8 +58,13 @@ const FixedSave = () => {
         if (Array.isArray(res?.rates) && res.rates.length) {
           const map: Record<number, number> = {};
           res.rates.forEach((x: any) => { map[Number(x.days)] = Number(x.rate); });
+          const list = res.rates.map((x: any) => Number(x.days)).sort((a: number, b: number) => a - b);
           setRates(map);
-          setPeriods(res.rates.map((x: any) => Number(x.days)).sort((a: number, b: number) => a - b));
+          setPeriods(list);
+          // Keep the selected period valid: if the live table doesn't offer the
+          // current default (90d), snap to the shortest offered period. Otherwise
+          // the quote reads "0% p.a / ₦0 interest" with no period highlighted.
+          setDays((d) => (list.includes(d) ? d : list[0]));
         }
         if (res?.min != null) setMinAmt(Number(res.min));
       })

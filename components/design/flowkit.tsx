@@ -241,6 +241,9 @@ export const ConfirmSheet = ({
   rows,
   balance,
   onPay,
+  cta,
+  methodTitle = 'Pay with',
+  methodSub,
 }: {
   open: boolean;
   onClose: () => void;
@@ -249,6 +252,11 @@ export const ConfirmSheet = ({
   rows: [string, string][];
   balance: number;
   onPay: () => void;
+  // Overrides for non-payment flows (e.g. a loan disbursement, where money is
+  // received, not paid). Defaults reproduce the standard "Pay with wallet" look.
+  cta?: string;            // pay-button label (default: "Pay ₦…")
+  methodTitle?: string;    // heading above the wallet card (default: "Pay with")
+  methodSub?: string;      // sub-line under "Zitch Wallet" (default: "Available ₦…")
 }) => {
   const { c } = useTheme();
   // Never let a wallet-funded payment proceed past confirm when the funds (or,
@@ -265,7 +273,7 @@ export const ConfirmSheet = ({
         {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} />)}
         <Row2 k="Fee" v="₦0" />
       </View>
-      <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>Pay with</Text>
+      <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>{methodTitle}</Text>
       <View style={{ borderRadius: 14, backgroundColor: c.surface2, borderWidth: 1.5, borderColor: c.line, padding: 14, marginBottom: 18 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
           <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
@@ -273,13 +281,13 @@ export const ConfirmSheet = ({
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Zitch Wallet</Text>
-            <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Available {money(balance)}</NText>
+            <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{methodSub ?? `Available ${money(balance)}`}</NText>
           </View>
           <ZIcon name="check" size={18} color={c.brand} />
         </View>
       </View>
       <Btn
-        label={insufficient ? 'Insufficient balance' : `Pay ${money(total)}`}
+        label={insufficient ? 'Insufficient balance' : (cta ?? `Pay ${money(total)}`)}
         icon="lock"
         onPress={onPay}
         disabled={insufficient}
