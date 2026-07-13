@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, Share } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
@@ -31,6 +31,23 @@ const TxnDetail = () => {
   const statusColor = sl === 'failed' ? c.red : sl === 'pending' ? c.amber : c.lime;
   const statusIcon = sl === 'failed' ? 'x' : sl === 'pending' ? 'history' : 'check';
 
+  // Share a plain-text receipt via the OS share sheet. Any failure (user
+  // dismisses, no share targets) is swallowed so the button never throws.
+  const shareReceipt = async () => {
+    const lines = [
+      `Zitch receipt`,
+      `${p.type || 'Transaction'}: ${(inflow ? '+' : '-') + money(Math.abs(amount))}`,
+      `Status: ${status}`,
+      p.detail ? `Date: ${p.detail}` : '',
+      `Reference: ${p.reference || '—'}`,
+    ].filter(Boolean);
+    try {
+      await Share.share({ message: lines.join('\n') });
+    } catch {
+      /* user dismissed or share unavailable — no-op */
+    }
+  };
+
   return (
     <Screen>
       <Header title="Transaction details" onBack={() => router.back()} />
@@ -54,7 +71,7 @@ const TxnDetail = () => {
       </View>
 
       <View style={{ marginTop: 16 }}>
-        <Btn label="Share receipt" icon="share" variant="outline" onPress={() => {}} />
+        <Btn label="Share receipt" icon="share" variant="outline" onPress={shareReceipt} />
       </View>
     </Screen>
   );

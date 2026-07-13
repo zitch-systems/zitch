@@ -7,6 +7,7 @@ import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 import { useTheme, font } from '@/lib/theme';
 
 const Register = () => {
@@ -14,7 +15,9 @@ const Register = () => {
   const [isRegistering, setIsRegistering] = useState(false);
   const [form, setForm] = useState({ email: '', phone: '' });
 
-  const valid = form.phone.trim().length >= 10;
+  // Nigerian mobile numbers are 11 digits (the input is capped at 11). Require
+  // the full length so an incomplete number never reaches the OTP endpoint.
+  const valid = form.phone.trim().length === 11;
 
   const handleSignup = async () => {
     if (form.phone.trim() === '') {
@@ -77,8 +80,9 @@ const Register = () => {
         />
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
-        By continuing you agree to Zitch's <Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text> &{' '}
-        <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text>.
+        By continuing you agree to Zitch's{' '}
+        <Link href={TERMS_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text></Link> &{' '}
+        <Link href={PRIVACY_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text></Link>.
       </Text>
 
       <View style={{ marginTop: 26 }}>

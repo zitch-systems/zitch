@@ -150,7 +150,7 @@ const Kyc = () => {
             <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to your phone & email.</Text>
             <Field value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
             <View style={{ height: 10 }} />
-            <Btn label="Confirm BVN" size="md" disabled={busy || bvnOtp.length < 4} onPress={confirmBvn} />
+            <Btn label="Confirm BVN" size="md" disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
             <Text onPress={() => { setBvnSent(false); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text>
           </>
         )}

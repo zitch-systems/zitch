@@ -14,9 +14,12 @@ const NGN_PRESETS = [1000, 5000, 10000, 50000, 100000, 500000];
 
 type Currency = { code: string; name: string; symbol: string; rate: number };
 
-// Format a foreign-currency value: "$1,234.56".
+// Format a foreign-currency value: "$1,234.56". A non-finite value (e.g. a
+// missing/non-numeric rate from the API) renders as "—" instead of "$NaN".
 const fx = (value: number, symbol: string) =>
-  `${symbol}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  Number.isFinite(value)
+    ? `${symbol}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : '—';
 
 // "Mon, 08 Jun 2026 00:02:31 +0000" -> "08 Jun 2026, 00:02 UTC".
 const prettyTime = (s: string) =>
