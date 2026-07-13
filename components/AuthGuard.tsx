@@ -4,6 +4,7 @@ import { Redirect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { isSessionLocked } from '@/lib/session';
 import { Loading } from '@/components/design/Loading';
+import { useTheme } from '@/lib/theme';
 
 type AuthState = 'loading' | 'authed' | 'unauthed';
 
@@ -26,6 +27,7 @@ let lastKnownAuth: AuthState | null = null;
  * rendered is dropped to /signin rather than staying visible until remount.
  */
 const AuthGuard = ({ children }: { children: React.ReactNode }) => {
+  const { c } = useTheme();
   const [state, setState] = useState<AuthState>(lastKnownAuth ?? 'loading');
 
   useEffect(() => {
@@ -58,7 +60,7 @@ const AuthGuard = ({ children }: { children: React.ReactNode }) => {
 
   if (state === 'loading') {
     return (
-      <View style={{ flex: 1, backgroundColor: '#EFF7F5' }}>
+      <View style={{ flex: 1, backgroundColor: c.bg }}>
         <Loading />
       </View>
     );

@@ -6,7 +6,7 @@ import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
-import { Label, ProviderGrid, PlanList, ConfirmSheet } from '@/components/design/flowkit';
+import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -179,7 +179,10 @@ const BuyCable = () => {
       ) : (
         <PlanList plans={plans} value={plan} onPick={setPlan} />
       )}
-      <View style={{ height: 18 }} />
+      <View style={{ height: 14 }} />
+      {/* Balance / insufficient-funds signal, consistent with the other bill
+          screens (buydata, buyelectricity, betting, exams). */}
+      <BalanceHint amount={amount} balance={balance} />
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 

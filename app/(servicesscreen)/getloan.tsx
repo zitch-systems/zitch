@@ -29,7 +29,9 @@ const GetLoan = () => {
   const { c } = useTheme();
   const { reload } = useWallet();
   const [token, setToken] = useState('');
-  const [available, setAvailable] = useState(500000);
+  // Start at 0 so the Hero never advertises a fabricated ₦500,000 eligibility
+  // before /api/loans/status/ returns the user's real available credit.
+  const [available, setAvailable] = useState(0);
   const [amount, setAmount] = useState(100000);
   const [tenure, setTenure] = useState(30);
   const [rate, setRate] = useState(0.045);
@@ -169,6 +171,9 @@ const GetLoan = () => {
         balance={available}
         rows={[['Amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repay', money(repay)]]}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
+        cta={`Confirm loan of ${money(amount)}`}
+        methodTitle="Disbursed to"
+        methodSub="Zitch Wallet · arrives instantly"
       />
 
       <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">

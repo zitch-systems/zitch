@@ -1,8 +1,10 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Share } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import ZIcon from '@/components/design/ZIcon';
 import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
+import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 
 // Full-screen success receipt shown after a completed purchase.
@@ -18,6 +20,36 @@ const Receipt = ({
   onDone: () => void;
 }) => {
   const { c } = useTheme();
+
+  // Plain-text rendering of the whole receipt, reused by Save + Share.
+  const asText = [title, message, '', ...rows.map(([k, v]) => `${k}: ${v}`), '', 'Zitch']
+    .filter((l) => l !== undefined)
+    .join('\n');
+  // The transaction reference row, if the receipt carries one.
+  const refValue = rows.find(([k]) => /ref/i.test(k))?.[1];
+
+  const onSave = async () => {
+    // No image capture available, so "Save" copies the full receipt as text — a
+    // dependable, offline record the user can paste anywhere.
+    await Clipboard.setStringAsync(asText);
+    notify('Saved', 'Receipt copied to clipboard', 'success');
+  };
+  const onShare = async () => {
+    try {
+      await Share.share({ message: asText });
+    } catch {
+      /* user dismissed or share unavailable — no-op */
+    }
+  };
+  const onCopyRef = async () => {
+    await Clipboard.setStringAsync(refValue || asText);
+    notify('Copied', refValue ? 'Reference copied to clipboard' : 'Receipt copied to clipboard', 'success');
+  };
+  const actions: [string, string, () => void][] = [
+    ['download', 'Save', onSave],
+    ['share', 'Share', onShare],
+    ['copy', 'Copy ref', onCopyRef],
+  ];
   return (
     <View style={{ flex: 1, paddingHorizontal: 22 }}>
       <View style={{ flex: 1 }}>
@@ -41,11 +73,17 @@ const Receipt = ({
         </View>
 
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-          {[['download', 'Save'], ['share', 'Share'], ['copy', 'Copy ref']].map(([ic, lb]) => (
-            <View key={ic} style={{ flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line }}>
+          {actions.map(([ic, lb, fn]) => (
+            <Pressable
+              key={ic}
+              onPress={fn}
+              accessibilityRole="button"
+              accessibilityLabel={lb}
+              style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed ? 0.85 : 1 })}
+            >
               <ZIcon name={ic} size={20} color={c.brand} />
               <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
-            </View>
+            </Pressable>
           ))}
         </View>
       </View>

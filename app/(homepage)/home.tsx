@@ -75,13 +75,11 @@ const Home = () => {
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
           <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
           <Pressable onPress={() => router.push('/scan')}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
+          {/* No hardcoded unread count: the app has no notifications-count
+              source, so a fixed "24" badge was always shown and contradicted the
+              notifications screen. Show the plain bell until a real count exists. */}
           <Pressable onPress={() => router.push('/notifications')}>
-            <View>
-              <ZIcon name="bell" size={24} color={c.ink1} />
-              <View style={{ position: 'absolute', top: -6, right: -7, minWidth: 16, height: 16, paddingHorizontal: 4, borderRadius: 9, backgroundColor: c.red, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#fff', fontSize: 10, fontFamily: font.bold }}>24</Text>
-              </View>
-            </View>
+            <ZIcon name="bell" size={24} color={c.ink1} />
           </Pressable>
         </View>
       </View>
