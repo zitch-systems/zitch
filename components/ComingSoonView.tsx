@@ -20,9 +20,6 @@ const ComingSoonView = ({ title = 'Coming Soon', icon = 'spark', note = "We're w
         </View>
         <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1, marginTop: 22 }}>{title}</Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 8, textAlign: 'center', maxWidth: 280, fontFamily: font.regular }}>{note}</Text>
-        <View style={{ marginTop: 16, paddingVertical: 7, paddingHorizontal: 16, borderRadius: 999, backgroundColor: c.surface3 }}>
-          <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink2 }}>Fully designed in handoff →</Text>
-        </View>
       </View>
     </Screen>
   );

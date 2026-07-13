@@ -76,7 +76,7 @@ const Register = () => {
           onChangeText={(e) => setForm({ ...form, email: e })}
           keyboardType="email-address"
           placeholder="you@email.com"
-          prefix={<ZIcon name="remita" size={18} color={c.ink3} />}
+          prefix={<ZIcon name="mail" size={18} color={c.ink3} />}
         />
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
