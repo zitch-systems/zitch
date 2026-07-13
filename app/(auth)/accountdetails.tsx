@@ -132,7 +132,7 @@ const AccountDetails = () => {
       <View style={{ gap: 16 }}>
         <Field label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
-        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
+        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="mail" size={18} color={c.ink3} />} />
         <Field label="Phone" value={form.phone} onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })} keyboardType="number-pad" placeholder={current.phone || '0801 234 5678'} prefix={<ZIcon name="airtime" size={18} color={c.ink3} />} />
       </View>
 
