@@ -27,9 +27,9 @@ const SecuritySetup = () => {
       <Header title="Security" sub="Your account security details" onBack={() => router.back()} />
       {/* Password + PIN route to their CHANGE screens, which require the current
           password / PIN before setting a new one. */}
-      <ZItem icon="lock" title="Password" sub="Change your account password"
+      <ZItem icon="shield" title="Password" sub="Change your account password"
              onPress={() => router.push('/setpassword?change=1' as any)} />
-      <ZItem icon="qr" title="Transaction PIN" sub="Update your payment PIN"
+      <ZItem icon="lock" title="Transaction PIN" sub="Update your payment PIN"
              onPress={() => router.push('/resetpin')} />
       <ZItem icon="fingerprint" title="Biometrics" sub="Face ID / fingerprint sign-in" last
              onPress={() => router.push('/setthumbprint')}

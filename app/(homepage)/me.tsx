@@ -32,7 +32,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { balance, firstName, avatar, showBal, reload: reloadWallet } = useWallet();
+  const { balance, firstName, avatar, showBal, setShowBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [bioTxn, setBioTxn] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
@@ -162,9 +162,12 @@ const Me = () => {
         <Avatar size={50} ring={c.brand} surface={c.surface} uri={avatar} />
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
+          {/* Tier pill sits on the screen bg (no surface). The amber tint goes
+              dark over the near-black dark bg, so a dark-brown ink is only
+              legible in light mode — use the bright amber token in dark. */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(245,166,35,.16)', alignSelf: 'flex-start' }}>
-            <ZIcon name="check" size={11} color="#B27400" stroke={2.6} />
-            <Text style={{ color: '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
+            <ZIcon name="check" size={11} color={theme === 'dark' ? c.amber : '#B27400'} stroke={2.6} />
+            <Text style={{ color: theme === 'dark' ? c.amber : '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
           </View>
         </View>
         <Pressable onPress={() => router.push('/settings')} style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
@@ -174,10 +177,10 @@ const Me = () => {
 
       {/* balance */}
       <View style={{ paddingHorizontal: 20, paddingTop: 12 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+        <Pressable onPress={() => setShowBal(!showBal)} hitSlop={12} style={{ flexDirection: 'row', alignItems: 'center', gap: 7, alignSelf: 'flex-start' }}>
           <Text style={{ color: c.ink3, fontSize: 13, fontFamily: font.regular }}>Total balance</Text>
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
-        </View>
+        </Pressable>
         <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
           {showBal ? money(balance) : '₦ ••••••'}
         </NText>

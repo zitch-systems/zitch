@@ -5,6 +5,7 @@ import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
+import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -21,6 +22,7 @@ const Betting = () => {
   const { balance, reload } = useWallet();
   const [token, setToken] = useState('');
   const [platforms, setPlatforms] = useState<Platform[]>([]);
+  const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState('');
   const [userId, setUserId] = useState('');
   const [amt, setAmt] = useState('');
@@ -35,7 +37,8 @@ const Betting = () => {
     fetch(`${baseUrl}/api/betting/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then((r) => r.json())
       .then((res) => { if (Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoadingList(false));
   }, []);
 
   const platform = platforms.find((p) => p.code === selected);
@@ -85,7 +88,13 @@ const Betting = () => {
       <Header title="Betting" sub="Fund your betting wallet instantly" onBack={() => router.back()} />
 
       <Label>Select platform</Label>
-      <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={setSelected} cols={3} />
+      {loadingList ? (
+        <View style={{ marginBottom: 16 }}><Loading full={false} /></View>
+      ) : platforms.length === 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 16 }}>No betting platforms available right now. Please try again later.</Text>
+      ) : (
+        <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={setSelected} cols={3} />
+      )}
 
       <Field
         label="User ID"

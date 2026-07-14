@@ -164,8 +164,8 @@ const FixedSave = () => {
                 onPress={() => setDays(d)}
                 style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, paddingHorizontal: 16, borderRadius: 14, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
               >
-                <Text style={{ fontFamily: font.bold, color: on ? '#fff' : c.ink1 }}>{d} days</Text>
-                <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: on ? 'rgba(255,255,255,.85)' : c.brand }}>{((rates[d] ?? 0) * 100).toFixed(0)}%</Text>
+                <Text style={{ fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink1 }}>{d} days</Text>
+                <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: on ? c.inkOnBrand : c.brand, opacity: on ? 0.8 : 1 }}>{((rates[d] ?? 0) * 100).toFixed(0)}%</Text>
               </Pressable>
             </View>
           );

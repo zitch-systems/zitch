@@ -38,8 +38,8 @@ const Setup = () => {
         Complete your password & PIN setup to secure your account
       </Text>
 
-      <Row icon="lock" title="Password" sub="Set your account password" to="/setpassword" />
-      <Row icon="qr" title="Transaction PIN" sub="Authorize payments securely" to="/setpin" />
+      <Row icon="shield" title="Password" sub="Set your account password" to="/setpassword" />
+      <Row icon="lock" title="Transaction PIN" sub="Authorize payments securely" to="/setpin" />
       <Row icon="fingerprint" title="Thumbprint" sub="Enable biometric sign-in" to="/setthumbprint" />
     </Screen>
   );

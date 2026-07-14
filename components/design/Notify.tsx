@@ -29,12 +29,6 @@ export function notify(title: string, message?: string, kind?: Kind): void {
 export const notifySuccess = (title: string, message?: string) => notify(title, message, 'success');
 export const notifyError = (title: string, message?: string) => notify(title, message, 'error');
 
-const STYLE: Record<Kind, { icon: string; color: string; tint: string }> = {
-  success: { icon: 'check', color: '#0B7A43', tint: 'rgba(11,122,67,.12)' },
-  error: { icon: 'x', color: '#C42B2B', tint: 'rgba(196,43,43,.12)' },
-  info: { icon: 'bell', color: '#0FA295', tint: 'rgba(15,162,149,.12)' },
-};
-
 export const NotifyHost = () => {
   const { c } = useTheme();
   const [item, setItem] = useState<Item | null>(null);
@@ -43,6 +37,15 @@ export const NotifyHost = () => {
     _emit = setItem;
     return () => { _emit = null; };
   }, []);
+
+  // Icon colours come from the theme tokens (bright in both light AND dark) so
+  // the success/error mark never goes muddy on the near-black dark surface —
+  // the previous hardcoded dark-green/red lost contrast in dark mode.
+  const STYLE: Record<Kind, { icon: string; color: string; tint: string }> = {
+    success: { icon: 'check', color: c.lime, tint: 'rgba(0,181,29,.14)' },
+    error: { icon: 'x', color: c.red, tint: 'rgba(255,59,59,.14)' },
+    info: { icon: 'bell', color: c.brand, tint: 'rgba(15,162,149,.14)' },
+  };
 
   if (!item) return null;
   const s = STYLE[item.kind];
@@ -69,7 +72,7 @@ export const NotifyHost = () => {
             </Text>
           ) : null}
           <Pressable onPress={close} style={{ marginTop: 22, alignSelf: 'stretch', height: 50, borderRadius: 14, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ color: '#fff', fontSize: 15, fontFamily: font.bold }}>OK</Text>
+            <Text style={{ color: c.inkOnBrand, fontSize: 15, fontFamily: font.bold }}>OK</Text>
           </Pressable>
         </Pressable>
       </Pressable>

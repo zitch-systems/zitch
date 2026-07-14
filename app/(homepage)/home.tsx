@@ -73,12 +73,12 @@ const Home = () => {
           Hi, {firstName || 'there'}
         </Text>
         <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <Pressable onPress={() => router.push('/support')}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
-          <Pressable onPress={() => router.push('/scan')}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/support')} hitSlop={10}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
+          <Pressable onPress={() => router.push('/scan')} hitSlop={10}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
           {/* No hardcoded unread count: the app has no notifications-count
               source, so a fixed "24" badge was always shown and contradicted the
               notifications screen. Show the plain bell until a real count exists. */}
-          <Pressable onPress={() => router.push('/notifications')}>
+          <Pressable onPress={() => router.push('/notifications')} hitSlop={10}>
             <ZIcon name="bell" size={24} color={c.ink1} />
           </Pressable>
         </View>
@@ -102,7 +102,7 @@ const Home = () => {
           <NText style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
             {showBal ? money(balance) : '₦ ••••••'}
           </NText>
-          <Pressable onPress={() => setShowBal(!showBal)}>
+          <Pressable onPress={() => setShowBal(!showBal)} hitSlop={12}>
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>

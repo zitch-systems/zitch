@@ -4,6 +4,7 @@ import { router } from 'expo-router';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken } from '@/lib/secureStore';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
@@ -23,6 +24,7 @@ const Exams = () => {
   const { balance, reload } = useWallet();
   const [token, setToken] = useState('');
   const [exams, setExams] = useState<Exam[]>([]);
+  const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState('');
   const [qty, setQty] = useState(1);
   const [phone, setPhone] = useState('');
@@ -37,7 +39,8 @@ const Exams = () => {
     fetch(`${baseUrl}/api/exams/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       .then((r) => r.json())
       .then((res) => { if (Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoadingList(false));
   }, []);
 
   const exam = exams.find((e) => e.code === selected);
@@ -87,6 +90,11 @@ const Exams = () => {
       <Header title="Exams · JAMB / WAEC" onBack={() => router.back()} />
 
       <Label>Select exam</Label>
+      {loadingList ? (
+        <View style={{ marginBottom: 16 }}><Loading full={false} /></View>
+      ) : exams.length === 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 16 }}>No exams available right now. Please try again later.</Text>
+      ) : (
       <View style={{ gap: 10, marginBottom: 16 }}>
         {exams.map((e) => {
           const on = selected === e.code;
@@ -106,6 +114,7 @@ const Exams = () => {
           );
         })}
       </View>
+      )}
 
       <Label>Quantity</Label>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 16 }}>
