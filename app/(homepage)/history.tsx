@@ -11,11 +11,19 @@ const History = () => {
   const { c } = useTheme();
   const { txns, reload } = useWallet();
   const [active, setActive] = useState('All');
+  const [refreshing, setRefreshing] = useState(false);
 
   // Pull the latest ledger on focus — otherwise History shows only whatever was
   // cached when the wallet last loaded (a transfer made elsewhere wouldn't appear
   // until some other screen happened to refresh).
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  // Pull-to-refresh: re-fetch the ledger while waiting on a pending transfer to
+  // settle, instead of leaving/re-entering the screen to force a reload.
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await reload(); } finally { setRefreshing(false); }
+  }, [reload]);
 
   const filtered = txns.filter((t) => {
     if (active === 'All') return true;
@@ -28,7 +36,7 @@ const History = () => {
   });
 
   return (
-    <Screen tab>
+    <Screen tab onRefresh={onRefresh} refreshing={refreshing}>
       <Header title="Transaction History" onBack={() => router.back()} />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 14 }}>
         {FILTERS.map((f) => {

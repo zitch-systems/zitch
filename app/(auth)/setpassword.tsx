@@ -100,6 +100,8 @@ const SetPassword = () => {
             onChangeText={(e) => setForm({ ...form, current: e })}
             secureTextEntry
             placeholder="Enter current password"
+            autoComplete="current-password"
+            textContentType="password"
             prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
           />
         )}
@@ -109,6 +111,8 @@ const SetPassword = () => {
           onChangeText={(e) => setForm({ ...form, password1: e })}
           secureTextEntry
           placeholder={isChange ? 'Enter new password' : 'Enter password'}
+          autoComplete="new-password"
+          textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
@@ -117,6 +121,8 @@ const SetPassword = () => {
           onChangeText={(e) => setForm({ ...form, password2: e })}
           secureTextEntry
           placeholder="Re-enter password"
+          autoComplete="new-password"
+          textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>

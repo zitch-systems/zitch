@@ -115,6 +115,8 @@ const Signin = () => {
           onChangeText={(e) => setForm({ ...form, email: e })}
           keyboardType="email-address"
           placeholder="Email or phone number"
+          autoComplete="username"
+          textContentType="username"
           prefix={<ZIcon name="user" size={18} color={c.ink3} />}
         />
         <Field
@@ -123,6 +125,8 @@ const Signin = () => {
           onChangeText={(e) => setForm({ ...form, password: e })}
           secureTextEntry
           placeholder="Enter password"
+          autoComplete="current-password"
+          textContentType="password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>

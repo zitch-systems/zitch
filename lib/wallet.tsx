@@ -53,9 +53,9 @@ type WalletValue = {
   loading: boolean;
   showBal: boolean;
   setShowBal: (v: boolean) => void;
-  reload: () => void;
+  reload: () => Promise<void>;
   linked: LinkedAccount[];
-  reloadLinked: () => void;
+  reloadLinked: () => Promise<void>;
 };
 
 const WalletContext = createContext<WalletValue>({
@@ -68,9 +68,9 @@ const WalletContext = createContext<WalletValue>({
   loading: true,
   showBal: true,
   setShowBal: () => {},
-  reload: () => {},
+  reload: () => Promise.resolve(),
   linked: [],
-  reloadLinked: () => {},
+  reloadLinked: () => Promise.resolve(),
 });
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
