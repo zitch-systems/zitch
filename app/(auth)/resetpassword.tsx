@@ -68,6 +68,8 @@ const ResetPassword = () => {
           keyboardType="number-pad"
           placeholder="6-digit code"
           maxLength={6}
+          autoComplete="sms-otp"
+          textContentType="oneTimeCode"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
@@ -76,6 +78,8 @@ const ResetPassword = () => {
           onChangeText={setP1}
           secureTextEntry
           placeholder="Enter new password"
+          autoComplete="new-password"
+          textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
@@ -84,6 +88,8 @@ const ResetPassword = () => {
           onChangeText={setP2}
           secureTextEntry
           placeholder="Re-enter new password"
+          autoComplete="new-password"
+          textContentType="newPassword"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>

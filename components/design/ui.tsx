@@ -11,6 +11,8 @@ import {
   ViewStyle,
   TextStyle,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
   useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -68,9 +70,17 @@ export const Screen = ({
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
       <AmbientBackground />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        {/* Lift content above the keyboard on iOS so a focused field / its submit
+            button is never hidden behind it (Android handles this via the OS
+            softInputMode). */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
+            // "handled" so the FIRST tap on a button while the keyboard is open
+            // activates it, instead of being swallowed to just dismiss the keyboard
+            // (which forced a double-tap on every form's submit button).
+            keyboardShouldPersistTaps="handled"
             refreshControl={
               onRefresh
                 ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.brand} colors={[c.brand]} />
@@ -88,6 +98,7 @@ export const Screen = ({
             <View style={{ flex: 1, width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </View>
         )}
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -337,6 +348,12 @@ export const Field = ({
   editable = true,
   pointerEvents,
   autoCapitalize,
+  autoComplete,
+  textContentType,
+  returnKeyType,
+  onSubmitEditing,
+  autoCorrect,
+  inputRef,
   loading = false,
 }: {
   label?: string;
@@ -351,6 +368,13 @@ export const Field = ({
   editable?: boolean;
   pointerEvents?: 'none' | 'auto' | 'box-none';
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+  // Autofill / SMS-autoread / keyboard-chaining pass-throughs (opt-in per field).
+  autoComplete?: any;
+  textContentType?: any;
+  returnKeyType?: 'done' | 'go' | 'next' | 'search' | 'send';
+  onSubmitEditing?: () => void;
+  autoCorrect?: boolean;
+  inputRef?: React.Ref<TextInput>;
   // While true, the input area shows the small branded Zitch loader in place of
   // the value/placeholder (e.g. the Send-money bank field while auto-detecting).
   loading?: boolean;
@@ -358,6 +382,12 @@ export const Field = ({
   const { c } = useTheme();
   const [show, setShow] = useState(false);
   const secure = !!secureTextEntry && !show;
+  // Passwords/PINs and emails must never be auto-capitalized or auto-corrected —
+  // a silently capitalized first character is a classic "wrong password" trap.
+  // Default those off unless the caller explicitly overrides.
+  const isEmail = keyboardType === 'email-address';
+  const capitalize = autoCapitalize ?? (secureTextEntry || isEmail ? 'none' : undefined);
+  const correct = autoCorrect ?? (secureTextEntry || isEmail ? false : undefined);
   return (
     <View>
       {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text>}
@@ -387,6 +417,7 @@ export const Field = ({
           </View>
         ) : (
         <TextInput
+          ref={inputRef}
           editable={editable}
           value={value}
           onChangeText={onChangeText}
@@ -395,7 +426,12 @@ export const Field = ({
           keyboardType={keyboardType}
           secureTextEntry={secure}
           maxLength={maxLength}
-          autoCapitalize={autoCapitalize}
+          autoCapitalize={capitalize}
+          autoCorrect={correct}
+          autoComplete={autoComplete}
+          textContentType={textContentType}
+          returnKeyType={returnKeyType}
+          onSubmitEditing={onSubmitEditing}
           style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
         />
         )}
@@ -429,27 +465,36 @@ export const Sheet = ({
   const maxW = width >= 600 ? 560 : undefined;
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)' }} />
-      <View
-        style={{
-          width: '100%',
-          maxWidth: maxW,
-          alignSelf: 'center',
-          backgroundColor: c.surface,
-          borderTopLeftRadius: 28,
-          borderTopRightRadius: 28,
-          padding: 20,
-          paddingTop: 10,
-          // Clear the home indicator / gesture bar so the sheet's bottom content
-          // (the PIN keypad's last row) isn't flush against the screen edge.
-          paddingBottom: 26 + insets.bottom,
-          maxHeight: '90%',
-        }}
+      {/* Ride the panel above the keyboard so a field inside the sheet (bank
+          search, fund amount) and its button aren't covered while typing. */}
+      <KeyboardAvoidingView
+        style={{ flex: 1, justifyContent: 'flex-end' }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
-        {title && <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginBottom: 14 }}>{title}</Text>}
-        <ScrollView showsVerticalScrollIndicator={false}>{children}</ScrollView>
-      </View>
+        <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)' }} />
+        <View
+          style={{
+            width: '100%',
+            maxWidth: maxW,
+            alignSelf: 'center',
+            backgroundColor: c.surface,
+            borderTopLeftRadius: 28,
+            borderTopRightRadius: 28,
+            padding: 20,
+            paddingTop: 10,
+            // Clear the home indicator / gesture bar so the sheet's bottom content
+            // (the PIN keypad's last row) isn't flush against the screen edge.
+            paddingBottom: 26 + insets.bottom,
+            maxHeight: '90%',
+          }}
+        >
+          <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
+          {title && <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginBottom: 14 }}>{title}</Text>}
+          {/* "handled": first tap on a row/button inside the sheet activates it
+              instead of only dismissing the keyboard. */}
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView>
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 };
