@@ -47,7 +47,7 @@ const History = () => {
               onPress={() => setActive(f)}
               style={{ paddingVertical: 8, paddingHorizontal: 16, borderRadius: 999, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
             >
-              <Text style={{ fontSize: 13, fontFamily: font.semibold, color: on ? '#fff' : c.ink2 }}>{f}</Text>
+              <Text style={{ fontSize: 13, fontFamily: font.semibold, color: on ? c.inkOnBrand : c.ink2 }}>{f}</Text>
             </Pressable>
           );
         })}

@@ -61,7 +61,7 @@ const Wallet = () => {
           <NText style={{ fontSize: 28, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
             {showBal ? money(balance) : '₦ ••••••'}
           </NText>
-          <Pressable onPress={() => setShowBal(!showBal)}>
+          <Pressable onPress={() => setShowBal(!showBal)} hitSlop={12}>
             <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
           </Pressable>
         </View>

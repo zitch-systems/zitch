@@ -131,7 +131,7 @@ const GetLoan = () => {
                 onPress={() => !disabled && setAmount(p)}
                 style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line, opacity: disabled ? 0.4 : 1 }}
               >
-                <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{(p / 1000)}k</Text>
+                <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{(p / 1000)}k</Text>
               </Pressable>
             </View>
           );
@@ -144,7 +144,7 @@ const GetLoan = () => {
           const on = tenure === t;
           return (
             <Pressable key={t} onPress={() => setTenure(t)} style={{ flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 14, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}>
-              <Text style={{ fontFamily: font.bold, color: on ? '#fff' : c.ink1 }}>{t} days</Text>
+              <Text style={{ fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink1 }}>{t} days</Text>
             </Pressable>
           );
         })}
