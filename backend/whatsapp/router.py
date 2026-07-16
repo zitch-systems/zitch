@@ -72,11 +72,15 @@ def _local_phone(msisdn: str) -> str:
 # screen and the receipt. Billers without a logo asset (electricity discos) and
 # transfers send plain text — the Zitch brand shows as the WhatsApp Business
 # profile picture in the chat header, not as a substitute logo in messages.
+# The network logos use wide "-wa" banner variants: WhatsApp upscales any image
+# to the chat-bubble width, so a square logo renders as a big square. The banners
+# are short/wide (~2.6:1) so they render as a compact strip. Cable logos are
+# already wide banners, so they keep their originals.
 PROVIDER_LOGOS = {
-    "mtn": "https://zitch.ng/assets/providers/mtn.png",
-    "glo": "https://zitch.ng/assets/providers/glo.png",
-    "airtel": "https://zitch.ng/assets/providers/airtel.png",
-    "9mobile": "https://zitch.ng/assets/providers/9mobile.png",
+    "mtn": "https://zitch.ng/assets/providers/mtn-wa.png",
+    "glo": "https://zitch.ng/assets/providers/glo-wa.png",
+    "airtel": "https://zitch.ng/assets/providers/airtel-wa.png",
+    "9mobile": "https://zitch.ng/assets/providers/9mobile-wa.png",
     "gotv": "https://zitch.ng/assets/providers/gotv.png",
     "dstv": "https://zitch.ng/assets/providers/dstv.png",
     "startimes": "https://zitch.ng/assets/providers/startimes.png",
