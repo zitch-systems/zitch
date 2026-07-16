@@ -49,7 +49,7 @@ class Wallet(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.user} Â· â‚¦{self.balance}"
+        return f"{self.user} · ₦{self.balance}"
 
 
 class Transaction(models.Model):
@@ -128,7 +128,7 @@ class Transaction(models.Model):
 
     def __str__(self):
         sign = "+" if self.direction == self.IN else "-"
-        return f"{self.service} {sign}â‚¦{self.amount} ({self.transaction_status})"
+        return f"{self.service} {sign}₦{self.amount} ({self.transaction_status})"
 
 
 class FundingIntent(models.Model):
@@ -157,7 +157,7 @@ class FundingIntent(models.Model):
         ordering = ["-created"]
 
     def __str__(self):
-        return f"{self.user} Â· â‚¦{self.amount} Â· {self.status}"
+        return f"{self.user} · ₦{self.amount} · {self.status}"
 
 
 class CurrencyWallet(models.Model):
@@ -180,7 +180,7 @@ class CurrencyWallet(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.user} Â· {self.currency} {self.balance}"
+        return f"{self.user} · {self.currency} {self.balance}"
 
 
 class FxQuote(models.Model):

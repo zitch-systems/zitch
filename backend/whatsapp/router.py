@@ -1,6 +1,6 @@
-﻿"""Deterministic WhatsApp router (slice 1).
+"""Deterministic WhatsApp router (slice 1).
 
-No LLM here â€” keyword + numbered-menu + slot-filling that drives the same money
+No LLM here — keyword + numbered-menu + slot-filling that drives the same money
 services the app uses (balance, NGN bank transfer with name-enquiry, confirm,
 PIN, idempotency). The LLM intent layer (later) sits *in front* of this and
 hands it the same structured actions, so money never depends on the AI being up.
@@ -38,20 +38,20 @@ from .providers import flows_live, send_buttons, send_flow, send_image, send_lis
 User = get_user_model()
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
-PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec Â§7)
+PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
 
 MENU = (
-    "ðŸ’š *Zitch* â€” what would you like to do?\n\n"
-    "1ï¸âƒ£  ðŸ’° Check balance\n"
-    "2ï¸âƒ£  ðŸ’¸ Send money\n"
-    "3ï¸âƒ£  ðŸ“± Airtime / Data\n"
-    "4ï¸âƒ£  ðŸ’¡ Pay a bill\n"
-    "5ï¸âƒ£  ðŸ’± Convert currency\n"
-    "6ï¸âƒ£  ðŸ¦ Add money\n\n"
+    "💚 *Zitch* — what would you like to do?\n\n"
+    "1️⃣  💰 Check balance\n"
+    "2️⃣  💸 Send money\n"
+    "3️⃣  📱 Airtime / Data\n"
+    "4️⃣  💡 Pay a bill\n"
+    "5️⃣  💱 Convert currency\n"
+    "6️⃣  🏦 Add money\n\n"
     "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
 UNLINKED = (
-    "ðŸ‘‹ Welcome to *Zitch* â€” banking right here on WhatsApp.\n\n"
+    "👋 Welcome to *Zitch* — banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
 )
 ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
@@ -70,7 +70,7 @@ def _local_phone(msisdn: str) -> str:
 # fetches these when we send an image message. Function-level prompts use emoji
 # icons; once a *specific* biller is chosen we show its real logo on the confirm
 # screen and the receipt. Billers without a logo asset (electricity discos) and
-# transfers send plain text â€” the Zitch brand shows as the WhatsApp Business
+# transfers send plain text — the Zitch brand shows as the WhatsApp Business
 # profile picture in the chat header, not as a substitute logo in messages.
 PROVIDER_LOGOS = {
     "mtn": "https://zitch.ng/assets/providers/mtn.png",
@@ -99,7 +99,7 @@ def reply(msisdn: str, text: str) -> None:
 
 def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
     """Send a logo image with a text caption (recording the caption as the OUT
-    row). With no image_url â€” or if the media send fails â€” it sends plain text, so
+    row). With no image_url — or if the media send fails — it sends plain text, so
     a reply is never lost when a logo is missing or briefly unreachable."""
     sent = bool(image_url) and send_image(msisdn, image_url, caption).get("success", False)
     if not sent:
@@ -139,7 +139,7 @@ def reply_list(msisdn: str, body: str, rows, button_label: str = "Choose") -> No
     (row ids = the text the router expects), mock/dev sends the equivalent
     numbered text. The OUT log row records the fallback text either way."""
     fallback = body + "\n" + "\n".join(
-        f"{rid}  {title}" + (f" â€” {desc}" if desc else "") for rid, title, desc in rows)
+        f"{rid}  {title}" + (f" — {desc}" if desc else "") for rid, title, desc in rows)
     from .providers import wa_live
     if wa_live():
         sent = send_list(msisdn, body, rows, button_label=button_label)
@@ -164,7 +164,7 @@ def reply_buttons(msisdn: str, body: str, buttons) -> None:
 
 
 def send_menu(msisdn: str) -> None:
-    """The main menu as a plain numbered list â€” reply with the number (1â€“6) or
+    """The main menu as a plain numbered list — reply with the number (1–6) or
     type the action (e.g. \"send 5k\"). Kept as text rather than a tappable list
     so it reads as the classic numbered menu."""
     reply(msisdn, MENU)
@@ -177,30 +177,30 @@ def _ask_network(msisdn: str) -> None:
 
 
 def _receipt(title: str, lines: list) -> str:
-    """A structured receipt block â€” the confirmation artifact users screenshot."""
+    """A structured receipt block — the confirmation artifact users screenshot."""
     body = "\n".join(f"{k}: {v}" for k, v in lines)
-    return f"ðŸ§¾ *{title}*\nâ”â”â”â”â”â”â”â”â”â”â”â”\n{body}\nâ”â”â”â”â”â”â”â”â”â”â”â”\nStatus: âœ… Successful"
+    return f"🧾 *{title}*\n━━━━━━━━━━━━\n{body}\n━━━━━━━━━━━━\nStatus: ✅ Successful"
 
 
 def _flow_summary(pa: PendingAction) -> str:
-    """One-line human summary of a pending money action â€” shown on the secure
+    """One-line human summary of a pending money action — shown on the secure
     Flow's PIN screen and reused as the Flow message body."""
     p = pa.payload
     at = pa.action_type
     try:
         if at == "transfer":
             return (f"Send {_money(Decimal(p['amount']))} to {p.get('name', 'recipient').upper()}"
-                    f" Â· {p.get('bank_name', '')} {p.get('account', '')}".rstrip())
+                    f" · {p.get('bank_name', '')} {p.get('account', '')}".rstrip())
         if at == "airtime":
-            return f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime â†’ {p.get('phone', '')}"
+            return f"{_money(Decimal(p['amount']))} {NETWORK_NAMES.get(p.get('net', ''), '')} airtime → {p.get('phone', '')}"
         if at == "data":
             return (f"{p.get('plan_name', 'Data')} ({NETWORK_NAMES.get(p.get('net', ''), '')})"
-                    f" â†’ {p.get('phone', '')} Â· {_money(Decimal(p['price']))}")
+                    f" → {p.get('phone', '')} · {_money(Decimal(p['price']))}")
         if at == "electricity":
-            return f"{_money(Decimal(p['amount']))} {DISCO_NAMES.get(p.get('disco', ''), '')} Â· meter {p.get('meter', '')}"
+            return f"{_money(Decimal(p['amount']))} {DISCO_NAMES.get(p.get('disco', ''), '')} · meter {p.get('meter', '')}"
         if at == "cable":
             return (f"{CABLE_NAMES.get(p.get('prov', ''), '')} {p.get('plan_name', '')}"
-                    f" Â· card {p.get('iuc', '')} Â· {_money(Decimal(p['price']))}")
+                    f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
         if at == "convert":
             return "Confirm your currency conversion"
     except (KeyError, InvalidOperation):
@@ -226,10 +226,10 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
 def _arm_confirm(pa: PendingAction, user) -> None:
     """Move a money flow to its confirm step. Preference, most-secure first:
 
-    1. A WhatsApp Flow (secure PIN pad) when configured â€” the PIN is typed into a
+    1. A WhatsApp Flow (secure PIN pad) when configured — the PIN is typed into a
        native masked field and submitted ENCRYPTED to our endpoint, so the chat
        never carries it at all.
-    2. A single-use 6-digit SMS code (live SMS, no Flow) â€” the chat carries a code
+    2. A single-use 6-digit SMS code (live SMS, no Flow) — the chat carries a code
        that's worthless after one use / 5 minutes, never the PIN.
     3. The PIN in chat (dev/mock, neither available) so flows never brick."""
     if flows_live() and _send_pin_flow(pa, user):
@@ -246,7 +246,7 @@ def _arm_confirm(pa: PendingAction, user) -> None:
 
 def _confirm_prompt(pa: PendingAction) -> str:
     if pa.payload.get("otp_hash"):
-        return "ðŸ” Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". (Never type your PIN here.)"
+        return "🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". (Never type your PIN here.)"
     return "Reply with your PIN to confirm, or \"cancel\"."
 
 
@@ -255,7 +255,7 @@ def active_link_for(msisdn: str) -> WhatsAppLink | None:
 
 
 def is_awaiting_pin(msisdn: str) -> bool:
-    """True if the current flow expects a PIN next â€” so the webhook masks it.
+    """True if the current flow expects a PIN next — so the webhook masks it.
     Covers an in-progress money flow AND account onboarding (where the user sets
     a PIN in chat), so neither PIN is ever written to the message log in clear."""
     pa = _current_action(msisdn)
@@ -267,15 +267,15 @@ def is_awaiting_pin(msisdn: str) -> bool:
 
 def is_awaiting_bvn(msisdn: str) -> bool:
     """True if the current flow expects a BVN next (the in-chat virtual-account
-    onboarding) â€” so the webhook masks it and the BVN never reaches the message
+    onboarding) — so the webhook masks it and the BVN never reaches the message
     log in clear, the same protection PINs get."""
     pa = _current_action(msisdn)
     return bool(pa and pa.action_type == "add_account" and pa.state == "bvn")
 
 
 def parse_amount(text: str) -> Decimal | None:
-    """Nigerian shorthand â†’ amount. '5k'â†’5000, '2m'â†’2_000_000, '1,500'â†’1500."""
-    t = text.strip().lower().replace(",", "").replace("â‚¦", "").replace("ngn", "").strip()
+    """Nigerian shorthand → amount. '5k'→5000, '2m'→2_000_000, '1,500'→1500."""
+    t = text.strip().lower().replace(",", "").replace("₦", "").replace("ngn", "").strip()
     m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([km])?", t)
     if not m:
         return None
@@ -288,7 +288,7 @@ def parse_amount(text: str) -> Decimal | None:
 
 
 def _money(amount: Decimal) -> str:
-    return f"â‚¦{amount:,.2f}"
+    return f"₦{amount:,.2f}"
 
 
 # --------------------------------------------------------------------------- #
@@ -324,7 +324,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
 
     # A frozen/suspended account is blocked on WhatsApp too. The app/admin gate
     # frozen users at the token layer, but WhatsApp auth is link-bound (not token),
-    # so without this a frozen fraud account could keep transacting over chat â€”
+    # so without this a frozen fraud account could keep transacting over chat —
     # freeze is the primary incident-response lever and must cover every surface.
     if not user.is_active:
         _clear_actions(msisdn)
@@ -335,7 +335,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
         if link.marketing_opt_in:
             link.marketing_opt_in = False
             link.save(update_fields=["marketing_opt_in"])
-        return reply(msisdn, "Done â€” you're unsubscribed from Zitch promotions. Reply \"menu\" to keep banking.")
+        return reply(msisdn, "Done — you're unsubscribed from Zitch promotions. Reply \"menu\" to keep banking.")
 
     # Human handover: the bot stays silent; the agent replies from the console.
     convo = ConversationState.for_msisdn(msisdn)
@@ -346,7 +346,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
         _clear_actions(msisdn)
         return reply(msisdn, "Okay, cancelled. Reply \"menu\" for options.")
 
-    # An in-progress flow consumes the message before any fresh command â€”
+    # An in-progress flow consumes the message before any fresh command —
     # except an explicit menu/help reset.
     if low in ("menu", "hi", "hello", "start", "help"):
         _clear_actions(msisdn)
@@ -369,20 +369,20 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low == "data":
         return _start_data(user, msisdn)
     if low == "3":
-        return reply(msisdn, "Reply \"airtime\" or \"data\".")
+        return _start_service_menu(user, msisdn, "airtime_data")
     if low in ("electricity", "light", "nepa", "power"):
         return _start_electricity(user, msisdn)
     if low in ("cable", "tv", "dstv", "gotv", "startimes"):
         return _start_cable(user, msisdn)
     if low in ("4", "bill", "bills", "pay bill"):
-        return reply(msisdn, "Reply \"electricity\" or \"cable\".")
+        return _start_service_menu(user, msisdn, "bill")
     if low in ("5", "convert", "conversion"):
         return _start_convert(user, msisdn)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
         return
-    # Free-form text: let the AI route it (when active) â€” but the deterministic
+    # Free-form text: let the AI route it (when active) — but the deterministic
     # paths above always win, so core flows never depend on the AI being up.
     if ai_active(link, convo):
         intent = ai.extract_intent(text)
@@ -415,11 +415,11 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     low = raw.lower()
 
     # 2. Existing account: bind via the app-issued LINK code. Bind only if the
-    # code arrives from the number on the user's Zitch account â€” the code is shown
+    # code arrives from the number on the user's Zitch account — the code is shown
     # in plaintext in the app, so without this a leaked/shoulder-surfed code lets
     # an attacker's WhatsApp claim the victim's account (SIM-swap protection).
-    # Compare on the national significant number (last 10 digits) so local (080â€¦)
-    # and international (23480â€¦) forms match.
+    # Compare on the national significant number (last 10 digits) so local (080…)
+    # and international (23480…) forms match.
     code = re.sub(r"[^A-Z0-9]", "", raw.upper().replace("LINK ", "", 1))
     link = (
         WhatsAppLink.objects.filter(
@@ -438,26 +438,26 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         link.linked_at = timezone.now()
         link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
         name = (link.user.first_name or "there").strip()
-        return reply(msisdn, f"âœ… *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
+        return reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
 
     # 3. Brand-new number: offer to create an account or link an existing one.
     if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started"):
         return _start_onboarding(msisdn)
     if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in"):
-        return reply(msisdn, "To connect an existing account, open the Zitch app â†’ *Settings â†’ Link WhatsApp*, get your code, and send it here.")
+        return reply(msisdn, "To connect an existing account, open the Zitch app → *Settings → Link WhatsApp*, get your code, and send it here.")
 
     # 4. Default welcome (with the create/link choices).
     return reply(msisdn, UNLINKED)
 
 
 # --------------------------------------------------------------------------- #
-# onboarding (create a Zitch account from WhatsApp) â€” phone-only Tier 1; BVN in
+# onboarding (create a Zitch account from WhatsApp) — phone-only Tier 1; BVN in
 # the app unlocks sending. The PIN is set in chat (masked in the log) and stored
 # hashed, never in clear.
 # --------------------------------------------------------------------------- #
 def _start_onboarding(msisdn: str) -> None:
     if User.objects.filter(phone=_local_phone(msisdn)).exists():
-        return reply(msisdn, "This number already has a Zitch account. Open the app â†’ *Settings â†’ Link WhatsApp* to connect it here.")
+        return reply(msisdn, "This number already has a Zitch account. Open the app → *Settings → Link WhatsApp* to connect it here.")
     WaOnboarding.objects.update_or_create(
         msisdn=msisdn,
         defaults={"step": "first_name", "payload": {}, "expires_at": timezone.now() + ONBOARD_TTL},
@@ -475,7 +475,7 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     val = text.strip()
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
-        return reply(msisdn, "No problem â€” signup cancelled. Reply *1* to start again anytime.")
+        return reply(msisdn, "No problem — signup cancelled. Reply *1* to start again anytime.")
     if ob.step == "first_name":
         if len(val) < 2:
             return reply(msisdn, "Please enter your first name.")
@@ -487,18 +487,18 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
             return reply(msisdn, "Please enter your last name.")
         ob.payload["last_name"] = val[:40]
         _onboard_to(ob, "pin")
-        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits â€” keep it secret).")
+        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
     if ob.step == "pin":
         if not re.fullmatch(r"\d{4}", val):
             return reply(msisdn, "Your PIN must be exactly 4 digits. Try again.")
         ob.payload["pin_hash"] = make_password(val)  # never store the raw PIN
         _onboard_to(ob, "pin_confirm")
-        return reply(msisdn, "Great â€” re-enter your *4-digit PIN* to confirm.")
+        return reply(msisdn, "Great — re-enter your *4-digit PIN* to confirm.")
     if ob.step == "pin_confirm":
         if not re.fullmatch(r"\d{4}", val) or not check_password(val, ob.payload.get("pin_hash", "")):
             ob.payload["pin_hash"] = ""
             _onboard_to(ob, "pin")
-            return reply(msisdn, "Those didn't match. Let's set it again â€” create your *4-digit PIN*.")
+            return reply(msisdn, "Those didn't match. Let's set it again — create your *4-digit PIN*.")
         return _finish_onboarding(ob, msisdn, val)
     _clear_onboarding(msisdn)
     return reply(msisdn, UNLINKED)
@@ -510,7 +510,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     ln = (ob.payload.get("last_name") or "").strip()
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
         _clear_onboarding(msisdn)
-        return reply(msisdn, "This number already has a Zitch account â€” open the app to link it.")
+        return reply(msisdn, "This number already has a Zitch account — open the app to link it.")
     # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
     # the app: only name + PIN are collected here (no BVN/NIN), and the app's tier
     # ladder (recompute_tier) requires BVN + NIN for Tier 1. The user raises their
@@ -526,9 +526,9 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     _clear_onboarding(msisdn)
     reply(
         msisdn,
-        f"âœ… *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
-        "You can *send money up to â‚¦1,000,000/day*, pay bills, buy airtime & data, "
-        "and check your balance â€” right here. Complete full KYC in the Zitch app to "
+        f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
+        "You can *send money up to ₦1,000,000/day*, pay bills, buy airtime & data, "
+        "and check your balance — right here. Complete full KYC in the Zitch app to "
         "raise your limits.\n\n" + MENU,
     )
 
@@ -539,34 +539,34 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
 def _do_balance(user, msisdn: str) -> None:
     bals = all_balances(user)
     if len(bals) == 1:
-        return reply(msisdn, f"ðŸ’° Your Zitch balance is {_money(bals['NGN'])}.")
+        return reply(msisdn, f"💰 Your Zitch balance is {_money(bals['NGN'])}.")
     lines = [(_money(bal) if ccy == "NGN" else f"{ccy} {bal:,.2f}") for ccy, bal in bals.items()]
-    reply(msisdn, "ðŸ’° Your balances:\n" + "\n".join(lines))
+    reply(msisdn, "💰 Your balances:\n" + "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- #
-# add money â€” the user's dedicated (reserved) account for bank-transfer funding
+# add money — the user's dedicated (reserved) account for bank-transfer funding
 # --------------------------------------------------------------------------- #
-def _send_account_details(msisdn: str, wallet, intro: str = "ðŸ¦ *Add money to your wallet*") -> None:
+def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to your wallet*") -> None:
     accts = wallet.bank_accounts or []
     if len(accts) > 1:
-        body = "\n".join(f"ðŸ”¢ *{a.get('account_number')}* â€” {a.get('bank_name')}" for a in accts)
+        body = "\n".join(f"🔢 *{a.get('account_number')}* — {a.get('bank_name')}" for a in accts)
     else:
-        body = f"ðŸ”¢ *{wallet.account_number}*\nðŸ›ï¸ {wallet.bank_name}"
+        body = f"🔢 *{wallet.account_number}*\n🏛️ {wallet.bank_name}"
     reply(
         msisdn,
         f"{intro}\n\n"
-        "Transfer to your dedicated Zitch account from any bank â€” your wallet is "
+        "Transfer to your dedicated Zitch account from any bank — your wallet is "
         "credited automatically, usually within seconds:\n\n"
         f"{body}\n"
-        f"ðŸ‘¤ {wallet.account_name}",
+        f"👤 {wallet.account_name}",
     )
 
 
 def _do_add_money(user, msisdn: str) -> None:
     """Show the user's dedicated Zitch account for bank-transfer funding (credited
     automatically by the Monnify pay-in webhook). If they don't have one yet, onboard
-    them right here on WhatsApp via Monnify â€” collect the BVN and mint the account."""
+    them right here on WhatsApp via Monnify — collect the BVN and mint the account."""
     wallet = get_or_create_wallet(user)
     if not wallet.account_number and (user.bvn_verified or user.nin_verified):
         wallet = ensure_reserved_account(user)
@@ -574,11 +574,11 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
 
-    # No account yet â€” start the Monnify onboarding in-chat by collecting the BVN.
+    # No account yet — start the Monnify onboarding in-chat by collecting the BVN.
     _new_flow(user, msisdn, "add_account", "bvn")
     return reply(
         msisdn,
-        "ðŸ¦ *Add money*\n\nTo get your dedicated Zitch account for funding by bank "
+        "🏦 *Add money*\n\nTo get your dedicated Zitch account for funding by bank "
         "transfer, reply with your *11-digit BVN*. We verify it securely with our "
         "licensed bank partner and issue your account instantly.\n\n"
         "_Don't know your BVN? Dial *565*0# on your registered line._\n"
@@ -594,17 +594,17 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
     hand it to Monnify (which verifies it and issues the virtual account), show it.
 
     Verification attempts are capped (like the PIN flow): each BVN Monnify rejects
-    counts toward BVN_MAX_ATTEMPTS, after which the flow aborts â€” so a linked
+    counts toward BVN_MAX_ATTEMPTS, after which the flow aborts — so a linked
     number can't brute-force BVNs against Monnify's identity check."""
     bvn = re.sub(r"\D", "", text)
     if len(bvn) != 11:
-        # Malformed input is guidance, not a verification attempt â€” don't count it.
+        # Malformed input is guidance, not a verification attempt — don't count it.
         return reply(msisdn, 'That doesn\'t look like an 11-digit BVN. Please send your '
                              '*11-digit BVN*, or reply "cancel".')
     wallet = ensure_reserved_account(user, bvn=bvn)
     if wallet.account_number:
         _clear_actions(msisdn)
-        return _send_account_details(msisdn, wallet, intro="âœ… *Your Zitch account is ready!*")
+        return _send_account_details(msisdn, wallet, intro="✅ *Your Zitch account is ready!*")
 
     attempts = int(pa.payload.get("bvn_attempts", 0)) + 1
     if attempts >= BVN_MAX_ATTEMPTS:
@@ -614,7 +614,7 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
     pa.payload["bvn_attempts"] = attempts
     _touch(pa, payload=pa.payload)
     return reply(msisdn, "Hmm, we couldn't create your account with that BVN. Check it's "
-                         'correct and matches your name, then send it again â€” or reply "cancel".')
+                         'correct and matches your name, then send it again — or reply "cancel".')
 
 
 
@@ -635,7 +635,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         # A secure PIN Flow is open: the PIN is entered there, never in chat. If
         # the user types here instead, nudge them back to the Flow (or cancel).
         cta = (getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("CTA", "Confirm with PIN")
-        return reply(msisdn, f"ðŸ” Tap *{cta}* on the secure screen I sent to enter your PIN â€” "
+        return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN — "
                              "it stays private and never appears in this chat. Or reply \"cancel\".")
     handler = {
         "transfer": _advance_transfer,
@@ -645,6 +645,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "cable": _advance_cable,
         "convert": _advance_convert,
         "add_account": _advance_add_account,
+        "pick_service": _advance_pick_service,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)
@@ -658,7 +659,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if state == "amount":
         amount = parse_amount(text)
         if amount is None or amount < 10:
-            return reply(msisdn, "Please enter a valid amount, at least â‚¦10 (e.g. 5000 or 5k).")
+            return reply(msisdn, "Please enter a valid amount, at least ₦10 (e.g. 5000 or 5k).")
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
             _clear_actions(msisdn)
@@ -689,8 +690,8 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
             # The list caps at 6; with the full bank catalogue a loose name can
             # match more, so when we truncate, tell the user how to narrow it
             # instead of silently hiding the rest.
-            prompt = ("I found a few banks â€” pick yours:" if len(matches) <= 6
-                      else f"I found {len(matches)} banks â€” here are the first 6. "
+            prompt = ("I found a few banks — pick yours:" if len(matches) <= 6
+                      else f"I found {len(matches)} banks — here are the first 6. "
                            "Reply a number, or type the bank's exact name:")
             return reply_list(msisdn, prompt,
                               [(str(i + 1), b.name[:24], "") for i, b in enumerate(shown)],
@@ -742,15 +743,15 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     reply(
         msisdn,
         "Confirm transfer\n"
-        f"{_money(amount)} â†’ {name.upper()}\n"
-        f"{bank.name} â€¢ {acct}\n"
+        f"{_money(amount)} → {name.upper()}\n"
+        f"{bank.name} • {acct}\n"
         f"{_confirm_prompt(pa)}",
     )
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
     """Shared confirm gate for every money flow: True if the reply is the armed
-    single-use SMS code (preferred â€” the chat never carries the PIN) or, when no
+    single-use SMS code (preferred — the chat never carries the PIN) or, when no
     code was armed (dev/mock SMS), the transaction PIN. Sends the right message
     (expired / locked / retry / cancel) and returns False otherwise."""
     otp_hash = pa.payload.get("otp_hash", "")
@@ -763,16 +764,16 @@ def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
             pass
         if expired:
             _clear_actions(msisdn)
-            reply(msisdn, "That code has expired â€” cancelled for your safety. Reply \"menu\" to start over.")
+            reply(msisdn, "That code has expired — cancelled for your safety. Reply \"menu\" to start over.")
             return False
         if check_password(text.strip(), otp_hash):
-            pa.payload.pop("otp_hash", None)   # single use â€” a replay can't confirm twice
+            pa.payload.pop("otp_hash", None)   # single use — a replay can't confirm twice
             _touch(pa, payload=pa.payload)
             return True
         attempts = int(pa.payload.get("pin_attempts", 0)) + 1
         if attempts >= PIN_FLOW_ATTEMPTS:
             _clear_actions(msisdn)
-            reply(msisdn, "Too many wrong codes. Cancelled â€” reply \"menu\" to start over.")
+            reply(msisdn, "Too many wrong codes. Cancelled — reply \"menu\" to start over.")
             return False
         pa.payload["pin_attempts"] = attempts
         _touch(pa, payload=pa.payload)
@@ -788,7 +789,7 @@ def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
     attempts = int(pa.payload.get("pin_attempts", 0)) + 1
     if attempts >= PIN_FLOW_ATTEMPTS:
         _clear_actions(msisdn)
-        reply(msisdn, "Too many wrong PIN attempts. Cancelled â€” reply \"menu\" to start over.")
+        reply(msisdn, "Too many wrong PIN attempts. Cancelled — reply \"menu\" to start over.")
         return False
     pa.payload["pin_attempts"] = attempts
     _touch(pa, payload=pa.payload)
@@ -826,8 +827,8 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     except PayoutError as exc:
         _clear_actions(msisdn)
         if exc.kind == "insufficient":
-            reply(msisdn, "Insufficient balance â€” transfer cancelled.")
-            return "Insufficient balance â€” transfer cancelled."
+            reply(msisdn, "Insufficient balance — transfer cancelled.")
+            return "Insufficient balance — transfer cancelled."
         if exc.kind == "duplicate":
             reply(msisdn, "That transfer was already processed.")
             return "That transfer was already processed."
@@ -848,7 +849,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
 
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
-    """Parse "0123456789 GTBank John Doe 5000" â†’ jump straight to name-enquiry.
+    """Parse "0123456789 GTBank John Doe 5000" → jump straight to name-enquiry.
     Returns True if handled as a transfer paste, else False."""
     tokens = text.split()
     acct = next((re.sub(r"\D", "", t) for t in tokens if len(re.sub(r"\D", "", t)) == 10), None)
@@ -865,13 +866,13 @@ def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
 
 
 def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str) -> bool:
-    """Validate then open a transfer at the bank step â€” shared by the paste path
+    """Validate then open a transfer at the bank step — shared by the paste path
     and the LLM. Returns False only when the bank can't be matched (caller decides)."""
     matches = _match_banks(bank_query)
     if not matches:
         return False
     if amount < 10:
-        reply(msisdn, "Minimum transfer is â‚¦10.")
+        reply(msisdn, "Minimum transfer is ₦10.")
         return True
     limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
     if limit_msg:
@@ -893,7 +894,7 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
 
 
 # --------------------------------------------------------------------------- #
-# VTU + bills (airtime / data / electricity / cable) â€” reuse run_provider_purchase
+# VTU + bills (airtime / data / electricity / cable) — reuse run_provider_purchase
 # --------------------------------------------------------------------------- #
 NETWORK_PROMPT = "Which network?\n" + "\n".join(f"{k}  {v}" for k, v in NETWORK_NAMES.items())
 DISCO_PROMPT = "Which disco?\n" + "\n".join(f"{k}  {v}" for k, v in DISCO_NAMES.items())
@@ -929,7 +930,7 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
     # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
     # this without the guided flow's own send_limit_error check, which would
-    # otherwise let a Tier-3-without-face user skip the >=â‚¦100k face requirement).
+    # otherwise let a Tier-3-without-face user skip the >=₦100k face requirement).
     send_msg = send_limit_error(user, amount)
     if send_msg:
         _clear_actions(msisdn)
@@ -952,8 +953,8 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         )
     except InsufficientFunds:
         _clear_actions(msisdn)
-        reply(msisdn, "Insufficient balance â€” cancelled.")
-        return "Insufficient balance â€” cancelled."
+        reply(msisdn, "Insufficient balance — cancelled.")
+        return "Insufficient balance — cancelled."
     except DuplicateTransaction:
         _clear_actions(msisdn)
         reply(msisdn, "That request was already processed.")
@@ -963,12 +964,52 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         title, rows = receipt(txn, result)
         return reply_receipt(msisdn, title, rows, ref=txn.reference)
     if status == "pending":
-        line = f"â³ Your {label} is processing â€” we'll confirm shortly. Ref {txn.reference}."
+        line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
         reply(msisdn, line)
         return line
-    line = f"âŒ {label} failed: {result.get('message', 'please try again')}. You were not charged."
+    line = f"❌ {label} failed: {result.get('message', 'please try again')}. You were not charged."
     reply(msisdn, line)
     return line
+
+
+# ---- service sub-menus (tap 1 or 2 — no need to type "airtime"/"data" etc.) ----
+# Each entry: (prompt, [(id, label, desc), ...]). The row ids ("1"/"2") are what
+# the router receives back from a tap or a typed number, mirroring the network menu.
+SERVICE_MENUS = {
+    "airtime_data": ("What would you like to buy?",
+                     [("1", "Airtime", ""), ("2", "Data", "")]),
+    "bill": ("Which bill would you like to pay?",
+             [("1", "Electricity", ""), ("2", "Cable TV", "")]),
+}
+
+
+def _start_service_menu(user, msisdn: str, kind: str) -> None:
+    """Open a category sub-menu so the user picks 1 or 2 (or taps the row) instead
+    of having to type the word. Stored as a `pick_service` flow so a bare "1"/"2"
+    is read as the sub-menu choice, not the main-menu balance/transfer number."""
+    body, rows = SERVICE_MENUS[kind]
+    _new_flow(user, msisdn, "pick_service", kind)
+    reply_list(msisdn, body, rows, button_label="Choose")
+
+
+def _advance_pick_service(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """Route a sub-menu pick to the matching guided flow. Accepts the number
+    (1/2) or the word, so a tap, a typed number and typed text all work. Each
+    _start_* clears this pending action (via _new_flow) as it opens its own flow."""
+    choice = text.strip().lower()
+    if pa.state == "airtime_data":
+        if choice in ("1", "airtime"):
+            return _start_airtime(user, msisdn)
+        if choice in ("2", "data"):
+            return _start_data(user, msisdn)
+        _, rows = SERVICE_MENUS["airtime_data"]
+        return reply_list(msisdn, "Reply 1 for Airtime or 2 for Data.", rows, button_label="Choose")
+    if choice in ("1", "electricity", "light", "nepa", "power"):
+        return _start_electricity(user, msisdn)
+    if choice in ("2", "cable", "tv", "dstv", "gotv", "startimes"):
+        return _start_cable(user, msisdn)
+    _, rows = SERVICE_MENUS["bill"]
+    return reply_list(msisdn, "Reply 1 for Electricity or 2 for Cable TV.", rows, button_label="Choose")
 
 
 # ---- airtime ----
@@ -992,11 +1033,11 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Enter a valid phone number (or \"me\").")
         pa.payload["phone"] = phone
         _touch(pa, state="amount", payload=pa.payload)
-        return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum â‚¦50.")
+        return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
     if st == "amount":
         amount = parse_amount(text)
         if amount is None or amount < 50:
-            return reply(msisdn, "Enter a valid amount, at least â‚¦50.")
+            return reply(msisdn, "Enter a valid amount, at least ₦50.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
@@ -1009,7 +1050,7 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         _arm_confirm(pa, user)
         return reply_image(
             msisdn, provider_logo(net),
-            f"ðŸ“± *Confirm airtime*\n{_money(amount)} {net} â†’ {pa.payload['phone']}\n\n"
+            f"📱 *Confirm airtime*\n{_money(amount)} {net} → {pa.payload['phone']}\n\n"
             f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
@@ -1024,7 +1065,7 @@ def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
     net = NETWORK_NAMES[pa.payload["net"]]
     phone = pa.payload["phone"]
     return _run_vtu(
-        pa, user, msisdn, amount, f"Airtime â€” {net}",
+        pa, user, msisdn, amount, f"Airtime — {net}",
         lambda ref: vtu_purchase(f"{net.lower()}-airtime",
                                  {"amount": str(amount), "phone": phone}, reference=ref),
         lambda txn, res: ("Airtime receipt", [
@@ -1052,7 +1093,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["net"] = net
         pa.payload["plan_choices"] = [p.plan_code for p in plans]
         _touch(pa, state="plan", payload=pa.payload)
-        lines = "\n".join(f"{i+1}  {p.name} â€¢ {p.validity} â€¢ {_money(p.price)}" for i, p in enumerate(plans))
+        lines = "\n".join(f"{i+1}  {p.name} • {p.validity} • {_money(p.price)}" for i, p in enumerate(plans))
         return reply(msisdn, "Choose a plan:\n" + lines)
     if st == "plan":
         plan = _pick(text, pa.payload.get("plan_choices", []), lambda c: DataPlan.objects.filter(plan_code=c).first())
@@ -1079,7 +1120,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         _arm_confirm(pa, user)
         return reply_image(
             msisdn, provider_logo(net),
-            f"ðŸŒ *Confirm data*\n{pa.payload['plan_name']} ({net}) â†’ {phone}\n{_money(price)}\n\n"
+            f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}\n\n"
             f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
@@ -1093,7 +1134,7 @@ def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
     net = NETWORK_NAMES[pa.payload["net"]]
     phone, plan_code, price = pa.payload["phone"], pa.payload["plan_code"], Decimal(pa.payload["price"])
     return _run_vtu(
-        pa, user, msisdn, price, f"Data â€” {net} {pa.payload['plan_name']}",
+        pa, user, msisdn, price, f"Data — {net} {pa.payload['plan_name']}",
         lambda ref: vtu_purchase(f"{net.lower()}-data",
                                  {"billersCode": phone, "variation_code": plan_code, "phone": phone}, reference=ref),
         lambda txn, res: ("Data receipt", [
@@ -1141,7 +1182,7 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
     if st == "amount":
         amount = parse_amount(text)
         if amount is None or amount < 100:
-            return reply(msisdn, "Enter a valid amount, at least â‚¦100.")
+            return reply(msisdn, "Enter a valid amount, at least ₦100.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
@@ -1153,11 +1194,11 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
         pa.payload["meta"] = {"meter": pa.payload["meter"], "disco": pa.payload["disco"],
                               "meter_type": pa.payload["meter_type"]}
         _arm_confirm(pa, user)
-        cust = pa.payload.get("customer") or "â€”"
+        cust = pa.payload.get("customer") or "—"
         return reply(
             msisdn,
-            f"ðŸ’¡ *Confirm electricity*\n{disco_name} ({pa.payload['meter_type']}) â€¢ "
-            f"Meter {pa.payload['meter']}\nCustomer: {cust} â€¢ {_money(amount)}\n\n"
+            f"💡 *Confirm electricity*\n{disco_name} ({pa.payload['meter_type']}) • "
+            f"Meter {pa.payload['meter']}\nCustomer: {cust} • {_money(amount)}\n\n"
             f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
@@ -1182,7 +1223,7 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
         return ("Electricity receipt", rows)
 
     return _run_vtu(
-        pa, user, msisdn, amount, f"Electricity â€” {disco_name}",
+        pa, user, msisdn, amount, f"Electricity — {disco_name}",
         lambda ref: vtu_purchase(f"{disco}-electric",
                                  {"billersCode": meter, "variation_code": mt, "amount": str(amount)}, reference=ref),
         _receipt_rows,
@@ -1208,7 +1249,7 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["prov"] = p
         pa.payload["plan_choices"] = [pl.cable_plan_code for pl in plans]
         _touch(pa, state="plan", payload=pa.payload)
-        lines = "\n".join(f"{i+1}  {pl.name} â€¢ {_money(pl.price)}" for i, pl in enumerate(plans))
+        lines = "\n".join(f"{i+1}  {pl.name} • {_money(pl.price)}" for i, pl in enumerate(plans))
         return reply(msisdn, "Choose a package:\n" + lines)
     if st == "plan":
         plan = _pick(text, pa.payload.get("plan_choices", []),
@@ -1239,11 +1280,11 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload.update({"iuc": iuc, "customer": cust})
         pa.payload["meta"] = {"iuc": iuc, "provider": pa.payload["prov"], "plan_code": pa.payload["plan_code"]}
         _arm_confirm(pa, user)
-        cust = cust or "â€”"
+        cust = cust or "—"
         return reply_image(
             msisdn, provider_logo(prov_name),
-            f"ðŸ“º *Confirm cable*\n{prov_name} â€¢ {pa.payload['plan_name']}\n"
-            f"Card {iuc} â€¢ {cust} â€¢ {_money(price)}\n\n"
+            f"📺 *Confirm cable*\n{prov_name} • {pa.payload['plan_name']}\n"
+            f"Card {iuc} • {cust} • {_money(price)}\n\n"
             f"{_confirm_prompt(pa)}")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
@@ -1258,7 +1299,7 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
     prov_name = CABLE_NAMES[pa.payload["prov"]]
     iuc, plan_code, price = pa.payload["iuc"], pa.payload["plan_code"], Decimal(pa.payload["price"])
     return _run_vtu(
-        pa, user, msisdn, price, f"Cable â€” {prov_name} {pa.payload['plan_name']}",
+        pa, user, msisdn, price, f"Cable — {prov_name} {pa.payload['plan_name']}",
         lambda ref: vtu_purchase(prov, {"billersCode": iuc, "variation_code": plan_code}, reference=ref),
         lambda txn, res: ("Cable receipt", [
             ("Provider", prov_name), ("Package", pa.payload["plan_name"]), ("Smartcard", iuc),
@@ -1279,7 +1320,7 @@ def _pick(text: str, choices: list, fetch):
 
 
 # --------------------------------------------------------------------------- #
-# AI intent layer â€” the LLM proposes; these map its intent to the SAME flows
+# AI intent layer — the LLM proposes; these map its intent to the SAME flows
 # --------------------------------------------------------------------------- #
 NET_BY_NAME = {v.lower(): k for k, v in NETWORK_NAMES.items()}  # "mtn" -> "1"
 
@@ -1309,7 +1350,7 @@ def _network_id(network) -> str | None:
 def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
     """Map one LLM tool call to a deterministic flow. Returns False for
     clarify/unknown so the caller shows the menu. Money still requires the
-    flow's confirm + PIN â€” the LLM only routes here."""
+    flow's confirm + PIN — the LLM only routes here."""
     name = intent.get("name")
     p = intent.get("input", {}) or {}
 
@@ -1341,7 +1382,7 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
         elif "cable" in cat or "tv" in cat:
             _start_cable(user, msisdn)
         else:
-            reply(msisdn, "Reply \"electricity\" or \"cable\".")
+            _start_service_menu(user, msisdn, "bill")
         return True
     if name == "convert_currency":
         _start_convert(user, msisdn)
@@ -1367,7 +1408,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
                        {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
                         "meta": {"phone": ph, "network": netid}})
         _arm_confirm(pa, user)   # the AI fast-path must arm the SMS code too
-        reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} â†’ {ph}\n"
+        reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}\n"
                       f"{_confirm_prompt(pa)}")
         return True
     _start_airtime(user, msisdn)
@@ -1375,7 +1416,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
 
 
 # --------------------------------------------------------------------------- #
-# currency conversion (FX) â€” quote -> PIN-within-TTL -> settle (Fincra rail)
+# currency conversion (FX) — quote -> PIN-within-TTL -> settle (Fincra rail)
 # --------------------------------------------------------------------------- #
 CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (blocked)
 
@@ -1418,9 +1459,9 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return reply(
             msisdn,
             "Confirm conversion\n"
-            f"Sell {quote.sell_amount:,.2f} {quote.from_currency} â†’ "
+            f"Sell {quote.sell_amount:,.2f} {quote.from_currency} → "
             f"Receive {quote.receive_amount:,.2f} {quote.to_currency}\n"
-            f"Rate {quote.rate:.4f} â€¢ expires in {secs}s\n"
+            f"Rate {quote.rate:.4f} • expires in {secs}s\n"
             f"{_confirm_prompt(pa)}",
         )
     if st == "pin":
@@ -1440,7 +1481,7 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
         return exc.message
     _clear_actions(msisdn)
     new_bal = currency_balance(user, quote.to_currency)
-    line = (f"âœ… Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
+    line = (f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
             f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
             f"New {quote.to_currency} balance: {new_bal:,.2f}.")
     reply(msisdn, line)
@@ -1448,7 +1489,7 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Secure-Flow execution dispatch â€” the Flows endpoint (whatsapp.flows) calls this
+# Secure-Flow execution dispatch — the Flows endpoint (whatsapp.flows) calls this
 # AFTER verifying the PIN, so a Flow-confirmed action runs the exact same money
 # path as the chat PIN path.
 # --------------------------------------------------------------------------- #
@@ -1461,4 +1502,4 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     if fn is None:
         _clear_actions(pa.msisdn)
         return "Sorry, this action can't be completed here. Please try again in the chat."
-    return fn(pa, user, pa.msisdn) or "Done âœ…"
+    return fn(pa, user, pa.msisdn) or "Done ✅"
