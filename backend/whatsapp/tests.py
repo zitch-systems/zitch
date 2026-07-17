@@ -407,6 +407,40 @@ class VtuTests(TestCase):
         self.assertIn("network", self.last_reply().lower())
         self.assertEqual(self.bal(), Decimal("20000"))
 
+    def test_airtime_data_menu_pick_by_number(self):
+        # Main-menu "3" offers Airtime/Data as a numbered pick — the user selects
+        # 1 or 2 (or taps the row) instead of typing the word.
+        self.inbound("3", "p1")
+        self.assertIn("Airtime", self.last_reply())
+        self.assertIn("Data", self.last_reply())
+        self.inbound("1", "p2")               # 1 -> Airtime -> ask network
+        self.assertIn("network", self.last_reply().lower())
+        self.inbound("1", "p3")               # MTN -> ask phone
+        self.inbound("me", "p4")
+        self.inbound("200", "p5")
+        self.assertIn("Confirm airtime", self.last_reply())
+
+    def test_airtime_data_menu_data_pick(self):
+        self.inbound("3", "pd1")
+        self.inbound("2", "pd2")              # 2 -> Data -> ask network
+        self.assertIn("network", self.last_reply().lower())
+        self.inbound("1", "pd3")              # MTN -> plan list
+        self.assertIn("1GB", self.last_reply())
+
+    def test_bill_menu_pick_by_number(self):
+        # Main-menu "4" offers Electricity/Cable as a numbered pick, same pattern.
+        self.inbound("4", "b1")
+        self.assertIn("Electricity", self.last_reply())
+        self.assertIn("Cable", self.last_reply())
+        self.inbound("1", "b2")               # 1 -> Electricity -> disco prompt
+        self.assertIn("disco", self.last_reply().lower())
+
+    def test_service_menu_reprompts_on_bad_pick(self):
+        self.inbound("3", "r1")
+        self.inbound("banana", "r2")          # not a valid pick -> re-prompt, no crash
+        self.assertIn("Airtime", self.last_reply())
+        self.assertIn("Data", self.last_reply())
+
     def test_electricity_over_tier_limit_refused(self):
         # KYC tier limits apply to bills over chat too (not just transfers): a
         # tier-1 user (₦50k cap) buying ₦60k of electricity is stopped before PIN.

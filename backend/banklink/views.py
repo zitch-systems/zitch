@@ -127,7 +127,7 @@ def fund(request):
     if amount is None:
         return fail("Enter a valid amount")
     if amount < 100:
-        return fail("Minimum funding amount is â‚¦100")
+        return fail("Minimum funding amount is ₦100")
 
     reference = make_reference("ZMONO")
     FundingIntent.objects.create(user=user, reference=reference, amount=amount,
@@ -187,7 +187,7 @@ def payout(request):
     if amount is None:
         return fail("Enter a valid amount")
     if amount < 100:
-        return fail("Minimum payout is â‚¦100")
+        return fail("Minimum payout is ₦100")
 
     limit_err = check_send_limits(user, amount)
     if limit_err:
