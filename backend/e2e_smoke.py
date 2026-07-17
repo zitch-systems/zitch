@@ -121,8 +121,13 @@ def main():
     bal = float(j(post("/api/wallet_balance/", token=tok))["wallet"])
     check("balance reflects funding", bal >= 50000, f"balance={bal}")
 
-    # KYC first (raises limits for the rest of the run)
-    for step, body in (("bvn", {"bvn": "12345678901"}), ("nin", {"nin": "12345678901"}), ("face", {"selfie": "data:image/png;base64,aGk="})):
+    # KYC first (raises limits for the rest of the run). The full ladder:
+    # Tier 1 = BVN + NIN; Tier 2 adds face + address; Tier 3 adds a government ID
+    # (accounts.models.User.recompute_tier).
+    for step, body in (("bvn", {"bvn": "12345678901"}), ("nin", {"nin": "12345678901"}),
+                       ("face", {"selfie": "data:image/png;base64,aGk="}),
+                       ("address", {"address": "12 Marina Road", "city": "Lagos", "state": "Lagos"}),
+                       ("id", {"image": "data:image/png;base64,aGk=", "doc_type": "passport"})):
         r = post(f"/api/kyc/{step}/", body, token=tok)
         check(f"kyc/{step} verifies (mock Prembly)", j(r).get("success") is True, f"{r.status_code} {j(r)}")
     r = post("/api/kyc/status/", token=tok)
@@ -338,10 +343,19 @@ def main():
     check("admin users/status freeze", j(r).get("status") == "frozen", f"{r.status_code} {j(r)}")
     r = post("/api/admin/users/status", {"uid": uid_b, "status": "active"}, token=afin)
     check("admin users/status unfreeze", j(r).get("status") == "active", str(j(r)))
+    # Freezing revokes the user's live sessions by design (admin_api.user_status),
+    # so user B's token is now dead — sign in again for the later balance checks.
+    r = post("/api/sigin/", {"email_or_phone": phone_b, "password": "Sup3r#secret"})
+    tok_b = j(r).get("access_token") or tok_b
+    check("user B re-login after freeze revoked sessions", bool(j(r).get("access_token")), f"{r.status_code} {str(j(r))[:120]}")
     r = post("/api/admin/users/pin_unlock", {"uid": uid_b}, token=afin)
     check("admin users/pin_unlock", j(r).get("success") is True, f"{r.status_code} {j(r)}")
+    # Tier 1 needs BVN AND NIN (recompute_tier), so approving BVN alone keeps the
+    # user at tier 0 — approve both and expect the tier to lift.
     r = post("/api/admin/kyc/review", {"uid": uid_b, "decision": "approve", "type": "bvn"}, token=afin)
-    check("admin kyc/review approve", j(r).get("success") is True and j(r).get("tier", 0) >= 1, f"{r.status_code} {j(r)}")
+    check("admin kyc/review approve bvn", j(r).get("success") is True and j(r).get("tier", 0) == 0, f"{r.status_code} {j(r)}")
+    r = post("/api/admin/kyc/review", {"uid": uid_b, "decision": "approve", "type": "nin"}, token=afin)
+    check("admin kyc/review approve nin lifts tier", j(r).get("success") is True and j(r).get("tier", 0) >= 1, f"{r.status_code} {j(r)}")
 
     ref = boot["txns"][0]["id"] if boot["txns"] else None
     r = post("/api/admin/txn/flag", {"ref": ref, "flagged": True}, token=afin)

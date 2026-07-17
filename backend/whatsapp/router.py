@@ -1016,6 +1016,21 @@ def _advance_pick_service(pa: PendingAction, user, msisdn: str, text: str) -> No
     return reply_list(msisdn, "Reply 1 for Electricity or 2 for Cable TV.", rows, button_label="Choose")
 
 
+def _choice_id(text: str, names: dict) -> str | None:
+    """Resolve a menu reply to its id: the number itself ("1") or the option's
+    name typed out ("MTN", "gotv", "Port Harcourt"). A tapped list row sends the
+    id, but over the text fallback users type the name they can see — both must
+    work (case/space-insensitive)."""
+    t = text.strip()
+    if t in names:
+        return t
+    tl = re.sub(r"\s", "", t.lower())
+    for k, v in names.items():
+        if tl and re.sub(r"\s", "", v.lower()) == tl:
+            return k
+    return None
+
+
 # ---- airtime ----
 def _start_airtime(user, msisdn: str) -> None:
     _new_flow(user, msisdn, "airtime", "network")
@@ -1025,8 +1040,8 @@ def _start_airtime(user, msisdn: str) -> None:
 def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
     st = pa.state
     if st == "network":
-        net = text.strip()
-        if net not in NETWORK_NAMES:
+        net = _choice_id(text, NETWORK_NAMES)
+        if net is None:
             return _ask_network(msisdn)
         pa.payload["net"] = net
         _touch(pa, state="phone", payload=pa.payload)
@@ -1087,8 +1102,8 @@ def _start_data(user, msisdn: str) -> None:
 def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
     st = pa.state
     if st == "network":
-        net = text.strip()
-        if net not in NETWORK_NAMES:
+        net = _choice_id(text, NETWORK_NAMES)
+        if net is None:
             return _ask_network(msisdn)
         plans = list(DataPlan.objects.filter(network=net, active=True)[:8])
         if not plans:
@@ -1157,8 +1172,8 @@ def _start_electricity(user, msisdn: str) -> None:
 def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> None:
     st = pa.state
     if st == "disco":
-        d = text.strip()
-        if d not in DISCO_NAMES:
+        d = _choice_id(text, DISCO_NAMES)
+        if d is None:
             return reply(msisdn, "Reply with the disco number.\n" + DISCO_PROMPT)
         pa.payload["disco"] = d
         _touch(pa, state="meter_type", payload=pa.payload)
@@ -1243,8 +1258,8 @@ def _start_cable(user, msisdn: str) -> None:
 def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
     st = pa.state
     if st == "provider":
-        p = text.strip()
-        if p not in CABLE_NAMES:
+        p = _choice_id(text, CABLE_NAMES)
+        if p is None:
             return reply(msisdn, "Reply with the provider number.\n" + CABLE_PROMPT)
         plans = list(CablePlan.objects.filter(provider=p, active=True)[:8])
         if not plans:
