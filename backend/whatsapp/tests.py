@@ -407,6 +407,22 @@ class VtuTests(TestCase):
         self.assertIn("network", self.last_reply().lower())
         self.assertEqual(self.bal(), Decimal("20000"))
 
+    def test_typed_network_name_accepted(self):
+        # A tapped list row sends the id ("1"), but over the text fallback users
+        # type the name they can see — "MTN" must advance the flow, not re-prompt.
+        self.inbound("airtime", "tn1")
+        self.inbound("MTN", "tn2")
+        self.assertIn("What phone number?", self.last_reply())
+
+    def test_typed_provider_and_disco_names_accepted(self):
+        self.inbound("cable", "tp1")
+        self.inbound("dstv", "tp2")           # name, case-insensitive
+        self.assertIn("DStv Compact", self.last_reply())
+        self.inbound("cancel", "tp3")
+        self.inbound("electricity", "td1")
+        self.inbound("port harcourt", "td2")  # multi-word disco name
+        self.assertIn("Prepaid or postpaid", self.last_reply())
+
     def test_airtime_data_menu_pick_by_number(self):
         # Main-menu "3" offers Airtime/Data as a numbered pick — the user selects
         # 1 or 2 (or taps the row) instead of typing the word.
