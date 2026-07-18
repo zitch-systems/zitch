@@ -19,13 +19,13 @@ window.ZADM = (function () {
     { id: 'ZTC-88341', user: 'Adaeze Okonkwo', type: 'transfer', channel: 'whatsapp', desc: 'To John Adeyemi · GTBank ····1234', amt: -5000, cur: 'NGN', fee: 10, status: 'success', time: ago(12) },
     { id: 'ZTC-88340', user: 'Seun Afolabi', type: 'fx', channel: 'app', desc: 'NGN → USD · $336.65 @ ₦1,485.20', amt: -500000, cur: 'NGN', fee: 0, status: 'success', time: ago(26) },
     { id: 'ZTC-88339', user: 'Ibrahim Musa', type: 'airtime', channel: 'whatsapp', desc: 'MTN · 0809 114 7765', amt: -1000, cur: 'NGN', fee: 0, status: 'success', time: ago(31) },
-    { id: 'ZTC-88338', user: 'John Adeyemi', type: 'fund', channel: 'app', desc: 'Monnify checkout', amt: 250000, cur: 'NGN', fee: 0, status: 'success', time: ago(58) },
+    { id: 'ZTC-88338', user: 'John Adeyemi', type: 'fund', channel: 'app', desc: 'Korapay checkout', amt: 250000, cur: 'NGN', fee: 0, status: 'success', time: ago(58) },
     { id: 'ZTC-88337', user: 'Kemi Balogun', type: 'electricity', channel: 'app', desc: 'IKEDC prepaid · 0414 ···· 882', amt: -10000, cur: 'NGN', fee: 100, status: 'pending', time: ago(64) },
     { id: 'ZTC-88336', user: 'Tunde Eze', type: 'transfer', channel: 'app', desc: 'To Zenith ····0099', amt: -1200000, cur: 'NGN', fee: 25, status: 'flagged', time: ago(95) },
     { id: 'ZTC-88335', user: 'Chiamaka Obi', type: 'data', channel: 'whatsapp', desc: 'Airtel 2GB · 30 days', amt: -1500, cur: 'NGN', fee: 0, status: 'success', time: ago(130) },
     { id: 'ZTC-88334', user: 'Seun Afolabi', type: 'cable', channel: 'app', desc: 'DStv Compact · IUC 7023…', amt: -19000, cur: 'NGN', fee: 0, status: 'success', time: ago(170) },
     { id: 'ZTC-88333', user: 'Adaeze Okonkwo', type: 'fx', channel: 'whatsapp', desc: 'NGN → GBP · £85.50 @ ₦1,872.45', amt: -160095, cur: 'NGN', fee: 0, status: 'success', time: ago(220) },
-    { id: 'ZTC-88332', user: 'Ngozi Umeh', type: 'fund', channel: 'app', desc: 'Monnify checkout', amt: 2500, cur: 'NGN', fee: 0, status: 'success', time: ago(300) },
+    { id: 'ZTC-88332', user: 'Ngozi Umeh', type: 'fund', channel: 'app', desc: 'Korapay checkout', amt: 2500, cur: 'NGN', fee: 0, status: 'success', time: ago(300) },
     { id: 'ZTC-88331', user: 'Ibrahim Musa', type: 'transfer', channel: 'app', desc: 'To UBA ····5521', amt: -45000, cur: 'NGN', fee: 10, status: 'failed', time: ago(340) },
     { id: 'ZTC-88330', user: 'John Adeyemi', type: 'fx', channel: 'app', desc: 'NGN → CAD · C$310.20 @ ₦1,082.10', amt: -335667, cur: 'NGN', fee: 0, status: 'success', time: ago(400) },
   ];
@@ -103,19 +103,19 @@ window.ZADM = (function () {
   ];
 
   const FLOAT = [
-    { cur: 'NGN', sym: '₦', bal: 184250300.22, provider: 'Monnify' },
+    { cur: 'NGN', sym: '₦', bal: 184250300.22, provider: 'Korapay' },
     { cur: 'USD', sym: '$', bal: 92410.55, provider: 'Fincra' },
     { cur: 'GBP', sym: '£', bal: 31206.10, provider: 'Fincra' },
     { cur: 'CAD', sym: 'C$', bal: 12880.00, provider: 'Fincra' },
   ];
 
   const PROVIDERS = [
-    { name: 'Monnify', role: 'Funding & payouts', status: 'operational', uptime: '99.98%' },
+    { name: 'Korapay', role: 'Funding · payouts · KYC', status: 'operational', uptime: '99.98%' },
     { name: 'VTU.ng', role: 'Airtime · data · bills', status: 'operational', uptime: '99.91%' },
     { name: 'Fincra', role: 'FX rates & settlement', status: 'operational', uptime: '99.95%' },
     { name: 'Meta WhatsApp', role: 'Chat channel', status: 'degraded', uptime: '98.72%' },
     { name: 'Sendchamp', role: 'SMS / OTP', status: 'operational', uptime: '99.99%' },
-    { name: 'Prembly', role: 'KYC (BVN · NIN · face)', status: 'operational', uptime: '99.87%' },
+    { name: 'Prembly', role: 'KYC (face · address · ID)', status: 'operational', uptime: '99.87%' },
   ];
 
   const VOLUME_14D = [38, 44, 41, 52, 49, 61, 58, 47, 66, 72, 64, 78, 81, 74]; // ₦m/day
@@ -142,11 +142,11 @@ window.ZADM = (function () {
     { user: 'Blessing Eke', id: 'u_1014', type: 'nin', submitted: ago(260), note: 'NIN photo low-light — manual review', tier: '1 → 2' },
   ];
   const WEBHOOKS = [
-    { src: 'Monnify', event: 'fund.success', ref: 'MNFY|82|441', sig: 'verified', code: 200, time: ago(18) },
-    { src: 'Monnify', event: 'disbursement.completed', ref: 'MNFY|82|438', sig: 'verified', code: 200, time: ago(55) },
+    { src: 'Korapay', event: 'charge.success', ref: 'KPY|82|441', sig: 'verified', code: 200, time: ago(18) },
+    { src: 'Korapay', event: 'transfer.success', ref: 'KPY|82|438', sig: 'verified', code: 200, time: ago(55) },
     { src: 'Meta WA', event: 'message.delivered', ref: 'wamid.HBg…98', sig: 'verified', code: 200, time: ago(61) },
     { src: 'Meta WA', event: 'message.failed · 131049', ref: 'wamid.HBg…41', sig: 'verified', code: 200, time: ago(190), note: 'marketing limit — recorded, not retried' },
-    { src: 'Monnify', event: 'disbursement.reversed', ref: 'MNFY|82|405', sig: 'verified', code: 200, time: ago(300), note: 'wallet refunded' },
+    { src: 'Korapay', event: 'transfer.failed', ref: 'KPY|82|405', sig: 'verified', code: 200, time: ago(300), note: 'wallet refunded' },
     { src: 'VTU.ng', event: 'vtu.callback', ref: 'VTNG-77231', sig: 'n/a', code: 200, time: ago(410) },
   ];
   const RECONS = [

@@ -114,7 +114,7 @@ class BankTransferTests(TestCase):
         self.assertEqual(len(body["matches"]), 1)
 
     def test_resolve_flags_mock_when_name_enquiry_not_live(self):
-        # Without a live Monnify name-enquiry rail the detection is a placeholder, so
+        # Without a live Kora name-enquiry rail the detection is a placeholder, so
         # the response must carry `mock: true` and the app won't auto-fill it as a
         # verified bank/holder (which looked like "mis-detection").
         from django.core.cache import cache
@@ -241,9 +241,9 @@ class BankTransferTests(TestCase):
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
             })
         ref = body["reference"]
-        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": ref}}
+        event = {"event": "transfer.success", "data": {"reference": ref}}
         self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
 
     def test_send_refunds_when_payout_fails(self):
@@ -269,16 +269,16 @@ class BankTransferTests(TestCase):
         ref = body["reference"]
         self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
 
-        event = {"eventType": "FAILED_DISBURSEMENT", "eventData": {"reference": ref, "status": "failed"}}
+        event = {"event": "transfer.failed", "data": {"reference": ref, "status": "failed"}}
         r = self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                             content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
+                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(self.balance(), Decimal("50000"))  # refunded by the webhook
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
 
-        # Duplicate webhook (Monnify retry) must not double-refund.
+        # Duplicate webhook (Kora retry) must not double-refund.
         self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("50000"))
 
     def test_disbursement_webhook_ignores_success_event(self):
@@ -287,15 +287,15 @@ class BankTransferTests(TestCase):
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
             "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
         })
-        event = {"eventType": "SUCCESSFUL_DISBURSEMENT", "eventData": {"reference": body["reference"]}}
+        event = {"event": "transfer.success", "data": {"reference": body["reference"]}}
         self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
         self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
 
     def test_ambiguous_send_timeout_holds_debit_never_refunds(self):
         """CRITICAL: a network timeout on the non-idempotent disburse POST is
-        AMBIGUOUS — Monnify may already have paid the recipient. The debit MUST be
+        AMBIGUOUS — Kora may already have paid the recipient. The debit MUST be
         HELD (PENDING + reconcile), never refunded. Refunding here drains the float
         (recipient keeps the money, sender made whole) and a retry double-pays. The
         reconcile flag then lets reconcile_payouts settle/reverse it on the true
@@ -318,7 +318,7 @@ class BankTransferTests(TestCase):
             Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
     def test_accepted_unknown_status_holds_debit_and_reports_pending(self):
-        """CRITICAL: a payout Monnify ACCEPTED but reported with a status this code
+        """CRITICAL: a payout Kora ACCEPTED but reported with a status this code
         doesn't recognise must be treated exactly like PENDING — debit held,
         response pending — not as a failure. Misclassifying it refunded an
         in-flight transfer (double-spend) and showed the user "Error / success"."""
@@ -384,9 +384,9 @@ class BankTransferTests(TestCase):
         self.assertNotIn("reconcile", txn.meta or {})
 
 
-class MonnifyPayoutReconcileTests(TestCase):
-    """The reconcile_payouts poller settles/reverses PENDING payouts when a Monnify
-    disbursement webhook is missed — the safety net behind the webhook."""
+class KoraPayoutReconcileTests(TestCase):
+    """The reconcile_payouts poller settles/reverses PENDING payouts when a Kora
+    transfer webhook is missed — the safety net behind the webhook."""
 
     def setUp(self):
         self.client = Client()
@@ -415,30 +415,30 @@ class MonnifyPayoutReconcileTests(TestCase):
 
     def test_settles_pending_payout_when_status_success(self):
         ref = self._pending_payout()
-        with patch("utility.monnify.verify_payout", return_value={"success": True, "status": "success"}):
+        with patch("utility.kora.verify_payout", return_value={"success": True, "status": "success"}):
             self._run()
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
         self.assertEqual(self.balance(), Decimal("40000"))  # settled, not refunded
 
     def test_reverses_pending_payout_when_status_failed(self):
         ref = self._pending_payout()
-        with patch("utility.monnify.verify_payout", return_value={"success": False, "status": "failed"}):
+        with patch("utility.kora.verify_payout", return_value={"success": False, "status": "failed"}):
             self._run()
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
         self.assertEqual(self.balance(), Decimal("50000"))  # refunded
 
     def test_leaves_still_pending_payout_untouched(self):
         ref = self._pending_payout()
-        with patch("utility.monnify.verify_payout",
+        with patch("utility.kora.verify_payout",
                    return_value={"success": False, "pending": True, "status": "pending"}):
             self._run()
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
         self.assertEqual(self.balance(), Decimal("40000"))  # untouched
 
     def test_unreachable_status_leaves_pending(self):
-        # A query that can't reach Monnify must NOT reverse money — leave PENDING.
+        # A query that can't reach Kora must NOT reverse money — leave PENDING.
         ref = self._pending_payout()
-        with patch("utility.monnify.verify_payout",
+        with patch("utility.kora.verify_payout",
                    return_value={"success": False, "message": "unreachable"}):
             self._run()
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
@@ -447,7 +447,7 @@ class MonnifyPayoutReconcileTests(TestCase):
     @override_settings(PAYOUT_PROVIDER="wema")
     def test_does_not_query_when_wema_is_payout_rail(self):
         ref = self._pending_payout()
-        with patch("utility.monnify.verify_payout") as mv:
+        with patch("utility.kora.verify_payout") as mv:
             self._run()
         mv.assert_not_called()
         self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)

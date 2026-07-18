@@ -200,14 +200,14 @@ VTUNG = {
     "PASSWORD": os.environ.get("VTUNG_PASSWORD", ""),
 }
 # Virtual-card backend: "issuer" (the generic CARD_ISSUER) — the sole card backend
-# (Monnify issues no cards). Blank => issuer. See utility.providers.card_provider.
+# (Kora card issuing is not integrated). Blank => issuer. See utility.providers.card_provider.
 CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
-# Wallet FUND-IN backend — "monnify" or "wema". Blank => monnify (the sole default
-# rail). Wema is opt-in (bank-transfer funding to an OTP-provisioned NUBAN). See
+# Wallet FUND-IN backend — "kora" or "wema". Blank => kora (the sole default rail).
+# Wema is opt-in (bank-transfer funding to an OTP-provisioned NUBAN). See
 # utility.providers.payment_provider.
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
-# The bank-PAYOUT + recipient name-enquiry rail — "monnify" or "wema"; blank =>
-# monnify (the sole default rail). Set PAYOUT_PROVIDER=wema once WEMA_CHANNEL_ID +
+# The bank-PAYOUT + recipient name-enquiry rail — "kora" or "wema"; blank => kora
+# (the sole default rail). Set PAYOUT_PROVIDER=wema once WEMA_CHANNEL_ID +
 # WEMA_WALLET_KEY + WEMA_SOURCE_ACCOUNT are configured (or WEMA_SIMULATION=true to
 # test the flow without live keys). See utility.providers.payout_provider.
 PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
@@ -216,40 +216,40 @@ PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # NUBAN); data & bills stay on VTU.ng until Wema's plan/biller catalog is synced.
 # See utility.providers.vas_provider and docs/wema-migration.md.
 VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
-# The BVN/NIN KYC rail — "monnify" (the sole rail); blank => monnify. vNIN is
-# verified via Prembly (Monnify has no vNIN product). See utility.providers.kyc_provider.
+# The BVN/NIN/vNIN KYC rail — "kora" (the sole rail); blank => kora. The image /
+# biometric steps (selfie/liveness, address, ID-document) stay on Prembly. See
+# utility.providers.kyc_provider.
 KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 # Fraud velocity guard: max outbound money movements per user per 10 minutes
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
 # tests (suites legitimately hammer one user far faster than any human).
 VELOCITY_MAX_OUT_10MIN = 0 if TESTING else int(os.environ.get("VELOCITY_MAX_OUT_10MIN", "20"))
 # (Observability: the Sentry init lives at the bottom of this file — already wired.)
-# Monnify — the sole money-movement rail: fund-in (dedicated virtual accounts +
-# hosted checkout) AND bank payouts (disbursements) + recipient name enquiry.
-# Reserved-account collections need NO IP whitelisting, but DISBURSEMENTS DO — the
-# server's egress IP must be whitelisted in the Monnify dashboard (Settings > API),
-# and MONNIFY_WALLET_ACCOUNT is the merchant wallet NUBAN payouts are drawn from.
-# Blank keys => MOCK; MONNIFY_SIMULATION=true serves the mock fund-in flow even in
-# production (test a real build without live keys — no real money moves; payouts
-# still fail closed). Live BASE_URL https://api.monnify.com, sandbox
-# https://sandbox.monnify.com. Webhooks (monnify-signature, HMAC-SHA512): fund-in ->
-# /api/fund/monnify/webhook/, payout -> /api/transfers/webhook/. See utility.monnify.
-MONNIFY = {
-    "BASE_URL": os.environ.get("MONNIFY_BASE_URL", "https://api.monnify.com"),
-    "API_KEY": os.environ.get("MONNIFY_API_KEY", ""),
-    "SECRET_KEY": os.environ.get("MONNIFY_SECRET_KEY", ""),
-    "CONTRACT_CODE": os.environ.get("MONNIFY_CONTRACT_CODE", ""),
-    "REDIRECT_URL": os.environ.get("MONNIFY_REDIRECT_URL", ""),
-    # Merchant wallet NUBAN that funds outbound transfers (the sourceAccountNumber
-    # on a disbursement). Required for live payouts.
-    "WALLET_ACCOUNT": os.environ.get("MONNIFY_WALLET_ACCOUNT", ""),
-    # HTTPS forward proxy (scheme://user:pass@host:port) that ALL Monnify calls exit
-    # through, so Monnify sees one whitelistable static IP (e.g. a DigitalOcean box)
-    # instead of the host's (Render's) own outbound IP. REQUIRED for disbursements
-    # when the whitelisted IP isn't the app's own egress. Blank => call Monnify
-    # directly. See utility.monnify._proxies.
-    "PROXY_URL": os.environ.get("MONNIFY_PROXY_URL", ""),
-    "SIMULATION": env_bool("MONNIFY_SIMULATION", False),
+# Korapay (Kora) — the sole money-movement rail: fund-in (dedicated virtual accounts
+# + hosted checkout) AND bank payouts + recipient name enquiry + merchant balance,
+# plus Nigeria KYC (BVN/NIN/vNIN). One Bearer SECRET key on every call; the PUBLIC
+# key is only for the (unused) Miscellaneous group. Unlike Monnify, Kora needs NO IP
+# whitelisting / forward proxy for payouts. Reserved accounts are issued on Wema Bank
+# (KORA_VA_BANK_CODE, default 035). Blank keys => MOCK; KORA_SIMULATION=true serves
+# the mock fund-in flow even in production (test a real build without live keys — no
+# real money moves; payouts and identity still fail closed). BASE_URL
+# https://api.korapay.com. Webhook (x-korapay-signature, HMAC-SHA256 of the JSON
+# `data` object): fund-in -> /api/fund/kora/webhook/, payout -> /api/transfers/webhook/.
+# See utility.kora. Set KORA_FUND_WEBHOOK_URL / KORA_PAYOUT_WEBHOOK_URL to attach the
+# webhook per request (else configure one URL in the Kora dashboard).
+KORA = {
+    "BASE_URL": os.environ.get("KORA_BASE_URL", "https://api.korapay.com"),
+    "SECRET_KEY": os.environ.get("KORA_SECRET_KEY", ""),
+    "PUBLIC_KEY": os.environ.get("KORA_PUBLIC_KEY", ""),
+    "REDIRECT_URL": os.environ.get("KORA_REDIRECT_URL", ""),
+    # Bank the reserved (permanent) virtual accounts are issued on — Wema (035).
+    "VA_BANK_CODE": os.environ.get("KORA_VA_BANK_CODE", "035"),
+    # Optional per-request webhook URLs (Kora also lets you set one URL in the
+    # dashboard for all events). When set they are attached to the charge/VA-create
+    # and disburse calls respectively.
+    "FUND_WEBHOOK_URL": os.environ.get("KORA_FUND_WEBHOOK_URL", ""),
+    "PAYOUT_WEBHOOK_URL": os.environ.get("KORA_PAYOUT_WEBHOOK_URL", ""),
+    "SIMULATION": env_bool("KORA_SIMULATION", False),
 }
 # Wema / ALAT (Banking-as-a-Service) — the target rail for the full migration
 # (funding accounts, payout, name-enquiry, balance; later VAS/cards/KYC). Azure
@@ -308,15 +308,18 @@ RESEND = {
     "API_KEY": os.environ.get("RESEND_API_KEY", ""),
     "FROM_EMAIL": os.environ.get("RESEND_FROM_EMAIL", "no-reply@zitch.ng"),
 }
-# KYC (BVN/NIN/liveness) — Prembly (IdentityPass). Blank => mock mode.
+# KYC — selfie/liveness + address + ID-document (image/biometric) — Prembly
+# (IdentityPass). Blank => mock mode.
 PREMBLY = {
     "BASE_URL": os.environ.get("PREMBLY_BASE_URL", "https://api.prembly.com"),
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
-# BVN/NIN verification is done by Monnify (see utility.providers.verify_bvn /
-# verify_nin). Prembly above handles the selfie/liveness step (kyc_verify_face) AND
-# the vNIN lookup (verify_vnin / kyc_verify_vnin), which Monnify does not provide.
+# BVN/NIN/vNIN verification is done by Kora (see utility.providers.verify_bvn /
+# verify_nin / verify_vnin). Prembly above is retained ONLY for the image/biometric
+# checks Kora can't do: the selfie/liveness step (kyc_verify_face — the ≥₦100k gate),
+# address (kyc_verify_address), and ID-document OCR (kyc_verify_nin_document /
+# kyc_verify_id_document).
 # Card issuer (virtual cards) — generic provider; blank => mock mode.
 CARD_ISSUER = {
     "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),

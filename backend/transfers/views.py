@@ -1,9 +1,9 @@
 """Bank transfer (payout) endpoints + saved beneficiaries.
 
-Payout to external banks needs a provider (Monnify disbursements); until keys are
-set this runs in MOCK mode in dev/tests and resolves/settles automatically so the
-flow is testable (in production it fails closed). Money still moves correctly out
-of the wallet ledger.
+Payout to external banks needs a provider (Kora payouts); until keys are set this
+runs in MOCK mode in dev/tests and resolves/settles automatically so the flow is
+testable (in production it fails closed). Money still moves correctly out of the
+wallet ledger.
 """
 import json
 import re
@@ -15,7 +15,7 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility import monnify as monnify_provider  # webhook signature verify
+from utility import kora as kora_provider  # webhook signature verify
 from utility.providers import payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key, reverse_transfer, settle_payout
@@ -160,7 +160,7 @@ def bank_transfer(request):
         return fail(resolved.get("message", "Could not verify this account number"), status=400)
     resolved_name = (resolved.get("name") or "").strip()
     shown_name = (data.get("name") or "").strip()
-    # Only enforce on a LIVE enquiry. In mock mode (no Monnify name-enquiry) the
+    # Only enforce on a LIVE enquiry. In mock mode (no Kora name-enquiry) the
     # resolved name is a fixed stub, so comparing it would false-block.
     if (not resolved.get("mock") and shown_name and resolved_name
             and not _names_match(shown_name, resolved_name)):
@@ -185,10 +185,10 @@ def bank_transfer(request):
             )
         if exc.kind == "insufficient":
             return fail("Insufficient wallet balance", status=402)
-        # Provider messages pass through to the user, but an API-call-level echo
-        # ("success" is Monnify's responseMessage whenever the REQUEST succeeded)
-        # or an empty string would render a nonsense "Error / success" dialog on
-        # app builds that show the message raw — replace those with a real sentence.
+        # Provider messages pass through to the user, but a bare status echo
+        # ("success" when the API REQUEST succeeded) or an empty string would render
+        # a nonsense "Error / success" dialog on app builds that show the message
+        # raw — replace those with a real sentence.
         message = (exc.message or "").strip()
         if not message or message.lower() in ("success", "successful"):
             message = "Transfer could not be completed. Please try again."
@@ -206,31 +206,31 @@ def bank_transfer(request):
 
 @csrf_exempt
 def disbursement_webhook(request):
-    """POST /api/transfers/webhook/ — Monnify payout (disbursement) callback.
+    """POST /api/transfers/webhook/ — Korapay payout (transfer) callback.
 
-    The terminal-state safety net (Monnify signs the RAW body with HMAC-SHA512,
-    ``monnify-signature`` header): ``SUCCESSFUL_DISBURSEMENT`` settles a payout left
-    PENDING on send; ``FAILED_DISBURSEMENT``/``REVERSED_DISBURSEMENT`` refunds the
-    wallet. Keyed on our reference, status-guarded (idempotent), always 200 on
-    accepted events.
+    The terminal-state safety net (Kora signs the JSON ``data`` object with
+    HMAC-SHA256, ``x-korapay-signature`` header): ``transfer.success`` settles a
+    payout left PENDING on send; ``transfer.failed`` (or a reversed/returned status)
+    refunds the wallet. Keyed on our reference, status-guarded (idempotent), always
+    200 on accepted events.
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
-    if not monnify_provider.verify_webhook(request.body, request.headers.get("monnify-signature", "")):
+    if not kora_provider.verify_webhook(request.body, request.headers.get("x-korapay-signature", "")):
         return fail("Invalid signature", status=401)
     try:
         event = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
         return fail("Invalid payload", status=400)
 
-    data = event.get("eventData", {}) or {}
+    data = event.get("data", {}) or {}
     reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
-    etype = event.get("eventType", "")
-    if etype in ("FAILED_DISBURSEMENT", "REVERSED_DISBURSEMENT") and reference:
+    etype = event.get("event", "")
+    if etype in ("transfer.failed", "transfer.reversed") and reference:
         reverse_transfer(reference)
-    elif etype == "SUCCESSFUL_DISBURSEMENT" and reference:
+    elif etype == "transfer.success" and reference:
         settle_payout(reference)
     from whatsapp.ops import record_audit
-    record_audit("webhook.monnify_disbursement", actor_type="system", target=reference,
+    record_audit("webhook.kora_disbursement", actor_type="system", target=reference,
                  after={"event": etype, "signature": "verified"})
     return ok(status=True)

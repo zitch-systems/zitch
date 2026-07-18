@@ -45,8 +45,8 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     Idempotent: returns immediately if the wallet already carries a number, so it
     is safe to call from every KYC path. Best-effort — a provider failure leaves
     the wallet numberless (the caller logs) and it is retried on the next KYC
-    action. Monnify needs a BVN/NIN to mint a dedicated account, so pass the raw
-    value while it is still in hand at verification time.
+    action. Kora needs a BVN to mint a dedicated account, so pass the raw value
+    while it is still in hand at verification time.
     """
     from utility.providers import funding_account_get, funding_account_reserve
 
@@ -65,9 +65,9 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
         # rejects). If that also fails, leave the wallet numberless to retry later.
         existing = funding_account_get(reference)
         if not existing.get("success"):
-            # Stash Monnify's real reason on the (unsaved) instance so the caller
-            # can surface it — "authentication failed" (keys/base-URL) vs a BVN/name
-            # mismatch vs "not configured" turns a dead end into a fixable signal.
+            # Stash Kora's real reason on the (unsaved) instance so the caller can
+            # surface it — a bad key vs a BVN/name mismatch vs "not configured"
+            # turns a dead end into a fixable signal.
             wallet.reserve_error = result.get("message", "") or existing.get("message", "")
             return wallet
         result = existing
@@ -237,11 +237,11 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
 
 
 def is_bank_payout(txn) -> bool:
-    """True for a bank-transfer (Monnify disbursement) payout, as opposed to a
-    VTU.ng purchase.
+    """True for a bank-transfer (Kora payout) payout, as opposed to a VTU.ng
+    purchase.
 
     Both leave a PENDING + ``meta.reconcile`` outbound row, but a payout is
-    settled by the disbursement webhook (settle_payout / reverse_transfer) and has
+    settled by the transfer webhook (settle_payout / reverse_transfer) and has
     NO VTU.ng record — requerying it via vtu_requery would query the wrong provider
     for a reference VTU.ng never saw. Bank payouts are the only such rows that
     carry a ``bank`` in meta (set in transfers.services.execute_payout)."""
@@ -252,7 +252,7 @@ def pending_vtu_purchases(cutoff):
     """PENDING outbound VTU.ng purchases due for requery, EXCLUDING bank-transfer
     payouts. The reconcile sweep (cron + on-demand) requeries each row via
     vtu_requery, which is only correct for VTU.ng purchases; bank payouts are
-    settled by the Monnify payout webhook, so they must not be swept here."""
+    settled by the Kora payout webhook, so they must not be swept here."""
     return Transaction.objects.filter(
         transaction_status=Transaction.PENDING,
         direction=Transaction.OUT,
@@ -318,7 +318,7 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     """Credit the wallet for a verified funding reference, exactly once.
 
     Locks the FundingIntent row so concurrent calls (the app's verify request
-    AND the Monnify webhook hitting at the same time) can't double-credit.
+    AND the Kora webhook hitting at the same time) can't double-credit.
     Returns the credit Transaction if this call performed the credit, else None.
     """
     try:
@@ -343,7 +343,7 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
 def settle_reserved_funding(transaction_reference: str, amount, user) -> Transaction | None:
     """Credit a wallet for an inbound bank transfer to its reserved account, once.
 
-    Keyed on Monnify's transactionReference (unique per payment): the ledger
+    Keyed on Kora's transaction_reference (unique per payment): the ledger
     row's unique `reference` is the idempotency guard, so a redelivered webhook
     is a no-op rather than a double-credit. Returns the credit row, or None if
     the payment was already applied (or the inputs are incomplete).
@@ -367,7 +367,7 @@ def settle_reserved_funding(transaction_reference: str, amount, user) -> Transac
 
 
 # Account-reference prefix that marks a wallet as provisioned on Wema/ALAT (vs
-# Monnify's "ZITCH-WALLET-"). Wema has no inbound-credit webhook, so these
+# Kora's "ZITCH-WALLET-"). Wema has no inbound-credit webhook, so these
 # wallets are the ones the reconcile_wema poller sweeps for deposits.
 WEMA_ACCOUNT_REF_PREFIX = "WEMA-WALLET-"
 
@@ -415,7 +415,7 @@ def pending_bank_payouts(cutoff):
     """PENDING outbound bank-transfer payouts (rows carrying a ``bank`` in meta),
     due for settlement reconciliation.
 
-    Monnify payouts settle via the disbursement webhook, but Wema exposes NO payout
+    Kora payouts settle via the transfer webhook, but Wema exposes NO payout
     webhook, so a Wema transfer returned PENDING/PROCESSING would otherwise sit
     debited forever. reconcile_wema polls confirm_transfer_status for these and
     settles/reverses them. The mirror of pending_vtu_purchases (which EXCLUDES

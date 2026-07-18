@@ -1,4 +1,4 @@
-"""Tests for the wallet core: balance, history, Monnify funding (idempotent),
+"""Tests for the wallet core: balance, history, Kora funding (idempotent),
 Zitch-to-Zitch transfer, and the tier / face-verification send limits.
 
 All run in MOCK provider mode (no keys), so funding settles automatically.
@@ -121,17 +121,17 @@ class WalletTests(TestCase):
     def test_fund_webhook_credits_once_and_dedupes_with_verify(self):
         _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "7500"})
         ref = init["reference"]
-        event = {"eventType": "SUCCESSFUL_TRANSACTION",
-                 "eventData": {"product": {"type": "WEB_SDK"}, "paymentReference": ref,
-                               "transactionReference": "MNFY-" + ref, "amountPaid": 7500}}
+        event = {"event": "charge.success",
+                 "data": {"reference": ref, "status": "success",
+                          "transaction_reference": "KPY-" + ref, "amount": 7500}}
         # Webhook credits (mock signature accepted).
-        r1 = self.client.post("/api/fund/monnify/webhook/", data=json.dumps(event),
-                              content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
+        r1 = self.client.post("/api/fund/kora/webhook/", data=json.dumps(event),
+                              content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(self.balance(self.user), Decimal("27500"))
         # Webhook AND the app's verify racing: still only one credit.
-        self.client.post("/api/fund/monnify/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
+        self.client.post("/api/fund/kora/webhook/", data=json.dumps(event),
+                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
         self.post("/api/fund/verify/", {"access_token": self.token, "reference": ref})
         self.assertEqual(self.balance(self.user), Decimal("27500"))
 
@@ -139,7 +139,7 @@ class WalletTests(TestCase):
         res, _ = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "50"})
         self.assertEqual(res.status_code, 400)
 
-    # --- dedicated account via Monnify onboarding (BVN) ---
+    # --- dedicated account via Kora onboarding (BVN) ---
     def test_account_create_via_bvn_onboarding(self):
         res, body = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
         self.assertEqual(res.status_code, 200)
@@ -160,11 +160,11 @@ class WalletTests(TestCase):
         self.assertEqual(body2["account_number"], body["account_number"])
 
     def test_account_create_rejected_when_reserve_fails(self):
-        """When Monnify rejects the virtual-account onboarding (e.g. a BVN/name
+        """When Kora rejects the virtual-account onboarding (e.g. a BVN/name
         mismatch), no account is minted and the user stays tier 1 / unverified."""
-        with patch("utility.monnify.create_virtual_account",
+        with patch("utility.kora.create_virtual_account",
                    return_value={"success": False, "message": "BVN/name mismatch"}), \
-                patch("utility.monnify.get_virtual_account", return_value={"success": False}):
+                patch("utility.kora.get_virtual_account", return_value={"success": False}):
             res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
         self.assertEqual(res.status_code, 502)
         u = User.objects.get(pk=self.user.pk)
@@ -323,32 +323,32 @@ class ReservedAccountTests(TestCase):
         from .services import ensure_reserved_account
 
         wallet = ensure_reserved_account(self.user, bvn="22200000001")
-        event = {"eventType": "SUCCESSFUL_TRANSACTION", "eventData": {
-            "product": {"type": "RESERVED_ACCOUNT"},
-            "transactionReference": "MNFY-TX-RSV001", "amountPaid": 5000,
-            "accountReference": wallet.account_reference,
-            "destinationAccountInformation": {"accountNumber": wallet.account_number},
+        event = {"event": "charge.success", "data": {
+            "status": "success", "transaction_reference": "KPY-TX-RSV001", "amount": 5000,
+            "virtual_bank_account_details": {"virtual_bank_account": {
+                "account_number": wallet.account_number,
+                "account_reference": wallet.account_reference}},
         }}
         body = json.dumps(event)
-        r1 = self.client.post("/api/fund/monnify/webhook/", data=body, content_type="application/json",
-                              HTTP_MONNIFY_SIGNATURE="mock")
+        r1 = self.client.post("/api/fund/kora/webhook/", data=body, content_type="application/json",
+                              HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(self.bal(), Decimal("5000"))
         # Redelivered webhook (same reference) must not double-credit.
-        self.client.post("/api/fund/monnify/webhook/", data=body, content_type="application/json",
-                         HTTP_MONNIFY_SIGNATURE="mock")
+        self.client.post("/api/fund/kora/webhook/", data=body, content_type="application/json",
+                         HTTP_X_KORAPAY_SIGNATURE="mock")
         self.assertEqual(self.bal(), Decimal("5000"))
 
     def test_webhook_ignores_unknown_reserved_account(self):
-        event = {"eventType": "SUCCESSFUL_TRANSACTION", "eventData": {
-            "product": {"type": "RESERVED_ACCOUNT"},
-            "transactionReference": "MNFY-TX-RSV404", "amountPaid": 5000,
-            "accountReference": "ZITCH-WALLET-999999",
-            "destinationAccountInformation": {"accountNumber": "0000000000"},
+        event = {"event": "charge.success", "data": {
+            "status": "success", "transaction_reference": "KPY-TX-RSV404", "amount": 5000,
+            "virtual_bank_account_details": {"virtual_bank_account": {
+                "account_number": "0000000000",
+                "account_reference": "ZITCH-WALLET-999999"}},
         }}
-        r = self.client.post("/api/fund/monnify/webhook/", data=json.dumps(event),
-                             content_type="application/json", HTTP_MONNIFY_SIGNATURE="mock")
-        self.assertEqual(r.status_code, 200)  # accepted so Monnify stops retrying
+        r = self.client.post("/api/fund/kora/webhook/", data=json.dumps(event),
+                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
+        self.assertEqual(r.status_code, 200)  # accepted so Kora stops retrying
         self.assertEqual(self.bal(), Decimal("0"))  # but nothing credited
 
     def test_wallet_account_endpoint_is_a_fast_read_without_provisioning(self):

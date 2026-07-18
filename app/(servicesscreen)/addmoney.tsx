@@ -15,11 +15,11 @@ import { useWallet } from '@/lib/wallet';
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
 // Two ways to fund:
-//  1. Instant checkout (Monnify hosted card/bank page) — works without a dedicated
+//  1. Instant checkout (Kora hosted card/bank page) — works without a dedicated
 //     account, credited by the pay-in webhook / verify. Always available.
-//  2. A dedicated Zitch (Monnify reserved) account for bank transfers — minted via
-//     Monnify's reserved-account onboarding (enter BVN; Monnify verifies and issues
-//     the NUBAN). Requires the reserved-account product to be enabled on the Monnify
+//  2. A dedicated Zitch (Kora reserved) account for bank transfers — minted via
+//     Kora's reserved-account onboarding (enter BVN; Kora verifies and issues
+//     the NUBAN). Requires the reserved-account product to be enabled on the Kora
 //     merchant account; until then, use instant checkout above.
 const AddMoney = () => {
   const { c } = useTheme();
@@ -58,7 +58,7 @@ const AddMoney = () => {
     notify('Copied', 'Account number copied to clipboard');
   };
 
-  // Instant funding: open Monnify's hosted checkout, then confirm + refresh. The
+  // Instant funding: open Kora's hosted checkout, then confirm + refresh. The
   // pay-in webhook also credits idempotently, so verify is best-effort.
   const fundNow = async () => {
     const amt = Number(fundAmt);
@@ -156,7 +156,7 @@ const AddMoney = () => {
     <Screen>
       <Header title="Add money" onBack={() => router.back()} />
 
-      {/* 1) Instant funding via Monnify hosted checkout (card / bank) */}
+      {/* 1) Instant funding via Kora hosted checkout (card / bank) */}
       <Label>Fund instantly</Label>
       <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
         <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginBottom: 14 }}>
@@ -180,7 +180,7 @@ const AddMoney = () => {
 
       <View style={{ height: 26 }} />
 
-      {/* 2) Dedicated account for bank transfers (needs Monnify reserved account) */}
+      {/* 2) Dedicated account for bank transfers (needs Kora reserved account) */}
       <Label>Or use a dedicated account</Label>
       {account ? (
         <>
