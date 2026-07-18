@@ -11,7 +11,7 @@ services:
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
     # Render can't see -> "no open ports detected" and the deploy times out. Render
     # injects PORT (default 10000, which the health check targets).
-    # 2 workers x 4 threads so one slow provider call (Monnify/VTU do
+    # 2 workers x 4 threads so one slow provider call (Kora/VTU do
     # network I/O in-request) can't stall every other request; --timeout bounds
     # a hung worker. Sized for the 512MB free/starter tiers. NOTE: with more
     # than one worker, set REDIS_URL so rate limits share one cache (see below).
@@ -38,25 +38,25 @@ services:
           name: zitch-db
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
-      # Money rail is Monnify (see the MONNIFY_* block below) — funding, virtual
-      # accounts, payouts + name enquiry, and BVN/NIN identity. vNIN + face are on
-      # Prembly; cards on the generic CARD_ISSUER.
-      # Optional: enables /payout-diagnose?token=... and /monnify-diagnose browser
+      # Money rail is Korapay (see the KORA_* block below) — funding, virtual
+      # accounts, payouts + name enquiry, merchant balance, and BVN/NIN/vNIN identity.
+      # Selfie/liveness + address + ID-document stay on Prembly; cards on CARD_ISSUER.
+      # Optional: enables /payout-diagnose?token=... and /kora-diagnose browser
       # self-tests (also gated by WEMA_DIAG_TOKEN).
       - key: DIAG_TOKEN
         sync: false
       # Virtual-card backend: "issuer" (generic CARD_ISSUER) — the sole backend; blank => issuer.
       - key: CARD_PROVIDER
         sync: false
-      # Wallet FUND-IN rail: "monnify" (default) or "wema"; blank => monnify.
+      # Wallet FUND-IN rail: "kora" (default) or "wema"; blank => kora.
       - key: PAYMENT_PROVIDER
         sync: false
-      # Bank-PAYOUT + recipient name-enquiry rail: blank => monnify (the production
+      # Bank-PAYOUT + recipient name-enquiry rail: blank => kora (the production
       # choice). "wema" exists but is ARCHIVED — do not set it.
       - key: PAYOUT_PROVIDER
         sync: false
-      # BVN/NIN KYC rail: "monnify" (the sole rail); blank => monnify. vNIN + face
-      # are on Prembly.
+      # BVN/NIN/vNIN KYC rail: "kora" (the sole rail); blank => kora. Selfie/liveness
+      # + address + ID-document are on Prembly.
       - key: KYC_PROVIDER
         sync: false
       # ---------------------------------------------------------------------
@@ -87,31 +87,29 @@ services:
         sync: false
       - key: WEMA_SIMULATION
         sync: false
-      # Monnify — the sole money rail: fund-in (dedicated virtual accounts + hosted
-      # checkout) AND payouts (disbursements) + name enquiry. Collections need NO IP
-      # whitelisting, but DISBURSEMENTS DO: whitelist this service's egress IP in the
-      # Monnify dashboard (Settings > API) — confirm it via /payout-diagnose. Blank
-      # keys => mock; MONNIFY_SIMULATION=true tests the fund-in flow without live keys
-      # (no real money; payouts still fail closed). BASE_URL: live
-      # https://api.monnify.com, sandbox https://sandbox.monnify.com. Webhooks:
-      # /api/fund/monnify/webhook/ (pay-in) and /api/transfers/webhook/ (payout).
-      - key: MONNIFY_API_KEY
+      # Korapay (Kora) — the sole money rail: fund-in (dedicated virtual accounts +
+      # hosted checkout) AND payouts + name enquiry + merchant balance, plus Nigeria
+      # KYC (BVN/NIN/vNIN). A single Bearer SECRET key; NO IP whitelisting. Blank keys
+      # => mock; KORA_SIMULATION=true tests the fund-in flow without live keys (no real
+      # money; payouts + identity still fail closed). BASE_URL https://api.korapay.com.
+      # Reserved accounts issue on Wema (KORA_VA_BANK_CODE, default 035). Webhooks:
+      # /api/fund/kora/webhook/ (pay-in) and /api/transfers/webhook/ (payout).
+      - key: KORA_SECRET_KEY
         sync: false
-      - key: MONNIFY_SECRET_KEY
+      - key: KORA_PUBLIC_KEY
         sync: false
-      - key: MONNIFY_CONTRACT_CODE
+      - key: KORA_VA_BANK_CODE
         sync: false
-      # Merchant wallet NUBAN payouts are drawn from (sourceAccountNumber). Required
-      # for live disbursements.
-      - key: MONNIFY_WALLET_ACCOUNT
+      - key: KORA_REDIRECT_URL
         sync: false
-      # HTTPS forward proxy all Monnify calls exit through, so Monnify sees one
-      # whitelistable static IP (e.g. a DigitalOcean box) instead of Render's own
-      # egress. scheme://user:pass@host:port. Required for disbursements when the
-      # whitelisted IP isn't Render's egress. Verify via /payout-diagnose.
-      - key: MONNIFY_PROXY_URL
+      # Optional per-request webhook URLs (Kora also supports one dashboard URL).
+      - key: KORA_FUND_WEBHOOK_URL
         sync: false
-      - key: MONNIFY_BASE_URL
+      - key: KORA_PAYOUT_WEBHOOK_URL
+        sync: false
+      - key: KORA_SIMULATION
+        sync: false
+      - key: KORA_BASE_URL
         sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
@@ -247,14 +245,13 @@ services:
   # (The zitch-reconcile-wema cron was removed when Wema was archived — restore it
   # from docs/wema-migration.md if the Wema rail is ever resumed.)
 
-  # Monnify payout reconciliation — a safety net behind the disbursement webhook:
-  # poll single-transfer status for any bank payout left PENDING and settle
-  # (SUCCESS) or reverse (FAILED/REVERSED) it, so a missed webhook never leaves a
-  # transfer debited forever. No-op unless Monnify is the payout rail. Also requires
-  # a paid plan (cron has no free tier). Runs every 10 minutes. NOTE: this service
-  # needs its OWN Monnify keys (crons are separate from the web service) to query
-  # disbursement status — set MONNIFY_* below in the Render dashboard, and the same
-  # egress IP applies (whitelist this cron's IP too if it differs from the web app).
+  # Kora payout reconciliation — a safety net behind the transfer webhook: poll
+  # single-transaction status for any bank payout left PENDING and settle (success)
+  # or reverse (failed/reversed) it, so a missed webhook never leaves a transfer
+  # debited forever. No-op unless Kora is the payout rail. Also requires a paid plan
+  # (cron has no free tier). Runs every 10 minutes. NOTE: this service needs its OWN
+  # Kora key (crons are separate from the web service) to query transaction status —
+  # set KORA_* below in the Render dashboard.
   - type: cron
     name: zitch-reconcile-payouts
     runtime: python
@@ -272,17 +269,9 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
-      - key: MONNIFY_API_KEY
+      - key: KORA_SECRET_KEY
         sync: false
-      - key: MONNIFY_SECRET_KEY
-        sync: false
-      - key: MONNIFY_CONTRACT_CODE
-        sync: false
-      - key: MONNIFY_WALLET_ACCOUNT
-        sync: false
-      - key: MONNIFY_PROXY_URL
-        sync: false
-      - key: MONNIFY_BASE_URL
+      - key: KORA_BASE_URL
         sync: false
 
   # Ledger <-> balance integrity check — recomputes every wallet from the

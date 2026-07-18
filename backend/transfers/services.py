@@ -117,8 +117,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     except InsufficientFunds:
         raise PayoutError("insufficient", "Insufficient wallet balance.")
 
-    # Wema per-user-balance model: debit the sender's own NUBAN (ignored by Monnify,
-    # which draws from the pooled merchant wallet).
+    # Wema per-user-balance model: debit the sender's own NUBAN (ignored by Kora,
+    # which draws from the merchant Kora balance).
     sender_source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
     result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
                          bank.bank_code, account_number, name, bank_name=bank.name,
@@ -135,11 +135,11 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         txn.save(update_fields=["transaction_status", "meta"])
     elif result.get("success") or result.get("pending"):
         # Accepted-but-queued (PENDING/PROCESSING), OR an AMBIGUOUS outcome — a send
-        # timeout / lost response on the non-idempotent disburse POST, where Monnify
-        # may already have paid the recipient. HOLD the debit: never refund a
+        # timeout / lost response on the non-idempotent disburse POST, where Kora may
+        # already have paid the recipient. HOLD the debit: never refund a
         # maybe-delivered transfer (that would drain the float and, on retry, double-
         # pay). The row stays PENDING with the reconcile flag pre-set above; the
-        # disbursement webhook or the payout reconciler (verify_payout) settles it
+        # transfer webhook or the payout reconciler (verify_payout) settles it
         # (settle_payout) or reverses it (reverse_transfer) once the outcome is known.
         # The caller reports "processing", not "sent".
         pass

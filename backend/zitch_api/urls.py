@@ -17,15 +17,14 @@ def health(_request):
     """
     from utility.providers import (_prembly_live, kyc_provider, payment_provider,
                                     payout_live, payout_provider, vas_provider, vtu_live)
-    from utility import monnify
+    from utility import kora
 
     integrations = {
-        "funding_provider": payment_provider(),   # which rail funds the wallet (monnify default)
-        "funding_monnify": monnify.monnify_live(),
-        "funding_monnify_simulation": monnify.monnify_simulation(),
-        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (monnify default)
+        "funding_provider": payment_provider(),   # which rail funds the wallet (kora default)
+        "funding_kora": kora.kora_live(),
+        "funding_kora_simulation": kora.kora_simulation(),
+        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (kora default)
         "payout_live": payout_live(),             # selected payout rail has live keys
-        "payout_monnify_wallet_set": bool(settings.MONNIFY.get("WALLET_ACCOUNT")),  # source wallet for disbursements
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
         # Wema/ALAT is ARCHIVED: opt-in code retained (see docs/wema-migration.md),
         # nothing routes to it unless a *_PROVIDER env is explicitly set to "wema".
@@ -33,9 +32,9 @@ def health(_request):
         "vtu_vtung": vtu_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
-        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN (monnify default)
-        "kyc_monnify": monnify.monnify_live(),
-        "kyc_prembly": _prembly_live(),  # face/liveness stays on Prembly
+        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (kora default)
+        "kyc_kora": kora.kora_live(),
+        "kyc_prembly": _prembly_live(),  # selfie/liveness + address + ID-doc stay on Prembly
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
@@ -73,12 +72,10 @@ def robots_txt(_request):
 def payout_diagnose(request):
     """GET /payout-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
 
-    Browser-accessible Monnify PAYOUT self-test for hosts without shell access
-    (e.g. Render). Reports the server's EGRESS IP (which must be whitelisted on
-    Monnify for disbursements), whether auth + the merchant wallet read work, and a
-    sample name-enquiry — turning a rejected live payout into a precise fix. Returns
-    NO secrets. Use it to VERIFY that the static IP you whitelisted matches the IP
-    the server actually presents.
+    Browser-accessible Kora PAYOUT self-test for hosts without shell access (e.g.
+    Render). Reports whether the secret key authenticates and the merchant Kora
+    balance reads (payouts are drawn from it) — turning a rejected live payout into
+    a precise fix. Kora needs NO IP whitelisting. Returns NO secrets.
 
     Opt-in + protected: 404 unless DIAG_TOKEN (or WEMA_DIAG_TOKEN) is set, supplied
     as ?token= (constant-time compared).
@@ -86,9 +83,13 @@ def payout_diagnose(request):
     denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
     if denied:
         return denied
-    from utility.monnify import disbursement_diagnostics
+    from utility.kora import get_balances, kora_diagnostics
 
-    return JsonResponse({"payout": disbursement_diagnostics()})
+    out = {"config": kora_diagnostics()}
+    bal = get_balances()
+    out["auth_ok"] = bool(bal.get("success"))
+    out["available_balance"] = bal.get("available_balance")
+    return JsonResponse({"payout": out})
 
 
 def wema_diagnose(request):
@@ -156,34 +157,22 @@ def _diag_denied(request, *env_names):
     return None
 
 
-def monnify_diagnose(request):
-    """GET /monnify-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&bvn=&name=&email=]
+def kora_diagnose(request):
+    """GET /kora-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&bvn=&name=&email=]
 
-    Browser self-test for the LIVE fund-in rail: proves Monnify auth + the
-    reserved-account product, and (with bvn+name) actually MINTS a NUBAN so
-    'can Monnify create an account?' is answered with a real account number.
-    Token-gated; returns no secrets.
+    Browser self-test for the LIVE Kora rail: proves the secret key authenticates
+    (a balance read) and, with bvn+name, actually MINTS a NUBAN so 'can Kora create
+    an account?' is answered with a real account number. Token-gated; no secrets.
     """
     denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
     if denied:
         return denied
-    from utility.monnify import deallocate_virtual_account, monnify_probe
-
-    # &dealloc=ZITCH-DIAG-XXXX — release a probe account so it stops blocking the
-    # customer's REAL account (Monnify: one reserved account per customer/BVN).
-    # Restricted to the diagnostic prefix: this endpoint can never deallocate a
-    # real user wallet account, token or not.
-    dealloc = request.GET.get("dealloc", "").strip()[:40]
-    if dealloc:
-        if not dealloc.startswith("ZITCH-DIAG-"):
-            return JsonResponse({"detail": "Only ZITCH-DIAG-* references can be deallocated here."},
-                                status=400)
-        return JsonResponse({"deallocate": deallocate_virtual_account(dealloc)})
+    from utility.kora import kora_probe
 
     bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
     name = request.GET.get("name", "").strip()[:80]
     email = request.GET.get("email", "").strip()[:120]
-    return JsonResponse({"monnify": monnify_probe(bvn=bvn, name=name, email=email)})
+    return JsonResponse({"kora": kora_probe(bvn=bvn, name=name, email=email)})
 
 
 def vtu_diagnose(request):
@@ -213,7 +202,7 @@ urlpatterns = [
     path("readyz", readyz),
     path("payout-diagnose", payout_diagnose),
     path("wema-diagnose", wema_diagnose),
-    path("monnify-diagnose", monnify_diagnose),
+    path("kora-diagnose", kora_diagnose),
     path("vtu-diagnose", vtu_diagnose),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),

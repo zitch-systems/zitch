@@ -10,10 +10,10 @@ ALAT exposes NO webhooks, so two things must be polled:
    re-polling the same window never double-credits.
 
 2. PAYOUTS (settlement): a Wema transfer returned PENDING/PROCESSING has no
-   disbursement webhook to settle it (unlike Monnify). This polls
+   disbursement webhook to settle it (unlike Kora). This polls
    confirm_transfer_status for each PENDING bank payout and settles (SUCCESS) or
-   reverses (FAILED) it â€” the equivalent of the Monnify payout webhook. Only runs when
-   Wema is the payout rail, so it never touches a Monnify payout it can't query.
+   reverses (FAILED) it â€” the equivalent of the Kora payout webhook. Only runs when
+   Wema is the payout rail, so it never touches a Kora payout it can't query.
 
 Schedule every few minutes (see render.yaml); each phase only does work when Wema
 is the relevant rail, so it's harmless otherwise.
@@ -67,7 +67,7 @@ class Command(BaseCommand):
                     credited += 1
 
         # Phase 2 â€” settle PENDING payouts (only when Wema is the payout rail, so we
-        # never query Wema for a Monnify payout it never saw).
+        # never query Wema for a Kora payout it never saw).
         settled = 0
         reversed_ = 0
         if payout_provider() == "wema":

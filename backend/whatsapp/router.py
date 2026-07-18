@@ -569,8 +569,8 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
 
 def _do_add_money(user, msisdn: str) -> None:
     """Show the user's dedicated Zitch account for bank-transfer funding (credited
-    automatically by the Monnify pay-in webhook). If they don't have one yet, onboard
-    them right here on WhatsApp via Monnify — collect the BVN and mint the account."""
+    automatically by the Kora pay-in webhook). If they don't have one yet, onboard
+    them right here on WhatsApp via Kora — collect the BVN and mint the account."""
     wallet = get_or_create_wallet(user)
     if not wallet.account_number and (user.bvn_verified or user.nin_verified):
         wallet = ensure_reserved_account(user)
@@ -578,7 +578,7 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
 
-    # No account yet — start the Monnify onboarding in-chat by collecting the BVN.
+    # No account yet — start the Kora onboarding in-chat by collecting the BVN.
     _new_flow(user, msisdn, "add_account", "bvn")
     return reply(
         msisdn,
@@ -595,11 +595,11 @@ BVN_MAX_ATTEMPTS = 3
 
 def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
     """Slot-filling step for in-chat virtual-account onboarding: receive the BVN,
-    hand it to Monnify (which verifies it and issues the virtual account), show it.
+    hand it to Kora (which verifies it and issues the virtual account), show it.
 
-    Verification attempts are capped (like the PIN flow): each BVN Monnify rejects
+    Verification attempts are capped (like the PIN flow): each BVN Kora rejects
     counts toward BVN_MAX_ATTEMPTS, after which the flow aborts — so a linked
-    number can't brute-force BVNs against Monnify's identity check."""
+    number can't brute-force BVNs against Kora's identity check."""
     bvn = re.sub(r"\D", "", text)
     if len(bvn) != 11:
         # Malformed input is guidance, not a verification attempt — don't count it.

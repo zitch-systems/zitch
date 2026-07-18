@@ -1,6 +1,6 @@
 """WhatsApp channel tests (slice 1): webhook, linking, balance, NGN transfer.
 
-All run in MOCK mode (no Meta/Monnify keys), so the webhook accepts unsigned
+All run in MOCK mode (no Meta/Kora keys), so the webhook accepts unsigned
 bodies and the payout settles automatically — the full flow is exercised offline.
 """
 import hashlib
@@ -206,7 +206,7 @@ class ChannelTests(TestCase):
 
     def test_add_money_without_account_onboards_via_bvn(self):
         # An unverified, account-less user funds for the first time: WhatsApp
-        # collects the BVN and Monnify (mock) mints the account in-chat.
+        # collects the BVN and Kora (mock) mints the account in-chat.
         self.user.bvn_verified = False
         self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
@@ -240,7 +240,7 @@ class ChannelTests(TestCase):
 
     @patch("whatsapp.router.ensure_reserved_account")
     def test_add_money_bvn_attempts_are_capped(self, mock_reserve):
-        # Monnify keeps rejecting (numberless wallet) — the flow must abort after
+        # Kora keeps rejecting (numberless wallet) — the flow must abort after
         # BVN_MAX_ATTEMPTS so a linked number can't brute-force BVNs.
         self.user.bvn_verified = False
         self.user.nin_verified = False

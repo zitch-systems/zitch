@@ -44,7 +44,7 @@ async function isEdgeBlock(res: Response): Promise<boolean> {
 // Install a global fetch guard so EVERY request to our API carries the User-Agent
 // (and Accept: application/json) — including the screens that call `fetch()`
 // directly (auth + some service lists) rather than going through `apiPost`.
-// Scoped to our own API hosts, so third-party SDK traffic (Mono/Monnify webviews)
+// Scoped to our own API hosts, so third-party SDK traffic (Mono/Kora webviews)
 // is untouched. Idempotent, and only fills a header that a caller left unset, so
 // it never overrides an explicit value. Also applies the edge-403 fallback above.
 // Import this once at app entry.

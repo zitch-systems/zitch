@@ -117,7 +117,7 @@ def main():
     check("wallet_balance shape", j(r).get("success") is True and "wallet" in j(r), str(j(r)))
 
     okf, detail = fund(tok)
-    check("fund wallet (Monnify mock)", okf, detail)
+    check("fund wallet (Kora mock)", okf, detail)
     bal = float(j(post("/api/wallet_balance/", token=tok))["wallet"])
     check("balance reflects funding", bal >= 50000, f"balance={bal}")
 
@@ -129,7 +129,7 @@ def main():
                        ("address", {"address": "12 Marina Road", "city": "Lagos", "state": "Lagos"}),
                        ("id", {"image": "data:image/png;base64,aGk=", "doc_type": "passport"})):
         r = post(f"/api/kyc/{step}/", body, token=tok)
-        check(f"kyc/{step} verifies (mock Prembly)", j(r).get("success") is True, f"{r.status_code} {j(r)}")
+        check(f"kyc/{step} verifies (mock KYC provider)", j(r).get("success") is True, f"{r.status_code} {j(r)}")
     r = post("/api/kyc/status/", token=tok)
     check("kyc/status tier=3", j(r).get("tier") == 3, str(j(r)))
 
