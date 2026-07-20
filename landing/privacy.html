@@ -123,7 +123,7 @@
   <div class="wrap title-in">
     <span class="eyebrow">Legal</span>
     <h1>Privacy Policy</h1>
-    <div class="updated"><i data-lucide="calendar"></i> Last updated: 3 July 2026</div>
+    <div class="updated"><i data-lucide="calendar"></i> Last updated: 20 July 2026</div>
     <p class="lead">This policy explains what personal information Zitch collects when you use our bill-payment platform, how we use and protect it, and the rights you have over it.</p>
   </div>
 </div>
@@ -134,18 +134,19 @@
     <ol>
       <li><a href="#intro">1. Who we are</a></li>
       <li><a href="#collect">2. Information we collect</a></li>
-      <li><a href="#use">3. How we use it</a></li>
-      <li><a href="#basis">4. Legal basis</a></li>
-      <li><a href="#share">5. When we share it</a></li>
-      <li><a href="#payments">6. Payment information</a></li>
-      <li><a href="#retention">7. Data retention</a></li>
-      <li><a href="#security">8. How we protect it</a></li>
-      <li><a href="#cookies">9. Cookies & analytics</a></li>
-      <li><a href="#rights">10. Your rights</a></li>
-      <li><a href="#children">11. Children</a></li>
-      <li><a href="#transfers">12. International transfers</a></li>
-      <li><a href="#changes">13. Changes to this policy</a></li>
-      <li><a href="#contact">14. Contact us</a></li>
+      <li><a href="#kyc">3. Identity verification &amp; KYC</a></li>
+      <li><a href="#use">4. How we use your information</a></li>
+      <li><a href="#basis">5. Legal basis for processing</a></li>
+      <li><a href="#share">6. When we share your information</a></li>
+      <li><a href="#payments">7. Payment information</a></li>
+      <li><a href="#retention">8. Data retention</a></li>
+      <li><a href="#security">9. How we protect your information</a></li>
+      <li><a href="#cookies">10. Cookies & analytics</a></li>
+      <li><a href="#rights">11. Your rights</a></li>
+      <li><a href="#children">12. Children</a></li>
+      <li><a href="#transfers">13. International transfers</a></li>
+      <li><a href="#changes">14. Changes to this policy</a></li>
+      <li><a href="#contact">15. Contact us</a></li>
     </ol>
   </nav>
 
@@ -153,7 +154,7 @@
     <section id="intro">
       <h2><span class="num">01</span> Who we are</h2>
       <p>This Privacy Policy applies to the Zitch mobile app, website and related services (the "Platform"), operated by Zitch Technologies Ltd (RC 6920451), 10 Alh Jamiu Balogun, Ketu-Ikosi, Lagos, Nigeria ("Zitch", "we", "us"). We are the data controller for the personal information described here.</p>
-      <p>We handle personal data in line with the Nigeria Data Protection Act and applicable regulations. This policy should be read together with our <a href="terms.html">Terms & Conditions</a>.</p>
+      <p>We handle personal data in line with the <strong>Nigeria Data Protection Act, 2023 (NDPA)</strong>, the <strong>General Application and Implementation Directive, 2025 (GAID)</strong> issued by the Nigeria Data Protection Commission (NDPC), and other applicable laws. This policy should be read together with our <a href="terms.html">Terms & Conditions</a>.</p>
     </section>
 
     <section id="collect">
@@ -161,7 +162,8 @@
       <h3>Information you give us</h3>
       <ul>
         <li><strong>Account details</strong> — your name, phone number, email address and password.</li>
-        <li><strong>Identity information</strong> — where required to verify you or meet legal obligations, details such as date of birth or a government identifier.</li>
+        <li><strong>Identity &amp; KYC information</strong> — where required to verify you or meet legal obligations: your date of birth, address, photograph, government-issued ID, and identifiers such as your Bank Verification Number (BVN) and National Identification Number (NIN).</li>
+        <li><strong>Biometric data</strong> — a live facial image (liveness) captured during identity verification and when you authorise certain high-value transactions. Face or fingerprint unlock happens on your device; we only receive confirmation that the check passed.</li>
         <li><strong>Transaction details</strong> — the phone numbers, meter numbers, smartcard/IUC numbers, billers and amounts you use to make payments.</li>
         <li><strong>Support messages</strong> — anything you send us when you contact support.</li>
       </ul>
@@ -172,8 +174,19 @@
       </ul>
     </section>
 
+    <section id="kyc">
+      <h2><span class="num">03</span> Identity verification &amp; KYC</h2>
+      <p>To open certain accounts and to meet Central Bank of Nigeria and anti-money-laundering rules, we verify your identity through two licensed identity-verification providers, <strong>Prembly</strong> and <strong>Dojah</strong>. They act as our processors and may use your data only to carry out the checks we ask for. Using their identity products &mdash; <strong>Connect</strong>, <strong>Lookup</strong> and <strong>Prove</strong> &mdash; the data flow is:</p>
+      <ul>
+        <li><strong>Lookup</strong> &mdash; we submit your BVN, NIN or phone number so the provider can confirm it against the authoritative national databases and return the matching record (such as your name, date of birth and photo), so we can confirm the details you gave us are genuine and belong to you.</li>
+        <li><strong>Prove</strong> &mdash; for facial verification and step-up checks on higher-value transactions, we capture a live selfie (liveness) and, where needed, a photo of your government ID; the provider matches your face to the record and screens the document for tampering.</li>
+        <li><strong>Connect</strong> &mdash; the secure, encrypted onboarding session through which this information (and, only if you choose to link a bank account, the account details you authorise) is collected and sent for verification.</li>
+      </ul>
+      <div class="callout"><p>We request only the data each check needs. Your <strong>BVN and NIN are stored only as one-way hashes &mdash; never as raw numbers</strong> &mdash; and we keep just the verification result and the minimum details for your account tier, protected and retained in line with the NDPA and the GAID.</p></div>
+    </section>
+
     <section id="use">
-      <h2><span class="num">03</span> How we use your information</h2>
+      <h2><span class="num">04</span> How we use your information</h2>
       <p>We use your information to:</p>
       <ul>
         <li>create and manage your account and Wallet;</li>
@@ -187,16 +200,17 @@
     </section>
 
     <section id="basis">
-      <h2><span class="num">04</span> Legal basis for processing</h2>
+      <h2><span class="num">05</span> Legal basis for processing</h2>
       <p>Depending on the activity, we rely on: <strong>performance of our contract</strong> with you (to deliver the Services), <strong>your consent</strong> (for example, marketing), <strong>legal obligations</strong> (such as anti-fraud and record-keeping duties), and our <strong>legitimate interests</strong> in operating and protecting the Platform. You can withdraw consent at any time where processing is based on it.</p>
     </section>
 
     <section id="share">
-      <h2><span class="num">05</span> When we share your information</h2>
+      <h2><span class="num">06</span> When we share your information</h2>
       <p>We do <strong>not</strong> sell your personal information. We share it only as needed to run the Platform:</p>
       <ul>
         <li><strong>Billers</strong> — the network, disco, pay-TV or exam body that must receive your details to fulfil a transaction (e.g. the phone or meter number).</li>
         <li><strong>Payment Partners</strong> — licensed processors that handle your wallet funding.</li>
+        <li><strong>Identity &amp; KYC providers</strong> — our licensed verification partners <strong>Prembly</strong> and <strong>Dojah</strong>, who confirm your BVN/NIN and carry out facial and document checks (see the <a href="#kyc">Identity verification &amp; KYC</a> section).</li>
         <li><strong>Service providers</strong> — vetted vendors (e.g. cloud hosting, communications, analytics) that process data on our behalf under confidentiality obligations.</li>
         <li><strong>Legal & regulatory</strong> — authorities where we are required by law, or to prevent fraud or protect our rights and users.</li>
         <li><strong>Business transfers</strong> — a successor entity if Zitch is involved in a merger, acquisition or reorganisation, subject to this policy.</li>
@@ -204,28 +218,28 @@
     </section>
 
     <section id="payments">
-      <h2><span class="num">06</span> Payment information</h2>
+      <h2><span class="num">07</span> Payment information</h2>
       <div class="callout"><p>Card and bank payments are processed by our licensed Payment Partners. <strong>Zitch does not store your full card number, CVV or bank credentials.</strong> Those details are handled directly by the payment processor under their own security standards.</p></div>
       <p>We keep a record of your transactions (amounts, billers, references and status) so we can provide receipts, support and reversals, and to meet our legal obligations.</p>
     </section>
 
     <section id="retention">
-      <h2><span class="num">07</span> Data retention</h2>
-      <p>We keep your information for as long as your account is active and for as long afterwards as we need to meet legal, accounting, tax and fraud-prevention requirements. When information is no longer needed, we securely delete or anonymise it.</p>
+      <h2><span class="num">08</span> Data retention</h2>
+      <p>We keep your information for as long as your account is active and for as long afterwards as we need to meet legal, accounting, tax and fraud-prevention requirements. In particular, identity and transaction records are kept for at least <strong>five (5) years</strong> after your last transaction or the end of our relationship, as required by Nigerian anti-money-laundering law. When information is no longer needed, we securely delete or anonymise it.</p>
     </section>
 
     <section id="security">
-      <h2><span class="num">08</span> How we protect your information</h2>
-      <p>We use technical and organisational measures to protect your data, including encryption of data in transit, PIN-protected transactions, access controls and monitoring. No system is completely secure, so we also encourage you to protect your PIN and password and to tell us right away about anything suspicious.</p>
+      <h2><span class="num">09</span> How we protect your information</h2>
+      <p>We use technical and organisational measures to protect your data, including encryption of data in transit and at rest, <strong>one-way hashing of sensitive identifiers such as your BVN and NIN</strong> (so we never store the raw numbers), PIN-protected transactions, role-based access controls and monitoring. No system is completely secure, so we also encourage you to protect your PIN and password and to tell us right away about anything suspicious.</p>
     </section>
 
     <section id="cookies">
-      <h2><span class="num">09</span> Cookies & analytics</h2>
+      <h2><span class="num">10</span> Cookies & analytics</h2>
       <p>Our website uses cookies and similar technologies to keep you signed in, remember preferences and understand how the site is used so we can improve it. You can control cookies through your browser settings; disabling some cookies may affect how the site works.</p>
     </section>
 
     <section id="rights">
-      <h2><span class="num">10</span> Your rights</h2>
+      <h2><span class="num">11</span> Your rights</h2>
       <p>Subject to applicable law, you have the right to:</p>
       <ul>
         <li>access the personal information we hold about you;</li>
@@ -233,31 +247,31 @@
         <li>ask us to delete your information where there is no lawful reason to keep it;</li>
         <li>object to or restrict certain processing, and withdraw consent;</li>
         <li>request a copy of certain information in a portable format; and</li>
-        <li>lodge a complaint with the relevant data-protection authority.</li>
+        <li>lodge a complaint with us or with the Nigeria Data Protection Commission (NDPC) at <a href="https://www.ndpc.gov.ng" target="_blank" rel="noopener">ndpc.gov.ng</a>.</li>
       </ul>
       <p>To exercise any of these rights, email support@zitch.ng. We may need to verify your identity before we act on a request.</p>
     </section>
 
     <section id="children">
-      <h2><span class="num">11</span> Children</h2>
+      <h2><span class="num">12</span> Children</h2>
       <p>Zitch is not intended for anyone under 18. We do not knowingly collect personal information from children. If you believe a child has provided us information, contact us and we will remove it.</p>
     </section>
 
     <section id="transfers">
-      <h2><span class="num">12</span> International transfers</h2>
-      <p>Some of our service providers may process data outside Nigeria. Where that happens, we take steps to ensure your information receives a level of protection consistent with applicable data-protection law.</p>
+      <h2><span class="num">13</span> International transfers</h2>
+      <p>Some of our service providers may process data outside Nigeria (for example, cloud hosting). Where that happens, we do so in line with the NDPA (sections 41–43) — transferring only to jurisdictions with an adequate level of protection or under appropriate safeguards such as binding contractual clauses, or with your consent or as otherwise permitted by law.</p>
     </section>
 
     <section id="changes">
-      <h2><span class="num">13</span> Changes to this policy</h2>
+      <h2><span class="num">14</span> Changes to this policy</h2>
       <p>We may update this policy from time to time. We will change the "Last updated" date above and, for material changes, notify you in the app or by email. Please review it periodically.</p>
     </section>
 
     <section id="contact">
-      <h2><span class="num">14</span> Contact us</h2>
+      <h2><span class="num">15</span> Contact us</h2>
       <p>For privacy questions or to exercise your rights, contact:</p>
       <ul>
-        <li>Data protection: support@zitch.ng</li>
+        <li>Data Protection Officer (DPO): support@zitch.ng</li>
         <li>Support: support@zitch.ng</li>
         <li>Phone / WhatsApp: +234 816 693 8327</li>
         <li>Address: 10 Alh Jamiu Balogun, Ketu-Ikosi, Lagos, Nigeria</li>
