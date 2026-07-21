@@ -17,23 +17,20 @@ def health(_request):
     """
     from utility.providers import (_prembly_live, kyc_provider, payment_provider,
                                     payout_live, payout_provider, vas_provider, vtu_live)
-    from utility import kora
+    from utility import wema
 
     integrations = {
-        "funding_provider": payment_provider(),   # which rail funds the wallet (kora default)
-        "funding_kora": kora.kora_live(),
-        "funding_kora_simulation": kora.kora_simulation(),
-        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (kora default)
-        "payout_live": payout_live(),             # selected payout rail has live keys
+        "funding_provider": payment_provider(),   # which rail funds the wallet (wema)
+        "funding_wema": wema.wema_live(),
+        "funding_wema_simulation": wema.wema_simulation(),
+        "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (wema)
+        "payout_live": payout_live(),             # payout rail has live keys
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
-        # Wema/ALAT is ARCHIVED: opt-in code retained (see docs/wema-migration.md),
-        # nothing routes to it unless a *_PROVIDER env is explicitly set to "wema".
-        "wema_status": "archived",
         "vtu_vtung": vtu_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
-        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (kora default)
-        "kyc_kora": kora.kora_live(),
+        "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)
+        "kyc_wema": wema.wema_live(),
         "kyc_prembly": _prembly_live(),  # selfie/liveness + address + ID-doc stay on Prembly
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
     }
@@ -67,29 +64,6 @@ def robots_txt(_request):
     marketing site. So disallow everything here; SEO lives on zitch.ng.
     """
     return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
-
-
-def payout_diagnose(request):
-    """GET /payout-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
-
-    Browser-accessible Kora PAYOUT self-test for hosts without shell access (e.g.
-    Render). Reports whether the secret key authenticates and the merchant Kora
-    balance reads (payouts are drawn from it) — turning a rejected live payout into
-    a precise fix. Kora needs NO IP whitelisting. Returns NO secrets.
-
-    Opt-in + protected: 404 unless DIAG_TOKEN (or WEMA_DIAG_TOKEN) is set, supplied
-    as ?token= (constant-time compared).
-    """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
-    if denied:
-        return denied
-    from utility.kora import get_balances, kora_diagnostics
-
-    out = {"config": kora_diagnostics()}
-    bal = get_balances()
-    out["auth_ok"] = bool(bal.get("success"))
-    out["available_balance"] = bal.get("available_balance")
-    return JsonResponse({"payout": out})
 
 
 def wema_diagnose(request):
@@ -157,24 +131,6 @@ def _diag_denied(request, *env_names):
     return None
 
 
-def kora_diagnose(request):
-    """GET /kora-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&bvn=&name=&email=]
-
-    Browser self-test for the LIVE Kora rail: proves the secret key authenticates
-    (a balance read) and, with bvn+name, actually MINTS a NUBAN so 'can Kora create
-    an account?' is answered with a real account number. Token-gated; no secrets.
-    """
-    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
-    if denied:
-        return denied
-    from utility.kora import kora_probe
-
-    bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
-    name = request.GET.get("name", "").strip()[:80]
-    email = request.GET.get("email", "").strip()[:120]
-    return JsonResponse({"kora": kora_probe(bvn=bvn, name=name, email=email)})
-
-
 def vtu_diagnose(request):
     """GET /vtu-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
 
@@ -200,9 +156,7 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
-    path("payout-diagnose", payout_diagnose),
     path("wema-diagnose", wema_diagnose),
-    path("kora-diagnose", kora_diagnose),
     path("vtu-diagnose", vtu_diagnose),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),

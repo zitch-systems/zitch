@@ -1,6 +1,6 @@
 ﻿"""Mono (open banking) integration â€” link an external bank to the Zitch wallet.
 
-Covers what the banklink app needs, mirroring the conventions in utility.kora:
+Covers what the banklink app needs, mirroring the conventions in utility.wema:
 
 - Account linking: exchange the Mono Connect auth code for a permanent account id.
 - Account data: details, balance, transactions of a linked account.
@@ -245,7 +245,7 @@ def verify_webhook(payload: dict, signature: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics â€” mirrors kora.kora_diagnostics
+# Diagnostics â€” mirrors wema.wema_diagnostics
 # ---------------------------------------------------------------------------
 def mono_diagnostics() -> dict:
     """Structured Mono connectivity self-test (no secrets)."""

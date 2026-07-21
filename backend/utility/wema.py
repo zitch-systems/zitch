@@ -35,6 +35,7 @@ the tx-status code legend, and inbound-credit detection) before go-live.
 """
 import hashlib
 import logging
+import re
 import secrets
 from decimal import Decimal, InvalidOperation
 
@@ -55,6 +56,7 @@ _PATH = {
     "debit": "/debit-wallet",                # payout / name enquiry / banks
     "airtime": "/airtime-data",              # airtime + data (VAS)
     "bills": "/bills-payment",               # bills payment (VAS)
+    "kyc": "/kyc",                           # Full KYC / Face: BVN / NIN / vNIN lookups
 }
 # Products whose channel-id header is `access` (not `x-api-key`).
 _ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills"}
@@ -592,7 +594,106 @@ def _parse_vas(data: dict, reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics — mirrors mono/kora diagnostics
+# KYC — Nigeria identity lookups (Wema Full KYC product): BVN / NIN / vNIN
+#
+# On a valid lookup Wema returns the holder's record; verify_bvn additionally
+# rejects a clear name mismatch when a name is supplied. Identity NEVER mock-passes
+# in production (fails closed via mock_disabled_in_prod, even with WEMA_SIMULATION
+# on) so a misconfigured deploy can't upgrade a real tier on a fabricated identity.
+#
+# VERIFY-BEFORE-LIVE: the Full KYC endpoint paths/fields follow the ALAT pattern but
+# were not exercised against a live gateway — confirm the request/response shapes
+# (and whether KYC needs securityInfo) against Wema's integration guide before go-live.
+# ---------------------------------------------------------------------------
+def _kyc_live() -> bool:
+    """Whether the Full KYC product has its subscription key + channel id."""
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("kyc"))
+
+
+def _name_tokens(name: str) -> set:
+    """Significant lowercased word tokens of a holder name (drops 1-char bits),
+    for tolerant BVN/NIN name comparison."""
+    return {t for t in re.sub(r"[^a-z ]", " ", (name or "").lower()).split() if len(t) > 1}
+
+
+def _name_mismatch(supplied: str, resolved: str) -> bool:
+    """True only when BOTH names are non-empty and share NO tokens — a clear
+    mismatch. Tolerant of order / middle names so a legitimate holder is never
+    blocked by a formatting difference."""
+    a, b = _name_tokens(supplied), _name_tokens(resolved)
+    return bool(a and b and not (a & b))
+
+
+def _kyc_record(data: dict) -> dict:
+    """Pull the holder's first/last name out of either ALAT envelope shape."""
+    d = data.get("result") or data.get("data") or {}
+    if not isinstance(d, dict):
+        d = {}
+    return {"first_name": d.get("firstName", "") or d.get("firstname", ""),
+            "last_name": d.get("lastName", "") or d.get("lastname", ""), "_d": d}
+
+
+def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
+    """Verify a BVN via Wema's Full KYC lookup (POST /kyc /api/Kyc/VerifyBvn {bvn}).
+
+    On a valid lookup Wema returns the holder's record; when ``name`` is supplied we
+    reject only a CLEAR mismatch (no shared name tokens), tolerant of order/middle
+    names. Fails closed in production without keys."""
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    if not _kyc_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Identity verification is temporarily unavailable"}
+        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+    try:
+        data = _post("kyc", "/api/Kyc/VerifyBvn", {"bvn": bvn}).json()
+        rec = _kyc_record(data)
+        ok = _ok(data) and bool(rec["_d"])
+        if ok and name and _name_mismatch(name, f"{rec['first_name']} {rec['last_name']}"):
+            return {"success": False, "message": "This BVN does not match your name", "raw": data}
+        return {"success": ok, "first_name": rec["first_name"], "last_name": rec["last_name"],
+                "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def verify_nin(nin: str) -> dict:
+    """Verify a NIN via Wema's Full KYC (POST /kyc /api/Kyc/VerifyNin {nin}) -> holder details."""
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    if not _kyc_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Identity verification is temporarily unavailable"}
+        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+    try:
+        data = _post("kyc", "/api/Kyc/VerifyNin", {"nin": nin}).json()
+        rec = _kyc_record(data)
+        return {"success": _ok(data) and bool(rec["_d"]), "first_name": rec["first_name"],
+                "last_name": rec["last_name"], "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def verify_vnin(vnin: str) -> dict:
+    """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC
+    (POST /kyc /api/Kyc/VerifyVnin {vnin}). Fails closed in production when unkeyed."""
+    if not vnin or len(vnin) != 16:
+        return {"success": False, "message": "Virtual NIN must be 16 characters"}
+    if not _kyc_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Identity verification is temporarily unavailable"}
+        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
+    try:
+        data = _post("kyc", "/api/Kyc/VerifyVnin", {"vnin": vnin}).json()
+        rec = _kyc_record(data)
+        return {"success": _ok(data) and bool(rec["_d"]), "first_name": rec["first_name"],
+                "last_name": rec["last_name"], "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Diagnostics — mirrors mono diagnostics
 # ---------------------------------------------------------------------------
 def _trim(raw, limit: int = 500):
     """Short, printable form of a provider response for a diagnostic (no secrets —

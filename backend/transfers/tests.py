@@ -114,7 +114,7 @@ class BankTransferTests(TestCase):
         self.assertEqual(len(body["matches"]), 1)
 
     def test_resolve_flags_mock_when_name_enquiry_not_live(self):
-        # Without a live Kora name-enquiry rail the detection is a placeholder, so
+        # Without a live Wema name-enquiry rail the detection is a placeholder, so
         # the response must carry `mock: true` and the app won't auto-fill it as a
         # verified bank/holder (which looked like "mis-detection").
         from django.core.cache import cache
@@ -233,19 +233,6 @@ class BankTransferTests(TestCase):
         self.assertEqual(payout.transaction_status, Transaction.PENDING)  # still pending, not refunded
         self.assertEqual(self.balance(), Decimal("40500"))  # 50000 - 10000 payout + 1000 seed - 500 vtu
 
-    def test_pending_payout_settled_by_webhook(self):
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "processing"}):
-            _, body = self.post("/api/transfers/send/", {
-                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
-            })
-        ref = body["reference"]
-        event = {"event": "transfer.success", "data": {"reference": ref}}
-        self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
-
     def test_send_refunds_when_payout_fails(self):
         """If the payout provider declines, the wallet debit must be reversed."""
         with patch("transfers.services.payout_send",
@@ -260,45 +247,12 @@ class BankTransferTests(TestCase):
         # A failed payout must not save the beneficiary.
         self.assertEqual(Beneficiary.objects.filter(user=self.user).count(), 0)
 
-    def test_disbursement_webhook_refunds_failed_payout(self):
-        """A payout that succeeds on send but fails later (webhook) is refunded."""
-        _, body = self.post("/api/transfers/send/", {
-            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
-        })
-        ref = body["reference"]
-        self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
-
-        event = {"event": "transfer.failed", "data": {"reference": ref, "status": "failed"}}
-        r = self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.balance(), Decimal("50000"))  # refunded by the webhook
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
-
-        # Duplicate webhook (Kora retry) must not double-refund.
-        self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(self.balance(), Decimal("50000"))
-
-    def test_disbursement_webhook_ignores_success_event(self):
-        """A successful-disbursement callback is a no-op (already settled)."""
-        _, body = self.post("/api/transfers/send/", {
-            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
-        })
-        event = {"event": "transfer.success", "data": {"reference": body["reference"]}}
-        self.client.post("/api/transfers/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(self.balance(), Decimal("40000"))  # unchanged
-        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status, Transaction.SUCCESS)
-
     def test_ambiguous_send_timeout_holds_debit_never_refunds(self):
         """CRITICAL: a network timeout on the non-idempotent disburse POST is
-        AMBIGUOUS — Kora may already have paid the recipient. The debit MUST be
+        AMBIGUOUS — Wema may already have paid the recipient. The debit MUST be
         HELD (PENDING + reconcile), never refunded. Refunding here drains the float
         (recipient keeps the money, sender made whole) and a retry double-pays. The
-        reconcile flag then lets reconcile_payouts settle/reverse it on the true
+        reconcile flag then lets reconcile_wema settle/reverse it on the true
         outcome."""
         with patch("transfers.services.payout_send",
                    return_value={"success": False, "pending": True, "status": "pending",
@@ -318,7 +272,7 @@ class BankTransferTests(TestCase):
             Transaction.objects.filter(user=self.user, transaction_status=Transaction.FAILED).exists())
 
     def test_accepted_unknown_status_holds_debit_and_reports_pending(self):
-        """CRITICAL: a payout Kora ACCEPTED but reported with a status this code
+        """CRITICAL: a payout Wema ACCEPTED but reported with a status this code
         doesn't recognise must be treated exactly like PENDING — debit held,
         response pending — not as a failure. Misclassifying it refunded an
         in-flight transfer (double-spend) and showed the user "Error / success"."""
@@ -382,72 +336,3 @@ class BankTransferTests(TestCase):
         txn = Transaction.objects.get(reference=body["reference"])
         self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
         self.assertNotIn("reconcile", txn.meta or {})
-
-
-class KoraPayoutReconcileTests(TestCase):
-    """The reconcile_payouts poller settles/reverses PENDING payouts when a Kora
-    transfer webhook is missed — the safety net behind the webhook."""
-
-    def setUp(self):
-        self.client = Client()
-        self.user, self.token = make_user("08010009001", "recon@zitch.test", balance="50000")
-        self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
-
-    def balance(self):
-        return get_or_create_wallet(self.user).balance
-
-    def _pending_payout(self):
-        # A payout the rail ACCEPTED but left PENDING (awaiting the webhook): the
-        # wallet stays debited and the row is flagged for reconciliation.
-        with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "pending"}):
-            res = self.client.post("/api/transfers/send/", data=json.dumps({
-                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
-                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
-            }), content_type="application/json")
-        ref = res.json()["reference"]
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
-        self.assertEqual(self.balance(), Decimal("40000"))  # debited on send
-        return ref
-
-    def _run(self):
-        call_command("reconcile_payouts", "--older-than-minutes", "0", stdout=StringIO())
-
-    def test_settles_pending_payout_when_status_success(self):
-        ref = self._pending_payout()
-        with patch("utility.kora.verify_payout", return_value={"success": True, "status": "success"}):
-            self._run()
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.SUCCESS)
-        self.assertEqual(self.balance(), Decimal("40000"))  # settled, not refunded
-
-    def test_reverses_pending_payout_when_status_failed(self):
-        ref = self._pending_payout()
-        with patch("utility.kora.verify_payout", return_value={"success": False, "status": "failed"}):
-            self._run()
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.FAILED)
-        self.assertEqual(self.balance(), Decimal("50000"))  # refunded
-
-    def test_leaves_still_pending_payout_untouched(self):
-        ref = self._pending_payout()
-        with patch("utility.kora.verify_payout",
-                   return_value={"success": False, "pending": True, "status": "pending"}):
-            self._run()
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
-        self.assertEqual(self.balance(), Decimal("40000"))  # untouched
-
-    def test_unreachable_status_leaves_pending(self):
-        # A query that can't reach Kora must NOT reverse money — leave PENDING.
-        ref = self._pending_payout()
-        with patch("utility.kora.verify_payout",
-                   return_value={"success": False, "message": "unreachable"}):
-            self._run()
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)
-        self.assertEqual(self.balance(), Decimal("40000"))
-
-    @override_settings(PAYOUT_PROVIDER="wema")
-    def test_does_not_query_when_wema_is_payout_rail(self):
-        ref = self._pending_payout()
-        with patch("utility.kora.verify_payout") as mv:
-            self._run()
-        mv.assert_not_called()
-        self.assertEqual(Transaction.objects.get(reference=ref).transaction_status, Transaction.PENDING)

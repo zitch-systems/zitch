@@ -7,5 +7,4 @@ urlpatterns = [
     path("beneficiaries/", views.list_beneficiaries),
     path("resolve/", views.resolve_account),
     path("send/", views.bank_transfer),
-    path("webhook/", views.disbursement_webhook),
 ]

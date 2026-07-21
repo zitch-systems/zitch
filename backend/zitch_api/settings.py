@@ -200,65 +200,42 @@ VTUNG = {
     "PASSWORD": os.environ.get("VTUNG_PASSWORD", ""),
 }
 # Virtual-card backend: "issuer" (the generic CARD_ISSUER) — the sole card backend
-# (Kora card issuing is not integrated). Blank => issuer. See utility.providers.card_provider.
+# (Wema card issuing is not integrated yet). Blank => issuer. See utility.providers.card_provider.
 CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
-# Wallet FUND-IN backend — "kora" or "wema". Blank => kora (the sole default rail).
-# Wema is opt-in (bank-transfer funding to an OTP-provisioned NUBAN). See
+# Wallet FUND-IN backend — "wema" (the sole rail); blank => wema. Wema funds by bank
+# transfer to an OTP-provisioned NUBAN (credited by the reconcile_wema poller). See
 # utility.providers.payment_provider.
 PAYMENT_PROVIDER = os.environ.get("PAYMENT_PROVIDER", "").strip().lower()
-# The bank-PAYOUT + recipient name-enquiry rail — "kora" or "wema"; blank => kora
-# (the sole default rail). Set PAYOUT_PROVIDER=wema once WEMA_CHANNEL_ID +
-# WEMA_WALLET_KEY + WEMA_SOURCE_ACCOUNT are configured (or WEMA_SIMULATION=true to
-# test the flow without live keys). See utility.providers.payout_provider.
+# The bank-PAYOUT + recipient name-enquiry rail — "wema" (the sole rail); blank =>
+# wema. Set WEMA_CHANNEL_ID + WEMA_WALLET_KEY + WEMA_SOURCE_ACCOUNT (or
+# WEMA_SIMULATION=true to test the flow without live keys). See
+# utility.providers.payout_provider.
 PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # The VAS (airtime/data/bills) rail — "wema" or "vtung"; blank => vtung (default).
 # Opt-in: VAS_PROVIDER=wema routes AIRTIME through Wema (debited from the user's own
 # NUBAN); data & bills stay on VTU.ng until Wema's plan/biller catalog is synced.
 # See utility.providers.vas_provider and docs/wema-migration.md.
 VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
-# The BVN/NIN/vNIN KYC rail — "kora" (the sole rail); blank => kora. The image /
-# biometric steps (selfie/liveness, address, ID-document) stay on Prembly. See
-# utility.providers.kyc_provider.
+# The BVN/NIN/vNIN KYC rail — "wema" (Wema Full KYC, the sole rail); blank => wema.
+# The image / biometric steps (selfie/liveness, address, ID-document) stay on
+# Prembly. See utility.providers.kyc_provider.
 KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 # Fraud velocity guard: max outbound money movements per user per 10 minutes
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
 # tests (suites legitimately hammer one user far faster than any human).
 VELOCITY_MAX_OUT_10MIN = 0 if TESTING else int(os.environ.get("VELOCITY_MAX_OUT_10MIN", "20"))
 # (Observability: the Sentry init lives at the bottom of this file — already wired.)
-# Korapay (Kora) — the sole money-movement rail: fund-in (dedicated virtual accounts
-# + hosted checkout) AND bank payouts + recipient name enquiry + merchant balance,
-# plus Nigeria KYC (BVN/NIN/vNIN). One Bearer SECRET key on every call; the PUBLIC
-# key is only for the (unused) Miscellaneous group. Unlike Monnify, Kora needs NO IP
-# whitelisting / forward proxy for payouts. Reserved accounts are issued on Wema Bank
-# (KORA_VA_BANK_CODE, default 035). Blank keys => MOCK; KORA_SIMULATION=true serves
-# the mock fund-in flow even in production (test a real build without live keys — no
-# real money moves; payouts and identity still fail closed). BASE_URL
-# https://api.korapay.com. Webhook (x-korapay-signature, HMAC-SHA256 of the JSON
-# `data` object): fund-in -> /api/fund/kora/webhook/, payout -> /api/transfers/webhook/.
-# See utility.kora. Set KORA_FUND_WEBHOOK_URL / KORA_PAYOUT_WEBHOOK_URL to attach the
-# webhook per request (else configure one URL in the Kora dashboard).
-KORA = {
-    "BASE_URL": os.environ.get("KORA_BASE_URL", "https://api.korapay.com"),
-    "SECRET_KEY": os.environ.get("KORA_SECRET_KEY", ""),
-    "PUBLIC_KEY": os.environ.get("KORA_PUBLIC_KEY", ""),
-    "REDIRECT_URL": os.environ.get("KORA_REDIRECT_URL", ""),
-    # Bank the reserved (permanent) virtual accounts are issued on — Wema (035).
-    "VA_BANK_CODE": os.environ.get("KORA_VA_BANK_CODE", "035"),
-    # Optional per-request webhook URLs (Kora also lets you set one URL in the
-    # dashboard for all events). When set they are attached to the charge/VA-create
-    # and disburse calls respectively.
-    "FUND_WEBHOOK_URL": os.environ.get("KORA_FUND_WEBHOOK_URL", ""),
-    "PAYOUT_WEBHOOK_URL": os.environ.get("KORA_PAYOUT_WEBHOOK_URL", ""),
-    "SIMULATION": env_bool("KORA_SIMULATION", False),
-}
-# Wema / ALAT (Banking-as-a-Service) — the target rail for the full migration
-# (funding accounts, payout, name-enquiry, balance; later VAS/cards/KYC). Azure
-# APIM: a per-PRODUCT subscription key (Ocp-Apim-Subscription-Key) + a channel id
-# (x-api-key / access). Sandbox host https://apiplayground.alat.ng (LIVE differs).
-# Blank keys => MOCK; WEMA_SIMULATION=true serves the mock flow even in prod (no
-# real money). securityInfo (encrypted, required on money-movement calls) is not
-# in the OpenAPI — set WEMA_SECURITY_INFO once Wema supplies the scheme. See
-# utility.wema. Kept opt-in (not wired as default) until verified end-to-end.
+# Wema / ALAT (Banking-as-a-Service) — the SOLE money-movement rail: fund-in
+# (dedicated NUBANs via a BVN/NIN + OTP flow) AND bank payouts + recipient name
+# enquiry + balance, plus Nigeria KYC (BVN/NIN/vNIN via the Full KYC product), VAS
+# (airtime/data/bills) and a Virtual Naira Card. Azure APIM: a per-PRODUCT
+# subscription key (Ocp-Apim-Subscription-Key) + a channel id (x-api-key / access).
+# Sandbox host https://apiplayground.alat.ng (LIVE differs — set WEMA_BASE_URL).
+# There is NO inbound-credit webhook: deposits AND payout settlement are handled by
+# the reconcile_wema poller. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
+# flow even in prod (no real money). securityInfo (encrypted, required on
+# money-movement calls) is not in the OpenAPI — set WEMA_SECURITY_INFO once Wema
+# supplies the scheme. See utility.wema.
 WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
@@ -315,11 +292,11 @@ PREMBLY = {
     "API_KEY": os.environ.get("PREMBLY_API_KEY", ""),
     "APP_ID": os.environ.get("PREMBLY_APP_ID", ""),
 }
-# BVN/NIN/vNIN verification is done by Kora (see utility.providers.verify_bvn /
-# verify_nin / verify_vnin). Prembly above is retained ONLY for the image/biometric
-# checks Kora can't do: the selfie/liveness step (kyc_verify_face — the ≥₦100k gate),
-# address (kyc_verify_address), and ID-document OCR (kyc_verify_nin_document /
-# kyc_verify_id_document).
+# BVN/NIN/vNIN verification is done by Wema's Full KYC (see utility.providers.verify_bvn
+# / verify_nin / verify_vnin). Prembly above is retained ONLY for the image/biometric
+# checks the number lookups can't do: the selfie/liveness step (kyc_verify_face — the
+# ≥₦100k gate), address (kyc_verify_address), and ID-document OCR
+# (kyc_verify_nin_document / kyc_verify_id_document).
 # Card issuer (virtual cards) — generic provider; blank => mock mode.
 CARD_ISSUER = {
     "BASE_URL": os.environ.get("CARD_ISSUER_BASE_URL", ""),

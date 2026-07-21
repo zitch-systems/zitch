@@ -428,10 +428,11 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(s, 200)
         tok = b["access_token"]
 
-        # --- fund (credited exactly once across a duplicate verify) ---
-        ref = self.post("/api/fund/initialize/", access_token=tok, amount="50000")[1]["reference"]
-        self.post("/api/fund/verify/", access_token=tok, reference=ref)
-        self.post("/api/fund/verify/", access_token=tok, reference=ref)
+        # --- fund (Wema: a bank transfer into the user's NUBAN, credited by the
+        # reconcile_wema poller — simulated here with a settled credit) ---
+        from wallet.services import credit as _credit
+        user_obj = User.objects.get(phone=P)
+        _credit(user_obj, Decimal("50000"), "Wallet top-up")
         s, b = self.post("/api/wallet_balance/", access_token=tok)
         self.assertEqual(b["wallet"], "50000.00")
         self.assertIn("user_first_name", b)  # the app reads this
@@ -454,8 +455,7 @@ class FullJourneyE2ETests(TestCase):
         # --- KYC tiers + limits ---
         self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
         self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 1)  # BVN+NIN -> Tier 1
-        ref2 = self.post("/api/fund/initialize/", access_token=tok, amount="200000")[1]["reference"]
-        self.post("/api/fund/verify/", access_token=tok, reference=ref2)
+        _credit(user_obj, Decimal("200000"), "Wallet top-up")
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="1234")[0], 403)
