@@ -57,9 +57,10 @@ _PATH = {
     "airtime": "/airtime-data",              # airtime + data (VAS)
     "bills": "/bills-payment",               # bills payment (VAS)
     "kyc": "/kyc",                           # Full KYC / Face: BVN / NIN / vNIN lookups
+    "card": "/virtual-card",                 # Virtual Naira Card (issue/freeze/fund/reveal)
 }
 # Products whose channel-id header is `access` (not `x-api-key`).
-_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills"}
+_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills", "card"}
 
 
 def wema_live() -> bool:
@@ -591,6 +592,101 @@ def _parse_vas(data: dict, reference: str) -> dict:
     return {"success": ok and not pending, "pending": pending, "status": status,
             "reference": r.get("transactionReference", reference),
             "message": r.get("message") or _msg(data), "raw": data}
+
+
+# ---------------------------------------------------------------------------
+# Virtual Naira Card (Wema card product): issue / freeze / fund / reveal
+#
+# Returns the same shapes the cards app + providers card_* wrappers expect
+# (issue -> {card_token, brand, last4, expiry}; reveal -> {pan, cvv}). Mock-first
+# with a deterministic fake card offline; fails closed in production when unkeyed so
+# a misconfigured deploy never fabricates a card that looks real in the app.
+#
+# VERIFY-BEFORE-LIVE: the ALAT virtual-card endpoint paths/fields and whether they
+# need securityInfo are not exercisable from CI — confirm against Wema's card
+# integration guide before go-live.
+# ---------------------------------------------------------------------------
+def _card_live() -> bool:
+    """Whether the Virtual Naira Card product has its subscription key + channel id."""
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("card"))
+
+
+def _card_result(data: dict) -> dict:
+    d = data.get("result") or data.get("data") or {}
+    if not isinstance(d, dict):
+        d = {}
+    return d
+
+
+def card_issue(holder: str, customer_ref: str) -> dict:
+    """Create a virtual Naira card. Returns {success, card_token, brand, last4, expiry}."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        seed = int(hashlib.sha256((customer_ref or holder or "x").encode()).hexdigest(), 16)
+        return {"success": True, "mock": True, "card_token": "wema_" + f"{seed % 10**12:012d}",
+                "brand": "Verve", "last4": f"{seed % 10000:04d}",
+                "expiry": f"{1 + seed % 12:02d}/{29 + seed % 3}"}
+    try:
+        body = {"customerReference": customer_ref, "name": holder, "currency": "NGN",
+                "securityInfo": _security_info(op="card_issue", reference=customer_ref)}
+        data = _post("card", "/api/VirtualCard/CreateCard", body).json()
+        r = _card_result(data)
+        token = r.get("cardId") or r.get("id") or r.get("cardReference") or ""
+        pan = str(r.get("maskedPan") or r.get("cardNumber") or "")
+        return {"success": _ok(data) and bool(token), "card_token": token,
+                "brand": r.get("scheme", "Verve"), "last4": pan[-4:],
+                "expiry": r.get("expiry") or f"{r.get('expiryMonth', '')}/{str(r.get('expiryYear', ''))[-2:]}",
+                "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def card_set_status(card_token: str, active: bool) -> dict:
+    """Freeze/unfreeze a virtual card."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        return {"success": True, "mock": True}
+    try:
+        path = "/api/VirtualCard/Unfreeze" if active else "/api/VirtualCard/Freeze"
+        data = _post("card", path, {"cardId": card_token,
+                                    "securityInfo": _security_info(op="card_status", reference=card_token)}).json()
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def card_fund(card_token: str, amount) -> dict:
+    """Top up a virtual card from the wallet."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        return {"success": True, "mock": True}
+    try:
+        body = {"cardId": card_token, "amount": float(amount),
+                "securityInfo": _security_info(op="card_fund", reference=card_token)}
+        data = _post("card", "/api/VirtualCard/Fund", body).json()
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def card_reveal(card_token: str) -> dict:
+    """Fetch full PAN/CVV for a one-time reveal (never persisted server-side)."""
+    if not _card_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Card issuing is not configured"}
+        seed = int(hashlib.sha256(card_token.encode()).hexdigest(), 16)
+        pan = "5061" + "".join(str((seed >> (i * 4)) % 10) for i in range(12))
+        return {"success": True, "mock": True, "pan": pan, "cvv": f"{seed % 1000:03d}"}
+    try:
+        data = _get("card", f"/api/VirtualCard/Details/{card_token}").json()
+        r = _card_result(data)
+        return {"success": _ok(data), "pan": r.get("cardNumber") or r.get("pan", ""),
+                "cvv": r.get("cvv") or r.get("cvv2", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
 
 
 # ---------------------------------------------------------------------------

@@ -190,8 +190,17 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
         txn.save(update_fields=["transaction_status", "meta"])
         return "success"
     if result.get("pending"):
+        changed = False
         if not meta.get("reconcile"):
             meta["reconcile"] = True
+            changed = True
+        # Persist the fulfilling rail so reconcile requeries against the SAME rail
+        # (a Wema VAS purchase must not be requeried on VTU.ng, or vice versa).
+        for k in ("vas_rail", "vas_type"):
+            if k in result and meta.get(k) != result[k]:
+                meta[k] = result[k]
+                changed = True
+        if changed:
             txn.meta = meta
             txn.save(update_fields=["meta"])
         return "pending"

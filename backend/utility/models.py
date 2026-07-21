@@ -12,6 +12,10 @@ class DataPlan(models.Model):
     name = models.CharField(max_length=60)          # e.g. "1.5GB"
     validity = models.CharField(max_length=40)       # e.g. "30 days"
     plan_code = models.CharField(max_length=40, unique=True)
+    # Wema's own packageCode for this plan (differs from the VTU.ng plan_code).
+    # Blank until synced by `manage.py seed_wema_plans`; a blank code keeps the
+    # plan on VTU.ng, so data only moves to Wema once the catalogue is mapped.
+    wema_code = models.CharField(max_length=60, blank=True, default="")
     price = models.DecimalField(max_digits=10, decimal_places=2)
     active = models.BooleanField(default=True)
 
@@ -24,6 +28,10 @@ class CablePlan(models.Model):
     name = models.CharField(max_length=80)
     validity = models.CharField(max_length=40, blank=True, default="30 days")
     cable_plan_code = models.CharField(max_length=40, unique=True)
+    # Wema's own packageId/packageCode for this bouquet (differs from the VTU.ng
+    # cable_plan_code). Blank until synced by `manage.py seed_wema_plans`; a blank
+    # code keeps the bouquet on VTU.ng.
+    wema_code = models.CharField(max_length=60, blank=True, default="")
     price = models.DecimalField(max_digits=10, decimal_places=2)
     active = models.BooleanField(default=True)
 

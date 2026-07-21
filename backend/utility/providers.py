@@ -51,34 +51,77 @@ def vtu_live() -> bool:
 
 
 def vas_provider() -> str:
-    """VAS (airtime/data/bills) rail — 'wema' or 'vtung'; blank => 'vtung'.
+    """VAS (airtime/data/bills) rail — 'wema' or 'vtung'.
 
-    Opt-in only. Wema currently routes AIRTIME here (debited from the user's own
-    NUBAN); data & bills stay on VTU.ng until Wema's plan/biller catalog is synced,
-    because Wema uses its own packageCode/packageId (see docs/wema-migration.md)."""
+    Explicit VAS_PROVIDER wins. Blank => AUTO: use Wema once its VAS keys are
+    configured (or simulation is on), else VTU.ng — so airtime/data/bills never break
+    on a deploy that has no Wema VAS keys yet. When Wema is selected the routing is
+    still per-service: AIRTIME (network + amount, no catalogue) always goes to Wema;
+    DATA and CABLE go to Wema once the plan's `wema_code` is synced
+    (`manage.py seed_wema_plans`), else VTU.ng; ELECTRICITY and BETTING stay on VTU.ng
+    until their Wema billers are mapped."""
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
-    return choice if choice in ("wema", "vtung") else "vtung"
+    if choice in ("wema", "vtung"):
+        return choice
+    from . import wema
+    return "wema" if (wema._vas_live("airtime") or wema.wema_simulation()) else "vtung"
+
+
+def _wema_vas_route(service_id: str, payload: dict):
+    """Resolve how Wema would fulfil this purchase, or None to stay on VTU.ng.
+
+    Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
+    Airtime always resolves; data/cable resolve only when the plan's `wema_code` has
+    been synced (blank => None => VTU.ng); electricity/betting always return None."""
+    if service_id.endswith("-airtime"):
+        return {"type": "airtime", "code": "", "amount": payload.get("amount")}
+    var = str(payload.get("variation_code", "") or "")
+    if not var:
+        return None  # no plan code -> nothing to map to a Wema catalogue code
+    if service_id.endswith("-data"):
+        from .models import DataPlan
+        p = DataPlan.objects.filter(plan_code=var).only("wema_code", "price").first()
+        return {"type": "data", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
+    if service_id in ("dstv", "gotv", "startimes"):
+        from .models import CablePlan
+        p = CablePlan.objects.filter(cable_plan_code=var).only("wema_code", "price").first()
+        return {"type": "bill", "code": p.wema_code, "amount": p.price} if (p and p.wema_code) else None
+    return None
 
 
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit a VAS purchase via the selected rail.
 
     Pass the wallet ledger `reference` so it becomes the provider's request_id
-    (idempotency key + requery handle). On a network error returns
-    ``pending=True``: the purchase may have landed, so the caller must NOT refund
-    — reconciliation requeries it by reference instead.
+    (idempotency key + requery handle). On a network error returns ``pending=True``:
+    the purchase may have landed, so the caller must NOT refund — reconciliation
+    requeries it by reference instead.
 
-    Wema routing is AIRTIME-only for now (per-service): a `*-airtime` service_id
-    with VAS_PROVIDER=wema debits the sender's NUBAN via Wema; every other service
-    (data/cable/electricity) stays on VTU.ng regardless, so enabling Wema VAS never
-    breaks the services whose catalog isn't mapped yet."""
-    if vas_provider() == "wema" and service_id.endswith("-airtime"):
-        from . import wema
-        network = service_id.rsplit("-airtime", 1)[0]
-        return wema.purchase_airtime(
-            payload.get("amount"), reference or "", payload.get("phone", ""), network,
-            source_account=payload.get("source_account", ""),
-        )
+    With VAS_PROVIDER=wema (the default) each service routes to Wema only where a
+    Wema catalogue code resolves (see `_wema_vas_route`); anything else falls through
+    to VTU.ng. The chosen rail is stamped on the result (`vas_rail`/`vas_type`) so a
+    PENDING purchase is requeried against the SAME rail that fulfilled it."""
+    if vas_provider() == "wema":
+        route = _wema_vas_route(service_id, payload)
+        if route is not None:
+            from . import wema
+            src = payload.get("source_account", "")
+            phone = payload.get("phone", "")
+            if route["type"] == "airtime":
+                network = service_id.rsplit("-airtime", 1)[0]
+                res = wema.purchase_airtime(route["amount"], reference or "", phone, network,
+                                            source_account=src)
+            elif route["type"] == "data":
+                network = service_id.rsplit("-data", 1)[0]
+                res = wema.purchase_data(route["amount"], reference or "", phone, network,
+                                         route["code"], source_account=src)
+            else:  # bill (cable)
+                res = wema.pay_bill(route["amount"], reference or "", package_id=route["code"],
+                                    identifier=payload.get("billersCode", ""), source_account=src,
+                                    phone=phone)
+            res.setdefault("vas_rail", "wema")
+            res.setdefault("vas_type", route["type"])
+            return res
     from .vtung import vt_purchase
     return vt_purchase(service_id, payload, reference)
 
@@ -89,17 +132,23 @@ def vtu_requery(reference: str) -> dict:
 
     Returns the {"success", "pending", ...} shape settle_or_refund expects:
     success => delivered; pending => still unknown (retry later); neither =>
-    a definitive failure the caller refunds. Wema airtime requeries via
-    wema.vas_status when Wema is the VAS rail."""
-    if vas_provider() == "wema":
+    a definitive failure the caller refunds. The rail is read from the ledger row's
+    stamped `vas_rail`/`vas_type` (set at purchase), so a Wema purchase requeries via
+    wema.vas_status and a VTU.ng one via vt_requery — even in the mixed state."""
+    from wallet.models import Transaction
+    txn = Transaction.objects.filter(reference=reference).only("meta").first()
+    meta = (txn.meta if txn else None) or {}
+    if meta.get("vas_rail") == "wema":
         from . import wema
-        return wema.vas_status(reference, "airtime")
+        return wema.vas_status(reference, meta.get("vas_type", "airtime"))
     from .vtung import vt_requery
     return vt_requery(reference)
 
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a meter / smartcard number, returning the customer name."""
+    """Validate a meter / smartcard number, returning the customer name. Validation is
+    read-only and stays on VTU.ng (the purchase rail is chosen separately in
+    vtu_purchase)."""
     from .vtung import vt_verify_customer
     return vt_verify_customer(service_id, billers_code, variation)
 
@@ -518,10 +567,14 @@ def payout_live() -> bool:
 
 
 def card_provider() -> str:
-    """'issuer' — the generic CARD_ISSUER is the sole virtual-card backend (Wema
-    card issuing is not integrated yet). Retained as a selector so callers keep working."""
+    """Virtual-card backend — 'wema' or 'issuer'. Explicit CARD_PROVIDER wins; blank
+    => AUTO: use Wema's Virtual Naira Card once its card key is configured, else the
+    generic CARD_ISSUER — so cards never break on a deploy without a Wema card key."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
-    return choice if choice == "issuer" else "issuer"
+    if choice in ("wema", "issuer"):
+        return choice
+    from . import wema
+    return "wema" if wema._card_live() else "issuer"
 
 
 # --- Funding (wallet top-up) dispatch — Wema (OTP-provisioned NUBAN) ---
@@ -605,16 +658,28 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
 # no issuer is configured the calls mock in dev/test and fail closed in production
 # (see issue_card / card_secure_details).
 def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_issue(holder, customer_ref)
     return issue_card(holder, customer_ref)
 
 
 def card_set_status(card_token: str, active: bool) -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_set_status(card_token, active)
     return set_card_status(card_token, active)
 
 
 def card_fund(card_token: str, amount) -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_fund(card_token, amount)
     return fund_card(card_token, amount)
 
 
 def card_reveal(card_token: str) -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_reveal(card_token)
     return card_secure_details(card_token)

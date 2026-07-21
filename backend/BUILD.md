@@ -106,8 +106,10 @@ payouts + name enquiry + balance) and the BVN/NIN/vNIN KYC backend (Full KYC). T
 views/services call provider-agnostic wrappers (`utility.providers.funding_*` /
 `payout_*` / `verify_*`) that delegate to the Wema client (`utility/wema.py`).
 Prembly is retained only for the image/biometric checks the number lookups can't do
-— selfie/liveness, address, and ID-document OCR. Cards run on the generic
-`CARD_ISSUER` (Wema card issuing is not wired yet). Wema exposes **NO webhooks** —
+— selfie/liveness, address, and ID-document OCR. Virtual cards use Wema's Virtual
+Naira Card once `WEMA_CARD_KEY` is set, else the generic `CARD_ISSUER`
+(VERIFY-BEFORE-LIVE — confirm the card endpoint shapes in `utility/wema.py`). Wema
+exposes **NO webhooks** —
 deposits and payout settlement are polled by `reconcile_wema`. Verify auth +
 connectivity at `/wema-diagnose?token=...`. Wema endpoint shapes are marked
 VERIFY-BEFORE-LIVE in `utility/wema.py` (esp. the `securityInfo` scheme, the live
@@ -199,11 +201,18 @@ the `WHATSAPP_*` env vars (see `.env.example`).
   `render.yaml` from `plan: free` to a paid plan before real money: free web
   sleeps (webhooks need always-on) and free Postgres expires. The two crons
   (`zitch-maturities`, `zitch-reconcile-vtu`) already require a paid plan.
-- VTU.ng (v2) is the VTU provider, in `utility/vtung.py` (called via the
+- VTU.ng (v2) is the fallback VTU provider, in `utility/vtung.py` (called via the
   `utility/providers.py` `vtu_*` wrappers). Confirm the tv/electricity/betting
   request field names, the customer-verify endpoint, the 9mobile `service_id`,
   and that the seeded data/cable `variation_id` codes match VTU.ng's catalogue —
   these couldn't be fetched from CI.
+- **VAS on Wema:** `vas_provider()` auto-selects Wema once its VAS keys
+  (`WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY`) are set, else VTU.ng. Routing is
+  per-service: **airtime** goes to Wema immediately; **data/cable** only after
+  `python manage.py seed_wema_plans` maps each plan's `wema_code` from Wema's live
+  catalogue (run it with live keys, review with `--dry-run` first); **electricity/
+  betting** stay on VTU.ng until their Wema billers are mapped. A blank `wema_code`
+  keeps that plan on VTU.ng, so the cutover is safe and incremental.
 - Wema / ALAT request/response shapes are VERIFY-BEFORE-LIVE: set `WEMA_CHANNEL_ID`,
   `WEMA_WALLET_KEY` (+ `WEMA_CARD_KEY` / `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` /
   `WEMA_KYC_KEY`), `WEMA_SOURCE_ACCOUNT`, the live `WEMA_BASE_URL`, and the
