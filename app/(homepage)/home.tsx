@@ -107,9 +107,9 @@ const Home = () => {
           </Pressable>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>
-          {/* The dedicated (Kora reserved) account number, shown only once the
-              wallet is provisioned with one — never a hardcoded placeholder (it
-              could be mistaken for a real account and shared). Tap to copy. */}
+          {/* The dedicated (Wema/ALAT) account number, shown only once the wallet
+              is provisioned with one — never a hardcoded placeholder (it could be
+              mistaken for a real account and shared). Tap to copy. */}
           {accountNumber ? (
             <Pressable
               onPress={copyAccount}

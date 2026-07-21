@@ -1,29 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import * as WebBrowser from 'expo-web-browser';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Btn, Field, Naira } from '@/components/design/ui';
+import { Screen, Header, Btn, Field } from '@/components/design/ui';
 import { Label } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
 
 type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
-// Two ways to fund:
-//  1. Instant checkout (Kora hosted card/bank page) — works without a dedicated
-//     account, credited by the pay-in webhook / verify. Always available.
-//  2. A dedicated Zitch (Kora reserved) account for bank transfers — minted via
-//     Kora's reserved-account onboarding (enter BVN; Kora verifies and issues
-//     the NUBAN). Requires the reserved-account product to be enabled on the Kora
-//     merchant account; until then, use instant checkout above.
+// Funding is by bank transfer to a dedicated Zitch (Wema/ALAT) NUBAN — minted via
+// Wema's reserved-account onboarding (enter BVN; Wema verifies it and issues the
+// NUBAN over a one-time OTP). Wema has no hosted checkout, so there is no instant
+// card/bank pay-in here; deposits to the NUBAN are credited automatically by the
+// reconcile poller.
 const AddMoney = () => {
   const { c } = useTheme();
-  const { reload } = useWallet();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
   const [bvn, setBvn] = useState('');
@@ -34,10 +29,6 @@ const AddMoney = () => {
   const [otpFlow, setOtpFlow] = useState<{ trackingId: string; destination: string } | null>(null);
   const [otp, setOtp] = useState('');
   const [verifying, setVerifying] = useState(false);
-
-  // Instant-checkout funding
-  const [fundAmt, setFundAmt] = useState('');
-  const [funding, setFunding] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -56,36 +47,6 @@ const AddMoney = () => {
     if (!account) return;
     await Clipboard.setStringAsync(account.account_number);
     notify('Copied', 'Account number copied to clipboard');
-  };
-
-  // Instant funding: open Kora's hosted checkout, then confirm + refresh. The
-  // pay-in webhook also credits idempotently, so verify is best-effort.
-  const fundNow = async () => {
-    const amt = Number(fundAmt);
-    if (!Number.isFinite(amt) || amt < 100) { notify('Error', 'Minimum funding amount is ₦100'); return; }
-    setFunding(true);
-    try {
-      const r = await apiJson<{ success?: boolean; reference?: string; authorization_url?: string; mock?: boolean; message?: string }>(
-        '/api/fund/initialize/', { amount: String(amt) });
-      if (!r?.success || !r.authorization_url) {
-        notify('Error', r?.message || "Couldn't start payment. Please try again.");
-        return;
-      }
-      if (r.mock || !/^https?:/.test(r.authorization_url)) {
-        notify('Test mode', 'Funding is in test mode — no real charge was made.');
-        return;
-      }
-      await WebBrowser.openBrowserAsync(r.authorization_url);
-      // Back from checkout: confirm with the rail (idempotent) then refresh.
-      if (r.reference) { try { await apiJson('/api/fund/verify/', { reference: r.reference }); } catch { /* webhook still credits */ } }
-      await reload();
-      setFundAmt('');
-      notify('Funding', 'If your payment went through, your wallet has been credited.');
-    } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-    } finally {
-      setFunding(false);
-    }
   };
 
   const createAccount = async () => {
@@ -156,32 +117,9 @@ const AddMoney = () => {
     <Screen>
       <Header title="Add money" onBack={() => router.back()} />
 
-      {/* 1) Instant funding via Kora hosted checkout (card / bank) */}
-      <Label>Fund instantly</Label>
-      <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
-        <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginBottom: 14 }}>
-          Pay with your debit card or bank on our secure checkout — your wallet is credited automatically.
-        </Text>
-        <Field
-          value={fundAmt}
-          onChangeText={(v) => setFundAmt(v.replace(/\D/g, ''))}
-          keyboardType="number-pad"
-          placeholder="Enter amount"
-          prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-        />
-        <View style={{ height: 14 }} />
-        <Btn
-          label={funding ? 'Starting checkout…' : 'Fund now'}
-          icon="card"
-          disabled={funding || Number(fundAmt) < 100}
-          onPress={fundNow}
-        />
-      </View>
-
-      <View style={{ height: 26 }} />
-
-      {/* 2) Dedicated account for bank transfers (needs Kora reserved account) */}
-      <Label>Or use a dedicated account</Label>
+      {/* Fund by bank transfer to a dedicated Wema/ALAT NUBAN. Wema has no hosted
+          checkout — deposits are credited automatically by the reconcile poller. */}
+      <Label>Fund by bank transfer</Label>
       {account ? (
         <>
           <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
