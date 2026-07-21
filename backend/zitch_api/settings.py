@@ -199,8 +199,9 @@ VTUNG = {
     "USERNAME": os.environ.get("VTUNG_USERNAME", ""),
     "PASSWORD": os.environ.get("VTUNG_PASSWORD", ""),
 }
-# Virtual-card backend: "issuer" (the generic CARD_ISSUER) — the sole card backend
-# (Wema card issuing is not integrated yet). Blank => issuer. See utility.providers.card_provider.
+# Virtual-card backend: "wema" or "issuer". Explicit value wins; blank => AUTO (Wema's
+# Virtual Naira Card once WEMA_CARD_KEY is set, else the generic CARD_ISSUER — so cards
+# never break on a deploy without a Wema card key). See utility.providers.card_provider.
 CARD_PROVIDER = os.environ.get("CARD_PROVIDER", "").strip().lower()
 # Wallet FUND-IN backend — "wema" (the sole rail); blank => wema. Wema funds by bank
 # transfer to an OTP-provisioned NUBAN (credited by the reconcile_wema poller). See

@@ -564,10 +564,14 @@ def payout_live() -> bool:
 
 
 def card_provider() -> str:
-    """'issuer' — the generic CARD_ISSUER is the sole virtual-card backend (Wema
-    card issuing is not integrated yet). Retained as a selector so callers keep working."""
+    """Virtual-card backend — 'wema' or 'issuer'. Explicit CARD_PROVIDER wins; blank
+    => AUTO: use Wema's Virtual Naira Card once its card key is configured, else the
+    generic CARD_ISSUER — so cards never break on a deploy without a Wema card key."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
-    return choice if choice == "issuer" else "issuer"
+    if choice in ("wema", "issuer"):
+        return choice
+    from . import wema
+    return "wema" if wema._card_live() else "issuer"
 
 
 # --- Funding (wallet top-up) dispatch — Wema (OTP-provisioned NUBAN) ---
@@ -651,16 +655,28 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
 # no issuer is configured the calls mock in dev/test and fail closed in production
 # (see issue_card / card_secure_details).
 def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_issue(holder, customer_ref)
     return issue_card(holder, customer_ref)
 
 
 def card_set_status(card_token: str, active: bool) -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_set_status(card_token, active)
     return set_card_status(card_token, active)
 
 
 def card_fund(card_token: str, amount) -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_fund(card_token, amount)
     return fund_card(card_token, amount)
 
 
 def card_reveal(card_token: str) -> dict:
+    if card_provider() == "wema":
+        from . import wema
+        return wema.card_reveal(card_token)
     return card_secure_details(card_token)

@@ -35,9 +35,9 @@ class ProviderSelectionTests(SimpleTestCase):
         self.assertEqual(P.card_provider(), "issuer")
 
     @override_settings(CARD_PROVIDER="wema")
-    def test_card_provider_ignores_unwired_wema(self):
-        # Wema card issuing is not integrated — the selector falls back to issuer.
-        self.assertEqual(P.card_provider(), "issuer")
+    def test_card_provider_explicit_wema(self):
+        # Wema Virtual Naira Card is wired — an explicit choice is honoured.
+        self.assertEqual(P.card_provider(), "wema")
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_payout_live_tracks_wema_keys(self):
@@ -165,13 +165,33 @@ class VasDispatchTests(SimpleTestCase):
 
 
 class CardDispatchTests(SimpleTestCase):
-    def test_card_issue_routes_to_generic_issuer(self):
-        # Wema card issuing is not integrated — card_issue delegates to CARD_ISSUER.
+    def test_card_issue_routes_to_generic_issuer_by_default(self):
+        # No Wema card key configured -> card_provider() is 'issuer'.
         with patch("utility.providers.issue_card",
                    return_value={"success": True, "card_token": "card_1"}) as m:
             out = P.card_issue("ADA EZE", "42", email="ada@b.com")
         m.assert_called_once()
         self.assertTrue(out["success"])
+
+    @override_settings(CARD_PROVIDER="wema")
+    def test_card_issue_routes_to_wema_when_selected(self):
+        with patch("utility.wema.card_issue",
+                   return_value={"success": True, "card_token": "wema_1", "last4": "1234"}) as m:
+            out = P.card_issue("ADA EZE", "42", email="ada@b.com")
+        m.assert_called_once_with("ADA EZE", "42")
+        self.assertTrue(out["success"])
+
+    @override_settings(CARD_PROVIDER="wema")
+    def test_card_freeze_fund_reveal_route_to_wema(self):
+        with patch("utility.wema.card_set_status", return_value={"success": True}) as ms, \
+             patch("utility.wema.card_fund", return_value={"success": True}) as mf, \
+             patch("utility.wema.card_reveal", return_value={"success": True, "pan": "5061", "cvv": "123"}) as mr:
+            P.card_set_status("wema_1", active=False)
+            P.card_fund("wema_1", 5000)
+            P.card_reveal("wema_1")
+        ms.assert_called_once_with("wema_1", False)
+        mf.assert_called_once_with("wema_1", 5000)
+        mr.assert_called_once_with("wema_1")
 
 
 class WemaVasRoutingTests(TestCase):

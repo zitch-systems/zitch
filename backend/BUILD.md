@@ -106,8 +106,10 @@ payouts + name enquiry + balance) and the BVN/NIN/vNIN KYC backend (Full KYC). T
 views/services call provider-agnostic wrappers (`utility.providers.funding_*` /
 `payout_*` / `verify_*`) that delegate to the Wema client (`utility/wema.py`).
 Prembly is retained only for the image/biometric checks the number lookups can't do
-— selfie/liveness, address, and ID-document OCR. Cards run on the generic
-`CARD_ISSUER` (Wema card issuing is not wired yet). Wema exposes **NO webhooks** —
+— selfie/liveness, address, and ID-document OCR. Virtual cards use Wema's Virtual
+Naira Card once `WEMA_CARD_KEY` is set, else the generic `CARD_ISSUER`
+(VERIFY-BEFORE-LIVE — confirm the card endpoint shapes in `utility/wema.py`). Wema
+exposes **NO webhooks** —
 deposits and payout settlement are polled by `reconcile_wema`. Verify auth +
 connectivity at `/wema-diagnose?token=...`. Wema endpoint shapes are marked
 VERIFY-BEFORE-LIVE in `utility/wema.py` (esp. the `securityInfo` scheme, the live
