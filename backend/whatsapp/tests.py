@@ -8,11 +8,13 @@ import hmac
 import json
 import re
 import unittest
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
+from django.utils import timezone
 
 from accounts.models import AccessToken
 from transfers.models import Bank
@@ -191,6 +193,39 @@ class ChannelTests(TestCase):
         self.inbound(f"LINK {code}", "m1")
         self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
         self.assertIn("your Zitch account", self.last_reply())
+
+    def test_link_rejected_when_account_has_no_registered_phone(self):
+        # `phone` is nullable: with no number on file there's nothing to match the
+        # sender against, so the bind must FAIL CLOSED (else a leaked code from any
+        # WhatsApp number would claim the account).
+        res = self.client.post("/api/whatsapp/link/start/",
+                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+        code = res.json()["code"]
+        self.user.phone = None
+        self.user.save(update_fields=["phone"])
+        self.inbound(f"LINK {code}", "np1")
+        self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
+        self.assertIn("your Zitch account", self.last_reply())
+
+    def test_frozen_account_cannot_execute_via_flow_pin(self):
+        # Freeze bypass: the chat path blocks a frozen user, but the encrypted Flow
+        # (native PIN pad) execution path must ALSO refuse — a transfer/VTU armed
+        # BEFORE an admin freeze can't run through the Flow within the arm window.
+        from .router import run_flow_execution
+
+        self.link()
+        before = self.balance()
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="airtime", state="flow_pin",
+            payload={"amount": "500", "phone": "08030000000", "network": "MTN"},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        out = run_flow_execution(pa, self.user)
+        self.assertIn("suspended", out.lower())
+        self.assertEqual(self.balance(), before)                       # no debit
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())  # cleared
 
     # --- balance ---
     def test_balance(self):

@@ -27,6 +27,18 @@ from .models import LinkedBankAccount
 log = logging.getLogger("banklink")
 
 
+def _linked_id(data) -> int | None:
+    """Coerce the client-supplied `linked_id` to an int, or None if unusable.
+
+    The value flows straight into a `filter(id=…)` on an integer PK; a non-numeric
+    string ("abc", []) would raise ValueError at query time → an unhandled 500.
+    Callers treat None as 'not found'."""
+    try:
+        return int(data.get("linked_id"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _serialize(a: LinkedBankAccount) -> dict:
     return {
         "id": a.id,
@@ -54,6 +66,16 @@ def connect(request):
     if not res.get("success"):
         return fail(res.get("message", "Could not link your bank"), status=502)
     account_id = res["account_id"]
+
+    # `mono_account_id` is globally unique, so an upsert keyed on it ALONE would
+    # reassign an existing row's `user` to the caller — letting whoever links an
+    # account id already owned by someone else silently steal (and unlink) that
+    # user's linked bank + its cached name/balance snapshot. Never mutate another
+    # user's row: reject a cross-user re-link; a same-user re-link still refreshes.
+    owned = LinkedBankAccount.objects.filter(mono_account_id=account_id).first()
+    if owned is not None and owned.user_id != user.id:
+        log.warning("banklink_cross_user_relink user=%s account=%s", user.id, account_id)
+        return fail("This bank account is already linked to another Zitch account.", status=409)
 
     details = mono.get_account(account_id)  # best-effort snapshot
     acct, _ = LinkedBankAccount.objects.update_or_create(
@@ -86,7 +108,7 @@ def refresh(request):
     Re-pulls the linked account's balance from Mono and caches it.
     """
     acct = request.user_obj.linked_banks.filter(
-        id=request.data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
+        id=_linked_id(request.data), status=LinkedBankAccount.ACTIVE).first()
     if acct is None:
         return fail("Linked account not found", status=404)
     res = mono.get_balance(acct.mono_account_id)
@@ -101,7 +123,7 @@ def refresh(request):
 @require_user
 def unlink(request):
     """POST /api/banklink/unlink/ {access_token, linked_id} -> {success}"""
-    acct = request.user_obj.linked_banks.filter(id=request.data.get("linked_id")).first()
+    acct = request.user_obj.linked_banks.filter(id=_linked_id(request.data)).first()
     if acct is None:
         return fail("Linked account not found", status=404)
     acct.status = LinkedBankAccount.UNLINKED
@@ -120,7 +142,7 @@ def fund(request):
     """
     user = request.user_obj
     acct = user.linked_banks.filter(
-        id=request.data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
+        id=_linked_id(request.data), status=LinkedBankAccount.ACTIVE).first()
     if acct is None:
         return fail("Linked account not found", status=404)
     amount = parse_amount(request.data.get("amount"))

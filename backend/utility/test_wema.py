@@ -131,6 +131,42 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(body["destinationAccountNumber"], "02")
 
 
+WEMA_KYC = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "kyc": "kyckey"}}
+
+
+@override_settings(WEMA=WEMA_KYC)
+class WemaKycNameMatchTests(SimpleTestCase):
+    """A valid identity number must belong to the requester: BVN already rejects a
+    clear name mismatch; NIN/vNIN must do the same, else any real NIN would lift the
+    caller's tier under someone else's identity."""
+
+    @patch("utility.wema.requests.post")
+    def test_nin_clear_name_mismatch_rejected(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "data": {"firstName": "JOHN", "lastName": "DOE"}})
+        r = wema.verify_nin("12345678901", name="Ada Eze")
+        self.assertFalse(r["success"])
+        self.assertIn("does not match", r["message"].lower())
+
+    @patch("utility.wema.requests.post")
+    def test_nin_name_match_is_order_tolerant(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "data": {"firstName": "ADA", "lastName": "EZE"}})
+        r = wema.verify_nin("12345678901", name="Eze Ada Chidinma")  # order + extra middle name
+        self.assertTrue(r["success"])
+
+    @patch("utility.wema.requests.post")
+    def test_nin_without_name_still_verifies(self, mock_post):
+        # No name supplied (legacy callers) -> lookup-only, unchanged behaviour.
+        mock_post.return_value = _resp({"status": True, "data": {"firstName": "JOHN", "lastName": "DOE"}})
+        self.assertTrue(wema.verify_nin("12345678901")["success"])
+
+    @patch("utility.wema.requests.post")
+    def test_vnin_clear_name_mismatch_rejected(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "data": {"firstName": "JOHN", "lastName": "DOE"}})
+        r = wema.verify_vnin("1234567890123456", name="Ada Eze")
+        self.assertFalse(r["success"])
+        self.assertIn("does not match", r["message"].lower())
+
+
 class WemaProbeTests(SimpleTestCase):
     def test_probe_without_keys_makes_no_live_call(self):
         # No keys configured -> config + hint only, never raises.

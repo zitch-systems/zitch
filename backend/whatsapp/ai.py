@@ -99,7 +99,15 @@ def extract_intent(text: str) -> dict | None:
     try:
         import anthropic
 
-        client = anthropic.Anthropic(api_key=settings.LLM["API_KEY"])
+        # Bound the call: this runs INSIDE the synchronous Meta webhook, so an
+        # unbounded client (SDK default ~10 min with retries) would stall the handler
+        # and trigger Meta retries → webhook disablement. Fail fast; the caller already
+        # falls back to the deterministic router on any error (money never blocks on AI).
+        client = anthropic.Anthropic(
+            api_key=settings.LLM["API_KEY"],
+            timeout=settings.LLM.get("TIMEOUT", 8),
+            max_retries=0,
+        )
         resp = client.messages.create(
             model=settings.LLM.get("MODEL") or "claude-haiku-4-5-20251001",
             max_tokens=512,

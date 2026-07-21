@@ -188,6 +188,29 @@ class BanklinkEndpointTests(TestCase):
         self.client.post("/api/banklink/webhook/", data=json.dumps(event), content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
 
+    def test_connect_cannot_reassign_another_users_linked_account(self):
+        # `mono_account_id` is globally unique, so two users whose Connect code maps
+        # to the SAME id must not be able to steal each other's row via the upsert.
+        other, other_token = make_user("08044400099", "victim@zitch.app")
+        code = "shared-mono-code"
+        r1 = self.client.post("/api/banklink/connect/",
+                              data=json.dumps({"code": code, "access_token": other_token}),
+                              content_type="application/json")
+        self.assertEqual(r1.status_code, 200)
+        acct_id = LinkedBankAccount.objects.get().mono_account_id
+        # self.user links the SAME account id -> must be refused, not silently stolen.
+        r2 = self._post("/api/banklink/connect/", {"code": code})
+        self.assertEqual(r2.status_code, 409)
+        row = LinkedBankAccount.objects.get(mono_account_id=acct_id)
+        self.assertEqual(row.user_id, other.id)   # ownership unchanged
+
+    def test_non_numeric_linked_id_never_500s(self):
+        # `linked_id` flows into filter(id=…) on an integer PK; a non-numeric value
+        # must be treated as "not found", never raise into a 500.
+        for path in ("/api/banklink/refresh/", "/api/banklink/unlink/", "/api/banklink/fund/"):
+            r = self._post(path, {"linked_id": "not-an-int", "amount": "500"})
+            self.assertEqual(r.status_code, 404, f"{path} should 404 on a bad linked_id")
+
 
 class BanklinkPayoutTests(TestCase):
     """Money OUT: wallet debit -> linked bank, PIN-verified, via the transfers rail."""

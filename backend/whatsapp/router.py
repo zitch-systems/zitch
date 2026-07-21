@@ -433,7 +433,10 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
     if link is not None:
         registered = re.sub(r"\D", "", (link.user.phone or ""))
         sender = re.sub(r"\D", "", msisdn)
-        if registered and registered[-10:] != sender[-10:]:
+        # Fail CLOSED: `phone` is nullable, so an account with no number on file has
+        # nothing to match against — binding anyway would let a leaked code attach an
+        # attacker's WhatsApp to that account. Require a registered number that matches.
+        if not registered or registered[-10:] != sender[-10:]:
             return reply(msisdn, "For your security, send this code from the phone number on your Zitch account.")
         link.wa_msisdn = msisdn
         link.status = WhatsAppLink.ACTIVE
@@ -1474,6 +1477,14 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
 # path as the chat PIN path.
 # --------------------------------------------------------------------------- #
 def run_flow_execution(pa: PendingAction, user) -> str:
+    # Re-check account state HERE. The chat path gates on is_active in handle_inbound,
+    # but the encrypted Flow (native PIN pad) endpoint reaches execution through a
+    # separate path that never re-checks it — so a transfer armed *before* an admin
+    # freezes the account for fraud could still execute via the Flow within the arm
+    # window, defeating the freeze (the platform's primary incident-response lever).
+    if not user.is_active:
+        _clear_actions(pa.msisdn)
+        return "Your Zitch account is currently suspended. Please contact support."
     executors = {
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,

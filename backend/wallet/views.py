@@ -337,6 +337,11 @@ def fund_verify(request):
     # Verify against the rail that started this intent (falls back to the current
     # default when the intent or its stamp is missing).
     intent = FundingIntent.objects.filter(reference=reference).first()
+    # Scope the reference to its owner: settle_funding always credits the intent's
+    # own user (never the caller), so this is an ownership/info-exposure guard rather
+    # than a theft vector — but a caller has no business verifying another user's ref.
+    if intent is not None and intent.user_id != request.user_obj.id:
+        return fail("Reference not found", status=404)
     provider = (intent.meta or {}).get("provider", "") if intent else ""
     result = funding_verify(reference, provider=provider)
     if not result.get("success"):
