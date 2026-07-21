@@ -1,6 +1,6 @@
 """WhatsApp channel tests (slice 1): webhook, linking, balance, NGN transfer.
 
-All run in MOCK mode (no Meta/Kora keys), so the webhook accepts unsigned
+All run in MOCK mode (no Meta/Wema keys), so the webhook accepts unsigned
 bodies and the payout settles automatically — the full flow is exercised offline.
 """
 import hashlib
@@ -40,6 +40,16 @@ def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="
     if Decimal(balance) > 0:
         credit(u, Decimal(balance), "Seed")
     return u, AccessToken.issue(u).key
+
+
+def give_account(user, number="0100000123"):
+    """Provision a Wema NUBAN on the user's wallet (what the app OTP flow persists)."""
+    w = get_or_create_wallet(user)
+    w.account_number = number
+    w.account_name = (user.get_full_name() or "Ada Eze").strip()
+    w.bank_name = "Wema Bank"
+    w.save(update_fields=["account_number", "account_name", "bank_name", "updated"])
+    return w
 
 
 class WebhookTests(TestCase):
@@ -190,71 +200,33 @@ class ChannelTests(TestCase):
 
     # --- add money (dedicated reserved account) ---
     def test_add_money_shows_dedicated_account_for_verified_user(self):
-        # make_user is BVN-verified, so a reserved account can be minted lazily.
+        # A user with a provisioned Wema NUBAN sees it for bank-transfer funding.
+        wallet = give_account(self.user)
         self.link()
         self.inbound("add money", "am1")
-        wallet = get_or_create_wallet(self.user)
-        self.assertTrue(wallet.account_number)               # reserved on demand
         reply = self.last_reply()
         self.assertIn(wallet.account_number, reply)
         self.assertIn("credited automatically", reply.lower())
 
     def test_add_money_menu_number_works(self):
+        wallet = give_account(self.user)
         self.link()
         self.inbound("6", "am2")
-        self.assertIn(get_or_create_wallet(self.user).account_number, self.last_reply())
+        self.assertIn(wallet.account_number, self.last_reply())
 
-    def test_add_money_without_account_onboards_via_bvn(self):
-        # An unverified, account-less user funds for the first time: WhatsApp
-        # collects the BVN and Kora (mock) mints the account in-chat.
+    def test_add_money_without_account_points_to_app(self):
+        # Wema account setup needs a BVN/NIN + OTP round-trip (done in the Zitch app),
+        # so a user without an account is directed there — no in-chat BVN collection.
         self.user.bvn_verified = False
         self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         self.link()
         self.inbound("fund", "am3")
         self.assertFalse(get_or_create_wallet(self.user).account_number)
-        self.assertIn("bvn", self.last_reply().lower())
-        self.assertTrue(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account", state="bvn").exists())
-
-        # Send the 11-digit BVN -> account is minted and shown.
-        self.inbound("22211100099", "am4")
-        wallet = get_or_create_wallet(self.user)
-        self.assertTrue(wallet.account_number)
-        self.assertIn(wallet.account_number, self.last_reply())
-        # The BVN must be masked in the inbound log — never stored in clear.
-        self.assertFalse(WaMessageLog.objects.filter(direction=WaMessageLog.IN, text="22211100099").exists())
-        self.assertTrue(WaMessageLog.objects.filter(direction=WaMessageLog.IN, text="[BVN]").exists())
-
-    def test_add_money_rejects_bad_bvn_and_keeps_flow(self):
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
-        self.link()
-        self.inbound("fund", "amb1")
-        self.inbound("123", "amb2")  # too short
-        self.assertIn("11-digit", self.last_reply())
-        self.assertFalse(get_or_create_wallet(self.user).account_number)
-        self.assertTrue(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account", state="bvn").exists())
-
-    @patch("whatsapp.router.ensure_reserved_account")
-    def test_add_money_bvn_attempts_are_capped(self, mock_reserve):
-        # Kora keeps rejecting (numberless wallet) — the flow must abort after
-        # BVN_MAX_ATTEMPTS so a linked number can't brute-force BVNs.
-        self.user.bvn_verified = False
-        self.user.nin_verified = False
-        self.user.save(update_fields=["bvn_verified", "nin_verified"])
-        mock_reserve.return_value = get_or_create_wallet(self.user)  # never gets a number
-        self.link()
-        self.inbound("fund", "cap1")
-        for i in range(3):
-            self.inbound("22211100099", f"cap{i + 2}")
-        self.assertIn("try again later", self.last_reply().lower())
+        self.assertIn("app", self.last_reply().lower())
         self.assertFalse(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account").exists())  # flow aborted
+            msisdn=MSISDN, action_type="add_account").exists())
 
-    # --- transfer ---
     def _run_transfer(self, pin="1234", start_mid="t"):
         self.link()
         self.inbound("2", f"{start_mid}1")               # send money
@@ -510,6 +482,7 @@ class AiIntentTests(TestCase):
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # bank-verified name
 
     def test_freeform_add_money(self):
+        give_account(self.user)
         with self._stub({"name": "add_money", "input": {}}):
             self.inbound("how do I fund my wallet?", "f1")
         reply = self.last_reply()

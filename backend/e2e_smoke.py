@@ -117,7 +117,7 @@ def main():
     check("wallet_balance shape", j(r).get("success") is True and "wallet" in j(r), str(j(r)))
 
     okf, detail = fund(tok)
-    check("fund wallet (Kora mock)", okf, detail)
+    check("fund wallet (Wema mock)", okf, detail)
     bal = float(j(post("/api/wallet_balance/", token=tok))["wallet"])
     check("balance reflects funding", bal >= 50000, f"balance={bal}")
 

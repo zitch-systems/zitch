@@ -10,7 +10,6 @@ from common.http import (
 )
 from common.ratelimit import ratelimit
 from utility.providers import funding_initialize, funding_verify, payment_provider
-from utility import kora as kora_provider
 from utility import wema as wema_provider
 
 from .models import FundingIntent, Wallet
@@ -22,7 +21,6 @@ from .services import (
     get_or_create_wallet,
     make_reference,
     settle_funding,
-    settle_reserved_funding,
     transfer,
     wema_account_reference,
 )
@@ -64,7 +62,7 @@ def wallet_account(request):
     A fast, side-effect-free read of the user's dedicated funding account: it never
     calls the provider on load. (A reserve needs the raw BVN, which we never store,
     so a read-time attempt can't succeed — it would only hang the Add-money page on
-    a slow Kora call.) Provisioning is explicit: at BVN verification time, or via
+    a slow provider call.) Provisioning is explicit: at BVN verification time, or via
     /api/wallet/account/create/, both of which have the BVN in hand.
     """
     wallet = get_or_create_wallet(request.user_obj)
@@ -97,8 +95,8 @@ def wallet_account_create(request):
     -> {success, account_number, account_name, bank_name, bank_accounts, tier,
         bvn_verified, nin_verified}
 
-    The one-step "get my account" / KYC flow: the BVN (or NIN) is handed to Kora's
-    reserved-account onboarding, which validates it (CBN rules — Kora won't issue a
+    The one-step "get my account" / KYC flow: the BVN (or NIN) is handed to Wema's
+    reserved-account onboarding, which validates it (CBN rules — Wema won't issue a
     dedicated account for a number that fails its own KYC) and issues the NUBAN. On
     success the user is marked KYC-verified for that identifier and their tier
     recomputed, so a single BVN both provisions the virtual wallet account AND lifts
@@ -121,58 +119,25 @@ def wallet_account_create(request):
         return fail("Enter your 11-digit BVN or NIN")
     using_bvn = len(bvn) == 11
 
-    if payment_provider() == "wema":
-        # Wema mints the NUBAN via a BVN/NIN + OTP round-trip, not a one-step
-        # reserve — start it here so the existing "Get my account" call drives the
-        # flow: the client shows the OTP step and finishes on
-        # /api/wallet/wema/verify-otp/ (which persists the account + lifts KYC).
-        res = wema_provider.create_wallet_request(
-            user.phone or "", user.email or f"{user.phone}@zitch.app", bvn=bvn, nin=nin)
-        if not res.get("success"):
-            return fail(res.get("message", "Couldn't start account creation"), status=502)
-        return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
-                  otp_destination=res.get("otp_destination", user.phone or ""),
-                  using_bvn=using_bvn, mock=res.get("mock", False),
-                  message="Enter the OTP sent to your phone")
-
-    wallet = ensure_reserved_account(user, bvn=bvn, nin=nin)
-    if not wallet.account_number:
-        # Surface Kora's actual reason (also logged as kora_reserve_failed) so the
-        # failure is self-diagnosing in the app: a bad key points at KORA_SECRET_KEY,
-        # a name/BVN mismatch points at the data, and "not configured" means the
-        # reserved-account product isn't enabled.
-        reason = getattr(wallet, "reserve_error", "") or ""
-        msg = "We couldn't create your account. Check that your BVN is correct and matches your name, then try again."
-        if reason:
-            msg = f"We couldn't create your account: {reason}"
-        return fail(msg, status=502, reason=reason)
-
-    # Provisioning succeeded on a verified identifier — record it as KYC and lift
-    # the tier (mirrors the dedicated KYC screen) so this single step also raises
-    # the user's limit. Best-effort: never fail the account response on this.
-    fields: list[str] = []
-    if using_bvn and not user.bvn_verified:
-        user.set_bvn(bvn)
-        user.bvn_verified = True
-        fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
-    elif not using_bvn and not user.nin_verified:
-        user.set_nin(nin)
-        user.nin_verified = True
-        fields += ["nin_hash", "nin_last4", "nin_verified"]
-    if fields:
-        user.recompute_tier()
-        user.save(update_fields=fields + ["tier"])
-
-    return ok(**_account_payload(
-        wallet, message="Your Zitch account is ready", tier=user.tier,
-        bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
+    # Wema mints the NUBAN via a BVN/NIN + OTP round-trip (the sole funding rail),
+    # not a one-step reserve — start it here so the existing "Get my account" call
+    # drives the flow: the client shows the OTP step and finishes on
+    # /api/wallet/wema/verify-otp/ (which persists the account + lifts KYC).
+    res = wema_provider.create_wallet_request(
+        user.phone or "", user.email or f"{user.phone}@zitch.app", bvn=bvn, nin=nin)
+    if not res.get("success"):
+        return fail(res.get("message", "Couldn't start account creation"), status=502)
+    return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
+              otp_destination=res.get("otp_destination", user.phone or ""),
+              using_bvn=using_bvn, mock=res.get("mock", False),
+              message="Enter the OTP sent to your phone")
 
 
 # ------------------- WEMA / ALAT wallet provisioning (OTP) -------------------
-# Wema mints a dedicated NUBAN via a BVN/NIN + OTP round-trip (unlike Kora's
-# one-step reserved account), and exposes NO inbound-credit webhook — deposits to
-# the NUBAN are detected by the reconcile_wema poller. These three endpoints drive
-# the OTP flow; they are gated on Wema being the funding rail (or configured).
+# Wema mints a dedicated NUBAN via a BVN/NIN + OTP round-trip and exposes NO
+# inbound-credit webhook — deposits to the NUBAN are detected by the reconcile_wema
+# poller. These three endpoints drive the OTP flow; they are gated on Wema being the
+# funding rail (or configured).
 def _wema_funding_enabled() -> bool:
     return (payment_provider() == "wema"
             or wema_provider.wema_live() or wema_provider.wema_simulation())
@@ -222,7 +187,7 @@ def wema_wallet_verify_otp(request):
     Step 2: validate the OTP, then fetch + persist the created NUBAN (marked with a
     WEMA account_reference so the reconcile poller sweeps it for deposits). If the
     identifier is echoed, the user is marked KYC-verified and their tier lifted —
-    mirroring the Kora account flow.
+    mirroring the Wema account flow.
     """
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
@@ -322,7 +287,7 @@ def transaction_history(request):
     )
 
 
-# ----------------------- WALLET FUNDING (Kora) -----------------------
+# ----------------------- WALLET FUNDING (Wema) -----------------------
 @api
 @ratelimit("fund_initialize", limit=20, window=60)
 @require_user
@@ -380,63 +345,6 @@ def fund_verify(request):
     settle_funding(reference, result.get("amount_naira"))  # idempotent
     wallet = get_or_create_wallet(request.user_obj)
     return ok(success=True, wallet=str(wallet.balance), message="Wallet funded")
-
-
-@csrf_exempt
-def kora_fund_webhook(request):
-    """POST /api/fund/kora/webhook/ — Korapay pay-in callback.
-
-    Verifies the `x-korapay-signature` header (HMAC-SHA256 of the JSON `data` object
-    with the secret key), then credits idempotently. A `charge.success` carrying
-    `virtual_bank_account_details` is an inbound transfer to a reserved account: it
-    credits the wallet mapped by our account_reference (or the destination account
-    number) via settle_reserved_funding, keyed on Kora's transaction_reference. A
-    plain hosted-checkout `charge.success` settles its FundingIntent by our
-    reference. Always 200 on accepted events so Kora stops retrying.
-    """
-    if request.method != "POST":
-        return fail("Method not allowed", status=405)
-    raw = request.body or b""
-    signature = request.headers.get("x-korapay-signature", "")
-    if not kora_provider.verify_webhook(raw, signature):
-        log.warning("kora_webhook_bad_signature has_header=%s body_len=%s", bool(signature), len(raw))
-        return fail("Invalid signature", status=401)
-    try:
-        event = json.loads(raw or b"{}")
-    except (ValueError, TypeError):
-        return fail("Invalid payload", status=400)
-
-    etype = event.get("event", "")
-    ed = event.get("data", {}) or {}
-    if etype == "charge.success":
-        amount = ed.get("amount")
-        # Kora's per-payment unique key (the ledger idempotency guard).
-        txref = ed.get("transaction_reference", "") or ed.get("reference", "")
-        va = (ed.get("virtual_bank_account_details", {}) or {}).get("virtual_bank_account", {}) or {}
-        if va:
-            # Inbound bank transfer to a reserved account.
-            account_ref = va.get("account_reference", "")
-            number = va.get("account_number", "")
-            wallet = None
-            if account_ref:
-                wallet = Wallet.objects.filter(account_reference=account_ref).first()
-            if wallet is None and number:
-                wallet = Wallet.objects.filter(account_number=number).first()
-            if wallet is not None:
-                settle_reserved_funding(txref, amount, wallet.user)
-            else:
-                log.warning("kora_funding_no_wallet account_ref=%r dest=%r ref=%s",
-                            account_ref, number, txref)
-        else:
-            # Hosted checkout: settle the FundingIntent by our reference.
-            settle_funding(ed.get("reference", "") or txref, amount)
-        log.info("kora_webhook event=%s txref=%s amount=%s", etype, txref, amount)
-    else:
-        log.info("kora_webhook ignored_event=%s", etype)
-    from whatsapp.ops import record_audit
-    record_audit("webhook.kora", actor_type="system", target=ed.get("transaction_reference", ""),
-                 after={"event": etype, "signature": "verified"})
-    return ok(status=True)
 
 
 # --------------------------- ZITCH-TO-ZITCH TRANSFER ---------------------------

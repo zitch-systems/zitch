@@ -1,24 +1,21 @@
 """Bank transfer (payout) endpoints + saved beneficiaries.
 
-Payout to external banks needs a provider (Kora payouts); until keys are set this
-runs in MOCK mode in dev/tests and resolves/settles automatically so the flow is
-testable (in production it fails closed). Money still moves correctly out of the
-wallet ledger.
+Payout to external banks runs on Wema/ALAT; until keys are set this runs in MOCK
+mode in dev/tests and resolves/settles automatically so the flow is testable (in
+production it fails closed). Money still moves correctly out of the wallet ledger.
+Wema exposes NO payout webhook — a PENDING transfer is settled/reversed by the
+reconcile_wema poller (utility/management/commands/reconcile_wema.py).
 """
-import json
 import re
-
-from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
     api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility import kora as kora_provider  # webhook signature verify
 from utility.providers import payout_resolve_account
 from wallet.models import Transaction
-from wallet.services import existing_for_key, reverse_transfer, settle_payout
+from wallet.services import existing_for_key
 
 from .models import Bank
 from .services import PayoutError, detect_account_banks, execute_payout
@@ -160,7 +157,7 @@ def bank_transfer(request):
         return fail(resolved.get("message", "Could not verify this account number"), status=400)
     resolved_name = (resolved.get("name") or "").strip()
     shown_name = (data.get("name") or "").strip()
-    # Only enforce on a LIVE enquiry. In mock mode (no Kora name-enquiry) the
+    # Only enforce on a LIVE enquiry. In mock mode (no live name-enquiry) the
     # resolved name is a fixed stub, so comparing it would false-block.
     if (not resolved.get("mock") and shown_name and resolved_name
             and not _names_match(shown_name, resolved_name)):
@@ -202,35 +199,3 @@ def bank_transfer(request):
                   message="Your transfer is processing and will be confirmed shortly.")
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
               message="Money sent")
-
-
-@csrf_exempt
-def disbursement_webhook(request):
-    """POST /api/transfers/webhook/ — Korapay payout (transfer) callback.
-
-    The terminal-state safety net (Kora signs the JSON ``data`` object with
-    HMAC-SHA256, ``x-korapay-signature`` header): ``transfer.success`` settles a
-    payout left PENDING on send; ``transfer.failed`` (or a reversed/returned status)
-    refunds the wallet. Keyed on our reference, status-guarded (idempotent), always
-    200 on accepted events.
-    """
-    if request.method != "POST":
-        return fail("Method not allowed", status=405)
-    if not kora_provider.verify_webhook(request.body, request.headers.get("x-korapay-signature", "")):
-        return fail("Invalid signature", status=401)
-    try:
-        event = json.loads(request.body or b"{}")
-    except (ValueError, TypeError):
-        return fail("Invalid payload", status=400)
-
-    data = event.get("data", {}) or {}
-    reference = data.get("reference", "")  # the merchant reference we sent (our txn ref)
-    etype = event.get("event", "")
-    if etype in ("transfer.failed", "transfer.reversed") and reference:
-        reverse_transfer(reference)
-    elif etype == "transfer.success" and reference:
-        settle_payout(reference)
-    from whatsapp.ops import record_audit
-    record_audit("webhook.kora_disbursement", actor_type="system", target=reference,
-                 after={"event": etype, "signature": "verified"})
-    return ok(status=True)

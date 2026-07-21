@@ -13,10 +13,10 @@ class Wallet(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="wallet")
     balance = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal("0.00"))
     # Dedicated (reserved) virtual account â€” a permanent NUBAN the user funds by
-    # bank transfer, minted via Kora once KYC supplies a BVN. `account_number`
+    # bank transfer, minted via Wema once KYC supplies a BVN/NIN. `account_number`
     # / `bank_name` are the primary account shown in the app; `bank_accounts` holds
     # the full list when the rail issues one per partner bank; `account_reference` is
-    # our stable key with Kora (used to match the funding webhook back to a user).
+    # our stable key with Wema (used to match a reconciled deposit back to a user).
     account_number = models.CharField(max_length=20, blank=True, default="")
     account_name = models.CharField(max_length=120, blank=True, default="")
     bank_name = models.CharField(max_length=80, blank=True, default="")
@@ -147,7 +147,7 @@ class FundingIntent(models.Model):
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
     credited = models.BooleanField(default=False)
-    # Free-form context, e.g. {"provider": "kora"} â€” records which rail started
+    # Free-form context, e.g. {"provider": "wema"} â€” records which rail started
     # the charge so verify confirms against the same one.
     meta = models.JSONField(default=dict, blank=True)
     created = models.DateTimeField(auto_now_add=True)

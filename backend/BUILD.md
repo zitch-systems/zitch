@@ -43,7 +43,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (Korapay / VTU.ng / Sendchamp / Prembly keys).
+3. After first deploy, set the service env vars (Wema/ALAT / VTU.ng / Sendchamp / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 
@@ -56,7 +56,7 @@ Auth: `/api/sigin/` · `/api/phone_verification/` · `/api/verify_otp/` ·
 `/api/update_info/`
 KYC: `/api/kyc/status/` · `/api/kyc/bvn/` · `/api/kyc/nin/` · `/api/kyc/face/`
 Wallet: `/api/wallet_balance/` · `/api/user-transaction-history/`
-Funding (Korapay): `/api/fund/initialize/` · `/api/fund/verify/` · `/api/fund/kora/webhook/`
+Funding (Wema): `/api/wallet/account/create/` · `/api/wallet/wema/verify-otp/` · `/api/wallet/wema/resend-otp/`
 Transfer (Zitch→Zitch): `/api/transfer/resolve/` · `/api/transfer/send/`
 Utility: `/api/utility/{buyairtime,get_data_plans,get_data_plans_price,buydata,
 get_cable_plans,get_cable_plans_price,validate_iuc,buycable,validate_meter,
@@ -66,7 +66,7 @@ Loans: `/api/loans/status/` · `/api/loans/quote/` · `/api/loans/request/` · `
 Fixed Save: `/api/savings/rates/` · `/api/savings/quote/` · `/api/savings/create/` · `/api/savings/list/`
 Betting: `/api/betting/list/` · `/api/betting/fund/`
 Zitch transfer: `/api/transfer/resolve/` · `/api/transfer/send/`
-Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/` · `/api/transfers/webhook/`
+Bank transfer: `/api/transfers/banks/` · `/api/transfers/beneficiaries/` · `/api/transfers/resolve/` · `/api/transfers/send/`
 Cards: `/api/cards/list/` · `/api/cards/create/` · `/api/cards/freeze/` · `/api/cards/details/` · `/api/cards/fund/`
 
 ## Fixed Save maturities
@@ -80,39 +80,38 @@ Matured plans are paid out (principal + interest credited to the wallet) two way
 
 Payout is idempotent per plan, so overlapping runs never double-pay.
 
-## Wallet funding flow (Korapay)
-1. App calls `/api/fund/initialize/` `{access_token, amount}` -> `{reference,
-   authorization_url}`. A `FundingIntent` row is created (pending).
-2. App opens `authorization_url` (Kora hosted checkout) in a browser.
-3. Wallet is credited **once**, by whichever arrives first:
-   - `/api/fund/verify/` `{access_token, reference}` (app calls on return), and/or
-   - `/api/fund/kora/webhook/` (Kora `charge.success`, `x-korapay-signature`
-     HMAC-SHA256 over the JSON `data` object, verified).
-   `settle_funding()` locks the intent row and guards on `credited`, so
-   duplicate verify/webhook calls never double-credit. A bank transfer into a
-   dedicated virtual account (no `FundingIntent`) is credited by account mapping
-   in `kora_fund_webhook` (a `charge.success` carrying
-   `virtual_bank_account_details`), keyed on Kora's transaction_reference.
-4. In MOCK mode (no Kora keys) verify/webhook succeed automatically so the
-   flow is testable offline; in production a missing key fails closed.
+## Wallet funding flow (Wema / ALAT)
+1. App calls `/api/wallet/account/create/` (or `/api/wallet/wema/create/`)
+   `{access_token, bvn|nin}` -> Wema sends an OTP; the app confirms on
+   `/api/wallet/wema/verify-otp/`, which persists the user's dedicated **NUBAN**
+   and lifts their KYC tier.
+2. To fund, the user makes a **bank transfer** to that NUBAN from any bank. Wema
+   exposes **NO inbound-credit webhook**.
+3. The `zitch-reconcile-wema` cron sweeps each Wema NUBAN's transaction history and
+   credits every inbound (`creditType == "Credit"`) deposit — idempotent on Wema's
+   `referenceId` (stored under a `WEMA-CR-` ledger key), so re-polling never
+   double-credits. (`/api/fund/initialize/` and `/api/fund/verify/` remain but
+   return a "top up by bank transfer" message — there is no hosted checkout.)
+4. In MOCK mode (no Wema keys) the flow simulates success so it's testable offline;
+   in production a missing key fails closed.
 
-Set the Kora dashboard webhook (one URL for all events, or per-request via
-`KORA_FUND_WEBHOOK_URL` / `KORA_PAYOUT_WEBHOOK_URL`) to:
-- pay-in:  `https://<your-render-host>/api/fund/kora/webhook/`
-- payout:  `https://<your-render-host>/api/transfers/webhook/`
+There are no money-movement webhooks to configure. Instead, ensure the
+`zitch-reconcile-wema` cron is running (see `render.yaml`) — it handles both inbound
+funding credits AND outbound payout settlement.
 
 ### Provider layout
 
-Korapay is the sole money-movement rail (funding, virtual accounts, payouts + name
-enquiry + balance) and the BVN/NIN/vNIN KYC backend. The views/services call
-provider-agnostic wrappers (`utility.providers.funding_*` / `payout_*` / `verify_*`)
-that delegate to the Kora client (`utility/kora.py`). Prembly is retained only for
-the image/biometric checks Kora can't do — selfie/liveness, address, and ID-document
-OCR. Cards run on the generic `CARD_ISSUER` (Kora card issuing is not integrated).
-Kora needs **NO IP whitelisting** for payouts — verify auth + the balance read at
-`/payout-diagnose?token=...`. Kora endpoint shapes are marked VERIFY-BEFORE-LIVE in
-`utility/kora.py`. Wema/ALAT opt-in code is retained but archived (set
-`*_PROVIDER=wema` to use it).
+Wema / ALAT is the sole money-movement rail (funding via OTP-provisioned NUBANs,
+payouts + name enquiry + balance) and the BVN/NIN/vNIN KYC backend (Full KYC). The
+views/services call provider-agnostic wrappers (`utility.providers.funding_*` /
+`payout_*` / `verify_*`) that delegate to the Wema client (`utility/wema.py`).
+Prembly is retained only for the image/biometric checks the number lookups can't do
+— selfie/liveness, address, and ID-document OCR. Cards run on the generic
+`CARD_ISSUER` (Wema card issuing is not wired yet). Wema exposes **NO webhooks** —
+deposits and payout settlement are polled by `reconcile_wema`. Verify auth +
+connectivity at `/wema-diagnose?token=...`. Wema endpoint shapes are marked
+VERIFY-BEFORE-LIVE in `utility/wema.py` (esp. the `securityInfo` scheme, the live
+host, and the tx-status legend).
 
 ## WhatsApp channel (deterministic; AI layer comes later)
 A WhatsApp banking channel where a **linked** user checks balance and sends money
@@ -205,24 +204,24 @@ the `WHATSAPP_*` env vars (see `.env.example`).
   request field names, the customer-verify endpoint, the 9mobile `service_id`,
   and that the seeded data/cable `variation_id` codes match VTU.ng's catalogue —
   these couldn't be fetched from CI.
-- Korapay request/response shapes are VERIFY-BEFORE-LIVE: set `KORA_SECRET_KEY` /
-  `KORA_PUBLIC_KEY` (sandbox first), confirm the charge / virtual-bank-account /
-  disburse / identity (BVN·NIN·vNIN) field names and the webhook signature scheme
-  against Kora's docs. No IP whitelisting is needed. Verify auth + the balance read
-  at `/kora-diagnose?token=...` (fund-in + NUBAN mint) and `/payout-diagnose?token=...`
-  (payout). Configure the dashboard webhook (URL above).
+- Wema / ALAT request/response shapes are VERIFY-BEFORE-LIVE: set `WEMA_CHANNEL_ID`,
+  `WEMA_WALLET_KEY` (+ `WEMA_CARD_KEY` / `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` /
+  `WEMA_KYC_KEY`), `WEMA_SOURCE_ACCOUNT`, the live `WEMA_BASE_URL`, and the
+  `WEMA_SECURITY_INFO` scheme. Confirm the account-creation (OTP), disburse,
+  name-enquiry and identity (BVN·NIN·vNIN) field names, the `securityInfo`
+  construction and the tx-status legend against Wema's integration guide. Verify auth
+  + connectivity at `/wema-diagnose?token=...`.
 - Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID` (selfie/liveness +
   address + ID-document only), and (when a card issuer is chosen) `CARD_ISSUER_*` /
   `CARD_PROVIDER` — confirm the request/response mapping in `utility/providers.py` /
-  `utility/kora.py`.
+  `utility/wema.py`.
 - Auth accepts `Authorization: Bearer <token>` (preferred) or body `access_token`.
   The app's `lib/api.ts` `apiPost`/`apiJson` helpers send the Bearer header and
   the core money screens use them; remaining screens can adopt incrementally —
   the body token still works, so nothing breaks mid-migration.
 - Replace seeded plans with the live aggregator catalogue.
-- Bank transfers use Kora payouts (drawn from your merchant Kora balance, which you
-  pre-fund). Point the Kora **transfer** webhook at
-  `https://<your-render-host>/api/transfers/webhook/` — `transfer.success` settles a
-  PENDING payout and `transfer.failed` refunds the wallet (payouts that come back
-  `processing`/`pending` stay PENDING until the webhook confirms). No IP whitelisting
-  is required on Kora.
+- Bank transfers use Wema payouts (`ProcessClientTransfer`), debited from the sender's
+  own NUBAN (falling back to the `WEMA_SOURCE_ACCOUNT` pool). Wema has **no payout
+  webhook**: a payout that comes back `PENDING`/`PROCESSING` stays PENDING until the
+  `zitch-reconcile-wema` cron polls `ConfirmClientTransferStatus` and settles
+  (`SUCCESS`) or reverses (`FAILED`) it. Ensure that cron is enabled on a paid plan.

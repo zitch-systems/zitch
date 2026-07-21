@@ -1,4 +1,4 @@
-"""Tests for the wallet core: balance, history, Kora funding (idempotent),
+"""Tests for the wallet core: balance, history, Wema funding (idempotent),
 Zitch-to-Zitch transfer, and the tier / face-verification send limits.
 
 All run in MOCK provider mode (no keys), so funding settles automatically.
@@ -105,72 +105,9 @@ class WalletTests(TestCase):
         self.assertEqual(dirs.get("Wallet top-up"), "in")
         self.assertTrue(any(s.startswith("Transfer to") and d == "out" for s, d in dirs.items()))
 
-    # --- funding (idempotency is the whole point) ---
-    def test_fund_verify_credits_once(self):
-        _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "5000"})
-        ref = init["reference"]
-        self.assertTrue(FundingIntent.objects.get(reference=ref).status == FundingIntent.PENDING)
-
-        self.post("/api/fund/verify/", {"access_token": self.token, "reference": ref})
-        self.assertEqual(self.balance(self.user), Decimal("25000"))
-        # A duplicate verify (app retry) must not double-credit.
-        self.post("/api/fund/verify/", {"access_token": self.token, "reference": ref})
-        self.assertEqual(self.balance(self.user), Decimal("25000"))
-        self.assertTrue(FundingIntent.objects.get(reference=ref).credited)
-
-    def test_fund_webhook_credits_once_and_dedupes_with_verify(self):
-        _, init = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "7500"})
-        ref = init["reference"]
-        event = {"event": "charge.success",
-                 "data": {"reference": ref, "status": "success",
-                          "transaction_reference": "KPY-" + ref, "amount": 7500}}
-        # Webhook credits (mock signature accepted).
-        r1 = self.client.post("/api/fund/kora/webhook/", data=json.dumps(event),
-                              content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(r1.status_code, 200)
-        self.assertEqual(self.balance(self.user), Decimal("27500"))
-        # Webhook AND the app's verify racing: still only one credit.
-        self.client.post("/api/fund/kora/webhook/", data=json.dumps(event),
-                         content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.post("/api/fund/verify/", {"access_token": self.token, "reference": ref})
-        self.assertEqual(self.balance(self.user), Decimal("27500"))
-
     def test_fund_rejects_below_minimum(self):
         res, _ = self.post("/api/fund/initialize/", {"access_token": self.token, "amount": "50"})
         self.assertEqual(res.status_code, 400)
-
-    # --- dedicated account via Kora onboarding (BVN) ---
-    def test_account_create_via_bvn_onboarding(self):
-        res, body = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
-        self.assertEqual(res.status_code, 200)
-        self.assertTrue(body["success"])
-        self.assertTrue(body["account_number"])
-        # The one BVN step provisions the account AND records BVN verification, but
-        # the user stays Tier 0 until NIN is also verified (Tier 1 = BVN + NIN).
-        self.assertTrue(body["bvn_verified"])
-        self.assertEqual(body["tier"], 0)
-        u = User.objects.get(pk=self.user.pk)
-        self.assertTrue(u.bvn_verified)
-        self.assertEqual(u.tier, 0)
-        self.assertEqual(u.bvn_last4, "0099")          # stored hashed, last-4 only
-        self.assertFalse(hasattr(u, "bvn"))            # never the raw number
-        # Idempotent: a second call returns the same account, never a second mint.
-        res2, body2 = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
-        self.assertEqual(res2.status_code, 200)
-        self.assertEqual(body2["account_number"], body["account_number"])
-
-    def test_account_create_rejected_when_reserve_fails(self):
-        """When Kora rejects the virtual-account onboarding (e.g. a BVN/name
-        mismatch), no account is minted and the user stays tier 1 / unverified."""
-        with patch("utility.kora.create_virtual_account",
-                   return_value={"success": False, "message": "BVN/name mismatch"}), \
-                patch("utility.kora.get_virtual_account", return_value={"success": False}):
-            res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "22211100099"})
-        self.assertEqual(res.status_code, 502)
-        u = User.objects.get(pk=self.user.pk)
-        self.assertFalse(u.bvn_verified)
-        self.assertEqual(u.tier, 1)
-        self.assertFalse(get_or_create_wallet(u).account_number)
 
     def test_account_create_requires_valid_id(self):
         res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "123"})
@@ -295,61 +232,6 @@ class ReservedAccountTests(TestCase):
 
     def bal(self):
         return get_or_create_wallet(self.user).balance
-
-    def test_ensure_reserved_account_is_idempotent(self):
-        from .services import ensure_reserved_account
-
-        w1 = ensure_reserved_account(self.user, bvn="22200000001")
-        self.assertTrue(w1.account_number)
-        self.assertTrue(w1.account_reference)
-        self.assertTrue(w1.bank_accounts)
-        # A second call must not re-reserve / change the number.
-        number = w1.account_number
-        w2 = ensure_reserved_account(self.user, bvn="22200000001")
-        self.assertEqual(w2.account_number, number)
-
-    def test_bvn_verification_reserves_and_balance_surfaces_it(self):
-        res, body = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "22200000001"})
-        self.assertEqual(res.status_code, 200)
-        wallet = get_or_create_wallet(self.user)
-        self.assertTrue(wallet.account_number)
-        # wallet_balance now carries the dedicated account for the app to show.
-        res, body = self.post("/api/wallet_balance/", {"access_token": self.token})
-        self.assertEqual(body["account_number"], wallet.account_number)
-        self.assertTrue(body["bank_name"])
-        self.assertTrue(body["bank_accounts"])
-
-    def test_webhook_credits_reserved_account_once(self):
-        from .services import ensure_reserved_account
-
-        wallet = ensure_reserved_account(self.user, bvn="22200000001")
-        event = {"event": "charge.success", "data": {
-            "status": "success", "transaction_reference": "KPY-TX-RSV001", "amount": 5000,
-            "virtual_bank_account_details": {"virtual_bank_account": {
-                "account_number": wallet.account_number,
-                "account_reference": wallet.account_reference}},
-        }}
-        body = json.dumps(event)
-        r1 = self.client.post("/api/fund/kora/webhook/", data=body, content_type="application/json",
-                              HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(r1.status_code, 200)
-        self.assertEqual(self.bal(), Decimal("5000"))
-        # Redelivered webhook (same reference) must not double-credit.
-        self.client.post("/api/fund/kora/webhook/", data=body, content_type="application/json",
-                         HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(self.bal(), Decimal("5000"))
-
-    def test_webhook_ignores_unknown_reserved_account(self):
-        event = {"event": "charge.success", "data": {
-            "status": "success", "transaction_reference": "KPY-TX-RSV404", "amount": 5000,
-            "virtual_bank_account_details": {"virtual_bank_account": {
-                "account_number": "0000000000",
-                "account_reference": "ZITCH-WALLET-999999"}},
-        }}
-        r = self.client.post("/api/fund/kora/webhook/", data=json.dumps(event),
-                             content_type="application/json", HTTP_X_KORAPAY_SIGNATURE="mock")
-        self.assertEqual(r.status_code, 200)  # accepted so Kora stops retrying
-        self.assertEqual(self.bal(), Decimal("0"))  # but nothing credited
 
     def test_wallet_account_endpoint_is_a_fast_read_without_provisioning(self):
         # The read endpoint never provisions on load (that needs the BVN, which we

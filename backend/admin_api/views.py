@@ -242,8 +242,7 @@ def _audit_row(a) -> dict:
     }
 
 
-_WEBHOOK_SOURCES = {"kora": "Korapay", "kora_disbursement": "Korapay",
-                    "whatsapp": "Meta WA", "vtung": "VTU.ng"}
+_WEBHOOK_SOURCES = {"whatsapp": "Meta WA", "vtung": "VTU.ng", "mono": "Mono"}
 
 
 def _webhook_rows(limit=40) -> list:
@@ -266,7 +265,7 @@ def _webhook_rows(limit=40) -> list:
 
 
 _RECON_RUNS = {"recon.vtu_run": "zitch-reconcile-vtu", "recon.maturities_run": "zitch-maturities",
-               "recon.kora_payouts_run": "zitch-reconcile-payouts"}
+               "recon.wema_run": "zitch-reconcile-wema"}
 
 
 def _recon_rows(limit=20) -> list:
@@ -474,7 +473,7 @@ def bootstrap(request):
 
     # Float = platform liability we actually hold per currency (real).
     from wallet.models import CurrencyWallet
-    float_rows = [{"cur": "NGN", "sym": "₦", "bal": _num(total_ngn), "provider": "Korapay"}]
+    float_rows = [{"cur": "NGN", "sym": "₦", "bal": _num(total_ngn), "provider": "Wema"}]
     for c in ["USD", "GBP", "CAD"]:
         bal = CurrencyWallet.objects.filter(currency=c).aggregate(s=Sum("balance"))["s"] or Decimal("0")
         float_rows.append({"cur": c, "sym": {"USD": "$", "GBP": "£", "CAD": "C$"}[c], "bal": _num(bal), "provider": "Fincra"})
@@ -489,7 +488,7 @@ def bootstrap(request):
 
     fincra_live = bool(dj_settings.FINCRA.get("SECRET_KEY"))
     providers = [
-        {"name": "Korapay", "role": "Funding · payouts · KYC", "status": _st(payout_live()), "uptime": "—"},
+        {"name": "Wema", "role": "Funding · payouts · KYC", "status": _st(payout_live()), "uptime": "—"},
         {"name": "VTU.ng", "role": "Airtime · data · bills", "status": _st(vtu_live()), "uptime": "—"},
         {"name": "Fincra", "role": "FX rates & settlement", "status": _st(fincra_live), "uptime": "—"},
         {"name": "Meta WhatsApp", "role": "Chat channel", "status": _st(wa_live()), "uptime": "—"},
@@ -709,7 +708,7 @@ def txn_requery(request):
     if not (txn.transaction_status == Transaction.PENDING and (txn.meta or {}).get("reconcile")):
         return fail("Only provider-pending purchases can be requeried", status=409)
     if is_bank_payout(txn):
-        # A bank transfer settles via the Kora payout webhook, not a VTU
+        # A bank transfer settles via the reconcile_wema poller, not a VTU
         # requery — don't query the wrong provider for a reference it never saw.
         return fail("Bank transfers reconcile via the disbursement webhook, not VTU requery", status=409)
     status = settle_or_refund(txn, vtu_requery(txn.reference))

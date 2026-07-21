@@ -149,7 +149,7 @@ def payout(request):
 
     Move money OUT of the Zitch wallet to the user's own linked bank account
     (PIN-verified). Reuses the transfers payout rail (detect bank -> execute_payout),
-    so balance/limit/idempotency guards and the Kora settlement webhook all apply.
+    so balance/limit/idempotency guards and the reconcile_wema settlement poller all apply.
     """
     user, data = request.user_obj, request.data
 

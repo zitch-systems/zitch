@@ -1,18 +1,18 @@
 """Third-party integration layer.
 
-Providers: Korapay (payments — funding, virtual accounts, payouts, and KYC
-BVN/NIN/vNIN; client in utility/kora.py), VTU.ng (airtime/data/cable/electricity/
-betting), Sendchamp (SMS/OTP), Resend (email/OTP), Prembly/IdentityPass (selfie /
-liveness + address + ID-document KYC — the image/biometric checks Kora can't do),
-Fincra (FX). Each function returns {"success": bool, ...}. When the relevant key is
-blank it runs in MOCK mode and simulates success so the whole app flow is testable
-without an external account — EXCEPT in production (DEBUG off), where money/identity
-mocks fail closed (see mock_disabled_in_prod) so a misconfigured deploy never fakes
-a money movement.
+Providers: Wema / ALAT (money movement — funding via OTP-provisioned NUBANs,
+payouts + name enquiry + balance, and KYC BVN/NIN/vNIN; client in utility/wema.py),
+VTU.ng (airtime/data/cable/electricity/betting), Sendchamp (SMS/OTP), Resend
+(email/OTP), Prembly/IdentityPass (selfie / liveness + address + ID-document KYC —
+the image/biometric checks Wema's number lookups don't cover), Fincra (FX). Each
+function returns {"success": bool, ...}. When the relevant key is blank it runs in
+MOCK mode and simulates success so the whole app flow is testable without an external
+account — EXCEPT in production (DEBUG off), where money/identity mocks fail closed
+(see mock_disabled_in_prod) so a misconfigured deploy never fakes a money movement.
 
 The funding_* / payout_* / card_* / verify_* wrappers are the stable, provider-
-agnostic contract the views and services call; they delegate to the Kora client
-(Wema stays opt-in via the *_PROVIDER env vars).
+agnostic contract the views and services call; they delegate to the Wema client
+(utility.wema), the sole money-movement + Nigeria-KYC rail.
 """
 import hashlib
 import logging
@@ -165,11 +165,11 @@ def send_email(to: str, subject: str, message: str, html: str | None = None) -> 
 # ---------------------------------------------------------------------------
 # KYC — selfie/liveness + address + ID-document — Prembly (IdentityPass)
 #
-# Prembly is retained ONLY for the image/biometric checks Kora structurally can't
+# Prembly is retained ONLY for the image/biometric checks Wema's number lookups can't
 # do: selfie/liveness (kyc_verify_face — the ≥₦100k transfer gate + Tier 2), address
 # (kyc_verify_address — Tier 2), and document-image OCR (kyc_verify_nin_document /
 # kyc_verify_id_document — Tier 1 NIN slip / Tier 3 government ID). The number-based
-# Nigeria identity lookups (BVN / NIN / vNIN) moved to Kora (see verify_bvn/nin/vnin).
+# Nigeria identity lookups (BVN / NIN / vNIN) run on Wema Full KYC (see verify_bvn/nin/vnin).
 # ---------------------------------------------------------------------------
 def _prembly_live() -> bool:
     return bool(settings.PREMBLY["API_KEY"] and settings.PREMBLY["APP_ID"])
@@ -268,10 +268,10 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC — BVN / NIN / vNIN (Kora)
+# KYC — BVN / NIN / vNIN (Wema Full KYC)
 #
 # verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
-# rest of the app calls. All three delegate to Kora (utility.kora), keeping the
+# rest of the app calls. All three delegate to Wema (utility.wema), keeping the
 # number-based Nigeria identity lookups on the same rail that mints the funding
 # account. The image/biometric steps (selfie/liveness, address, ID-document OCR)
 # stay on Prembly (kyc_verify_face / kyc_verify_address / kyc_verify_*_document
@@ -279,30 +279,30 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 # mock-passes identity on a misconfigured deploy; dev/tests keep the mock.
 # ---------------------------------------------------------------------------
 def kyc_provider() -> str:
-    """The BVN/NIN/vNIN backend — 'kora' (Kora is the sole rail). Retained so any
-    caller/diagnostic that reads the selector keeps working."""
+    """The BVN/NIN/vNIN backend — 'wema' (Wema Full KYC is the sole rail). Retained
+    so any caller/diagnostic that reads the selector keeps working."""
     choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
-    return choice if choice == "kora" else "kora"
+    return choice if choice == "wema" else "wema"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via Kora's identity lookup (rejects a clear name mismatch when a
+    """Verify a BVN via Wema's Full KYC lookup (rejects a clear name mismatch when a
     name is supplied). Fails closed in production without keys; dev/tests mock."""
-    from . import kora
-    return kora.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
+    from . import wema
+    return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
 def verify_nin(nin: str) -> dict:
-    """Verify a NIN via Kora. Fails closed in prod without keys."""
-    from . import kora
-    return kora.verify_nin(nin)
+    """Verify a NIN via Wema's Full KYC. Fails closed in prod without keys."""
+    from . import wema
+    return wema.verify_nin(nin)
 
 
 def verify_vnin(vnin: str) -> dict:
-    """Verify a Virtual NIN (16-char tokenised NIN) via Kora. Fails closed in
-    production when unkeyed; dev/tests keep the mock."""
-    from . import kora
-    return kora.verify_vnin(vnin)
+    """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC. Fails closed
+    in production when unkeyed; dev/tests keep the mock."""
+    from . import wema
+    return wema.verify_vnin(vnin)
 
 
 # ---------------------------------------------------------------------------
@@ -479,14 +479,14 @@ def fx_execute(quote_ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Money-movement rail — Korapay (funding / virtual accounts / payouts)
+# Money-movement rail — Wema / ALAT (funding / virtual accounts / payouts)
 #
 # The funding_* / payout_* wrappers are the provider-agnostic contract the views
-# and services call; they delegate to the Kora client (utility.kora). Kora is the
-# sole default rail; Wema stays opt-in via the *_PROVIDER env vars. The *_provider()
-# selectors are retained (returning "kora") so any remaining callers keep working.
-# Kora pay-in credits arrive on /api/fund/kora/webhook/ and payout terminal states
-# on /api/transfers/webhook/.
+# and services call; they delegate to the Wema client (utility.wema), the sole
+# money-movement rail. Wema funds by bank transfer to an OTP-provisioned NUBAN (no
+# hosted checkout, no webhook — inbound deposits AND payout settlement are handled
+# by the reconcile_wema poller). The *_provider() selectors are retained (returning
+# "wema") so any remaining callers/diagnostics keep working.
 # ---------------------------------------------------------------------------
 def _wema_live() -> bool:
     from . import wema
@@ -494,146 +494,111 @@ def _wema_live() -> bool:
 
 
 def payment_provider() -> str:
-    """The wallet FUND-IN rail — 'wema' or 'kora'. Explicit PAYMENT_PROVIDER wins;
-    blank => 'kora' (the sole default rail). Wema funds by bank transfer to an
-    OTP-provisioned NUBAN (no hosted checkout, no webhook — deposits are reconciled
-    by the reconcile_wema poller), so it is opt-in only."""
+    """The wallet FUND-IN rail — 'wema' (the sole rail). Wema funds by bank transfer
+    to an OTP-provisioned NUBAN (no hosted checkout, no webhook — deposits are
+    reconciled by the reconcile_wema poller). Retained as a selector so callers keep
+    working."""
     choice = (getattr(settings, "PAYMENT_PROVIDER", "") or "").strip().lower()
-    if choice in ("wema", "kora"):
-        return choice
-    return "kora"
+    return choice if choice == "wema" else "wema"
 
 
 def payout_provider() -> str:
-    """The bank-payout + recipient name-enquiry rail — 'wema' or 'kora'.
-
-    Explicit PAYOUT_PROVIDER wins; blank => 'kora' (the sole default rail).
-    Payouts move to Wema only when PAYOUT_PROVIDER=wema is set."""
+    """The bank-payout + recipient name-enquiry rail — 'wema' (the sole rail).
+    Retained as a selector so callers keep working."""
     choice = (getattr(settings, "PAYOUT_PROVIDER", "") or "").strip().lower()
-    if choice in ("wema", "kora"):
-        return choice
-    return "kora"
+    return choice if choice == "wema" else "wema"
 
 
 def payout_live() -> bool:
-    """Whether the selected payout rail has live keys (else MOCK)."""
-    if payout_provider() == "wema":
-        return _wema_live()
-    from . import kora
-    return kora.kora_live()
+    """Whether the Wema payout rail has live keys (else MOCK)."""
+    return _wema_live()
 
 
 def card_provider() -> str:
-    """'issuer' — the generic CARD_ISSUER is the sole virtual-card backend (Kora
-    card issuing is not integrated). Retained as a selector so callers keep working."""
+    """'issuer' — the generic CARD_ISSUER is the sole virtual-card backend (Wema
+    card issuing is not integrated yet). Retained as a selector so callers keep working."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
     return choice if choice == "issuer" else "issuer"
 
 
-# --- Funding (wallet top-up) dispatch — Kora or Wema, per payment_provider() ---
+# --- Funding (wallet top-up) dispatch — Wema (OTP-provisioned NUBAN) ---
 def funding_initialize(email: str, amount_naira, reference: str, *,
                        name: str = "", redirect_url: str = "") -> dict:
-    """Start a hosted-checkout funding charge -> {success, authorization_url}."""
-    if payment_provider() == "wema":
-        # Wema/ALAT has no hosted checkout — funding is by bank transfer to the
-        # user's NUBAN (credited by the reconcile_wema poller). Fail gracefully.
-        return {"success": False,
-                "message": "Top up by bank transfer to your account number."}
-    from . import kora
-    return kora.payment_initialize(email, amount_naira, reference,
-                                   name=name, redirect_url=redirect_url)
+    """Wema/ALAT has no hosted checkout — funding is by bank transfer to the user's
+    dedicated NUBAN (credited by the reconcile_wema poller), so there is no charge to
+    start. Returns a graceful message the app shows instead of a checkout URL."""
+    return {"success": False,
+            "message": "Top up by bank transfer to your dedicated account number."}
 
 
 def funding_verify(reference: str, provider: str = "") -> dict:
-    """Verify a funding charge. Honours the provider stamped on the FundingIntent
-    (so a charge started on one rail verifies against that same rail even if the
-    default flips), falling back to the current default."""
-    prov = (provider or payment_provider()).strip().lower()
-    if prov == "wema":
-        # Wema deposits are credited by the reconcile poller, not a verify call.
-        return {"success": False, "message": "Wema funding is credited automatically on receipt."}
-    from . import kora
-    return kora.payment_verify(reference)
+    """Wema deposits are credited by the reconcile poller, not a synchronous verify
+    call, so there is nothing to confirm here."""
+    return {"success": False, "message": "Wema funding is credited automatically on receipt."}
 
 
 def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
                             customer_name: str, bvn: str = "", nin: str = "") -> dict:
-    """Provision a dedicated funding (virtual) account via the selected rail.
+    """Provision a dedicated funding (virtual) account.
 
-    Returns {success, account_number, bank_name, account_name, reference} so
-    wallet.services.ensure_reserved_account stays agnostic.
+    Wema can't mint an account synchronously — it needs a BVN/NIN + OTP round-trip
+    driven by the /api/wallet/wema/* endpoints. Signal that so ensure_reserved_account
+    leaves the wallet numberless (the OTP flow fills it) rather than surfacing a hard
+    error.
     """
-    if payment_provider() == "wema":
-        # Wema can't mint an account synchronously — it needs a BVN/NIN + OTP
-        # round-trip driven by the /api/wallet/wema/* endpoints. Signal that so
-        # ensure_reserved_account leaves the wallet numberless (the OTP flow fills
-        # it) rather than surfacing a hard error.
-        return {"success": False, "otp_required": True,
-                "message": "Verify the OTP to finish setting up your account."}
-    from . import kora
-    return kora.create_virtual_account(account_reference, account_name, customer_email,
-                                       customer_name, bvn=bvn, nin=nin)
+    return {"success": False, "otp_required": True,
+            "message": "Verify the OTP to finish setting up your account."}
 
 
 def funding_account_get(account_reference: str) -> dict:
-    """Fetch an existing dedicated account (duplicate recovery), per rail."""
-    if payment_provider() == "wema":
-        # Wema accounts are provisioned by the OTP endpoints, not a synchronous
-        # lookup — never fall through to Kora's get (wrong rail).
-        return {"success": False, "otp_required": True,
-                "message": "Verify the OTP to finish setting up your account."}
-    from . import kora
-    return kora.get_virtual_account(account_reference)
+    """Fetch an existing dedicated account (duplicate recovery).
+
+    Wema accounts are provisioned by the OTP endpoints, not a synchronous lookup, so
+    this signals otp_required rather than performing a wrong-rail lookup."""
+    return {"success": False, "otp_required": True,
+            "message": "Verify the OTP to finish setting up your account."}
 
 
-# --- Payout (bank transfer) dispatch — Kora or Wema, per payout_provider() ---
+# --- Payout (bank transfer) dispatch — Wema ---
 def payout_resolve_account(account_number: str, bank_code: str) -> dict:
-    """Recipient name enquiry via the selected payout rail.
+    """Recipient name enquiry via Wema.
 
-    Returns {success, name, ...}. Both Kora and Wema resolve by
-    (account_number, bank_code); no securityInfo is needed for enquiry."""
-    if payout_provider() == "wema":
-        from . import wema
-        return wema.resolve_account(account_number, bank_code)
-    from . import kora
-    return kora.resolve_account(account_number, bank_code)
+    Returns {success, name, ...}. Wema resolves by (account_number, bank_code); no
+    securityInfo is needed for enquiry."""
+    from . import wema
+    return wema.resolve_account(account_number, bank_code)
 
 
 def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
                 account_number: str, account_name: str, bank_name: str = "",
                 source_account: str = "") -> dict:
-    """Single bank payout via the selected rail. Returns {success, status, ...};
-    both rails yield success/processing/pending — execute_payout treats
-    PROCESSING/PENDING as not-yet-confirmed.
+    """Single bank payout via Wema. Returns {success, status, ...}; Wema yields
+    success/processing/pending — execute_payout treats PROCESSING/PENDING as
+    not-yet-confirmed.
 
-    `bank_name` is optional for Kora (routes by code) but sent to Wema, whose
-    ProcessClientTransfer takes destinationBankName alongside the code.
+    `bank_name` is sent to Wema's ProcessClientTransfer (destinationBankName)
+    alongside the code.
 
-    MONEY-FLOW: Kora draws from the merchant's Kora balance, so `source_account`
-    (the sender's own NUBAN) is ignored on the Kora rail. On Wema (per-user-balance
-    model) it debits the SENDER's own NUBAN — `source_account`, which execute_payout
-    passes as the sender's wallet.account_number — falling back to the shared
-    WEMA_SOURCE_ACCOUNT pool only for a sender who has no Wema NUBAN yet, and failing
-    closed (refundable) on a live call with neither."""
-    if payout_provider() == "wema":
-        from . import wema
-        src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
-        if wema.wema_live() and not src:
-            return {"success": False,
-                    "message": "Payouts are temporarily unavailable — please try again shortly."}
-        return wema.transfer(
-            amount_naira, reference, narration,
-            source_account=src, destination_account=account_number,
-            destination_bank_code=bank_code, destination_bank_name=bank_name,
-            destination_name=account_name,
-        )
-    from . import kora
-    return kora.disburse(amount_naira, reference, narration, bank_code,
-                         account_number, account_name, customer_name=account_name)
+    MONEY-FLOW: Wema uses a per-user-balance model, so this debits the SENDER's own
+    NUBAN — `source_account`, which execute_payout passes as the sender's
+    wallet.account_number — falling back to the shared WEMA_SOURCE_ACCOUNT pool only
+    for a sender who has no Wema NUBAN yet, and failing closed (refundable) on a live
+    call with neither."""
+    from . import wema
+    src = source_account or settings.WEMA.get("SOURCE_ACCOUNT", "")
+    if wema.wema_live() and not src:
+        return {"success": False,
+                "message": "Payouts are temporarily unavailable — please try again shortly."}
+    return wema.transfer(
+        amount_naira, reference, narration,
+        source_account=src, destination_account=account_number,
+        destination_bank_code=bank_code, destination_bank_name=bank_name,
+        destination_name=account_name,
+    )
 
 
 # --- Virtual card dispatch ---
-# The generic CARD_ISSUER is the sole card backend (Kora card issuing is not wired). When
+# The generic CARD_ISSUER is the sole card backend (Wema card issuing is not wired yet). When
 # no issuer is configured the calls mock in dev/test and fail closed in production
 # (see issue_card / card_secure_details).
 def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:

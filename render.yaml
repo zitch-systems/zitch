@@ -11,7 +11,7 @@ services:
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
     # Render can't see -> "no open ports detected" and the deploy times out. Render
     # injects PORT (default 10000, which the health check targets).
-    # 2 workers x 4 threads so one slow provider call (Kora/VTU do
+    # 2 workers x 4 threads so one slow provider call (Wema/VTU do
     # network I/O in-request) can't stall every other request; --timeout bounds
     # a hung worker. Sized for the 512MB free/starter tiers. NOTE: with more
     # than one worker, set REDIS_URL so rate limits share one cache (see below).
@@ -38,34 +38,37 @@ services:
           name: zitch-db
           property: connectionString
       # Fill these in the Render dashboard (kept out of source):
-      # Money rail is Korapay (see the KORA_* block below) — funding, virtual
-      # accounts, payouts + name enquiry, merchant balance, and BVN/NIN/vNIN identity.
-      # Selfie/liveness + address + ID-document stay on Prembly; cards on CARD_ISSUER.
-      # Optional: enables /payout-diagnose?token=... and /kora-diagnose browser
-      # self-tests (also gated by WEMA_DIAG_TOKEN).
+      # Money rail is Wema / ALAT (see the WEMA_* block below) — funding (dedicated
+      # NUBANs via BVN/NIN + OTP), payouts + name enquiry + balance, and BVN/NIN/vNIN
+      # identity (Full KYC). Selfie/liveness + address + ID-document stay on Prembly;
+      # cards on CARD_ISSUER (Wema card issuing not wired yet).
+      # Optional: DIAG_TOKEN + WEMA_DIAG_TOKEN enable the /wema-diagnose?token=... and
+      # /vtu-diagnose browser self-tests.
       - key: DIAG_TOKEN
+        sync: false
+      - key: WEMA_DIAG_TOKEN
         sync: false
       # Virtual-card backend: "issuer" (generic CARD_ISSUER) — the sole backend; blank => issuer.
       - key: CARD_PROVIDER
         sync: false
-      # Wallet FUND-IN rail: "kora" (default) or "wema"; blank => kora.
+      # Wallet FUND-IN rail: "wema" (the sole rail); blank => wema.
       - key: PAYMENT_PROVIDER
         sync: false
-      # Bank-PAYOUT + recipient name-enquiry rail: blank => kora (the production
-      # choice). "wema" exists but is ARCHIVED — do not set it.
+      # Bank-PAYOUT + recipient name-enquiry rail: "wema" (the sole rail); blank => wema.
       - key: PAYOUT_PROVIDER
         sync: false
-      # BVN/NIN/vNIN KYC rail: "kora" (the sole rail); blank => kora. Selfie/liveness
-      # + address + ID-document are on Prembly.
+      # BVN/NIN/vNIN KYC rail: "wema" (Wema Full KYC, the sole rail); blank => wema.
+      # Selfie/liveness + address + ID-document are on Prembly.
       - key: KYC_PROVIDER
         sync: false
       # ---------------------------------------------------------------------
-      # Wema / ALAT — ARCHIVED (2026-07). Integration code is retained and opt-in
-      # only; NOTHING routes to Wema unless a *_PROVIDER env is explicitly set to
-      # "wema". Verified on test keys: auth + bank list + name enquiry. Blocked on
-      # Wema's side: the sandbox does not mint partnership accounts/OTPs, and the
-      # securityInfo scheme + tx-status legend are undocumented. To resume, see
-      # docs/wema-migration.md. The env vars below can stay blank.
+      # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Set WEMA_CHANNEL_ID
+      # + WEMA_WALLET_KEY (and the per-product keys card/airtime/bills/kyc),
+      # WEMA_SOURCE_ACCOUNT (the pool NUBAN that funds payouts), the live WEMA_BASE_URL,
+      # and the WEMA_SECURITY_INFO scheme. Blank keys => mock; WEMA_SIMULATION=true
+      # tests the flow without live keys (no real money). There is NO inbound-credit
+      # webhook — deposits AND payout settlement are polled by the zitch-reconcile-wema
+      # cron. See docs/wema-migration.md and utility/wema.py.
       # ---------------------------------------------------------------------
       - key: WEMA_CHANNEL_ID
         sync: false
@@ -86,30 +89,6 @@ services:
       - key: WEMA_BASE_URL
         sync: false
       - key: WEMA_SIMULATION
-        sync: false
-      # Korapay (Kora) — the sole money rail: fund-in (dedicated virtual accounts +
-      # hosted checkout) AND payouts + name enquiry + merchant balance, plus Nigeria
-      # KYC (BVN/NIN/vNIN). A single Bearer SECRET key; NO IP whitelisting. Blank keys
-      # => mock; KORA_SIMULATION=true tests the fund-in flow without live keys (no real
-      # money; payouts + identity still fail closed). BASE_URL https://api.korapay.com.
-      # Reserved accounts issue on Wema (KORA_VA_BANK_CODE, default 035). Webhooks:
-      # /api/fund/kora/webhook/ (pay-in) and /api/transfers/webhook/ (payout).
-      - key: KORA_SECRET_KEY
-        sync: false
-      - key: KORA_PUBLIC_KEY
-        sync: false
-      - key: KORA_VA_BANK_CODE
-        sync: false
-      - key: KORA_REDIRECT_URL
-        sync: false
-      # Optional per-request webhook URLs (Kora also supports one dashboard URL).
-      - key: KORA_FUND_WEBHOOK_URL
-        sync: false
-      - key: KORA_PAYOUT_WEBHOOK_URL
-        sync: false
-      - key: KORA_SIMULATION
-        sync: false
-      - key: KORA_BASE_URL
         sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
@@ -242,24 +221,21 @@ services:
           name: zitch-db
           property: connectionString
 
-  # (The zitch-reconcile-wema cron was removed when Wema was archived — restore it
-  # from docs/wema-migration.md if the Wema rail is ever resumed.)
-
-  # Kora payout reconciliation — a safety net behind the transfer webhook: poll
-  # single-transaction status for any bank payout left PENDING and settle (success)
-  # or reverse (failed/reversed) it, so a missed webhook never leaves a transfer
-  # debited forever. No-op unless Kora is the payout rail. Also requires a paid plan
-  # (cron has no free tier). Runs every 10 minutes. NOTE: this service needs its OWN
-  # Kora key (crons are separate from the web service) to query transaction status —
-  # set KORA_* below in the Render dashboard.
+  # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:
+  # (1) FUNDING: sweep each Wema NUBAN's transaction history and credit inbound
+  # deposits (idempotent on Wema's referenceId); (2) PAYOUTS: poll
+  # ConfirmClientTransferStatus for any bank payout left PENDING and settle (success)
+  # or reverse (failed) it. Without this, deposits never credit and a PENDING payout
+  # sits debited forever. Requires a paid plan (cron has no free tier). Runs every 10
+  # minutes. NOTE: crons are separate from the web service, so set the WEMA_* keys here.
   - type: cron
-    name: zitch-reconcile-payouts
+    name: zitch-reconcile-wema
     runtime: python
     rootDir: backend
     plan: starter
     schedule: "*/10 * * * *"
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python manage.py reconcile_payouts"
+    startCommand: "python manage.py reconcile_wema"
     envVars:
       - key: DJANGO_SECRET_KEY
         generateValue: true
@@ -269,9 +245,15 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
-      - key: KORA_SECRET_KEY
+      - key: WEMA_CHANNEL_ID
         sync: false
-      - key: KORA_BASE_URL
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_SOURCE_ACCOUNT
+        sync: false
+      - key: WEMA_SECURITY_INFO
+        sync: false
+      - key: WEMA_BASE_URL
         sync: false
 
   # Ledger <-> balance integrity check — recomputes every wallet from the

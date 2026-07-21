@@ -13,7 +13,6 @@ urlpatterns = [
     path("user-transaction-history/", views.transaction_history),
     path("fund/initialize/", views.fund_initialize),
     path("fund/verify/", views.fund_verify),
-    path("fund/kora/webhook/", views.kora_fund_webhook),
     path("transfer/resolve/", views.resolve_recipient),
     path("transfer/send/", views.transfer_send),
 ]

@@ -1,90 +1,75 @@
-"""Tests for the payment/payout/card provider-selection dispatch layer and the
-Kora webhook endpoints (utility.providers dispatch + wallet/transfers views).
+"""Tests for the payment/payout/KYC/card provider-selection dispatch layer
+(utility.providers).
 
-Two layers:
-- Pure routing (SimpleTestCase): the *_provider() selectors and the funding_* /
-  payout_* / card_* wrappers delegate to the Kora client (Wema is opt-in).
-- Webhook crediting (TestCase): the Kora pay-in/payout webhooks credit/settle the
-  ledger. In MOCK mode (no Kora key) verify_webhook accepts, so the routes are
-  testable offline.
+Wema/ALAT is the sole money-movement + Nigeria-KYC rail; the funding_* / payout_* /
+verify_* wrappers delegate to it. VAS stays on VTU.ng (Wema airtime opt-in) and
+virtual cards on the generic issuer. Pure routing (SimpleTestCase): no network.
 """
-import json
-from decimal import Decimal
 from unittest.mock import patch
 
-from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, override_settings
 
 from utility import providers as P
-from wallet.models import FundingIntent, Transaction, Wallet
-from wallet.tests import make_user
 
-KORA_LIVE = {"BASE_URL": "https://api.korapay.com", "SECRET_KEY": "sk_test_x",
-             "PUBLIC_KEY": "pk_test_x", "REDIRECT_URL": "", "VA_BANK_CODE": "035",
-             "FUND_WEBHOOK_URL": "", "PAYOUT_WEBHOOK_URL": "", "SIMULATION": False}
 WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
              "KEYS": {"wallet": "subkey"}, "SOURCE_ACCOUNT": "0100000001",
              "SECURITY_INFO": "sec", "SIMULATION": False}
 
 
 class ProviderSelectionTests(SimpleTestCase):
-    """Kora is the default rail; Wema is opt-in via the *_PROVIDER env vars."""
+    """Wema is the sole money-movement rail."""
 
-    def test_money_rail_defaults_to_kora(self):
-        self.assertEqual(P.payment_provider(), "kora")
-        self.assertEqual(P.payout_provider(), "kora")
-
-    @override_settings(PAYOUT_PROVIDER="wema")
-    def test_payout_provider_explicit_wema(self):
+    def test_money_rail_is_wema(self):
+        self.assertEqual(P.payment_provider(), "wema")
         self.assertEqual(P.payout_provider(), "wema")
 
-    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
-    def test_payout_live_tracks_wema_keys_when_selected(self):
-        self.assertTrue(P.payout_live())
+    @override_settings(PAYMENT_PROVIDER="kora", PAYOUT_PROVIDER="monnify")
+    def test_removed_choice_falls_back_to_wema(self):
+        # A legacy/unknown *_PROVIDER value falls back to the sole rail.
+        self.assertEqual(P.payment_provider(), "wema")
+        self.assertEqual(P.payout_provider(), "wema")
 
     def test_card_provider_defaults_to_issuer(self):
         self.assertEqual(P.card_provider(), "issuer")
 
-    @override_settings(CARD_PROVIDER="kora")
-    def test_card_provider_ignores_kora(self):
-        # Kora card issuing is not integrated — the selector falls back to issuer.
+    @override_settings(CARD_PROVIDER="wema")
+    def test_card_provider_ignores_unwired_wema(self):
+        # Wema card issuing is not integrated — the selector falls back to issuer.
         self.assertEqual(P.card_provider(), "issuer")
 
-    @override_settings(KORA=KORA_LIVE)
-    def test_payout_live_tracks_kora_keys(self):
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_payout_live_tracks_wema_keys(self):
         self.assertTrue(P.payout_live())
+
+    def test_payout_live_false_without_keys(self):
+        self.assertFalse(P.payout_live())
 
 
 class FundingDispatchTests(SimpleTestCase):
-    def test_funding_initialize_routes_to_kora(self):
-        with patch("utility.kora.payment_initialize",
-                   return_value={"success": True, "authorization_url": "https://k", "reference": "R"}) as m:
-            P.funding_initialize("a@b.com", 1000, "ZPAY1", name="Ada")
-        m.assert_called_once()
+    """Wema funds by an OTP-provisioned NUBAN — no hosted checkout, no sync reserve."""
 
-    def test_funding_verify_routes_to_kora(self):
-        with patch("utility.kora.payment_verify", return_value={"success": True}) as m:
-            P.funding_verify("ZPAY1")
-        m.assert_called_once()
+    def test_funding_initialize_returns_transfer_message(self):
+        out = P.funding_initialize("a@b.com", 1000, "ZPAY1", name="Ada")
+        self.assertFalse(out["success"])
+        self.assertIn("transfer", out["message"].lower())
 
-    def test_funding_account_reserve_routes_to_kora(self):
-        with patch("utility.kora.create_virtual_account",
-                   return_value={"success": True, "account_number": "990", "reference": "r"}) as m:
-            P.funding_account_reserve("usr-1", "Ada", "a@b.com", "Ada", bvn="22212345678")
-        m.assert_called_once()
+    def test_funding_verify_is_automatic(self):
+        out = P.funding_verify("ZPAY1")
+        self.assertFalse(out["success"])
+
+    def test_funding_account_reserve_signals_otp(self):
+        out = P.funding_account_reserve("usr-1", "Ada", "a@b.com", "Ada", bvn="22212345678")
+        self.assertFalse(out["success"])
+        self.assertTrue(out["otp_required"])
+
+    def test_funding_account_get_signals_otp(self):
+        out = P.funding_account_get("ZITCH-WALLET-1")
+        self.assertFalse(out["success"])
+        self.assertTrue(out["otp_required"])
 
 
 class PayoutDispatchTests(SimpleTestCase):
-    def test_payout_send_routes_to_kora(self):
-        with patch("utility.kora.disburse", return_value={"success": True, "status": "processing"}) as m:
-            P.payout_send(1000, "ZTRF1", "note", "058", "0123456789", "ADA EZE")
-        m.assert_called_once()
-
-    def test_payout_resolve_routes_to_kora(self):
-        with patch("utility.kora.resolve_account", return_value={"success": True, "name": "ADA"}) as m:
-            P.payout_resolve_account("0123456789", "058")
-        m.assert_called_once_with("0123456789", "058")
-
-    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
+    @override_settings(WEMA=WEMA_LIVE)
     def test_payout_send_routes_to_wema_with_source_and_bank_name(self):
         with patch("utility.wema.transfer",
                    return_value={"success": True, "status": "SUCCESS"}) as m:
@@ -97,14 +82,13 @@ class PayoutDispatchTests(SimpleTestCase):
         self.assertEqual(kw["destination_bank_name"], "Wema Bank")
         self.assertEqual(kw["destination_name"], "ADA EZE")
 
-    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
     def test_payout_resolve_routes_to_wema(self):
         with patch("utility.wema.resolve_account",
                    return_value={"success": True, "name": "ADA EZE"}) as m:
             P.payout_resolve_account("0123456789", "035")
         m.assert_called_once_with("0123456789", "035")
 
-    @override_settings(PAYOUT_PROVIDER="wema", WEMA={**WEMA_LIVE, "SOURCE_ACCOUNT": ""})
+    @override_settings(WEMA={**WEMA_LIVE, "SOURCE_ACCOUNT": ""})
     def test_payout_send_fails_closed_without_source_account(self):
         # Live Wema payout with no sender NUBAN and no pool must refuse (refundable)
         # rather than send an empty sourceAccountNumber. wema.transfer must NOT be called.
@@ -113,7 +97,7 @@ class PayoutDispatchTests(SimpleTestCase):
         self.assertFalse(out["success"])
         m.assert_not_called()
 
-    @override_settings(PAYOUT_PROVIDER="wema", WEMA=WEMA_LIVE)
+    @override_settings(WEMA=WEMA_LIVE)
     def test_payout_send_prefers_sender_nuban_over_pool(self):
         # Per-user-balance model: debit the SENDER's own NUBAN, not the pool.
         with patch("utility.wema.transfer", return_value={"success": True, "status": "SUCCESS"}) as m:
@@ -123,30 +107,28 @@ class PayoutDispatchTests(SimpleTestCase):
 
 
 class KycDispatchTests(SimpleTestCase):
-    """Production rails: BVN/NIN/vNIN all on Kora (the sole identity-lookup rail)."""
+    """BVN/NIN/vNIN all on Wema Full KYC (the sole identity-lookup rail)."""
 
-    def test_kyc_provider_is_kora(self):
-        self.assertEqual(P.kyc_provider(), "kora")
+    def test_kyc_provider_is_wema(self):
+        self.assertEqual(P.kyc_provider(), "wema")
 
-    @override_settings(KYC_PROVIDER="monnify")
-    def test_removed_choice_falls_back_to_kora(self):
-        self.assertEqual(P.kyc_provider(), "kora")
+    @override_settings(KYC_PROVIDER="kora")
+    def test_removed_choice_falls_back_to_wema(self):
+        self.assertEqual(P.kyc_provider(), "wema")
 
-    @override_settings(KORA=KORA_LIVE)
-    def test_verify_bvn_routes_to_kora(self):
-        with patch("utility.kora.verify_bvn", return_value={"success": True}) as mm:
+    def test_verify_bvn_routes_to_wema(self):
+        with patch("utility.wema.verify_bvn", return_value={"success": True}) as mm:
             P.verify_bvn("22222222222", name="Ada Eze", mobile="080")
         mm.assert_called_once()
         self.assertEqual(mm.call_args.kwargs["name"], "Ada Eze")
 
-    @override_settings(KORA=KORA_LIVE)
-    def test_verify_nin_routes_to_kora(self):
-        with patch("utility.kora.verify_nin", return_value={"success": True}) as mm:
+    def test_verify_nin_routes_to_wema(self):
+        with patch("utility.wema.verify_nin", return_value={"success": True}) as mm:
             P.verify_nin("12345678901")
         mm.assert_called_once_with("12345678901")
 
-    def test_vnin_routes_to_kora(self):
-        with patch("utility.kora.verify_vnin", return_value={"success": True}) as mk:
+    def test_verify_vnin_routes_to_wema(self):
+        with patch("utility.wema.verify_vnin", return_value={"success": True}) as mk:
             P.verify_vnin("AB123456789CDEFG")
         mk.assert_called_once()
 
@@ -180,87 +162,11 @@ class VasDispatchTests(SimpleTestCase):
         mv.assert_called_once()
 
 
-class FundingAccountGetDispatchTests(SimpleTestCase):
-    @override_settings(PAYMENT_PROVIDER="wema")
-    def test_funding_account_get_wema_does_not_hit_kora(self):
-        # Must NOT fall through to kora.get_virtual_account for a Wema account.
-        with patch("utility.kora.get_virtual_account") as mm:
-            out = P.funding_account_get("ZITCH-WALLET-1")
-        mm.assert_not_called()
-        self.assertFalse(out["success"])
-        self.assertTrue(out.get("otp_required"))
-
-
 class CardDispatchTests(SimpleTestCase):
     def test_card_issue_routes_to_generic_issuer(self):
-        # Kora card issuing is not integrated — card_issue delegates to CARD_ISSUER.
+        # Wema card issuing is not integrated — card_issue delegates to CARD_ISSUER.
         with patch("utility.providers.issue_card",
                    return_value={"success": True, "card_token": "card_1"}) as m:
             out = P.card_issue("ADA EZE", "42", email="ada@b.com")
         m.assert_called_once()
         self.assertTrue(out["success"])
-
-
-class KoraFundingWebhookTests(TestCase):
-    def setUp(self):
-        self.client = Client()
-        self.user, self.token = make_user("08030000001", "fund@zitch.app")
-
-    def _post(self, payload):
-        return self.client.post("/api/fund/kora/webhook/", data=json.dumps(payload),
-                                content_type="application/json",
-                                HTTP_X_KORAPAY_SIGNATURE="mock")
-
-    def test_checkout_success_credits_funding_intent(self):
-        FundingIntent.objects.create(user=self.user, reference="ZPAYK1", amount=Decimal("2500"),
-                                     meta={"provider": "kora"})
-        res = self._post({"event": "charge.success",
-                          "data": {"reference": "ZPAYK1", "status": "success",
-                                   "transaction_reference": "KPY-TX-1", "amount": "2500"}})
-        self.assertEqual(res.status_code, 200)
-        intent = FundingIntent.objects.get(reference="ZPAYK1")
-        self.assertTrue(intent.credited)
-        self.assertEqual(get_balance(self.user), Decimal("2500"))
-
-    def test_reserved_account_credit_maps_by_account_number(self):
-        w = Wallet.objects.get(user=self.user)
-        w.account_number = "9900000001"
-        w.account_reference = "ZITCH-WALLET-X"
-        w.save(update_fields=["account_number", "account_reference"])
-        payload = {"event": "charge.success",
-                   "data": {"status": "success", "transaction_reference": "KPY-TX-9", "amount": "1500",
-                            "virtual_bank_account_details": {
-                                "virtual_bank_account": {"account_number": "9900000001",
-                                                         "account_reference": "ZITCH-WALLET-X"}}}}
-        res = self._post(payload)
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(get_balance(self.user), Decimal("1500"))
-        # Idempotent: a redelivered event keyed on the same txref does not double-credit.
-        self._post(payload)
-        self.assertEqual(get_balance(self.user), Decimal("1500"))
-
-
-class KoraPayoutWebhookTests(TestCase):
-    def setUp(self):
-        self.client = Client()
-
-    def _post(self, payload):
-        return self.client.post("/api/transfers/webhook/", data=json.dumps(payload),
-                                content_type="application/json",
-                                HTTP_X_KORAPAY_SIGNATURE="mock")
-
-    def test_failed_transfer_reverses(self):
-        with patch("transfers.views.reverse_transfer") as m:
-            res = self._post({"event": "transfer.failed", "data": {"reference": "ZTRF9"}})
-        self.assertEqual(res.status_code, 200)
-        m.assert_called_once_with("ZTRF9")
-
-    def test_successful_transfer_settles(self):
-        with patch("transfers.views.settle_payout") as m:
-            res = self._post({"event": "transfer.success", "data": {"reference": "ZTRF9"}})
-        self.assertEqual(res.status_code, 200)
-        m.assert_called_once_with("ZTRF9")
-
-
-def get_balance(user) -> Decimal:
-    return Wallet.objects.get(user=user).balance

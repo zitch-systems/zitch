@@ -34,8 +34,8 @@ def flows_live() -> bool:
 def verify_signature(raw_body: bytes, header: str) -> bool:
     """Validate Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body).
 
-    With no APP_SECRET configured (mock mode) we accept, matching how the Kora
-    webhook behaves without keys â€” so tests and local runs work unsigned.
+    With no APP_SECRET configured (mock mode) we accept, matching how the money-provider mocks (which accept
+    unsigned in mock mode) behave â€” so tests and local runs work unsigned.
     """
     secret = _cfg().get("APP_SECRET", "")
     if not secret:

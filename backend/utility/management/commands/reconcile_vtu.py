@@ -29,7 +29,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         cutoff = timezone.now() - timedelta(minutes=options["older_than_minutes"])
         # VTU.ng purchases only â€” bank-transfer payouts share the PENDING+reconcile
-        # shape but are settled by the Kora payout webhook, never a VTU
+        # shape but are settled by the reconcile_wema poller, never a VTU
         # requery (which would hit the wrong provider for a foreign reference).
         pending = pending_vtu_purchases(cutoff)
         total = pending.count()
