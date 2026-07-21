@@ -2,12 +2,14 @@
 (utility.providers).
 
 Wema/ALAT is the sole money-movement + Nigeria-KYC rail; the funding_* / payout_* /
-verify_* wrappers delegate to it. VAS stays on VTU.ng (Wema airtime opt-in) and
-virtual cards on the generic issuer. Pure routing (SimpleTestCase): no network.
+verify_* wrappers delegate to it. VAS routes per-service to Wema once its keys +
+catalogue are in place (airtime always; data/cable when synced; electricity/betting
+stay on VTU.ng); virtual cards on the generic issuer.
 """
+from decimal import Decimal
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from utility import providers as P
 
@@ -170,3 +172,63 @@ class CardDispatchTests(SimpleTestCase):
             out = P.card_issue("ADA EZE", "42", email="ada@b.com")
         m.assert_called_once()
         self.assertTrue(out["success"])
+
+
+class WemaVasRoutingTests(TestCase):
+    """DB-backed VAS routing: data/cable go to Wema only once wema_code is synced,
+    and a PENDING purchase requeries against the rail stamped on the ledger row."""
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_data_routes_to_wema_when_code_synced(self):
+        from utility.models import DataPlan
+        DataPlan.objects.create(network="1", plan_type="1", name="1GB", validity="30 days",
+                                plan_code="MTN1GB", wema_code="WEMA-MTN-1GB", price=Decimal("500"))
+        with patch("utility.wema.purchase_data", return_value={"success": True, "status": "SUCCESS"}) as mw, \
+             patch("utility.vtung.vt_purchase") as mv:
+            out = P.vtu_purchase("mtn-data", {"variation_code": "MTN1GB", "phone": "080"}, reference="R")
+        mw.assert_called_once()
+        self.assertEqual(mw.call_args.args[4], "WEMA-MTN-1GB")  # package_code positional
+        self.assertEqual(out["vas_rail"], "wema")
+        mv.assert_not_called()
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_data_stays_on_vtung_without_wema_code(self):
+        from utility.models import DataPlan
+        DataPlan.objects.create(network="1", plan_type="1", name="2GB", validity="30 days",
+                                plan_code="MTN2GB", wema_code="", price=Decimal("1000"))
+        with patch("utility.vtung.vt_purchase", return_value={"success": True}) as mv, \
+             patch("utility.wema.purchase_data") as mw:
+            P.vtu_purchase("mtn-data", {"variation_code": "MTN2GB", "phone": "080"}, reference="R")
+        mv.assert_called_once()
+        mw.assert_not_called()
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_cable_routes_to_wema_when_code_synced(self):
+        from utility.models import CablePlan
+        CablePlan.objects.create(provider="2", name="DStv Compact", cable_plan_code="DSTV-C",
+                                 wema_code="WEMA-DSTV-C", price=Decimal("10500"))
+        with patch("utility.wema.pay_bill", return_value={"success": True, "status": "SUCCESS"}) as mw, \
+             patch("utility.vtung.vt_purchase") as mv:
+            out = P.vtu_purchase("dstv", {"variation_code": "DSTV-C", "billersCode": "1234567890"}, reference="R")
+        mw.assert_called_once()
+        self.assertEqual(mw.call_args.kwargs["package_id"], "WEMA-DSTV-C")
+        self.assertEqual(out["vas_rail"], "wema")
+        mv.assert_not_called()
+
+    def test_requery_uses_stamped_wema_rail(self):
+        from wallet.services import debit
+        from wallet.tests import make_user
+        user, _ = make_user("08033330001", "vas@zitch.test", balance="1000")
+        txn = debit(user, Decimal("500"), "Airtime", meta={"vas_rail": "wema", "vas_type": "airtime"})
+        with patch("utility.wema.vas_status", return_value={"success": True}) as mw, \
+             patch("utility.vtung.vt_requery") as mv:
+            P.vtu_requery(txn.reference)
+        mw.assert_called_once_with(txn.reference, "airtime")
+        mv.assert_not_called()
+
+    def test_requery_defaults_to_vtung(self):
+        with patch("utility.vtung.vt_requery", return_value={"success": True}) as mv, \
+             patch("utility.wema.vas_status") as mw:
+            P.vtu_requery("NO-SUCH-REF")
+        mv.assert_called_once()
+        mw.assert_not_called()
