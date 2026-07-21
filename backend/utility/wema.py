@@ -657,8 +657,13 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
         return _unreachable(exc)
 
 
-def verify_nin(nin: str) -> dict:
-    """Verify a NIN via Wema's Full KYC (POST /kyc /api/Kyc/VerifyNin {nin}) -> holder details."""
+def verify_nin(nin: str, name: str = "") -> dict:
+    """Verify a NIN via Wema's Full KYC (POST /kyc /api/Kyc/VerifyNin {nin}) -> holder details.
+
+    When ``name`` is supplied we reject only a CLEAR mismatch (no shared name
+    tokens), tolerant of order/middle names — mirroring verify_bvn, so a NIN that
+    demonstrably belongs to someone else can't lift the requester's KYC tier.
+    Fails closed in production without keys."""
     if len(nin) != 11 or not nin.isdigit():
         return {"success": False, "message": "NIN must be 11 digits"}
     if not _kyc_live():
@@ -668,15 +673,19 @@ def verify_nin(nin: str) -> dict:
     try:
         data = _post("kyc", "/api/Kyc/VerifyNin", {"nin": nin}).json()
         rec = _kyc_record(data)
-        return {"success": _ok(data) and bool(rec["_d"]), "first_name": rec["first_name"],
+        ok = _ok(data) and bool(rec["_d"])
+        if ok and name and _name_mismatch(name, f"{rec['first_name']} {rec['last_name']}"):
+            return {"success": False, "message": "This NIN does not match your name", "raw": data}
+        return {"success": ok, "first_name": rec["first_name"],
                 "last_name": rec["last_name"], "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
 
-def verify_vnin(vnin: str) -> dict:
+def verify_vnin(vnin: str, name: str = "") -> dict:
     """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC
-    (POST /kyc /api/Kyc/VerifyVnin {vnin}). Fails closed in production when unkeyed."""
+    (POST /kyc /api/Kyc/VerifyVnin {vnin}). Rejects a clear name mismatch when a
+    name is supplied. Fails closed in production when unkeyed."""
     if not vnin or len(vnin) != 16:
         return {"success": False, "message": "Virtual NIN must be 16 characters"}
     if not _kyc_live():
@@ -686,7 +695,10 @@ def verify_vnin(vnin: str) -> dict:
     try:
         data = _post("kyc", "/api/Kyc/VerifyVnin", {"vnin": vnin}).json()
         rec = _kyc_record(data)
-        return {"success": _ok(data) and bool(rec["_d"]), "first_name": rec["first_name"],
+        ok = _ok(data) and bool(rec["_d"])
+        if ok and name and _name_mismatch(name, f"{rec['first_name']} {rec['last_name']}"):
+            return {"success": False, "message": "This NIN does not match your name", "raw": data}
+        return {"success": ok, "first_name": rec["first_name"],
                 "last_name": rec["last_name"], "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)

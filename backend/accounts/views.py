@@ -591,7 +591,9 @@ def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
     user = request.user_obj
     nin = (request.data.get("nin") or "").strip()
-    result = verify_nin(nin)
+    # Pass the account name so a NIN that demonstrably belongs to someone else is
+    # rejected (mirrors kyc_bvn) — otherwise any valid NIN would lift the tier.
+    result = verify_nin(nin, name=user.get_full_name() or "")
     if not result.get("success"):
         return fail(result.get("message", "NIN verification failed"), status=400)
     # The redesigned flow also uploads the NIN slip/ID image; verify it when sent.

@@ -292,17 +292,20 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
     return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
-def verify_nin(nin: str) -> dict:
-    """Verify a NIN via Wema's Full KYC. Fails closed in prod without keys."""
+def verify_nin(nin: str, name: str = "") -> dict:
+    """Verify a NIN via Wema's Full KYC (rejects a clear name mismatch when a name is
+    supplied, so a NIN that isn't the requester's can't lift their tier). Fails closed
+    in prod without keys."""
     from . import wema
-    return wema.verify_nin(nin)
+    return wema.verify_nin(nin, name=name)
 
 
-def verify_vnin(vnin: str) -> dict:
-    """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC. Fails closed
-    in production when unkeyed; dev/tests keep the mock."""
+def verify_vnin(vnin: str, name: str = "") -> dict:
+    """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC (rejects a clear
+    name mismatch when a name is supplied). Fails closed in production when unkeyed;
+    dev/tests keep the mock."""
     from . import wema
-    return wema.verify_vnin(vnin)
+    return wema.verify_vnin(vnin, name=name)
 
 
 # ---------------------------------------------------------------------------

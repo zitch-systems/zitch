@@ -15,6 +15,109 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 
 ---
 
+## Update — Wema/ALAT money-rail audit (this PR, `claude/continue-audit-bj0qo7`)
+
+Since the last audit pass the entire money + KYC rail was rewritten: Monnify and Korapay/Baxi
+were **deleted** and **Wema/ALAT is now the sole money-movement rail** (funding via OTP-provisioned
+NUBANs, payouts, name enquiry) **and the sole Nigeria-KYC rail** (BVN/NIN/vNIN via Wema Full KYC),
+with **VTU.ng** the sole VTU (airtime/data/cable/electricity/betting/exams) provider and **Mono**
+open-banking for external bank-link + DirectPay funding. This pass re-audited those surfaces (Wema
+client + reconcile poller, Mono `banklink`, VTU.ng, the WhatsApp channel incl. the native-PIN Flow),
+re-verified the prior OPEN list, and applied surgical fixes with regression tests. **Full backend
+suite green: 432 passing;** `check` clean; migrations complete; no schema/flow restructuring.
+
+### Fixed this pass (7 surgical fixes, each with a regression test)
+
+- **`[FIXED]` High — `banklink.connect` cross-user account takeover (write-IDOR).** `mono_account_id`
+  is globally `unique`, but `connect` upserted with `update_or_create(mono_account_id=…, defaults={"user": user})`
+  keyed on that id alone — so linking an id already owned by another user **reassigned the row's owner**
+  (and its cached name/balance), silently unlinking the victim. Under `MONO_SIMULATION` the id is
+  `mock_acct_<sha256(code)>`, deterministic from the client-supplied code, making the collision trivial.
+  *Fix:* reject a cross-user re-link (409); a same-user re-link still refreshes. (`banklink/views.py`)
+- **`[FIXED]` High (compliance) — NIN/vNIN verification didn't confirm the identity is the requester's.**
+  `verify_bvn` rejects a clear name mismatch, but `verify_nin`/`verify_vnin` did not — so any *valid*
+  NIN (a relative's, one found online) passed and, with a name-matched BVN, lifted the user to Tier 1
+  under a borrowed identity (an AML/KYC-integrity hole). *Fix:* `verify_nin`/`verify_vnin` now take a
+  `name=` and reject a clear mismatch (order/middle-name tolerant), mirroring BVN; `kyc_nin` passes the
+  account name. (`utility/wema.py`, `utility/providers.py`, `accounts/views.py`)
+- **`[FIXED]` High — account **freeze** was bypassable via the native-PIN Flow path.** The chat path
+  blocks a frozen user (`handle_inbound` → `is_active`), but the encrypted Flows data-exchange endpoint
+  reaches execution through a separate path (`flow_endpoint` → `run_flow_execution` → `_exec_*` →
+  `execute_payout`) that never re-checked it — so a transfer/VTU armed **before** an admin freeze could
+  still execute through the native PIN pad within the arm window, defeating the platform's primary
+  incident-response lever. *Fix:* `run_flow_execution` now refuses and clears the action when
+  `not user.is_active`. (`whatsapp/router.py`)
+- **`[FIXED]` Medium — WhatsApp link-code MSISDN binding failed **open** for phone-less accounts.** The
+  SIM-swap guard was `if registered and registered[-10:] != sender[-10:]`; `User.phone` is nullable, so
+  an account with no number on file skipped the check and a leaked code bound **any** number. *Fix:*
+  fail closed — a bind requires a registered number that matches the sender. (`whatsapp/router.py`)
+- **`[FIXED]` Medium — Anthropic (LLM intent) client had no timeout in the synchronous webhook.** The
+  client was built with SDK defaults (~10 min, with retries) inside the in-request Meta webhook path; a
+  slow/hung LLM stalls the handler → Meta retries → webhook disablement (channel outage). *Fix:* build
+  with a bounded `timeout` (default 8s) and `max_retries=0`; the caller already falls back to the
+  deterministic router on any error (money never blocks on AI). (`whatsapp/ai.py`)
+- **`[FIXED]` Low — `banklink` `linked_id` → 500.** `refresh`/`unlink`/`fund` passed the raw client
+  `linked_id` into a `filter(id=…)` on an integer PK; a non-numeric value raised `ValueError` → an
+  unhandled 500. *Fix:* a `_linked_id()` coercion treats a bad value as "not found" (404). (`banklink/views.py`)
+- **`[FIXED]` Low — `fund_verify` didn't scope the reference to the caller.** Not a theft vector
+  (`settle_funding` credits the intent's own owner and is idempotent), but a caller could poke another
+  user's funding reference. *Fix:* 404 when the intent belongs to a different user. (`wallet/views.py`)
+
+### Still OPEN (recommended; needs live-gateway data or larger work)
+
+- **`[OPEN]` High — reconcile poller can double-credit a payout reversal (Wema, per-user-balance model).**
+  Payouts debit the sender's **own** NUBAN; `reconcile_wema` **Phase 1** credits the wallet for *every*
+  inbound `creditType=="Credit"` history row, while **Phase 2** independently reverses a FAILED payout
+  via `reverse_transfer`. If a reversed/bounced transfer (or a Wema-side VAS refund) lands back in the
+  NUBAN as an inbound credit, it is counted **twice** — once by each phase — leaking float. It can't be
+  reproduced or fixed with confidence until Wema's live transaction-history shape for a reversal is
+  known (the client is explicitly *VERIFY-BEFORE-LIVE*). **Recommend:** exclude self-reversals from the
+  funding sweep (match against our own outbound references/narration), and add a ledger-vs-polled-NUBAN
+  reconciliation invariant that alarms on divergence before enabling live money flows.
+- **`[OPEN]` Medium — two-rail settlement model needs a reconciliation design.** `wallet.balance` is meant
+  to mirror the user's Wema NUBAN, but VTU.ng/cards/internal-transfers debit `wallet.balance` while being
+  paid from a pooled ZITCH float (the NUBAN is untouched), so the ledger and the NUBAN drift by every
+  float-paid spend. A periodic NUBAN→settlement sweep + daily reconciliation invariant is required before
+  go-live.
+- **`[OPEN]` Medium — Mono webhook: static shared-secret + credits on `payment_received`.** `verify_webhook`
+  compares a static header, not a body HMAC, and has no replay window; and crediting fires on
+  `mono.events.payment_received` (an intermediate event) with a full-intent-amount fallback when `amount`
+  is absent. Idempotency + the `min(intent.amount, paid)` clamp bound the blast radius, but **recommend:**
+  credit only on a terminal `*successful` event with a positive settled amount, and move to a per-payload
+  HMAC signature.
+- **`[OPEN]` Medium — WhatsApp confirm gate degrades to PIN-in-chat.** When Flows isn't live and the SMS
+  code can't be sent (unset/failed Sendchamp), `_arm_confirm` falls back to entering the raw PIN in the
+  chat — exactly what the secure-PIN Flow / SMS-code design exists to prevent. **Recommend:** in prod,
+  refuse the transaction (send the user to the app) rather than fall back to chat-PIN.
+- **`[OPEN]` Low/Medium — WhatsApp `PendingAction` per-msisdn attempt counter is raceable.** No `unique`
+  on `msisdn` and no `select_for_update` on the read, so the "N wrong then cancel" cap is bypassable by
+  concurrent inbound messages. The transaction-PIN branch is backstopped by the row-locked
+  `evaluate_transaction_pin` lockout; the **SMS-OTP** branch has no second backstop (still not
+  practically brute-forceable: ~150 guesses over the TTL vs 10⁶). **Recommend:** unique-per-msisdn +
+  `select_for_update`.
+- **`[OPEN]` Low — link-code entropy/guess-cap; Flows endpoint transport auth.** Link code is 24-bit
+  (`token_hex(3)`) with only the generic 30/min inbound throttle (no per-code cap); the `flow_endpoint`
+  has no `X-Hub-Signature-256` check (contained today by the HMAC-signed, msisdn-bound `flow_token` +
+  PIN lockout). **Recommend:** raise entropy + add a per-code guess cap; verify Meta's signature on the
+  Flow endpoint too.
+- **`[OPEN]` — Wema money-movement `securityInfo` scheme + `WEMA_SIMULATION` prod foot-gun.** Live payouts
+  send `securityInfo` from `WEMA_SECURITY_INFO`; unset, they fail at the gateway (outage, not a leak).
+  `WEMA_SIMULATION=true` serves mock money movement even in prod by design — ensure it is **off** for a
+  live deploy (KYC never mock-passes even under simulation — verified).
+- Carried over (unchanged this pass): queue the WhatsApp webhook + broadcasts (still synchronous in-request);
+  exam PIN count-mismatch refund (moot today — VTU.ng sells no e-PINs, so it fails safe); ledger
+  immutability at the DB layer (ORM `save()` guard present; needs a Postgres trigger for `.update()`).
+
+### Re-verified as FIXED since the earlier report
+
+`DEBUG` now defaults `False`; CI runs `check --deploy` + `pip-audit` + gitleaks with a `permissions:`
+block; dependencies are upper-bounded (incl. `anthropic<1.0`); `CACHES` uses Redis when `REDIS_URL` is
+set; `gunicorn` runs `--workers 2 --threads 4 --timeout 60`; `Transaction.save()` rejects edits to
+`amount`/`direction`/`currency`; betting/exams route cleanly through VTU.ng (no dead Baxi branch);
+VTU velocity/tier/face parity holds across all spend paths incl. the WhatsApp AI fast-path.
+
+---
+
 ## Update — operator-portal feature pass (this PR)
 
 Back-office features added to the console portal (`/console/portal/` + `/api/admin/`), each

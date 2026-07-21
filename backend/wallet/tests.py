@@ -350,3 +350,17 @@ class ReservedFundingTests(TestCase):
         get_or_create_wallet(u)
         self.assertIsNone(settle_reserved_funding("", "1000.00", u))
         self.assertIsNone(settle_reserved_funding("MNFY|TEST|002", None, u))
+
+
+class FundVerifyOwnershipTests(TestCase):
+    """/api/fund/verify/ must not let a caller act on another user's funding ref."""
+
+    def test_fund_verify_rejects_another_users_reference(self):
+        a, _ = make_user("08088800001", "fa@zitch.test")
+        _, tok_b = make_user("08088800002", "fb@zitch.test")
+        FundingIntent.objects.create(user=a, reference="ZPAYOWN0001", amount=Decimal("5000"))
+        res = Client().post(
+            "/api/fund/verify/",
+            data=json.dumps({"access_token": tok_b, "reference": "ZPAYOWN0001"}),
+            content_type="application/json")
+        self.assertEqual(res.status_code, 404)

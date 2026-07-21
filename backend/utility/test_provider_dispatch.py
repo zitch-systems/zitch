@@ -124,13 +124,13 @@ class KycDispatchTests(SimpleTestCase):
 
     def test_verify_nin_routes_to_wema(self):
         with patch("utility.wema.verify_nin", return_value={"success": True}) as mm:
-            P.verify_nin("12345678901")
-        mm.assert_called_once_with("12345678901")
+            P.verify_nin("12345678901", name="Ada Eze")
+        mm.assert_called_once_with("12345678901", name="Ada Eze")
 
     def test_verify_vnin_routes_to_wema(self):
         with patch("utility.wema.verify_vnin", return_value={"success": True}) as mk:
-            P.verify_vnin("AB123456789CDEFG")
-        mk.assert_called_once()
+            P.verify_vnin("AB123456789CDEFG", name="Ada Eze")
+        mk.assert_called_once_with("AB123456789CDEFG", name="Ada Eze")
 
 
 class VasDispatchTests(SimpleTestCase):
