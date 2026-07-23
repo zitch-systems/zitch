@@ -26,6 +26,15 @@ window.ZAPI = (function () {
     return me;
   }
   function logout() {
+    // Revoke the token server-side (best-effort, fire-and-forget) — clearing
+    // localStorage alone left the admin-scoped token valid until its TTL.
+    if (token) {
+      fetch('/api/ops/logout/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+        body: '{}',
+      }).catch(() => {});
+    }
     token = ''; me = null;
     localStorage.removeItem('zops_token');
     localStorage.removeItem('zops_me');
@@ -93,6 +102,9 @@ window.ZAPI = (function () {
       body: JSON.stringify(body || {}),
     });
     const data = await res.json().catch(() => ({}));
+    // Same expiry handling as call(): drop the dead session instead of leaving
+    // the UI signed-in with every WhatsApp action failing opaquely.
+    if (res.status === 401) { logout(); throw new Error(data.message || 'Session expired — sign in again'); }
     if (!res.ok) throw new Error(data.message || 'Request failed');
     return data;
   }

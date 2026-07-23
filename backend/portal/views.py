@@ -87,6 +87,21 @@ def login(request):
     )
 
 
+@api
+@require_cap()
+def logout(request):
+    """POST /api/ops/logout/ — revoke the presented admin token server-side.
+
+    Without this, the SPA's Sign out only cleared localStorage and the
+    admin-scoped token stayed valid until its TTL — a copied token (shared
+    machine, shoulder-surfed devtools) outlived the visible sign-out."""
+    from common.http import resolve_token
+
+    AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
+    record_audit("ops.logout", actor=request.user_obj, target=request.user_obj.username)
+    return ok(success=True, message="Signed out")
+
+
 # --------------------------------------------------------------------------- #
 # serializers (tiny, view-shaped)
 # --------------------------------------------------------------------------- #
@@ -238,7 +253,10 @@ def users(request):
             Q(first_name__icontains=q) | Q(last_name__icontains=q)
             | Q(username__icontains=q) | Q(email__icontains=q) | Q(phone__icontains=q)
         )
-    return ok(rows=_user_rows(qs), total=User.objects.filter(is_staff=False).count())
+    # `total` reflects the ACTIVE filter — the header reads "<total> users ·
+    # <rows> shown", which lied whenever a search was active (all-users count
+    # next to a filtered page).
+    return ok(rows=_user_rows(qs), total=qs.count())
 
 
 @api
@@ -276,9 +294,16 @@ def user_action(request):
 @require_cap()
 def kyc_queue(request):
     """Users whose submitted identity (BVN/NIN) hasn't verified, or who are
-    still below the tier their verified checks support — the manual-review pile."""
+    still below the tier their verified checks support — the manual-review pile.
+
+    Only ACTIONABLE rows: a bare Q(tier=0) (as before) also listed every fresh
+    signup with nothing submitted — rows approve provably no-ops on and reject
+    can't clear, so the queue grew forever. A tier-0 user belongs here only when
+    their verified checks already support Tier 1 (a stale/derived-tier mismatch
+    an approve actually fixes)."""
     qs = User.objects.filter(is_staff=False, is_active=True).filter(
-        Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False) | Q(tier=0)
+        Q(bvn_hash__gt="", bvn_verified=False) | Q(nin_hash__gt="", nin_verified=False)
+        | Q(tier=0, bvn_verified=True, nin_verified=True)
     ).order_by("-date_joined")
     rows = [
         {
@@ -319,11 +344,27 @@ def kyc_review(request):
         user.recompute_tier()
         fields.append("tier")
         user.save(update_fields=fields)
+    else:
+        # Reject clears the UNVERIFIED submitted identifier(s), so the user drops
+        # out of the review queue and must resubmit correct details. It was a
+        # pure-audit no-op before, which meant a rejected row reappeared on every
+        # queue load — the pile could never drain. Verified identities and the
+        # derived tier are untouched (reject never revokes an accepted check).
+        fields = []
+        if user.bvn_hash and not user.bvn_verified:
+            user.bvn_hash = user.bvn_last4 = ""
+            fields += ["bvn_hash", "bvn_last4"]
+        if user.nin_hash and not user.nin_verified:
+            user.nin_hash = user.nin_last4 = ""
+            fields += ["nin_hash", "nin_last4"]
+        if fields:
+            user.save(update_fields=fields)
     record_audit(
         "kyc.approve" if approve else "kyc.reject",
         actor=request.user_obj, target=f"user:{user.id}",
         before=before, after={"tier": user.tier, "bvn_verified": user.bvn_verified,
-                              "nin_verified": user.nin_verified},
+                              "nin_verified": user.nin_verified,
+                              **({} if approve else {"submission_cleared": True})},
     )
     return ok(success=True, tier=user.tier)
 
@@ -493,11 +534,20 @@ def products(request):
 @api
 @require_cap("users")
 def card_action(request):
+    from utility.providers import card_set_status
+
     card = VirtualCard.objects.filter(id=request.data.get("card_id")).first()
     if card is None:
         return fail("Card not found", status=404)
+    going_active = card.status == VirtualCard.FROZEN
+    # Freeze/unfreeze at the ISSUER first, exactly like the user-facing
+    # cards.toggle_freeze. Flipping only our DB row left the real card active at
+    # the issuer — an admin fraud-freeze that didn't actually stop the card.
+    result = card_set_status(card.card_token, active=going_active)
+    if not result.get("success"):
+        return fail(result.get("message", "Could not update card"), status=502)
     before = {"status": card.status}
-    card.status = VirtualCard.ACTIVE if card.status == VirtualCard.FROZEN else VirtualCard.FROZEN
+    card.status = VirtualCard.ACTIVE if going_active else VirtualCard.FROZEN
     card.save(update_fields=["status"])
     record_audit("card.freeze_toggle", actor=request.user_obj, target=f"card:{card.id}",
                  before=before, after={"status": card.status})
@@ -584,6 +634,10 @@ def thread(request):
     msisdn = (request.data.get("msisdn") or "").strip()
     if not msisdn:
         return fail("msisdn required")
+    # LATEST 200, oldest-first for display. Slicing the ascending queryset (as
+    # before) pinned a long conversation to its OLDEST 200 rows — the inbox
+    # thread never showed anything new once a chat passed 200 messages.
+    latest = list(WaMessageLog.objects.filter(msisdn=msisdn).order_by("-created", "-id")[:200])
     msgs = [
         {
             "dir": m.direction.lower(),
@@ -593,7 +647,7 @@ def thread(request):
             "flagged": m.flagged,
             "agent": m.text.startswith("[Agent"),
         }
-        for m in WaMessageLog.objects.filter(msisdn=msisdn).order_by("created")[:200]
+        for m in reversed(latest)
     ]
     return ok(msgs=msgs)
 

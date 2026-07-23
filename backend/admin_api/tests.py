@@ -207,6 +207,58 @@ class AdminApiTests(TestCase):
         card.refresh_from_db()
         self.assertEqual(card.status, VirtualCard.FROZEN)
 
+    def test_card_freeze_fails_closed_when_issuer_rejects(self):
+        # The freeze must reach the ISSUER; if it fails there, the DB row must
+        # not flip (a "frozen" row over a live card is a fraud gap).
+        from unittest.mock import patch
+
+        card = VirtualCard.objects.create(user=self.customer, card_token="ct_9",
+                                          last4="9035", expiry="11/27")
+        with patch("utility.providers.card_set_status",
+                   return_value={"success": False, "message": "issuer down"}):
+            res, _ = self.post("cards/freeze", self.finance_token,
+                               {"card_id": card.id, "status": "frozen"})
+        self.assertEqual(res.status_code, 502)
+        card.refresh_from_db()
+        self.assertEqual(card.status, VirtualCard.ACTIVE)
+        with patch("utility.providers.card_set_status", return_value={"success": True}) as m:
+            res, _ = self.post("cards/freeze", self.finance_token,
+                               {"card_id": card.id, "status": "frozen"})
+        self.assertEqual(res.status_code, 200)
+        m.assert_called_once_with("ct_9", active=False)
+
+    def test_kyc_reject_clears_unverified_submission(self):
+        self.customer.set_bvn("12345678901")
+        self.customer.save(update_fields=["bvn_hash", "bvn_last4"])
+        res, _ = self.post("kyc/review", self.finance_token,
+                           {"uid": self.customer.id, "decision": "reject", "type": "bvn"})
+        self.assertEqual(res.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.bvn_hash, "")
+        self.assertEqual(self.customer.bvn_last4, "")
+        self.assertFalse(self.customer.bvn_verified)
+        self.assertTrue(AuditLog.objects.filter(action="kyc.reject").exists())
+        # Rejecting a VERIFIED identity never revokes it.
+        self.customer.set_nin("98765432109")
+        self.customer.nin_verified = True
+        self.customer.save()
+        self.post("kyc/review", self.finance_token,
+                  {"uid": self.customer.id, "decision": "reject", "type": "nin"})
+        self.customer.refresh_from_db()
+        self.assertTrue(self.customer.nin_verified)
+        self.assertNotEqual(self.customer.nin_hash, "")
+
+    def test_super_admin_group_grants_full_role(self):
+        # The `super_admin` GROUP must resolve like a superuser here, exactly as
+        # it does on /api/ops/ (portal.roles) — one role matrix, two mounts.
+        boss = make_staff("bosede", role="super_admin")
+        token = AccessToken.issue(boss, scope=AccessToken.ADMIN).key
+        res, body = self.get("me", token)
+        self.assertEqual(body["role"], "super_admin")
+        res, _ = self.post("settings/update", token,
+                           {"key": "ai_enabled_global", "value": "false"})
+        self.assertEqual(res.status_code, 200)
+
     def test_loan_remind_requires_wa_link(self):
         loan = Loan.objects.create(user=self.customer, principal=Decimal("50000"),
                                    interest=Decimal("2250"), tenure_days=30,

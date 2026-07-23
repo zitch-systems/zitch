@@ -178,6 +178,83 @@ class MutationTests(PortalTestCase):
             res = self.post(path, token=self.admin)
             self.assertEqual(res.status_code, 200, f"{path}: {res.content[:120]}")
 
+    def test_logout_revokes_admin_token(self):
+        # Sign out must kill the token SERVER-side — clearing localStorage alone
+        # left it valid until TTL.
+        self.assertEqual(self.post("summary", token=self.admin).status_code, 200)
+        self.assertEqual(self.post("logout", token=self.admin).status_code, 200)
+        self.assertEqual(self.post("summary", token=self.admin).status_code, 401)
+        self.assertTrue(AuditLog.objects.filter(action="ops.logout").exists())
+
+    def test_kyc_reject_clears_submission_and_drains_queue(self):
+        self.user.bvn_hash, self.user.bvn_last4, self.user.tier = "deadbeefhash", "1234", 0
+        self.user.save()
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertTrue(any(r["id"] == self.user.id for r in rows))
+        res = self.post("kyc-review", {"user_id": self.user.id, "approve": False}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        # Submission cleared (user resubmits), verified state untouched.
+        self.assertEqual(self.user.bvn_hash, "")
+        self.assertEqual(self.user.bvn_last4, "")
+        self.assertFalse(self.user.bvn_verified)
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertFalse(any(r["id"] == self.user.id for r in rows))
+        self.assertTrue(AuditLog.objects.filter(action="kyc.reject").exists())
+
+    def test_kyc_queue_skips_fresh_signup_lists_stale_tier(self):
+        # A tier-0 user with NOTHING submitted is not reviewable — approve
+        # provably no-ops on them — so they must not clog the queue…
+        fresh = User.objects.create(username="fresh", phone="08010000010", tier=0)
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertFalse(any(r["id"] == fresh.id for r in rows))
+        # …but a tier-0 user whose checks already support Tier 1 IS actionable.
+        fresh.bvn_verified = fresh.nin_verified = True
+        fresh.save(update_fields=["bvn_verified", "nin_verified"])
+        rows = self.post("kyc-queue", token=self.admin).json()["rows"]
+        self.assertTrue(any(r["id"] == fresh.id for r in rows))
+
+    def test_users_total_reflects_search_filter(self):
+        User.objects.create(username="zuri", phone="08010000011", first_name="Zuri")
+        data = self.post("users", {"q": "Zuri"}, token=self.admin).json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(len(data["rows"]), 1)
+
+    def test_card_action_freezes_at_issuer_and_fails_closed(self):
+        from unittest.mock import patch
+
+        from cards.models import VirtualCard
+
+        card = VirtualCard.objects.create(user=self.user, card_token="ct_1", last4="4321")
+        # Issuer rejects -> 502 and the DB row must NOT flip (a card shown
+        # "frozen" in the portal while live at the issuer is a fraud gap).
+        with patch("utility.providers.card_set_status",
+                   return_value={"success": False, "message": "issuer down"}) as m:
+            res = self.post("card-action", {"card_id": card.id}, token=self.admin)
+        self.assertEqual(res.status_code, 502)
+        card.refresh_from_db()
+        self.assertEqual(card.status, VirtualCard.ACTIVE)
+        # Issuer accepts -> frozen, issuer called with active=False.
+        with patch("utility.providers.card_set_status", return_value={"success": True}) as m:
+            res = self.post("card-action", {"card_id": card.id}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        m.assert_called_once_with("ct_1", active=False)
+        card.refresh_from_db()
+        self.assertEqual(card.status, VirtualCard.FROZEN)
+
+    def test_thread_returns_latest_messages(self):
+        from whatsapp.models import WaMessageLog
+
+        for i in range(205):
+            WaMessageLog.objects.create(msisdn="2348010000012", direction=WaMessageLog.IN,
+                                        wa_message_id=f"m{i}", text=f"msg {i}")
+        msgs = self.post("thread", {"msisdn": "2348010000012"}, token=self.admin).json()["msgs"]
+        self.assertEqual(len(msgs), 200)
+        # The newest message is present (the old ascending slice pinned the
+        # thread to its oldest 200 rows forever) and order is oldest-first.
+        self.assertEqual(msgs[-1]["text"], "msg 204")
+        self.assertEqual(msgs[0]["text"], "msg 5")
+
 
 class WebPagesTests(TestCase):
     def test_landing_prototype_portal_render(self):
