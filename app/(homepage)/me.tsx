@@ -128,7 +128,7 @@ const Me = () => {
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 4-digit PIN', go: () => router.push('/resetpin') },
     { icon: 'help', title: 'Customer Service Center', go: () => router.push('/support') },
-    { icon: 'gift', title: 'Invitation', sub: 'Invite friends & earn up to ₦5,600', go: () => router.push('/invite') },
+    { icon: 'gift', title: 'Invitation', sub: 'Share Zitch — rewards coming soon', go: () => router.push('/invite') },
     { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/ussd') },
   ];
 

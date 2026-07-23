@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { publicPost } from '@/lib/api';
 import { saveToken, getToken } from '@/lib/secureStore';
 import { unlockSession } from '@/lib/session';
@@ -75,9 +74,9 @@ const Signin = () => {
       const result = await response.json();
       if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
+        // (The legacy userID/sessionExpiration AsyncStorage stamps are gone —
+        // nothing read them; session state lives in secureStore + lib/session.)
         await saveToken(result.access_token);
-        await AsyncStorage.setItem('userID', form.email);
-        await AsyncStorage.setItem('sessionExpiration', Date.now().toString());
         await unlockSession(); // clear any idle lock + stamp activity
         router.replace('/home');
       } else {

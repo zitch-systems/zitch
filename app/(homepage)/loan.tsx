@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -34,8 +34,11 @@ const Loans = () => {
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
   // Stable per-repayment key so a retry / double-tap is deduped server-side and
-  // never debits the wallet twice. Reset after a successful repayment.
+  // never debits the wallet twice. Reset after a successful repayment — and
+  // whenever the loan or its outstanding changes, so a stale key can't replay a
+  // PRIOR repayment attempt against a different amount (mirrors sendmoney).
   const idemKey = useRef<string>('');
+  useEffect(() => { idemKey.current = ''; }, [active?.reference, active?.outstanding]);
 
   const load = useCallback(async () => {
     const t = await getToken();

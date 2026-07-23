@@ -12,6 +12,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import AuthGuard from '@/components/AuthGuard';
 
 const AccountDetails = () => {
   const { c } = useTheme();
@@ -143,4 +144,13 @@ const AccountDetails = () => {
   );
 };
 
-export default AccountDetails;
+// Post-login screen living in the unguarded (auth) group: gate it explicitly
+// so a deep link can't render it without a valid, unlocked session (the API
+// would 401 anyway — this keeps the surface consistent with the other groups).
+const GuardedAccountDetails = () => (
+  <AuthGuard>
+    <AccountDetails />
+  </AuthGuard>
+);
+
+export default GuardedAccountDetails;

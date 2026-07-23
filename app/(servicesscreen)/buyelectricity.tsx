@@ -67,7 +67,12 @@ const BuyElectricity = () => {
     }
   };
 
+  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const idemKey = useRef('');  // stable across retries of one purchase attempt
+
+  // Any edit to the purchase details is a new spend — drop the retained key so a
+  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [disco, meterType, meter, amt]);
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
@@ -84,6 +89,9 @@ const BuyElectricity = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
+        // `pending` = provider timeout: held while reconciliation confirms or
+        // refunds — no token yet, and the receipt must not claim delivery.
+        setPending(!!result.pending);
         if (result.token) setPurchasedToken(String(result.token));
         setStep(null);
         setDone(true);
@@ -107,8 +115,10 @@ const BuyElectricity = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={purchasedToken ? 'Token generated' : 'Payment successful'}
-          message={`Your ${provider.name} ${meterType} purchase was successful.`}
+          title={purchasedToken ? 'Token generated' : pending ? 'Processing' : 'Payment successful'}
+          message={pending
+            ? `Your ${provider.name} ${meterType} purchase is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
+            : `Your ${provider.name} ${meterType} purchase was successful.`}
           rows={[
             ['Disco', provider.name],
             ['Meter', meter],
