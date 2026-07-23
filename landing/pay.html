@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="icon" type="image/png" href="uploads/zitch-logo.png" />
+<link rel="apple-touch-icon" href="uploads/zitch-logo.png" />
+<title>Payment request — Zitch</title>
+<meta name="description" content="Someone is requesting a payment on Zitch. Open the Zitch app to pay them securely." />
+<!-- Personalised, link-only utility page (the app's BizPayment share links point here) — keep out of search. -->
+<meta name="robots" content="noindex" />
+<link rel="stylesheet" href="_ds/remotejobs44-design-system-01e971a1-a75c-46a8-961e-ce72965a5e0a/colors_and_type.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=DM+Sans:opsz,wght@9..40,400;9..40,500&display=swap" rel="stylesheet" />
+<style>
+  :root{--wrap:520px;
+    /* ===== Zitch teal brand — overrides the design-system blue ===== */
+    --brand-50:#E6F7F4;--brand-100:#C2EDE7;--brand-200:#8FDDD4;--brand-300:#54C9BD;
+    --brand-400:#2BBAAF;--brand-500:#12A99B;--brand-600:#0FA295;--brand-700:#00847B;
+    --brand-800:#00615A;--brand-900:#043C37;--brand-950:#04221F;--brand:var(--brand-600);
+    --accent:#F5A623;--accent-light:#FBC85A;--accent-dark:#D48A0A;
+    --bg-app:#F4FAF9;--bg-section:#E9F5F2;--bg-card:#FFFFFF;
+    --border-1:#DCEDE9;--border-2:#CFE5E0;--border-3:#E9F5F2;
+    --shadow-md-brand:0 4px 20px rgba(0,132,123,.18);
+    --shadow-lg-brand:0 8px 32px rgba(0,132,123,.20);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg-app);color:var(--fg-1);font-family:var(--font-body);min-height:100vh;display:flex;flex-direction:column;}
+  a{color:inherit;text-decoration:none;}
+  .wrap{max-width:var(--wrap);margin:0 auto;padding:0 24px;width:100%;}
+  header{padding:22px 0;}
+  .brand{display:inline-flex;align-items:center;gap:11px;}
+  .brand .mark{width:38px;height:38px;border-radius:11px;object-fit:cover;display:block;}
+  .brand .word{font-family:var(--font-display);font-weight:800;font-size:22px;letter-spacing:-.02em;}
+  main{flex:1;display:flex;align-items:center;padding:24px 0 48px;}
+  .card{background:var(--bg-card);border:1px solid var(--border-1);border-radius:22px;padding:32px 28px;box-shadow:var(--shadow-lg-brand);text-align:center;}
+  .badge{width:64px;height:64px;border-radius:20px;background:var(--brand-50);display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:30px;}
+  .eyebrow{font-family:var(--font-display);font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--brand-700);}
+  h1{font-family:var(--font-display);font-size:26px;font-weight:800;letter-spacing:-.02em;margin:10px 0 4px;}
+  .amount{font-family:var(--font-display);font-size:40px;font-weight:800;color:var(--brand-700);margin:14px 0 2px;font-variant-numeric:tabular-nums;}
+  .note{font-size:14.5px;color:var(--fg-2);margin-top:8px;line-height:1.55;}
+  .how{margin-top:26px;text-align:left;border-top:1px solid var(--border-1);padding-top:20px;}
+  .how h2{font-family:var(--font-display);font-size:14px;font-weight:700;margin-bottom:12px;}
+  .step{display:flex;gap:12px;align-items:flex-start;margin-bottom:12px;font-size:14px;color:var(--fg-2);line-height:1.5;}
+  .step .n{flex:none;width:24px;height:24px;border-radius:12px;background:var(--bg-section);color:var(--brand-800);font-family:var(--font-display);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;}
+  .btn{display:flex;align-items:center;justify-content:center;gap:9px;height:52px;border-radius:14px;font-family:var(--font-display);font-weight:600;font-size:15px;margin-top:20px;background:var(--brand-700);color:#fff;box-shadow:var(--shadow-md-brand);}
+  .btn:hover{background:var(--brand-800);}
+  .fine{font-size:12px;color:var(--fg-3);margin-top:16px;line-height:1.6;}
+  footer{padding:20px 0 26px;text-align:center;font-size:12.5px;color:var(--fg-3);}
+</style>
+</head>
+<body>
+<header><div class="wrap"><a class="brand" href="/"><img class="mark" src="uploads/zitch-logo.png" alt="" /><span class="word">Zitch</span></a></div></header>
+<main><div class="wrap">
+  <div class="card">
+    <div class="badge">💸</div>
+    <div class="eyebrow">Payment request</div>
+    <h1 id="headline">Someone is requesting a payment</h1>
+    <div class="amount" id="amount" hidden></div>
+    <p class="note" id="note" hidden></p>
+    <div class="how">
+      <h2>How to pay</h2>
+      <div class="step"><span class="n">1</span><span>Open the Zitch app (or download it below) and sign in.</span></div>
+      <div class="step"><span class="n">2</span><span>Tap <strong>Send money → To Zitch</strong> and enter the requester's phone number or tag.</span></div>
+      <div class="step"><span class="n">3</span><span>Confirm the name that comes up matches who you expect, then pay with your PIN.</span></div>
+    </div>
+    <a class="btn" href="/">Get the Zitch app</a>
+    <p class="fine">Zitch will never ask for your PIN, password or OTP outside the app. Always confirm the recipient's name before you pay — payments can't be reversed once sent.</p>
+  </div>
+</div></main>
+<footer>© Zitch Technologies · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></footer>
+<script>
+  // Personalise from the query string — every value is rendered via textContent
+  // only (never innerHTML), so a crafted link can't inject markup or script.
+  (function () {
+    var p = new URLSearchParams(location.search);
+    var to = (p.get('to') || '').slice(0, 40).trim();
+    var note = (p.get('note') || '').slice(0, 80).trim();
+    // Amount: digits only, bounded, formatted server-of-truth-free (display only).
+    var amtRaw = (p.get('amount') || '').replace(/\D/g, '').slice(0, 10);
+    var amt = amtRaw ? parseInt(amtRaw, 10) : 0;
+    if (to) document.getElementById('headline').textContent = to + ' is requesting a payment';
+    if (amt > 0) {
+      var el = document.getElementById('amount');
+      el.textContent = '₦' + amt.toLocaleString('en-NG');
+      el.hidden = false;
+    }
+    if (note) {
+      var n = document.getElementById('note');
+      n.textContent = 'For: ' + note;
+      n.hidden = false;
+    }
+  })();
+</script>
+</body>
+</html>

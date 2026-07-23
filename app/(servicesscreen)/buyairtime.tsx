@@ -30,10 +30,18 @@ const BuyAirtime = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one purchase attempt
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
+
+  // A change to ANY purchase detail is a new spend — drop the retained key so the
+  // next attempt mints a fresh one. The key is kept only across byte-identical
+  // retries (so a timed-out-but-delivered attempt replays server-side); reusing
+  // it after an edit would replay the PRIOR purchase and render a false receipt
+  // for the edited one. Mirrors sendmoney.
+  useEffect(() => { idemKey.current = ''; }, [net, phone, amt]);
 
   const network = NETWORKS.find((n) => n.id === net)!;
   const amount = Number(amt || 0);
@@ -53,6 +61,10 @@ const BuyAirtime = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
+        // `pending` = provider timeout: the money is HELD while reconciliation
+        // confirms or refunds it — the receipt must say "processing", not claim
+        // a delivery that may yet be reversed.
+        setPending(!!result.pending);
         setStep(null);
         setDone(true);
         reload();
@@ -76,8 +88,10 @@ const BuyAirtime = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Successful"
-          message={`Your airtime purchase to ${phone} was successful.`}
+          title={pending ? 'Processing' : 'Successful'}
+          message={pending
+            ? `Your airtime purchase to ${phone} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
+            : `Your airtime purchase to ${phone} was successful.`}
           rows={[['Type', 'Airtime top-up'], ['Network', network.name], ['Phone', phone], ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />

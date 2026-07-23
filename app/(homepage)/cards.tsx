@@ -72,6 +72,10 @@ const Cards = () => {
 
   const idemKey = useRef('');  // stable across retries of one card-funding attempt
 
+  // A different amount (or card) is a new funding — drop the retained key so a
+  // stale one can't replay the PRIOR load for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [fundAmt, card?.id]);
+
   const doFund = async (pin: string) => {
     if (!card) return;
     if (!idemKey.current) idemKey.current = newIdempotencyKey();

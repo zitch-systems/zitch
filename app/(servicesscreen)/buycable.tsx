@@ -102,7 +102,12 @@ const BuyCable = () => {
     }
   };
 
+  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const idemKey = useRef('');  // stable across retries of one purchase attempt
+
+  // Any edit to the purchase details is a new spend — drop the retained key so a
+  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [prov, iuc, plan]);
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
@@ -118,6 +123,9 @@ const BuyCable = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
+        // `pending` = provider timeout: held while reconciliation confirms or
+        // refunds — the receipt must say "processing", not claim delivery.
+        setPending(!!result.pending);
         setStep(null);
         setDone(true);
         reload();
@@ -140,8 +148,10 @@ const BuyCable = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Subscription active"
-          message={`${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
+          title={pending ? 'Processing' : 'Subscription active'}
+          message={pending
+            ? `Your ${provider.name} ${planObj?.label || ''} subscription on ${iuc} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
+            : `${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
           rows={[['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />

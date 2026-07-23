@@ -3,6 +3,7 @@ import { router } from 'expo-router';
 import { Screen, Header, ZItem, Toggle } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, authenticate } from '@/lib/biometrics';
+import AuthGuard from '@/components/AuthGuard';
 
 const SecuritySetup = () => {
   const [bio, setBio] = useState(false);
@@ -38,4 +39,13 @@ const SecuritySetup = () => {
   );
 };
 
-export default SecuritySetup;
+// Post-login screen living in the unguarded (auth) group: gate it explicitly
+// so a deep link can't render it without a valid, unlocked session (the API
+// would 401 anyway — this keeps the surface consistent with the other groups).
+const GuardedSecuritySetup = () => (
+  <AuthGuard>
+    <SecuritySetup />
+  </AuthGuard>
+);
+
+export default GuardedSecuritySetup;

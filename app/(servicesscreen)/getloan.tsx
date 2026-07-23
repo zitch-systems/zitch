@@ -65,6 +65,10 @@ const GetLoan = () => {
   // double-tap can't disburse the loan twice (the server dedups on this key).
   const idemKey = useRef('');
 
+  // A different amount/tenure is a new request — drop the retained key so a
+  // stale one can't replay the PRIOR loan for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [amount, tenure]);
+
   const request = async (pin: string) => {
     setBusy(true);
     if (!idemKey.current) idemKey.current = newIdempotencyKey();

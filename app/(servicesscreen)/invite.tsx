@@ -10,6 +10,9 @@ import { useWallet } from '@/lib/wallet';
 
 // A stable, shareable referral code derived from the user's name. (When a
 // backend referral endpoint exists, fetch the canonical code instead.)
+// NOTE: there is no referral backend yet, so the screen presents rewards as
+// COMING SOON and never promises specific amounts — a claim the product can't
+// honour yet would be fabricated UI.
 const codeFor = (name: string) => {
   const base = (name || 'FRIEND').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'FRIEND';
   return `ZITCH-${base}`;
@@ -22,8 +25,8 @@ const Invite = () => {
 
   const code = codeFor(firstName);
   const message =
-    `Join me on Zitch — buy airtime, data, pay bills and convert airtime to cash. ` +
-    `Use my invite code ${code} when you sign up. Download: https://zitch.ng`;
+    `Join me on Zitch — buy airtime, data, pay bills and send money free. ` +
+    `Download: https://zitch.ng`;
 
   const copy = async () => {
     await Clipboard.setStringAsync(code);
@@ -40,15 +43,15 @@ const Invite = () => {
   };
 
   const steps = [
-    { icon: 'share', title: 'Share your code', sub: 'Send your invite to friends' },
-    { icon: 'user', title: 'They sign up', sub: 'Using your code at registration' },
-    { icon: 'gift', title: 'You both earn', sub: 'Get rewarded on their first transaction' },
+    { icon: 'share', title: 'Share Zitch', sub: 'Send your invite to friends' },
+    { icon: 'user', title: 'They sign up', sub: 'Free account in minutes' },
+    { icon: 'gift', title: 'Rewards coming soon', sub: 'Referral rewards launch shortly — your code will count' },
   ];
 
   return (
     <Screen pad={false}>
       <View style={{ paddingHorizontal: 20 }}>
-        <Header title="Invite & Earn" sub="Earn up to ₦5,600" onBack={() => router.back()} />
+        <Header title="Invite friends" sub="Share Zitch — rewards coming soon" onBack={() => router.back()} />
       </View>
 
       <View style={{ paddingHorizontal: 16 }}>

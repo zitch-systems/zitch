@@ -88,7 +88,12 @@ const BuyData = () => {
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
   const valid = phone.length >= 10 && !!plan && amount > 0 && amount <= balance;
+  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const idemKey = useRef('');  // stable across retries of one purchase attempt
+
+  // Any edit to the purchase details is a new spend — drop the retained key so a
+  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [net, planType, plan, phone]);
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
@@ -104,6 +109,9 @@ const BuyData = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
+        // `pending` = provider timeout: held while reconciliation confirms or
+        // refunds — the receipt must say "processing", not claim delivery.
+        setPending(!!result.pending);
         setStep(null);
         setDone(true);
         reload();
@@ -126,8 +134,10 @@ const BuyData = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Successful"
-          message={`Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
+          title={pending ? 'Processing' : 'Successful'}
+          message={pending
+            ? `Your ${planObj?.label || 'data'} purchase to ${phone} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
+            : `Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
           rows={[['Type', 'Data bundle'], ['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />

@@ -9,6 +9,7 @@ import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money, NText } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import AuthGuard from '@/components/AuthGuard';
 
 type Status = {
   tier: number; tier_name?: string; transaction_limit: string;
@@ -194,4 +195,13 @@ const Kyc = () => {
   );
 };
 
-export default Kyc;
+// Post-login screen living in the unguarded (auth) group: gate it explicitly
+// so a deep link can't render it without a valid, unlocked session (the API
+// would 401 anyway — this keeps the surface consistent with the other groups).
+const GuardedKyc = () => (
+  <AuthGuard>
+    <Kyc />
+  </AuthGuard>
+);
+
+export default GuardedKyc;

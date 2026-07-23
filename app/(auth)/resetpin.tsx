@@ -8,6 +8,7 @@ import { notify } from '@/components/design/Notify';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { isTrivialPin } from '@/lib/format';
+import AuthGuard from '@/components/AuthGuard';
 
 // Change the transaction PIN for a signed-in user. Changing an existing PIN
 // requires the CURRENT PIN by default (so a stolen session token alone can't
@@ -121,4 +122,13 @@ const ResetPin = () => {
   );
 };
 
-export default ResetPin;
+// Post-login screen living in the unguarded (auth) group: gate it explicitly
+// so a deep link can't render it without a valid, unlocked session (the API
+// would 401 anyway — this keeps the surface consistent with the other groups).
+const GuardedResetPin = () => (
+  <AuthGuard>
+    <ResetPin />
+  </AuthGuard>
+);
+
+export default GuardedResetPin;

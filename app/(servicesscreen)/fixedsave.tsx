@@ -79,6 +79,10 @@ const FixedSave = () => {
 
   const idemKey = useRef('');  // stable across retries of one lock attempt
 
+  // Any edit to the lock details is a new spend — drop the retained key so a
+  // stale one can't replay the PRIOR lock for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [amt, days]);
+
   const create = async (pin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
@@ -92,7 +96,9 @@ const FixedSave = () => {
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
-        idemKey.current = '';  // definitive server failure — retry is a fresh attempt
+        // Only a definitive rejection mints a new key; a connectivity failure
+        // (`offline`) keeps it so a retry replays server-side, never debits twice.
+        if (!res.offline) idemKey.current = '';
         notify('Error', res.message || 'Could not lock savings');
         setStep(null);
       }

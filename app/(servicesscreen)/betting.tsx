@@ -29,8 +29,13 @@ const Betting = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one funding attempt
+
+  // Any edit to the funding details is a new spend — drop the retained key so a
+  // stale one can't replay the PRIOR attempt for the edited one (mirrors sendmoney).
+  useEffect(() => { idemKey.current = ''; }, [selected, userId, amt]);
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
@@ -50,15 +55,23 @@ const Betting = () => {
     setBusy(true);
     try {
       const res = await apiJson('/api/betting/fund/', { platform: selected, user_id: userId, amount: amt, transaction_pin: pin, idempotency_key: idemKey.current });
-      if (res.success) {
+      // `pending` = provider timeout: the money is DEBITED AND HELD while
+      // reconciliation confirms or refunds it. It carries no `success` field, so
+      // treating it as a failure (as before) told the user "Error", cleared the
+      // key, and invited a retry that debited a SECOND time. `duplicate` = the
+      // server replayed a completed attempt — also not a failure.
+      if (res.success || res.pending || res.duplicate) {
         idemKey.current = '';
+        setPending(!res.success && !!res.pending && !res.duplicate);
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
+        // Only a definitive rejection mints a new key; a connectivity failure
+        // (`offline`) keeps it so a retry replays server-side, never debits twice.
+        if (!res.offline) idemKey.current = '';
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
@@ -74,8 +87,10 @@ const Betting = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title="Wallet funded"
-          message={`${money(amount)} added to your ${platform.name} account ${userId}.`}
+          title={pending ? 'Processing' : 'Wallet funded'}
+          message={pending
+            ? `${money(amount)} to your ${platform.name} account ${userId} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
+            : `${money(amount)} added to your ${platform.name} account ${userId}.`}
           rows={[['Platform', platform.name], ['User ID', userId], ['Fee', '₦0'], ['Total', money(amount), true]]}
           onDone={() => router.replace('/home')}
         />
