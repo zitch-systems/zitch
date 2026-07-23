@@ -134,16 +134,20 @@ should show `payout_provider: "wema"`.
    `ResponseModel` with no tracking id; `create_wallet_request` looks for the tracking id in
    several places to tolerate the live (undocumented) shape. Confirm where the live gateway
    returns `trackingId`/`otpTrackingID`.
-5. **Inbound-credit detection — ⚠️ double-credit risk on reversals (audit OPEN, High).** The
-   funding sweep (Phase 1) credits **every** `creditType == "Credit"` history row, while the
-   payout phase (Phase 2) independently reverses a FAILED payout via `reverse_transfer`. If a
-   reversed/bounced payout (or a Wema-side VAS refund) lands back in the sender's own NUBAN as
-   an inbound credit, it is counted **twice** — once per phase — leaking float. Also confirm the
-   `transhistoryV2` date format and that a genuine third-party deposit is distinguishable from
-   any credit we push ourselves via `FundWallet` (`credit_wallet` has no production caller today).
-   **Before enabling live money flows:** exclude self-reversals from the funding sweep (match
-   against our own outbound references/narration) and add a ledger-vs-polled-NUBAN reconciliation
-   invariant that alarms on divergence. This needs Wema's live reversal history shape.
+5. **Inbound-credit detection — reversal double-credit now GUARDED (was audit OPEN, High).**
+   The funding sweep (Phase 1) credits `creditType == "Credit"` history rows, while the payout
+   phase (Phase 2) independently reverses a FAILED payout via `reverse_transfer`. A
+   reversed/bounced payout landing back in the sender's own NUBAN was previously counted
+   **twice** — once per phase — leaking float. The sweep now excludes self-reversals:
+   `apply_wema_credit` matches each credit row (whole raw row, any field, so it doesn't depend
+   on the undocumented reversal shape) against the wallet owner's own outbound payout
+   references and routes a hit through `reverse_transfer` — which refunds at most once, ever,
+   across both phases — instead of crediting it as funding. Third-party deposits (including
+   another user's payout arriving) still credit normally. **Remaining before go-live:** confirm
+   the `transhistoryV2` date format and that a genuine deposit is distinguishable from any
+   credit we push ourselves via `FundWallet` (`credit_wallet` has no production caller today),
+   and add a ledger-vs-polled-NUBAN reconciliation invariant that alarms on divergence — that
+   part still needs Wema's live reversal history shape.
 
 ## No-webhook reconciliation
 

@@ -3,6 +3,7 @@
 Every debit/credit goes through here so balance changes and ledger rows are
 always written together, atomically, with row locking to prevent double-spend.
 """
+import json
 import logging
 import secrets
 from decimal import Decimal
@@ -394,7 +395,38 @@ def wema_provisioned_wallets():
             .exclude(account_number=""))
 
 
-def apply_wema_credit(wallet, tx: dict) -> Transaction | None:
+def self_payout_references(user) -> list[str]:
+    """References of this user's outbound bank-transfer payouts (rows carrying a
+    ``bank`` in meta) — the set an inbound polled credit row is matched against
+    to spot a payout that BOUNCED BACK into the sender's own NUBAN."""
+    return [r for r in
+            Transaction.objects.filter(user=user, direction=Transaction.OUT,
+                                       meta__has_key="bank")
+            .values_list("reference", flat=True) if r]
+
+
+def _reversal_reference(tx: dict, references) -> str | None:
+    """The payout reference this credit-history row is a reversal of, or None.
+
+    Matched by substring over the WHOLE raw row (any field — referenceId,
+    narration, remarks…), so it doesn't depend on Wema's undocumented reversal
+    shape. Ledger references are long unique tokens, so a hit can only mean the
+    row relates to that payout. Only the wallet owner's OWN payout references are
+    ever passed in: an inbound credit carrying ANOTHER user's payout reference is
+    a genuine deposit (their payout arriving here) and must still credit."""
+    if not references:
+        return None
+    try:
+        blob = json.dumps(tx, default=str).upper()
+    except (TypeError, ValueError):
+        blob = str(tx).upper()
+    for ref in references:
+        if ref.upper() in blob:
+            return ref
+    return None
+
+
+def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> Transaction | None:
     """Credit `wallet` for one inbound Wema transaction-history row, exactly once.
 
     Skips non-credit / zero rows. Idempotent on Wema's per-transaction referenceId,
@@ -403,6 +435,15 @@ def apply_wema_credit(wallet, tx: dict) -> Transaction | None:
     in the shared, globally-unique ``Transaction.reference`` namespace — a collision
     would otherwise make settle_reserved_funding treat a real deposit as 'already
     credited' and silently drop it. Returns the credit row if applied, else None.
+
+    A credit row that references one of the user's OWN outbound payouts is a
+    payout REVERSAL (the money bounced back into the sender's NUBAN), not a
+    deposit. It is routed through ``reverse_transfer`` — which refunds at most
+    once, ever, across this sweep and the payout-status poller — instead of being
+    credited as funding. Without this, a bounced payout was counted twice: once
+    here and once when the payout poller reversed the FAILED transfer.
+    ``self_refs`` lets the sweep pass the user's payout references once per
+    wallet; when omitted they are looked up.
     """
     from utility import wema
 
@@ -415,6 +456,13 @@ def apply_wema_credit(wallet, tx: dict) -> Transaction | None:
                     norm["reference"], tx.get("amount"), wallet.account_number)
         return None
     if norm["amount_naira"] <= Decimal("0"):
+        return None
+    refs = self_payout_references(wallet.user) if self_refs is None else self_refs
+    matched = _reversal_reference(tx, refs)
+    if matched:
+        reversed_txn = reverse_transfer(matched)
+        log.warning("wema_credit_payout_reversal ref=%s payout=%s reversed=%s account=%s",
+                    norm["reference"], matched, bool(reversed_txn), wallet.account_number)
         return None
     ledger_ref = f"WEMA-CR-{norm['reference']}"
     return settle_reserved_funding(ledger_ref, norm["amount_naira"], wallet.user)

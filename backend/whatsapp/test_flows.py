@@ -275,3 +275,25 @@ class FlowEndpointTests(TestCase):
                                                  "initial_vector": "AA=="}),
                                 content_type="application/json")
         self.assertEqual(res.status_code, 421)
+
+    def test_signature_enforced_when_secret_set(self):
+        # Meta signs Flows data-exchange requests like webhook callbacks; the
+        # envelope encryption alone doesn't authenticate the sender (anyone with
+        # our PUBLIC key can produce a decryptable body), so with an APP_SECRET
+        # configured the endpoint must reject an unsigned/badly-signed POST.
+        import hashlib
+        import hmac as hmac_mod
+
+        body, _, _ = self._meta_encrypt({"action": "ping"})
+        raw = json.dumps(body).encode()
+        wa = {"VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "shh",
+              "BASE_URL": "x", "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""}
+        with override_settings(WHATSAPP=wa, WHATSAPP_FLOW={"PRIVATE_KEY": self.priv_pem}):
+            unsigned = Client().post("/webhooks/whatsapp/flow", data=raw,
+                                     content_type="application/json")
+            self.assertEqual(unsigned.status_code, 401)
+            good_sig = hmac_mod.new(b"shh", raw, hashlib.sha256).hexdigest()
+            signed = Client().post("/webhooks/whatsapp/flow", data=raw,
+                                   content_type="application/json",
+                                   HTTP_X_HUB_SIGNATURE_256=f"sha256={good_sig}")
+            self.assertEqual(signed.status_code, 200)  # signature passes; ping served

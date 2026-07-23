@@ -26,8 +26,8 @@ from django.utils import timezone
 from utility import wema
 from utility.providers import payout_provider
 from wallet.services import (
-    apply_wema_credit, pending_bank_payouts, reverse_transfer, settle_payout,
-    wema_provisioned_wallets,
+    apply_wema_credit, pending_bank_payouts, reverse_transfer, self_payout_references,
+    settle_payout, wema_provisioned_wallets,
 )
 
 # Terminal statuses from confirm_transfer_status (the ALAT legend is not published,
@@ -62,8 +62,12 @@ class Command(BaseCommand):
             res = wema.get_transactions(wallet.account_number, date_from, date_to)
             if not res.get("success"):
                 continue
+            # The user's own payout references, fetched once per wallet: a credit
+            # row matching one is a payout REVERSAL (routed through
+            # reverse_transfer inside apply_wema_credit), never a funding credit.
+            self_refs = self_payout_references(wallet.user)
             for tx in res.get("transactions", []) or []:
-                if apply_wema_credit(wallet, tx) is not None:
+                if apply_wema_credit(wallet, tx, self_refs=self_refs) is not None:
                     credited += 1
 
         # Phase 2 â€” settle PENDING payouts (only when Wema is the payout rail, so we

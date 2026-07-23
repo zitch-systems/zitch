@@ -89,6 +89,26 @@ def _wema_vas_route(service_id: str, payload: dict):
     return None
 
 
+def _vas_source_account(payload: dict, reference: str | None) -> str:
+    """The NUBAN a Wema VAS purchase debits (per-user-balance money-flow model).
+
+    An explicit ``payload["source_account"]`` wins; otherwise the buyer's own
+    wallet NUBAN is resolved from the ledger row the purchase is keyed on (the
+    row exists by the time the provider call runs), so EVERY caller — app views
+    and the WhatsApp router alike — debits the buyer's account rather than
+    silently falling back to the shared WEMA_SOURCE_ACCOUNT pool, which would
+    leak pool float while the buyer's NUBAN keeps its money. Blank only when the
+    buyer has no Wema NUBAN yet (the Wema client then uses the pool)."""
+    src = str(payload.get("source_account", "") or "")
+    if src or not reference:
+        return src
+    from wallet.models import Transaction
+    txn = Transaction.objects.filter(reference=reference).select_related("user").first()
+    if txn is None:
+        return ""
+    return getattr(getattr(txn.user, "wallet", None), "account_number", "") or ""
+
+
 def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -> dict:
     """Submit a VAS purchase via the selected rail.
 
@@ -105,7 +125,7 @@ def vtu_purchase(service_id: str, payload: dict, reference: str | None = None) -
         route = _wema_vas_route(service_id, payload)
         if route is not None:
             from . import wema
-            src = payload.get("source_account", "")
+            src = _vas_source_account(payload, reference)
             phone = payload.get("phone", "")
             if route["type"] == "airtime":
                 network = service_id.rsplit("-airtime", 1)[0]

@@ -235,6 +235,36 @@ class WemaVasRoutingTests(TestCase):
         self.assertEqual(out["vas_rail"], "wema")
         mv.assert_not_called()
 
+    @override_settings(VAS_PROVIDER="wema")
+    def test_data_purchase_debits_buyer_nuban_from_ledger_reference(self):
+        # No explicit source_account in the payload (the app data/cable views and
+        # the WhatsApp router don't send one): the buyer's own wallet NUBAN must
+        # be resolved from the ledger row, per the per-user-balance money-flow
+        # model — NOT silently fall back to the shared pool account.
+        from utility.models import DataPlan
+        from wallet.services import debit
+        from wallet.tests import make_user
+        DataPlan.objects.create(network="1", plan_type="1", name="3GB", validity="30 days",
+                                plan_code="MTN3GB", wema_code="WEMA-MTN-3GB", price=Decimal("1500"))
+        user, _ = make_user("08033330002", "nuban@zitch.test", balance="5000")
+        wallet = user.wallet
+        wallet.account_number = "0155500099"
+        wallet.save(update_fields=["account_number"])
+        txn = debit(user, Decimal("1500"), "Data — MTN 3GB", meta={})
+        with patch("utility.wema.purchase_data",
+                   return_value={"success": True, "status": "SUCCESS"}) as mw:
+            P.vtu_purchase("mtn-data", {"variation_code": "MTN3GB", "phone": "080"},
+                           reference=txn.reference)
+        self.assertEqual(mw.call_args.kwargs["source_account"], "0155500099")
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_explicit_source_account_wins_over_ledger_lookup(self):
+        with patch("utility.wema.purchase_airtime", return_value={"success": True}) as mw:
+            P.vtu_purchase("mtn-airtime",
+                           {"amount": "500", "phone": "080", "source_account": "0100000042"},
+                           reference="NO-SUCH-LEDGER-ROW")
+        self.assertEqual(mw.call_args.kwargs["source_account"], "0100000042")
+
     def test_requery_uses_stamped_wema_rail(self):
         from wallet.services import debit
         from wallet.tests import make_user
