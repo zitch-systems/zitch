@@ -133,6 +133,91 @@ class WemaReconcileTests(TestCase):
                                                           "creditType": "Credit"}))
 
 
+class WemaReversalGuardTests(TestCase):
+    """A bounced payout landing back in the sender's OWN NUBAN as an inbound
+    credit must NOT be counted twice (funding sweep + payout reversal): the sweep
+    routes it through reverse_transfer (refunds at most once, ever) instead of
+    crediting it as funding. docs/wema-migration.md open item 5."""
+
+    PAYOUT_REF = "ZTCHDEADBEEF0001"
+
+    def setUp(self):
+        # Wallet already debited ₦1,000 by the payout: ₦5,000 - ₦1,000.
+        self.user, _ = make_user("08030000555", "rev@zitch.app", balance="4000")
+        self.wallet = Wallet.objects.get(user=self.user)
+        self.wallet.account_number = "0155500055"
+        self.wallet.account_reference = wema_account_reference(self.user)
+        self.wallet.save(update_fields=["account_number", "account_reference"])
+        self.payout = Transaction.objects.create(
+            user=self.user, service="Transfer to ADA", amount=Decimal("1000"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference=self.PAYOUT_REF, meta={"reconcile": True, "bank": "GTBank"})
+
+    def _run(self, txns, status="FAILED"):
+        with patch("utility.wema.get_transactions",
+                   return_value={"success": True, "transactions": txns}), \
+             patch("utility.wema.confirm_transfer_status",
+                   return_value={"success": True, "status": status}):
+            call_command("reconcile_wema", "--payout-older-than-minutes=0")
+
+    def _bounce(self):
+        # The reversal row carries our reference in the narration (field-agnostic
+        # matching, so referenceId carrying it works too — see test below).
+        return _tx("ALAT-REV-77", 1000, narration=f"REV/{self.PAYOUT_REF}/bounced")
+
+    def test_bounced_payout_refunded_exactly_once(self):
+        self._run([self._bounce()])
+        self.payout.refresh_from_db()
+        self.assertEqual(self.payout.transaction_status, Transaction.FAILED)
+        # One refund (back to ₦5,000) — NOT the reversal + a funding credit (₦6,000).
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+        self.assertFalse(Transaction.objects.filter(reference="WEMA-CR-ALAT-REV-77").exists())
+        # Re-poll of the same window: the row matches again, but reverse_transfer
+        # is a no-op on the already-FAILED payout.
+        self._run([self._bounce()])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+
+    def test_already_reversed_payout_not_credited_again(self):
+        # Phase 2 (payout poller) reversed it in an earlier run…
+        from wallet.services import reverse_transfer
+        reverse_transfer(self.PAYOUT_REF)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+        # …then the bounce appears in the polled history: no second credit.
+        self._run([self._bounce()])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+        self.assertFalse(Transaction.objects.filter(reference="WEMA-CR-ALAT-REV-77").exists())
+
+    def test_reversal_matched_in_any_field(self):
+        # Some rails echo the reference in referenceId rather than narration.
+        row = _tx(self.PAYOUT_REF, 1000, narration="TRF REVERSAL")
+        self._run([row])
+        self.payout.refresh_from_db()
+        self.assertEqual(self.payout.transaction_status, Transaction.FAILED)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+        self.assertFalse(Transaction.objects.filter(
+            reference=f"WEMA-CR-{self.PAYOUT_REF}").exists())
+
+    def test_third_party_deposit_still_credits_alongside_payouts(self):
+        # A genuine deposit (no payout reference anywhere) credits normally even
+        # while the user has an outstanding payout.
+        self._run([_tx("WEMA-DEP-9", 2500)], status="IN_PROGRESS")
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("6500.00"))
+        self.assertTrue(Transaction.objects.filter(reference="WEMA-CR-WEMA-DEP-9").exists())
+
+    def test_other_users_payout_arriving_here_still_credits(self):
+        # Recipient-side: an inbound credit carrying ANOTHER user's payout
+        # reference is that payout ARRIVING, not a reversal — it must credit.
+        other, _ = make_user("08030000556", "other@zitch.app", balance="0")
+        Transaction.objects.create(
+            user=other, service="Transfer to REV", amount=Decimal("800"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference="ZTCHCAFEBABE0002", meta={"reconcile": True, "bank": "Wema Bank"})
+        self._run([_tx("ALAT-IN-88", 800, narration="TRF/ZTCHCAFEBABE0002/from other")],
+                  status="IN_PROGRESS")
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("4800.00"))
+        self.assertTrue(Transaction.objects.filter(reference="WEMA-CR-ALAT-IN-88").exists())
+
+
 @override_settings(PAYOUT_PROVIDER="wema")
 class WemaPayoutSettlementTests(TestCase):
     """Wema has no payout webhook, so reconcile_wema must settle/reverse PENDING

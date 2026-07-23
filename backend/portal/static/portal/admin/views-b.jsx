@@ -9,7 +9,10 @@ function WaInbox({ toast, refresh }) {
   const [selIdx, setSelIdx] = useStateB(0);
   const [msgs, setMsgs] = useStateB([]);
   const [reply, setReply] = useStateB('');
-  const c = convos[selIdx];
+  // Clamp: a reload can shrink the list below the selected index (the inbox is
+  // the top-50 by activity), which would render `c.user` of undefined — a
+  // white-screen crash of the whole portal.
+  const c = convos[Math.min(selIdx, convos.length - 1)];
 
   const loadThread = (msisdn) =>
     ZAPI.thread(msisdn).then((r) => setMsgs(r.msgs)).catch((e) => toast('⚠ ' + e.message));

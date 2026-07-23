@@ -70,6 +70,15 @@ def flow_endpoint(request):
     if request.method != "POST":
         return HttpResponse(status=405)
 
+    # Meta signs Flows data-exchange requests exactly like webhook callbacks
+    # (X-Hub-Signature-256 over the raw body, keyed on the app secret) — verify
+    # them the same way. The envelope encryption alone doesn't authenticate the
+    # sender (anyone holding our PUBLIC key can produce a decryptable body), so
+    # without this check the endpoint accepts forged PIN submissions from any
+    # origin. Mock mode (channel not live) accepts unsigned, as on the webhook.
+    if not verify_signature(request.body, request.headers.get("X-Hub-Signature-256", "")):
+        return JsonResponse({"success": False, "message": "Invalid signature"}, status=401)
+
     from .flows import handle_flow_request
     from .flows_crypto import FlowDecryptError, decrypt_request, encrypt_response
 

@@ -106,24 +106,32 @@ def _kyc_label(u) -> str:
     return "pending"
 
 
-def _wallets_by_user() -> dict:
+def _wallets_by_user(user_ids=None) -> dict:
+    """Balance map keyed by user id. Pass ``user_ids`` to scope the query —
+    the single-user / search endpoints were scanning every wallet row in the
+    database to serve a handful of rows."""
     from wallet.models import CurrencyWallet, Wallet
 
+    wallets = Wallet.objects.all() if user_ids is None else Wallet.objects.filter(user_id__in=user_ids)
+    cwallets = (CurrencyWallet.objects.all() if user_ids is None
+                else CurrencyWallet.objects.filter(user_id__in=user_ids))
     out: dict[int, dict] = {}
-    for w in Wallet.objects.all():
+    for w in wallets:
         out.setdefault(w.user_id, {"NGN": 0, "USD": 0, "GBP": 0, "CAD": 0})
         out[w.user_id]["NGN"] = _num(w.balance)
-    for cw in CurrencyWallet.objects.all():
+    for cw in cwallets:
         out.setdefault(cw.user_id, {"NGN": 0, "USD": 0, "GBP": 0, "CAD": 0})
         out[cw.user_id][cw.currency] = _num(cw.balance)
     return out
 
 
-def _wa_by_user() -> dict:
+def _wa_by_user(user_ids=None) -> dict:
     from whatsapp.models import WhatsAppLink
 
+    links = (WhatsAppLink.objects.all() if user_ids is None
+             else WhatsAppLink.objects.filter(user_id__in=user_ids))
     out: dict[int, dict] = {}
-    for link in WhatsAppLink.objects.all():
+    for link in links:
         # Prefer an active link for the user's headline WA status.
         cur = out.get(link.user_id)
         if cur is None or link.status == WhatsAppLink.ACTIVE:
@@ -578,8 +586,9 @@ def kyc_review(request):
     """POST {uid, decision: approve|reject, type: bvn|nin|face}
 
     Approving marks the relevant verification flag and recomputes the tier
-    (face also upgrades nothing but unlocks large transfers). Reject is a no-op
-    write that is still audited.
+    (face also upgrades nothing but unlocks large transfers). Rejecting a
+    bvn/nin review clears the unverified submission (the user resubmits);
+    rejecting face is audit-only. Every decision is audited.
     """
     u = _get_user(request.data.get("uid"))
     if u is None:
@@ -598,6 +607,17 @@ def kyc_review(request):
             u.face_verified = True
         u.recompute_tier()
         u.save(update_fields=["bvn_verified", "nin_verified", "face_verified", "tier"])
+    elif kind in ("bvn", "nin"):
+        # Reject clears the UNVERIFIED submitted identifier so the user leaves
+        # the review queue and must resubmit — previously a pure-audit no-op, so
+        # a rejected row reappeared on every queue load. A verified identity is
+        # never revoked here (face has no stored artifact to clear).
+        if kind == "bvn" and u.bvn_hash and not u.bvn_verified:
+            u.bvn_hash = u.bvn_last4 = ""
+            u.save(update_fields=["bvn_hash", "bvn_last4"])
+        elif kind == "nin" and u.nin_hash and not u.nin_verified:
+            u.nin_hash = u.nin_last4 = ""
+            u.save(update_fields=["nin_hash", "nin_last4"])
     after = {"tier": u.tier, "bvn": u.bvn_verified, "nin": u.nin_verified, "face": u.face_verified}
     audit(request, f"kyc.{decision}", target=f"u_{u.id} ({kind})", before=before, after=after)
     return ok(success=True, uid=u.id, tier=u.tier, decision=decision)
@@ -638,6 +658,7 @@ def card_freeze(request):
 
     Accepts the bare pk or the portal's serialized form (``cd_<pk>``)."""
     from cards.models import VirtualCard
+    from utility.providers import card_set_status
 
     raw = str(request.data.get("card_id") or "")
     try:
@@ -647,6 +668,11 @@ def card_freeze(request):
     status = (request.data.get("status") or "").strip()
     if status not in (VirtualCard.ACTIVE, VirtualCard.FROZEN):
         return fail("status must be active or frozen")
+    # Freeze/unfreeze at the ISSUER first (same as the user-facing
+    # cards.toggle_freeze) — a DB-only flip left the real card transacting.
+    result = card_set_status(card.card_token, active=(status == VirtualCard.ACTIVE))
+    if not result.get("success"):
+        return fail(result.get("message", "Could not update card"), status=502)
     before = card.status
     card.status = status
     card.save(update_fields=["status"])
@@ -882,10 +908,16 @@ def user_detail(request):
     if u is None:
         return fail("User not found", status=404)
     name = (u.get_full_name() or u.username or u.phone or "—").strip()
-    wallets = _wallets_by_user()
-    wa = _wa_by_user()
+    wallets = _wallets_by_user(user_ids=[u.id])
+    wa = _wa_by_user(user_ids=[u.id])
     link = WhatsAppLink.objects.filter(user=u, status=WhatsAppLink.ACTIVE).first()
     txns = [_txn_row(t, {u.id: name}) for t in Transaction.objects.filter(user=u)[:25]]
+    # Audit rows that touched THIS user. Targets are written as "u_<id>",
+    # "u_<id> (…)" (admin_api) or "user:<id>" (ops portal); the old
+    # `target__contains="u_<id>"` cross-matched u_1 against u_12/u_103 and
+    # missed the ops-portal form entirely.
+    target_q = (Q(target=f"u_{u.id}") | Q(target__startswith=f"u_{u.id} ")
+                | Q(target=f"user:{u.id}") | Q(target__startswith=f"user:{u.id} "))
     return ok(
         user=_user_row(u, wallets, wa),
         txns=txns,
@@ -894,7 +926,7 @@ def user_detail(request):
         cards=[_card_row(c, name) for c in VirtualCard.objects.filter(user=u)[:20]],
         wa_msisdn=(link.wa_msisdn if link else ""),
         pin_locked=bool(u.pin_locked_until and u.pin_locked_until > timezone.now()),
-        audit=[_audit_row(a) for a in AuditLog.objects.filter(target__contains=f"u_{u.id}")[:20]],
+        audit=[_audit_row(a) for a in AuditLog.objects.filter(target_q)[:20]],
     )
 
 
@@ -910,10 +942,12 @@ def user_search(request):
             Q(first_name__icontains=q) | Q(last_name__icontains=q)
             | Q(username__icontains=q) | Q(email__icontains=q) | Q(phone__icontains=q)
         )
-    wallets = _wallets_by_user()
-    wa = _wa_by_user()
-    return ok(rows=[_user_row(u, wallets, wa) for u in qs[:100]],
-              total=User.objects.count())
+    rows = list(qs[:100])
+    ids = [u.id for u in rows]
+    wallets = _wallets_by_user(user_ids=ids)
+    wa = _wa_by_user(user_ids=ids)
+    return ok(rows=[_user_row(u, wallets, wa) for u in rows],
+              total=qs.count())
 
 
 @staff_endpoint(methods=("POST",))

@@ -6,8 +6,8 @@ additionally requires ``user.is_staff`` and gates writes behind a role matrix
 that is enforced HERE, on the server — the topbar "view as" switcher in the
 prototype is presentation only and must never be trusted for authorization.
 
-Role resolution:
-  super_admin — Django superuser.
+Role resolution (identical to portal.roles — one matrix, two mounts):
+  super_admin — Django superuser, or membership of the `super_admin` Group.
   finance / support / read_only — membership of the like-named Django Group.
   default — read_only (least privilege) for any other staff user.
 """
@@ -37,8 +37,11 @@ CAN = {
 def staff_role(user) -> str:
     if getattr(user, "is_superuser", False):
         return ROLE_SUPER
+    # Same group→role mapping as portal.roles.role_of — the `super_admin` GROUP
+    # grants the role too (not just is_superuser), so a staff member never holds
+    # full caps on /api/ops/ while being read_only on /api/admin/.
     names = set(user.groups.values_list("name", flat=True))
-    for role in (ROLE_FINANCE, ROLE_SUPPORT, ROLE_READONLY):
+    for role in (ROLE_SUPER, ROLE_FINANCE, ROLE_SUPPORT, ROLE_READONLY):
         if role in names:
             return role
     return ROLE_READONLY
