@@ -302,6 +302,13 @@ TEST_OTP = {
     "PHONE": os.environ.get("TEST_OTP_PHONE", "").strip(),
     "CODE": os.environ.get("TEST_OTP_CODE", "").strip(),
 }
+# TEST-ONLY simulated-deposit token — LEAVE UNSET IN PRODUCTION. When set (AND
+# WEMA_SIMULATION is on), POST /api/dev/simulate-deposit/ with this token credits a
+# mock wallet deposit, so the app can be walked fund -> transfer -> airtime end to
+# end with fake money. The endpoint 404s whenever WEMA_SIMULATION is off, so it can
+# never fabricate real money on a live deploy. `manage.py wema_preflight` HARD-FAILS
+# while this is set. Remove it before launch.
+SIMULATE_DEPOSIT_TOKEN = os.environ.get("SIMULATE_DEPOSIT_TOKEN", "").strip()
 # Email / OTP fallback — Resend. Sends the same OTP code in parallel with
 # Sendchamp so SMS delivery issues (DND, sender ID approval, carrier blocks)
 # don't strand a user. Blank API_KEY => mock mode (silent success).
