@@ -19,10 +19,15 @@ from wallet.tests import make_user
 
 
 def _tx(ref, amount, credit=True, **extra):
-    return {"referenceId": ref, "amount": amount,
-            "creditType": "Credit" if credit else "Debit",
-            "narration": extra.get("narration", "Transfer in"),
-            "sender": extra.get("sender", "GTBANK / JOHN")}
+    row = {"referenceId": ref, "amount": amount,
+           "creditType": "Credit" if credit else "Debit",
+           "narration": extra.get("narration", "Transfer in"),
+           "sender": extra.get("sender", "GTBANK / JOHN")}
+    # Omitted status == settled (no regression for existing rows); pass status=
+    # explicitly to exercise the Pending/Failed funding guard.
+    if "status" in extra:
+        row["status"] = extra["status"]
+    return row
 
 
 @override_settings(PAYMENT_PROVIDER="wema")
@@ -132,19 +137,35 @@ class WemaReconcileTests(TestCase):
         self.assertIsNone(apply_wema_credit(self.wallet, {"referenceId": "Y", "amount": "N/A",
                                                           "creditType": "Credit"}))
 
-    def test_apply_wema_credit_skips_unsettled_status(self):
-        # Per ALAT's transhistoryV2 status legend, a Failed/Pending inbound credit
-        # row hasn't actually landed and must NOT credit (a Pending one is credited on
-        # a later sweep once it flips to Successfull). Absent/Successfull still credits.
-        for st in ("Failed", "Pending", "Reversed"):
-            row = _tx(f"UNSETTLED-{st}", 1000)
-            row["status"] = st
-            self.assertIsNone(apply_wema_credit(self.wallet, row))
+    def test_pending_or_failed_credit_row_not_funded(self):
+        # ALAT TransactionStatus {Default, Successfull, Failed, Pending}. A settled
+        # credit funds the wallet; a Pending (in-flight) or Failed (bounced) credit
+        # row must be skipped so a deposit is never credited before it settles.
+        self.assertIsNotNone(apply_wema_credit(self.wallet,
+            {"referenceId": "S1", "amount": 700, "creditType": "Credit", "status": "Successfull"}))
+        self.assertIsNone(apply_wema_credit(self.wallet,
+            {"referenceId": "P1", "amount": 700, "creditType": "Credit", "status": "Pending"}))
+        self.assertIsNone(apply_wema_credit(self.wallet,
+            {"referenceId": "F1", "amount": 700, "creditType": "Credit", "status": "Failed"}))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("700.00"))
+
+    def test_pending_credit_funds_once_it_settles(self):
+        # A Pending row is skipped, then the SAME referenceId re-appears settled on a
+        # later sweep and funds exactly once — no permanent drop, no double-credit.
+        self._run([_tx("WEMA-LATE", 1500, status="Pending")])
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0.00"))
-        settled = _tx("SETTLED-1", 1000)
-        settled["status"] = "Successfull"
-        self.assertIsNotNone(apply_wema_credit(self.wallet, settled))
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("1000.00"))
+        self._run([_tx("WEMA-LATE", 1500, status="Successfull")])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("1500.00"))
+        self._run([_tx("WEMA-LATE", 1500, status="Successfull")])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("1500.00"))
+
+    def test_reversed_credit_row_not_funded(self):
+        # Defense-in-depth beyond the documented enum: normalize_transaction's
+        # _TX_UNSETTLED also treats a re-spelled non-final status (e.g. Reversed) as
+        # unsettled, so such a row is skipped too.
+        self.assertIsNone(apply_wema_credit(self.wallet,
+            {"referenceId": "R1", "amount": 900, "creditType": "Credit", "status": "Reversed"}))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0.00"))
 
 
 class WemaReversalGuardTests(TestCase):

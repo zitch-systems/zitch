@@ -175,6 +175,106 @@ To test payout in sandbox: set `WEMA_CHANNEL_ID` + `WEMA_WALLET_KEY` + `WEMA_SOU
 (leave `WEMA_SECURITY_INFO` blank), redeploy, run a name-enquiry + a small transfer. `/healthz`
 should show `payout_provider: "wema"`.
 
+## Spec reconciliation — against the full ALAT OpenAPI set (2026-07)
+
+Every rail in `utility/wema.py` was reconciled field-by-field against the official ALAT
+OpenAPI specs (19 files: wallet-creation/BVN, credit/debit-wallet, account-maintenance,
+airtime-data, bills, card-management, the partnership-account/KYC/upgrade family, plus the
+new Remita / pay-with-bank / BNPL products). Summary:
+
+| Rail | Verdict | Notes |
+|------|---------|-------|
+| Wallet creation (NIN + BVN + OTP) | ✅ paths/fields correct | `trackingId` lives at `data.otpTrackingID` on the live envelope; ResendOtp is **200 No-Content** (now handled). |
+| Balance + transaction history | ✅ correct | `status` now honored — see funding guard below. |
+| Debit wallet / transfer (payout) | ✅ correct | `ClientTransferRequestDto` is a perfect field match. `GetNIPCharges` is unused (optional). |
+| Credit wallet / FundWallet | ✅ correct | Status poll is bound to the `debit` suffix; a credit-rail poll is optional. |
+| Airtime & Data | ⚠️ mostly correct | On the right (Client/SingleAccount) endpoints. **Requery bug:** `CheckTransactionStatus` returns `result.transactionStatus` as an **integer** enum (1–11), not a string — legend needed (below). |
+| Bills payment | ⚠️ mostly correct | Same integer-status requery gap (`checktransactionstatus`, enum 1–9). `packageId` is int32 in the spec. |
+| **Virtual cards** | ❌ **paths wrong** | `/api/VirtualCard/*` do not exist — see Card rail below. Rail is gated off, so this blocks cards only, not core launch. |
+| **KYC (BVN/NIN/vNIN)** | ❌ **endpoints don't exist** | Wema has no standalone identity lookup — see KYC rail below. |
+
+**Funding-correctness fix (landed):** `normalize_transaction` now treats an inbound
+`creditType=='Credit'` row as fundable only when its `status` is settled. The ALAT
+`TransactionStatus` enum is `{Default, Successfull(sic), Failed, Pending}`; a **Pending**
+(in-flight) or **Failed** (bounced) credit row is skipped, so a deposit is never credited
+before it settles. Unknown/blank still counts (a live gateway that omits the field can't
+strand real money); a Pending row credits on a later sweep once it settles.
+
+### `securityInfo` — the crux (still needs Wema)
+
+The specs reveal the **shape** but not the **algorithm**. `EncryptionCredentials`
+`{encryptionPassword, encryptionIV, encryptionSalt, encryptionIdentifier}` (all `readOnly`,
+wrapped in the standard result envelope) is **issued to the partner** — no endpoint in any of
+the 19 specs returns or accepts it, so credentials are provisioned out-of-band. The quartet
+(password + **salt** + IV + identifier) is the classic **AES-CBC + PBKDF2** signature
+(salt ⇒ derived, not pre-shared key; IV ⇒ chaining mode; identifier ⇒ which credential set
+Wema decrypts with). Confidence ~MEDIUM on that shape, LOW on the runnable parameters.
+
+`securityInfo` is carried by: `ProcessClientTransfer`, `FundWallet`, `PurchaseAirtime`/`Data`
+(Client **and** pool — **required, minLength 1** on the pool variants), `PayBill`
+(+ pool), `ProcessRemitaPayment`. It is **absent** from account-creation, balance/history,
+name-enquiry, **cards, and KYC** — so those rails are fully buildable without it.
+
+**Send Wema exactly these questions to close it:**
+1. How are our production `EncryptionCredentials` (password/IV/salt/identifier) issued? (They appear in no endpoint.)
+2. What plaintext is encrypted into `securityInfo` — a fixed credential string, or a per-transaction canonical string? If the latter, which fields and in what order (e.g. `reference|amount|sourceAccount|timestamp`)?
+3. Is `securityInfo` static-per-channel (cacheable) or per-transaction?
+4. Cipher: AES-CBC or AES-GCM? Key size (128/192/256)? Padding (PKCS7)? If GCM, where/how long is the auth tag?
+5. KDF: PBKDF2-HMAC over password+salt? Which hash (SHA1/SHA256), how many iterations, what derived key length? Or is `encryptionPassword` already the raw key?
+6. Encodings: are IV/salt/password delivered Base64/hex/raw-UTF-8, and is the `securityInfo` output Base64 or hex?
+7. Is `encryptionIdentifier` sent in the request, or inferred by Wema from our subscription key / channel id?
+8. Please provide **one fully worked example** (sample plaintext + credential set → resulting `securityInfo`) so we can match it byte-for-byte.
+9. A C# reference snippet (the specs are .NET) would let us match iterations/padding exactly.
+
+`_security_info()` is a fail-loud stub: it returns a static `WEMA_SECURITY_INFO` if set, else
+`""` (which makes a live money call fail at the gateway rather than send an unsigned payload).
+Slot the real construction into that one function; keep the static-value fast path; add a unit
+test reproducing Wema's worked example before flipping `wema_live()`.
+
+### Card rail — DONE (re-pointed to the real Card Management API)
+
+The old `/api/VirtualCard/*` paths were fabricated; the client now uses the real
+**Card Management API** (`utility.wema.card_*`, threaded through `providers.card_*` + the
+`cards` app):
+- APIM suffix **`/card-management`** (not `/virtual-card`); auth header **`x-api-key`** (not `access`); **no `securityInfo`**.
+- Keyed by the customer **NUBAN (`accountNo`)**, so the stored `card_token` IS the NUBAN:
+  - issue → `POST /api/Partner/partnerCard/virtualCard` (`{accountNo, emailaddress, phoneNumber, amount, customerAddress, cardKey, currency:'NGN'}`)
+  - reveal → `GET /api/Partner/partnerCard/virtual-card-details/{accountNo}` (or `retrieveCard/{accountNo}` for full PAN/CVV)
+  - block → `POST /api/Partner/partnerCard/hotlistCard?maskedPan=&accountNumber=` (**block-only — no unfreeze endpoint exists**, so `card_set_status(active=True)` reports unsupported)
+  - fund → none; funding is only the optional `amount` at creation, so `card_fund` reports unsupported
+- VERIFY-BEFORE-LIVE: the opaque `data` shape (masked PAN/expiry/CVV) and the `cardKey`
+  (`WEMA_CARD_PRODUCT_KEY`) need a live-key smoke test.
+
+### KYC rail — DONE (verified via account creation, name-matched)
+
+Wema exposes **no** BVN/NIN/vNIN lookup endpoint — the old `/api/Kyc/Verify*` paths were
+fabricated and 404 live. BVN/NIN are validated only as a byproduct of account creation; current
+tier reads from `GET /api/partnership/partner-account-kyc-status` (`get_kyc_status`).
+**Resolution (chosen: fold into account creation):** identity is verified by the NUBAN
+account-creation OTP flow, and the holder name ALAT returns is name-matched
+(`holder_name_mismatch`) against the user's registered name before the tier lifts
+(`wallet.views.wema_wallet_verify_otp`). `verify_bvn`/`verify_nin`/`verify_vnin` no longer hit a
+non-existent endpoint — in production they route the caller to account setup; dev/tests keep the
+mock. (Prembly stays the image/biometric KYC rail for face/address/ID.)
+
+### Transaction-status legends — still needed from Wema
+
+- **Transfer/credit:** `result.status` / `result.data.status` are plain strings; the spec
+  examples are all `"string"`. `reconcile_wema` matches SUCCESS/FAILED families defensively.
+- **VAS airtime/data requery:** `CheckTransactionStatus` → `result.transactionStatus` is an
+  **integer enum (1–11)**; `transactionType` on the request is an **int enum {1,2}** (not the
+  string `'airtime'`/`'data'`). Requery cannot interpret the code until Wema supplies the map.
+- **Bills requery:** `checktransactionstatus` → `result.transactionStatus` **integer enum (1–9)**.
+- **History:** `TransactionStatus {Default, Successfull, Failed, Pending}` — now honored.
+
+### New portal products (available, NOT launch-blocking)
+
+`Remita Payment`, `Pay with Bank Account (ALAT Authenticator)`, `Buy-Now-Pay-Later`,
+`Direct Debit / Scheduled Payments`, and `Get Statement` are provisioned in the portal but not
+wired. They are new capabilities (Remita maps to the `remita.tsx` stub; BNPL to `bnpl.tsx`),
+each a product decision. BNPL uses a different auth scheme (`x-merchant-id` +
+`x-merchant-authorization-key`). Wire post-launch as features, not go-live blockers.
+
 ## ⚠️ Open decisions — confirm with Wema before go-live
 
 1. **Money-flow model — RESOLVED: per-user balances.** Each user's NUBAN holds its own
@@ -184,19 +284,22 @@ should show `payout_provider: "wema"`.
    fails closed (refundable). To pay out via Wema a user must have a Wema NUBAN with balance,
    or `WEMA_SOURCE_ACCOUNT` must be funded to cover pool-sourced payouts.
 2. **`securityInfo` construction.** The encryption scheme (algorithm / what is signed / key
-   material) is not in the OpenAPI. Implement in `utility.wema._security_info` once Wema
-   supplies it. Sandbox does not enforce it.
-3. **Transaction-status legend — partially RESOLVED.** `transhistoryV2` now documents
-   `status ∈ {Default, Successfull, Failed, Pending}`, and the funding sweep gates on it
-   (only settled credits apply). Two legends remain undocumented: the `confirm_transfer_status`
-   status STRING for bank payouts (matched defensively via `_SETTLED`/`_REVERSED`, incl. the
-   `SUCCESSFULL` spelling), and the integer `transactionStatus` (1..11) the VAS
-   `CheckTransactionStatus` returns (left PENDING until the legend is confirmed). Confirm both.
-4. **Wallet-creation OTP response shape — STILL OPEN.** The spec confirms the create endpoints
-   return `{message, status, code, statusCode, errors}` with **no** tracking id, yet the OTP
-   validate step requires `trackingId`. `create_wallet_request` looks for it at the top level
-   and under `data`/`result` to tolerate the live (undocumented) shape. Confirm where the live
-   gateway returns `trackingId`/`otpTrackingID`.
+   material) is NOT in the OpenAPI. Implement in `utility.wema._security_info` once Wema
+   supplies it; it carries on the transfer / credit_wallet / VAS / bills money-movement calls.
+   Sandbox does not enforce it.
+3. **Transaction-status legends.** `transhistoryV2` history status is now documented and
+   honored (`{Default, Successfull, Failed, Pending}` — only settled credits fund). Two legends
+   remain: the `confirm_transfer_status` bank-payout status STRING (matched defensively via
+   `_SETTLED`/`_REVERSED`, incl. the `SUCCESSFULL` spelling), and the **integer**
+   `transactionStatus` the VAS/bills `CheckTransactionStatus` returns (enum 1..11) — the code
+   reads it but leaves such a purchase PENDING until the code→meaning map is confirmed. Confirm
+   both with Wema.
+4. **Wallet-creation OTP response shape.** The create endpoints return
+   `{message, status, code, statusCode, errors}` with **no** tracking id per the spec, yet the
+   OTP validate step requires `trackingId`; `create_wallet_request` hunts for it at the top
+   level and under `data`/`result` (the live envelope is reported to carry it at
+   `data.otpTrackingID`). `ResendOtp` is a **200 No-Content** endpoint — now handled (a bare
+   `.json()` on the empty body used to raise on a genuine success). Confirm the live shape.
 5. **Inbound-credit detection — reversal double-credit now GUARDED (was audit OPEN, High).**
    The funding sweep (Phase 1) credits `creditType == "Credit"` history rows, while the payout
    phase (Phase 2) independently reverses a FAILED payout via `reverse_transfer`. A

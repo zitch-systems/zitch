@@ -29,9 +29,19 @@ MOCK mode when unconfigured; fails closed in production (providers.mock_disabled
 so a misconfigured deploy never fabricates an account/credit. WEMA_SIMULATION=true
 serves the mock flow even in production to test a real build without live keys.
 
-VERIFY-BEFORE-LIVE: paths/fields follow the ALAT OpenAPI specs but were not
-exercised against a live gateway — confirm each (esp. securityInfo, the live host,
-the tx-status code legend, and inbound-credit detection) before go-live.
+RECONCILED against the full ALAT OpenAPI spec set (see docs/wema-migration.md §Spec
+reconciliation). Funding rails — wallet-creation, balance/history, payout/transfer,
+credit-wallet, airtime/data, bills — have CONFIRMED-correct paths, fields, auth and
+envelopes. The card + KYC rails were re-pointed to the real endpoints:
+  * Card rail — moved to the real /card-management partnerCard endpoints, NUBAN-keyed
+    (issue/reveal/block); no reversible freeze or top-up (report unsupported).
+  * KYC rail — Wema has no standalone BVN/NIN lookup, so identity is verified by the
+    name-matched account-creation flow (see the KYC section).
+Still open before go-live:
+  * securityInfo construction (algorithm/plaintext) — provisioned out-of-band by Wema.
+  * tx-status legends — payout status strings, and the VAS/bills CheckTransactionStatus
+    INTEGER enums, are undocumented in the specs; get the code→meaning map from Wema.
+  * live host (WEMA_BASE_URL) + production keys.
 """
 import hashlib
 import json
@@ -236,8 +246,17 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
         return {"success": not _mock_blocked(), "mock": True, "message": "OTP resent (demo)"}
     try:
         product = "wallet_bvn" if bvn else "wallet_nin"
-        data = _post(product, "/api/CustomerAccount/ResendOtpRequest/ResendOtp",
-                     {"trackingId": tracking_id, "phoneNumber": phone}).json()
+        resp = _post(product, "/api/CustomerAccount/ResendOtpRequest/ResendOtp",
+                     {"trackingId": tracking_id, "phoneNumber": phone})
+        # The spec documents ResendOtp as 200 No-Content: a bare .json() on an empty
+        # body raises ValueError (not a RequestException) and would crash a genuine
+        # success. Treat any 2xx with an empty/non-JSON body as resent.
+        if resp.status_code < 300 and not (resp.content or b"").strip():
+            return {"success": True, "message": "OTP resent"}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"success": resp.status_code < 300, "message": "OTP resent"}
         return {"success": _ok(data), "message": _msg(data)}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -366,13 +385,19 @@ def normalize_transaction(tx: dict) -> dict:
 
     `referenceId` (fallback `tranId`) is the unique per-transaction key used as
     the ledger idempotency guard; `creditType == "Credit"` marks an inbound
-    deposit (the only rows funding applies); `settled` is False for a row the
-    documented `status` marks Failed/Pending, so the funding sweep never credits a
-    deposit that hasn't actually landed."""
+    deposit; `settled` is False for a row the documented `status` marks Failed/
+    Pending, so the funding sweep (apply_wema_credit) never credits a deposit that
+    hasn't actually landed."""
     if not isinstance(tx, dict):
         return {"reference": "", "amount_naira": None, "is_credit": False,
                 "settled": False, "status": "", "narration": "", "sender": ""}
     ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
+    # ALAT TransactionStatus enum is {Default, Successfull(sic), Failed, Pending}
+    # (confirmed against wallet-services-account-maintenance-api). Only a SETTLED
+    # credit is fundable, so `settled` blocks clearly-non-final rows; unknown /
+    # blank / Successfull / Default still count, so a live gateway that omits or
+    # re-spells the field can't strand real money — a Pending row simply credits on
+    # a later sweep once it settles. apply_wema_credit gates on `settled`.
     is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
     status = str(tx.get("status") or "").strip().lower()
     return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
@@ -765,7 +790,8 @@ def _parse_vas(data: dict, reference: str) -> dict:
 # VERIFY-BEFORE-LIVE: issue/reveal return an OPAQUE `data` field whose structure
 # isn't in the OpenAPI (masked PAN / expiry / CVV / card ref) and the virtualCard
 # request's `cardKey` (card product id) must come from Wema — confirm both against
-# Wema's card integration guide before go-live.
+# Wema's card integration guide before go-live. (retrieveCard/{accountNo} is an
+# alternative reveal endpoint if virtual-card-details doesn't return the full PAN/CVV.)
 # ---------------------------------------------------------------------------
 def _card_live() -> bool:
     """Whether the Card-Management product has its subscription key + channel id."""
