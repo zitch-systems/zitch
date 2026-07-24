@@ -63,6 +63,12 @@ crons too (`render.yaml` already declares the slots on each).
 | `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
 | `SENDCHAMP_API_KEY` | SMS / OTP-by-SMS. |
+| `SENDCHAMP_SENDER_NAME` | Sender ID (default `Zitch`) — **must be an approved sender ID in Sendchamp** for the DND route to deliver. |
+
+> ⚠️ **`TEST_OTP_PHONE` / `TEST_OTP_CODE` — pre-launch testing ONLY, must be UNSET for go-live.**
+> When both are set, that one number accepts a fixed OTP code (for walking the app
+> before the SMS sender ID is approved). `wema_preflight` **hard-fails** while they
+> are set, so readiness cannot pass until you remove them. Delete both before launch.
 
 No `*_PROVIDER` flip is needed — `wema` is already the default funding, payout and
 KYC rail.
