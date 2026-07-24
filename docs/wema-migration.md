@@ -108,7 +108,13 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 | VAS — **airtime** | **wired** (auto-selects Wema once VAS keys are set; debits user NUBAN) |
 | VAS — **data / cable** | **wired, gated per-plan** on a synced `wema_code` (else VTU.ng) |
 | VAS — electricity / betting / exams | stays on VTU.ng (billers not mapped) |
+| VAS — **Remita RRR** | **wired** — `validate_rrr` + `payremita` debit the user NUBAN (pending stays for manual recon) |
 | Virtual cards | **wired to real card-management** (NUBAN-keyed issue/reveal/block); no reversible freeze/top-up |
+| NIP transfer charges | **wired** — `payout_charge` + `/api/transfers/charge/` (informational; debit unchanged) |
+| Account tier upgrade | **tier 3 synced** on address verify (bank-side limits); tier 2 needs BVN/NIN we don't retain |
+| BNPL | **offers wired** (read-only `/api/loans/bnpl/offers/`); consent→disburse gated on product sign-off |
+| Fund from ALAT account | **wired** — Pay-with-Bank direct debit (`/api/wallet/alat/fund/` + `/verify/`, credits once) |
+| NUBAN bank statement | **wired** — `/api/wallet/statement/` over transhistoryV2 |
 
 ## VAS (airtime / data / cable) — #189
 
@@ -267,13 +273,42 @@ mock. (Prembly stays the image/biometric KYC rail for face/address/ID.)
 - **Bills requery:** `checktransactionstatus` → `result.transactionStatus` **integer enum (1–9)**.
 - **History:** `TransactionStatus {Default, Successfull, Failed, Pending}` — now honored.
 
-### New portal products (available, NOT launch-blocking)
+### New portal products — now wired (client + endpoints)
 
-`Remita Payment`, `Pay with Bank Account (ALAT Authenticator)`, `Buy-Now-Pay-Later`,
-`Direct Debit / Scheduled Payments`, and `Get Statement` are provisioned in the portal but not
-wired. They are new capabilities (Remita maps to the `remita.tsx` stub; BNPL to `bnpl.tsx`),
-each a product decision. BNPL uses a different auth scheme (`x-merchant-id` +
-`x-merchant-authorization-key`). Wire post-launch as features, not go-live blockers.
+The follow-up rails from the bundle are wired (mock-first, fail-closed):
+
+- **NIP transfer charges** — `get_nip_charges` + `nip_fee_for` (`/debit-wallet/GetNIPCharges`);
+  `providers.payout_charge` caches the schedule and `POST /api/transfers/charge/` returns the
+  fee for an amount. **Informational** — the send flow debit is unchanged (whether to pass the
+  NIP fee to users is a pricing decision, deliberately not made here).
+- **Account tier upgrade** — `upgrade_tier2` ({accountNumber, nin, bvn, liveImageOfFace}) and
+  `upgrade_tier3` ({residentialAddress, accountNumber}) on `/account-upgrade`. Tier 3 is
+  best-effort synced when the user verifies their address (`accounts.views.kyc_address`), so the
+  NUBAN's bank-side limits track the user's KYC. Tier 2 is **not** auto-synced: it needs the raw
+  BVN/NIN, which Zitch doesn't retain post-provisioning (only an HMAC + last4).
+- **Remita** — `validate_rrr` / `pay_remita` / `remita_receipt` (`/remita-payment`).
+  `POST /api/utility/validate_rrr/` + `POST /api/utility/payremita/` validate then pay an RRR
+  from the user's NUBAN via `run_provider_purchase` (debit → pay → settle/refund). A timed-out
+  payment stays PENDING for manual reconciliation — ALAT has no Remita status endpoint, so
+  `vas_status("…","remita")` never auto-settles/refunds or mis-routes to the airtime check.
+- **BNPL** — `bnpl_offers` / `bnpl_consent` / `bnpl_accept_terms` / `bnpl_status` /
+  `bnpl_liquidate` on `/alat-bnpl` with the merchant-auth headers (`x-merchant-id` +
+  `x-merchant-authorization-key`, config `WEMA_BNPL_*`). Only the **read-only** offers endpoint
+  (`POST /api/loans/bnpl/offers/`) is exposed; the consent→accept→disburse commitment flow is
+  built at the client layer but intentionally NOT exposed as an end-user endpoint — it creates
+  real external debt and needs product/compliance sign-off first.
+
+- **Pay with Bank Account (ALAT Authenticator)** — `pwba_fund_request` / `pwba_status`
+  (`/pwba-authenticator`, no securityInfo, channel id in the body). A direct-debit **funding**
+  rail: `POST /api/wallet/alat/fund/` starts a debit from the user's OWN ALAT account (they
+  approve it in the ALAT app) and `POST /api/wallet/alat/fund/verify/` polls it and credits the
+  wallet exactly once (FundingIntent + `settle_funding`).
+- **Get Statement** — `POST /api/wallet/statement/` returns the user's Wema NUBAN bank statement
+  (ALAT transhistoryV2, normalised) for a date range; distinct from the Zitch ledger history.
+
+Still unwired: **Direct Debit / Scheduled Payments** and any recurring-mandate flow — the bundle
+carries recurring *schemas* (SaveRecurringRequest/RecurringBillsResponse in bills-payment) but no
+recurring *endpoints*, so there's nothing to call yet. Confirm the endpoints with Wema.
 
 ## ⚠️ Open decisions — confirm with Wema before go-live
 

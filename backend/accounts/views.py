@@ -482,6 +482,24 @@ def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
         log.warning("reserve_account_failed user=%s", user.id, exc_info=True)
 
 
+def _sync_wema_tier3(user, address: dict) -> None:
+    """Best-effort: lift the user's Wema NUBAN to Tier 3 at the bank (address
+    verification) so its bank-side limits track the user's verified KYC. Needs only
+    the address + account number (NOT BVN/NIN, which we don't retain — so the Tier-2
+    face upgrade, which does require them, is intentionally not auto-synced). Never
+    breaks the KYC response; a hiccup is logged and can be re-synced later."""
+    acct = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    if not acct:
+        return
+    try:
+        from utility import wema
+        res = wema.upgrade_tier3(acct, address)
+        if not res.get("success"):
+            log.info("wema_tier3_sync_soft_fail user=%s msg=%s", user.id, res.get("message", ""))
+    except Exception:  # noqa: BLE001 — a provider hiccup must never break KYC
+        log.warning("wema_tier3_sync_error user=%s", user.id, exc_info=True)
+
+
 _TIER_NAMES = {0: "Unverified", 1: "Verified", 2: "Enhanced", 3: "Premium"}
 
 
@@ -659,6 +677,8 @@ def kyc_address(request):
     user.address_verified = True
     user.recompute_tier()
     user.save(update_fields=["address", "address_verified", "tier"])
+    # Sync the bank-side NUBAN tier (best-effort; needs only the address + NUBAN).
+    _sync_wema_tier3(user, {"fullAddress": full, "city": city, "state": state})
     return ok(success=True, message="Address verified", **_kyc_state(user))
 
 

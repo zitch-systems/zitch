@@ -2,6 +2,7 @@
 the available-credit clamp."""
 import json
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.test import Client, TestCase
 
@@ -23,6 +24,19 @@ class LoanTests(TestCase):
 
     def balance(self):
         return get_or_create_wallet(self.user).balance
+
+    def test_bnpl_offers_returns_eligibility(self):
+        offers = [{"productId": 1, "productName": "BNPL 30d", "maximumTenor": 30}]
+        with patch("loans.views.provider_bnpl_offers", return_value={"success": True, "offers": offers}):
+            res, body = self.post("/api/loans/bnpl/offers/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["offers"][0]["productName"], "BNPL 30d")
+
+    def test_bnpl_offers_surfaces_unavailable(self):
+        with patch("loans.views.provider_bnpl_offers",
+                   return_value={"success": False, "message": "BNPL is not configured"}):
+            res, _ = self.post("/api/loans/bnpl/offers/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 502)
 
     def test_status_with_no_loan(self):
         res, body = self.post("/api/loans/status/", {"access_token": self.token})

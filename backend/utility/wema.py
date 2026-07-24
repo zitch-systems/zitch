@@ -70,11 +70,14 @@ _PATH = {
     "debit": "/debit-wallet",                # payout / name enquiry / banks
     "airtime": "/airtime-data",              # airtime + data (VAS)
     "bills": "/bills-payment",               # bills payment (VAS)
+    "remita": "/remita-payment",             # Remita RRR bill payment (VAS)
+    "bnpl": "/alat-bnpl",                    # Buy-Now-Pay-Later (merchant-auth)
+    "pwba": "/pwba-authenticator",           # Pay with Bank Account — ALAT Authenticator direct debit
     "kyc": "/kyc",                           # Nigeria identity lookups (see KYC section)
     "card": "/card-management",              # Virtual Naira Card (partnerCard endpoints)
 }
 # Products whose channel-id header is `access` (not `x-api-key`).
-_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills"}
+_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills", "remita"}
 
 
 def wema_live() -> bool:
@@ -101,7 +104,22 @@ def _sub_key(product: str) -> str:
     return keys.get(product, "")
 
 
+def _bnpl_headers() -> dict:
+    """BNPL uses merchant credentials (x-merchant-id + x-merchant-authorization-key)
+    alongside its APIM subscription key — NOT the channel id the other products use."""
+    m = settings.WEMA
+    return {
+        "Ocp-Apim-Subscription-Key": (m.get("KEYS") or {}).get("bnpl", ""),
+        "x-merchant-id": m.get("BNPL_MERCHANT_ID", ""),
+        "x-merchant-authorization-key": m.get("BNPL_AUTH_KEY", ""),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
 def _headers(product: str) -> dict:
+    if product == "bnpl":
+        return _bnpl_headers()
     channel = settings.WEMA.get("CHANNEL_ID", "")
     channel_header = "access" if product in _ACCESS_PRODUCTS else "x-api-key"
     return {
@@ -328,6 +346,55 @@ def get_kyc_status(account_number: str) -> dict:
         return _unreachable(exc)
 
 
+def _residential_address(address) -> dict:
+    """Map a free-form/partial address into ALAT's residentialAddress object. Accepts a
+    string (used as fullAddress) or a dict of the known fields."""
+    fields = ("buildingNumber", "apartment", "street", "city", "town", "state", "lga",
+              "lcda", "landmark", "additionalInformation", "country", "fullAddress", "postalCode")
+    if not isinstance(address, dict):
+        return {"fullAddress": str(address or ""), "country": "Nigeria"}
+    out = {k: address.get(k, "") for k in fields}
+    if not out.get("country"):
+        out["country"] = "Nigeria"
+    if not out.get("fullAddress"):
+        out["fullAddress"] = " ".join(v for v in (address.get("street"), address.get("city"),
+                                                  address.get("state")) if v)
+    return out
+
+
+def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_image: str = "") -> dict:
+    """Upgrade a partnership NUBAN to Tier 2 at the bank (partner-account-upgrade-tier2
+    {accountNumber, nin, bvn, liveImageOfFace}).
+
+    Best-effort sync of the account's BANK-side tier (and thus its NUBAN limits) when
+    the user completes the matching Zitch KYC step — it does NOT change Zitch's own tier
+    policy. Fails soft in production when unkeyed."""
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier2",
+                     {"accountNumber": account_number, "nin": nin, "bvn": bvn,
+                      "liveImageOfFace": live_image}).json()
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def upgrade_tier3(account_number: str, address) -> dict:
+    """Upgrade a partnership NUBAN to Tier 3 at the bank via address verification
+    (partner-account-upgrade-tier3 {residentialAddress{...}, accountNumber}). Best-effort
+    bank-side sync (see upgrade_tier2)."""
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier3",
+                     {"accountNumber": account_number,
+                      "residentialAddress": _residential_address(address)}).json()
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
 # ---------------------------------------------------------------------------
 # Account maintenance — balance + history (credit detection is by polling)
 # ---------------------------------------------------------------------------
@@ -424,6 +491,47 @@ def get_banks() -> dict:
         return {"success": _ok(data), "banks": banks, "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
+
+
+def get_nip_charges() -> dict:
+    """The NIP transfer fee schedule (GET /debit-wallet/api/Shared/GetNIPCharges).
+
+    Returns {success, charges: [{name, transaction_type, charge, lower, upper}], terms,
+    terms_url}. Each band applies a `charge` to amounts in [lower, upper]; `nip_fee_for`
+    resolves the fee for a given amount."""
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Transfers are not configured"}
+        return {"success": True, "mock": True, "charges": []}
+    try:
+        data = _get("debit", "/api/Shared/GetNIPCharges").json()
+        r = data.get("result", {}) or {}
+        raw = r.get("chargeFees", []) or []
+        charges = [{"name": c.get("chargeFeeName", ""), "transaction_type": c.get("transactionType"),
+                    "charge": _naira(c.get("charge")), "lower": _naira(c.get("lower")),
+                    "upper": _naira(c.get("upper"))}
+                   for c in (raw if isinstance(raw, list) else [raw]) if isinstance(c, dict)]
+        return {"success": _ok(data), "charges": charges,
+                "terms": r.get("termsAndConditions", ""),
+                "terms_url": r.get("termsAndConditionsUrl", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def nip_fee_for(amount_naira, charges: list) -> Decimal | None:
+    """The NIP fee that applies to `amount_naira` from a `get_nip_charges()` charge list,
+    matching the first band whose [lower, upper] contains the amount (upper<=0 means open-
+    ended). Returns None when no band matches (caller decides a default)."""
+    amt = _naira(amount_naira)
+    if amt is None:
+        return None
+    for c in charges or []:
+        lo, up, ch = c.get("lower"), c.get("upper"), c.get("charge")
+        if ch is None or lo is None:
+            continue
+        if amt >= lo and (up is None or up <= 0 or amt <= up):
+            return ch
+    return None
 
 
 def resolve_account(account_number: str, bank_code: str) -> dict:
@@ -727,6 +835,12 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
     2 = data); the bills check takes only the reference. Both return an integer
     ``transactionStatus`` whose legend ALAT doesn't publish — see _parse_vas for how
     that is handled money-safely."""
+    if txn_type == "remita":
+        # ProcessRemitaPayment is synchronous and ALAT exposes NO Remita status
+        # endpoint, so a timed-out Remita payment can't be auto-requeried — leave it
+        # PENDING for manual reconciliation (never auto-settle/refund, never mis-route
+        # to the airtime status endpoint).
+        return {"success": False, "pending": True, "status": "REMITA_MANUAL", "reference": reference}
     product = "bills" if txn_type == "bill" else "airtime"
     if not _vas_live(product):
         return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
@@ -770,6 +884,235 @@ def _parse_vas(data: dict, reference: str) -> dict:
     return {"success": ok and not pending, "pending": pending, "status": status,
             "reference": r.get("transactionReference", reference),
             "message": r.get("message") or _msg(data), "raw": data}
+
+
+# ---------------------------------------------------------------------------
+# Remita — pay a Remita RRR (bill payment) debiting the user's NUBAN.
+#
+# validate_rrr -> confirm the RRR + amount before paying; pay_remita -> the money call
+# (carries securityInfo; mirrors the bill/VAS contract — success => paid; a network
+# error returns pending=True so the caller never refunds a maybe-paid bill).
+# ---------------------------------------------------------------------------
+def validate_rrr(rrr: str) -> dict:
+    """Validate a Remita Retrieval Reference (RRR) -> {success, name, amount, message}."""
+    if not _vas_live("remita"):
+        if _mock_blocked():
+            return {"success": False, "message": "Remita is not configured"}
+        return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM", "amount": None}
+    try:
+        channel = settings.WEMA.get("CHANNEL_ID", "")
+        data = _get("remita", f"/api/RemitaPayment/ValidateRrr/{rrr}/{channel}").json()
+        r = data.get("result") or data.get("data") or {}
+        if not isinstance(r, dict):
+            r = {}
+        return {"success": _ok(data) or bool(data.get("successful") or r.get("isValidated")),
+                "name": r.get("name") or r.get("customerName", ""), "amount": _naira(r.get("amount")),
+                "message": r.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = "", charge=0,
+               email: str = "", phone: str = "", name: str = "", payer_name: str = "",
+               payer_email: str = "", payer_number: str = "", description: str = "") -> dict:
+    """Pay a Remita RRR debiting the user's NUBAN (ProcessRemitaPayment)."""
+    if not _vas_live("remita"):
+        if _mock_blocked():
+            return {"success": False, "message": "Remita is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
+    src = source_account or _vas_source()
+    if not src:
+        return {"success": False, "message": "Remita is temporarily unavailable"}
+    try:
+        body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "customerAccount": src,
+                "amount": float(amount_naira), "charge": float(charge),
+                "transactionReference": reference, "customerEmail": email,
+                "customerPhoneNumber": phone, "customerName": name, "channelType": "API",
+                "accountName": name, "rrr": rrr, "payerEmail": payer_email or email,
+                "payerName": payer_name or name, "payerNumber": payer_number or phone,
+                "description": description or f"Remita {rrr}",
+                "securityInfo": _security_info(op="remita", reference=reference, amount=amount_naira)}
+        data = _post("remita", "/api/RemitaPayment/ProcessRemitaPayment", body).json()
+        return _parse_vas(data, reference)
+    except requests.RequestException as exc:
+        return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
+
+
+def remita_receipt(rrr: str) -> dict:
+    """Fetch a Remita payment receipt for a paid RRR (PrintRemitaReceipt)."""
+    if not _vas_live("remita"):
+        return {"success": not _mock_blocked(), "mock": True, "receipt": None}
+    try:
+        data = _get("remita", f"/api/RemitaPayment/PrintRemitaReceipt/{rrr}").json()
+        return {"success": _ok(data) or bool(data.get("successful")),
+                "receipt": data.get("result") or data.get("data"), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Buy-Now-Pay-Later (ALAT BNPL) — external credit against the user's NUBAN.
+#
+# Distinct auth (merchant headers, see _bnpl_headers) and a multi-step flow: offers
+# (eligibility) -> consent (accountNumber, amount, tenor) -> accept terms -> poll status
+# -> liquidate. This is REAL debt: only the read-only `offers` step is exposed to end
+# users today; the commitment steps (consent/accept/liquidate) are built here but gated
+# behind a product/compliance decision (see the loans app).
+# ---------------------------------------------------------------------------
+def _bnpl_live() -> bool:
+    m = settings.WEMA
+    return bool(m.get("BNPL_MERCHANT_ID") and m.get("BNPL_AUTH_KEY"))
+
+
+def bnpl_offers() -> dict:
+    """Get the BNPL product offers a customer is eligible for (read-only)."""
+    if not _bnpl_live():
+        if _mock_blocked():
+            return {"success": False, "message": "BNPL is not configured"}
+        return {"success": True, "mock": True, "offers": []}
+    try:
+        data = _get("bnpl", "/api/Eligibility/productoffers").json()
+        rows = data.get("result") if isinstance(data, dict) else None
+        if rows is None:
+            rows = data.get("data") if isinstance(data, dict) else None
+        if rows is None:
+            rows = data if isinstance(data, list) else [data]
+        rows = rows if isinstance(rows, list) else [rows]
+        ok = _ok(data) if isinstance(data, dict) and ("status" in data or "hasError" in data) else bool(rows)
+        return {"success": ok, "offers": rows, "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_consent(account_number: str, product_amount, tenor: int, customer_reference: str, *,
+                 equity_amount=0) -> dict:
+    """Request BNPL consent for a loan against the NUBAN (ConsentRequest)."""
+    if not _bnpl_live():
+        if _mock_blocked():
+            return {"success": False, "message": "BNPL is not configured"}
+        return {"success": True, "mock": True, "eligibility_id": "BNPL-SIM-" + secrets.token_hex(6),
+                "account_name": "ADEYEMI WILLIAM"}
+    try:
+        data = _post("bnpl", "/api/Eligibility/ConsentRequest",
+                     {"accountNumber": account_number, "productAmount": float(product_amount),
+                      "equityAmount": float(equity_amount or 0), "tenor": int(tenor),
+                      "customerReference": customer_reference}).json()
+        r = data.get("response", {}) or {}
+        if not isinstance(r, dict):
+            r = {}
+        return {"success": bool(data.get("successful")) or _ok(data),
+                "eligibility_id": r.get("eligibilityId") or data.get("eligibilityId", ""),
+                "account_name": r.get("accountName", ""),
+                "message": data.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_accept_terms(eligibility_id: str, accepted: bool = True) -> dict:
+    """Accept (or decline) the BNPL loan terms (AcceptTerms — a 200 No-Content endpoint)."""
+    if not _bnpl_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        resp = _post("bnpl", "/api/LoanApplication/AcceptTerms",
+                     {"eligibilityId": eligibility_id, "isTermsAccepted": bool(accepted)})
+        if resp.status_code < 300 and not (resp.content or b"").strip():
+            return {"success": True}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"success": resp.status_code < 300}
+        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_status(customer_reference: str) -> dict:
+    """Poll a BNPL loan application's status by our customer reference."""
+    if not _bnpl_live():
+        return {"success": not _mock_blocked(), "mock": True, "status": "PENDING"}
+    try:
+        # ALAT spells the query param "customeReference" (sic).
+        data = _get("bnpl", "/api/LoanApplication/loan-application-status",
+                    {"customeReference": customer_reference}).json()
+        r = data.get("result") or data.get("data") or data
+        status = (r.get("status") if isinstance(r, dict) else "") or ""
+        return {"success": bool(data.get("successful")) or _ok(data), "status": str(status), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
+    """Liquidate (early-repay) a BNPL loan (loan-liquidation)."""
+    if not _bnpl_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        body = {"customerReference": customer_reference}
+        if amount is not None:
+            body["amount"] = float(amount)
+        data = _post("bnpl", "/api/LoanApplication/loan-liquidation", body).json()
+        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Pay with Bank Account — ALAT Authenticator (/pwba-authenticator).
+#
+# A single direct debit from a customer's OWN WEMA/ALAT account, authorised by them
+# in the ALAT mobile app — a funding rail (pull money from the user's ALAT account
+# into their Zitch wallet). Async: initiate -> customer approves in-app -> poll status
+# -> credit. No securityInfo; the channel id travels in the body, not a header.
+# ---------------------------------------------------------------------------
+def _pwba_live() -> bool:
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("pwba"))
+
+
+def pwba_fund_request(amount_naira, reference: str, *, source_account: str, narration: str = "") -> dict:
+    """Initiate a direct debit from the customer's ALAT account (transfer-fund-request).
+    The customer then approves it in the ALAT app; poll pwba_status for the outcome."""
+    if not _pwba_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Pay-with-bank is not configured"}
+        return {"success": True, "mock": True, "status": "PENDING", "reference": reference}
+    try:
+        body = {"amount": float(amount_naira), "sourceAccountNumber": source_account,
+                "channelId": settings.WEMA.get("CHANNEL_ID", ""),
+                "narration": narration or "Zitch wallet funding", "transactionReference": reference}
+        data = _post("pwba", "/api/EcommerceTransfer/v2/transfer-fund-request", body).json()
+        r = data.get("result", {}) or {}
+        if not isinstance(r, dict):
+            r = {}
+        return {"success": _ok(data), "status": (r.get("status") or "").upper(),
+                "platform_reference": r.get("platformTransactionReference", ""),
+                "message": r.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def pwba_status(reference: str) -> dict:
+    """Check a Pay-with-Bank direct debit's status by our transactionReference.
+
+    Maps to the {success, pending, amount_naira} shape the funding verify path wants:
+    SUCCESS/SETTLED => credit; PENDING/PROCESSING => not yet; anything else => not
+    successful (no credit)."""
+    if not _pwba_live():
+        # Mock: settle immediately in dev so the funding flow is testable offline.
+        return {"success": not _mock_blocked(), "mock": True,
+                "status": "SUCCESS" if not _mock_blocked() else "FAILED"}
+    try:
+        channel = settings.WEMA.get("CHANNEL_ID", "")
+        data = _get("pwba", f"/api/EcommerceTransfer/CheckTransactionStatus/{channel}/{reference}").json()
+        r = data.get("result", {}) or {}
+        if not isinstance(r, dict):
+            r = {}
+        status = (r.get("status") or "").upper()
+        pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS", "")
+        settled = _ok(data) and status in ("SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "SETTLED")
+        return {"success": settled, "pending": pending and not settled, "status": status,
+                "platform_reference": r.get("platformTransactionReference", ""),
+                "message": r.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
 
 
 # ---------------------------------------------------------------------------

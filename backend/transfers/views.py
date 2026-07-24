@@ -13,7 +13,7 @@ from common.http import (
     require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import payout_resolve_account
+from utility.providers import payout_charge, payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key
 
@@ -103,6 +103,21 @@ def resolve_account(request):
     # not a real detection. The app must not silently auto-fill it as verified.
     return ok(success=True, name=top["name"], bank=top["bank"], bank_name=top["bank_name"],
               mock=bool(top.get("mock")), matches=matches)
+
+
+@api
+@require_user
+def transfer_charge(request):
+    """POST /api/transfers/charge/ {access_token, amount} -> {fee}
+
+    The NIP fee the bank levies on an inter-bank transfer of ``amount`` (from Wema's
+    GetNIPCharges schedule). Informational — for display before the user confirms; the
+    send flow itself is unchanged. Returns "0.00" when the schedule isn't available."""
+    amount = parse_amount(request.data.get("amount"))
+    if amount is None:
+        return fail("Enter a valid amount")
+    fee = payout_charge(amount)
+    return ok(success=True, amount=str(amount), fee=str(fee) if fee is not None else "0.00")
 
 
 @api

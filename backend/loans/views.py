@@ -7,6 +7,7 @@ from common.http import (
     api, fail, idempotent_replay, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
+from utility.providers import bnpl_offers as provider_bnpl_offers
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, get_or_create_wallet
 
 from .models import Loan
@@ -161,3 +162,18 @@ def loan_repay(request):
 
     wallet = get_or_create_wallet(user)
     return ok(success=True, wallet=str(wallet.balance), loan=_loan_dict(loan), message="Repayment successful")
+
+
+@api
+@require_user
+def bnpl_offers(request):
+    """POST /api/loans/bnpl/offers/ {access_token} -> {success, offers}
+
+    The ALAT Buy-Now-Pay-Later product offers the user is eligible for (read-only). The
+    consent -> accept -> disburse commitment flow (real external credit) is built at the
+    client layer (utility.wema.bnpl_*) but intentionally NOT exposed as an end-user
+    endpoint yet — it creates real debt and needs product/compliance sign-off first."""
+    res = provider_bnpl_offers()
+    if not res.get("success"):
+        return fail(res.get("message", "BNPL is unavailable right now"), status=502)
+    return ok(success=True, offers=res.get("offers", []) or [], mock=bool(res.get("mock")))

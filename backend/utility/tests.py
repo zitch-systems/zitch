@@ -63,6 +63,34 @@ class UtilityTests(TestCase):
         self.assertEqual(body.get("code"), "velocity")
         self.assertEqual(self.balance(), Decimal("20000"))   # no debit
 
+    # --- remita ---
+    def test_validate_rrr(self):
+        with patch("utility.views.remita_validate",
+                   return_value={"success": True, "name": "ADA EZE", "amount": Decimal("5000.00")}):
+            res, body = self.post("/api/utility/validate_rrr/",
+                                  {"access_token": self.token, "rrr": "120000000001"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["name"], "ADA EZE")
+        self.assertEqual(body["amount"], "5000.00")
+
+    def test_payremita_success_debits_once(self):
+        with patch("utility.views.remita_pay", return_value={"success": True, "status": "SUCCESS"}):
+            res, body = self.post("/api/utility/payremita/", {
+                "access_token": self.token, "rrr": "120000000001", "amount": "5000",
+                "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(self.balance(), Decimal("15000"))
+        self.assertEqual(Transaction.objects.get(reference=body["reference"]).transaction_status,
+                         Transaction.SUCCESS)
+
+    def test_payremita_refunds_on_failure(self):
+        with patch("utility.views.remita_pay",
+                   return_value={"success": False, "message": "invalid rrr"}):
+            res, _ = self.post("/api/utility/payremita/", {
+                "access_token": self.token, "rrr": "BAD", "amount": "5000", "transaction_pin": "1234"})
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(self.balance(), Decimal("20000"))   # fully refunded
+
     def test_airtime_rejects_wrong_pin_without_debit(self):
         res, _ = self.post("/api/utility/buyairtime/", {
             "access_token": self.token, "amount": "1000", "network": "1",

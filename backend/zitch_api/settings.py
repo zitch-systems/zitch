@@ -244,15 +244,23 @@ WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
     "KEYS": {
-        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services (create/acct-mgt/credit/debit)
+        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services (create/acct-mgt/credit/debit/upgrade)
         "card": os.environ.get("WEMA_CARD_KEY", ""),       # Card Management (Virtual Naira Card)
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime & Data (subscribe to enable)
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # Bills Payment (subscribe to enable)
         "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
+        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment (subscribe to enable)
+        "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later APIM subscription
+        "pwba": os.environ.get("WEMA_PWBA_KEY", ""),       # Pay with Bank Account (ALAT Authenticator)
     },
     # The card product id ("cardKey") ALAT's virtualCard request expects — distinct
     # from the subscription key above. Supplied by Wema; blank until then.
     "CARD_PRODUCT_KEY": os.environ.get("WEMA_CARD_PRODUCT_KEY", ""),
+    # BNPL uses a DIFFERENT auth scheme from the rest of the rail: merchant headers
+    # (x-merchant-id + x-merchant-authorization-key) alongside the APIM subscription
+    # key above. Supplied by Wema when the BNPL product is enabled.
+    "BNPL_MERCHANT_ID": os.environ.get("WEMA_BNPL_MERCHANT_ID", ""),
+    "BNPL_AUTH_KEY": os.environ.get("WEMA_BNPL_AUTH_KEY", ""),
     # Our own Wema pool/settlement NUBAN that funds outbound transfers (the
     # sourceAccountNumber on ProcessClientTransfer). Required for Wema payouts.
     "SOURCE_ACCOUNT": os.environ.get("WEMA_SOURCE_ACCOUNT", ""),
