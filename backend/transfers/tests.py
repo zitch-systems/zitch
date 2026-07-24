@@ -27,6 +27,19 @@ class BankTransferTests(TestCase):
     def balance(self):
         return get_or_create_wallet(self.user).balance
 
+    def test_transfer_charge_returns_nip_fee(self):
+        from decimal import Decimal
+        with patch("transfers.views.payout_charge", return_value=Decimal("25.00")):
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["fee"], "25.00")
+
+    def test_transfer_charge_defaults_to_zero_when_unavailable(self):
+        with patch("transfers.views.payout_charge", return_value=None):
+            res, body = self.post("/api/transfers/charge/", {"access_token": self.token, "amount": "20000"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["fee"], "0.00")
+
     def test_transfer_below_50_rejected(self):
         res, body = self.post("/api/transfers/send/", {
             "access_token": self.token, "account_number": "0123456789", "bank": "gtb",

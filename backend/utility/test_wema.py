@@ -399,3 +399,120 @@ class WemaAccountLifecycleTests(SimpleTestCase):
         self.assertEqual(r["restriction_status"], "None")
         self.assertTrue(mock_get.call_args[0][0].endswith(
             "/account-upgrade/api/partnership/partner-account-kyc-status"))
+
+    @patch("utility.wema.requests.post")
+    def test_upgrade_tier2_sends_identity(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "message": "ok"})
+        r = wema.upgrade_tier2("0155500011", bvn="22222222222", nin="12345678901", live_image="b64")
+        self.assertTrue(r["success"])
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["accountNumber"], "0155500011")
+        self.assertEqual(body["bvn"], "22222222222")
+        self.assertTrue(mock_post.call_args[0][0].endswith(
+            "/account-upgrade/api/partnership/partner-account-upgrade-tier2"))
+
+    @patch("utility.wema.requests.post")
+    def test_upgrade_tier3_maps_residential_address(self, mock_post):
+        mock_post.return_value = _resp({"status": True})
+        r = wema.upgrade_tier3("0155500011", {"fullAddress": "1 Marina, Lagos", "state": "Lagos"})
+        self.assertTrue(r["success"])
+        addr = mock_post.call_args[1]["json"]["residentialAddress"]
+        self.assertEqual(addr["fullAddress"], "1 Marina, Lagos")
+        self.assertEqual(addr["country"], "Nigeria")   # defaulted
+
+
+@override_settings(WEMA=WEMA_LIVE)
+class WemaNipChargesTests(SimpleTestCase):
+    @patch("utility.wema.requests.get")
+    def test_charges_and_fee_bands(self, mock_get):
+        mock_get.return_value = _resp({"result": {"chargeFees": [
+            {"chargeFeeName": "<=5000", "transactionType": 1, "charge": 10, "lower": 0, "upper": 5000},
+            {"chargeFeeName": "5001-50000", "transactionType": 1, "charge": 25, "lower": 5001, "upper": 50000},
+            {"chargeFeeName": ">50000", "transactionType": 1, "charge": 50, "lower": 50001, "upper": 0}]},
+            "hasError": False})
+        r = wema.get_nip_charges()
+        self.assertTrue(r["success"])
+        charges = r["charges"]
+        self.assertEqual(wema.nip_fee_for(3000, charges), Decimal("10.00"))
+        self.assertEqual(wema.nip_fee_for(20000, charges), Decimal("25.00"))
+        self.assertEqual(wema.nip_fee_for(100000, charges), Decimal("50.00"))  # open-ended upper
+        self.assertTrue(mock_get.call_args[0][0].endswith("/debit-wallet/api/Shared/GetNIPCharges"))
+
+    def test_nip_fee_no_band_returns_none(self):
+        bands = [{"lower": Decimal("500"), "upper": Decimal("1000"), "charge": Decimal("5")}]
+        self.assertIsNone(wema.nip_fee_for(100, bands))
+
+
+WEMA_REMITA = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "remita": "remitakey"},
+               "SOURCE_ACCOUNT": "0100000001"}
+
+
+@override_settings(WEMA=WEMA_REMITA)
+class WemaRemitaTests(SimpleTestCase):
+    @patch("utility.wema.requests.get")
+    def test_validate_rrr(self, mock_get):
+        mock_get.return_value = _resp({"result": {"isValidated": True, "name": "ADA EZE",
+                                                  "amount": "5000"}, "hasError": False})
+        r = wema.validate_rrr("120000000001")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["amount"], Decimal("5000.00"))
+        self.assertTrue(mock_get.call_args[0][0].endswith(
+            "/remita-payment/api/RemitaPayment/ValidateRrr/120000000001/chan-1"))
+
+    @patch("utility.wema.requests.post")
+    def test_pay_remita_sends_rrr_securityinfo_nuban(self, mock_post):
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS", "transactionReference": "R"},
+                                        "hasError": False})
+        r = wema.pay_remita(5000, "R", rrr="120000000001", source_account="0155500011", name="ADA")
+        self.assertTrue(r["success"])
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["rrr"], "120000000001")
+        self.assertEqual(body["customerAccount"], "0155500011")   # debits the user's NUBAN
+        self.assertEqual(body["securityInfo"], "sec")
+        self.assertEqual(mock_post.call_args[1]["headers"]["access"], "chan-1")   # remita uses `access`
+        self.assertTrue(mock_post.call_args[0][0].endswith(
+            "/remita-payment/api/RemitaPayment/ProcessRemitaPayment"))
+
+    def test_vas_status_remita_stays_pending(self):
+        # No Remita status endpoint on ALAT -> a timed-out payment stays pending
+        # (never mis-routed to the airtime status endpoint / auto-settled).
+        r = wema.vas_status("R", "remita")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])
+
+
+WEMA_BNPL = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "bnpl": "bnplkey"},
+             "BNPL_MERCHANT_ID": "merch-1", "BNPL_AUTH_KEY": "merch-auth"}
+
+
+@override_settings(WEMA=WEMA_BNPL)
+class WemaBnplTests(SimpleTestCase):
+    @patch("utility.wema.requests.get")
+    def test_offers_uses_merchant_auth(self, mock_get):
+        mock_get.return_value = _resp([{"productId": 1, "productName": "BNPL 30d", "maximumTenor": 30}])
+        r = wema.bnpl_offers()
+        self.assertTrue(r["success"])
+        self.assertEqual(r["offers"][0]["productName"], "BNPL 30d")
+        h = mock_get.call_args[1]["headers"]
+        self.assertEqual(h["x-merchant-id"], "merch-1")
+        self.assertEqual(h["x-merchant-authorization-key"], "merch-auth")
+        self.assertEqual(h["Ocp-Apim-Subscription-Key"], "bnplkey")
+        self.assertNotIn("access", h)      # BNPL does NOT use the channel header
+        self.assertTrue(mock_get.call_args[0][0].endswith("/alat-bnpl/api/Eligibility/productoffers"))
+
+    @patch("utility.wema.requests.post")
+    def test_consent_returns_eligibility_id(self, mock_post):
+        mock_post.return_value = _resp({"successful": True, "message": "ok",
+                                        "response": {"accountName": "ADA", "eligibilityId": "E-1"}})
+        r = wema.bnpl_consent("0155500011", 20000, 30, "CUST-1")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["eligibility_id"], "E-1")
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["productAmount"], 20000.0)
+        self.assertEqual(body["tenor"], 30)
+        self.assertTrue(mock_post.call_args[0][0].endswith("/alat-bnpl/api/Eligibility/ConsentRequest"))
+
+    def test_bnpl_live_requires_merchant_creds(self):
+        self.assertTrue(wema._bnpl_live())
+        with override_settings(WEMA={**WEMA_BNPL, "BNPL_MERCHANT_ID": ""}):
+            self.assertFalse(wema._bnpl_live())

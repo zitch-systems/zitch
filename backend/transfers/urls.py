@@ -6,5 +6,6 @@ urlpatterns = [
     path("banks/", views.list_banks),
     path("beneficiaries/", views.list_beneficiaries),
     path("resolve/", views.resolve_account),
+    path("charge/", views.transfer_charge),
     path("send/", views.bank_transfer),
 ]

@@ -12,7 +12,7 @@ from common.http import (
 from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
-from .providers import vtu_purchase, vtu_verify_customer
+from .providers import remita_pay, remita_validate, vtu_purchase, vtu_verify_customer
 
 NETWORK_NAMES = {"1": "MTN", "2": "GLO", "3": "Airtel", "4": "9mobile"}
 CABLE_NAMES = {"1": "GoTV", "2": "DSTV", "3": "StarTimes"}
@@ -229,3 +229,51 @@ def buyelectricity(request):
     token = (result.get("token") or result.get("provider_reference", "")) if status == "success" else ""
     return provider_purchase_response(status, txn, result,
                                       success_message="Electricity purchase successful", token=token)
+
+
+# ---------------- REMITA (RRR bill payment) ----------------
+@api
+@require_user
+def validate_rrr(request):
+    """POST /api/utility/validate_rrr/ {access_token, rrr} -> {success, name, amount}"""
+    rrr = (request.data.get("rrr") or "").strip()
+    if not rrr:
+        return fail("Enter the Remita RRR")
+    res = remita_validate(rrr)
+    if not res.get("success"):
+        return fail(res.get("message", "Could not validate this RRR"), status=400)
+    amount = res.get("amount")
+    return ok(success=True, name=res.get("name", ""),
+              amount=str(amount) if amount is not None else "", mock=bool(res.get("mock")))
+
+
+@api
+@require_user
+def payremita(request):
+    """POST /api/utility/payremita/ {access_token, rrr, amount, transaction_pin}
+
+    Debit the wallet and pay the Remita RRR from the user's NUBAN. A timed-out payment
+    stays PENDING (ALAT has no Remita status endpoint — see wema.vas_status); it is
+    never auto-refunded, so a maybe-paid bill is not double-spent."""
+    user, data = request.user_obj, request.data
+    err = _check_pin(user, data)
+    if err:
+        return err
+    rrr = (data.get("rrr") or "").strip()
+    if not rrr:
+        return fail("Enter the Remita RRR")
+    amount = _amount(data.get("amount"))
+    if amount is None or amount < 100:
+        return fail("Enter a valid amount")
+    source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    name = user.get_full_name() or user.phone or "Zitch User"
+    outcome = _run_purchase(
+        user, amount, f"Remita — {rrr}",
+        {"rrr": rrr, "vas_rail": "wema", "vas_type": "remita"},
+        lambda ref: remita_pay(amount, ref, rrr=rrr, source_account=source,
+                               email=user.email or "", phone=user.phone or "", name=name),
+        idempotency_key=spend_key(data.get("idempotency_key"), user, "remita", rrr, amount),
+    )
+    if not isinstance(outcome, tuple):
+        return outcome
+    return provider_purchase_response(*outcome, success_message="Remita payment successful")

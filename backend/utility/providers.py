@@ -707,3 +707,42 @@ def card_reveal(card_token: str) -> dict:
         from . import wema
         return wema.card_reveal(card_token)
     return card_secure_details(card_token)
+
+
+# ---------------------------------------------------------------------------
+# NIP transfer charges / Remita / BNPL — Wema-only rails (no alternative provider).
+# The wrappers keep the views off the wema client directly and give tests one seam.
+# ---------------------------------------------------------------------------
+def payout_charge(amount_naira):
+    """The NIP fee a bank transfer of `amount_naira` attracts (naira Decimal), or None
+    if the schedule isn't available. Caches the near-static fee schedule for an hour.
+    INFORMATIONAL — it does not change what the send flow debits."""
+    from django.core.cache import cache
+
+    from . import wema
+    charges = cache.get("wema_nip_charges")
+    if charges is None:
+        res = wema.get_nip_charges()
+        if not res.get("success"):
+            return None
+        charges = res.get("charges", []) or []
+        cache.set("wema_nip_charges", charges, 3600)
+    return wema.nip_fee_for(amount_naira, charges)
+
+
+def remita_validate(rrr: str) -> dict:
+    """Validate a Remita RRR (read-only)."""
+    from . import wema
+    return wema.validate_rrr(rrr)
+
+
+def remita_pay(amount_naira, reference: str, *, rrr: str, source_account: str = "", **kw) -> dict:
+    """Pay a Remita RRR debiting the user's NUBAN."""
+    from . import wema
+    return wema.pay_remita(amount_naira, reference, rrr=rrr, source_account=source_account, **kw)
+
+
+def bnpl_offers() -> dict:
+    """The BNPL product offers a customer is eligible for (read-only)."""
+    from . import wema
+    return wema.bnpl_offers()
