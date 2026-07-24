@@ -22,21 +22,32 @@ from .models import OTP, AccessToken, User
 _LOGO_URL = "https://zitch.ng/assets/brand/zitch-icon.png"
 
 
-def _branded_email(title: str, intro: str, code: str, note: str) -> str:
-    """A simple, email-client-safe branded HTML body for one-time codes — the
-    Zitch logo, a heading, the code in a prominent box, and a footer. Inline
-    styles only (no <style>/external CSS) so it renders in Gmail/Outlook/Apple."""
+def _branded_email(title: str, intro: str, *, code: str = "", note: str = "") -> str:
+    """An email-client-safe branded HTML body: the Zitch logo + wordmark on the brand
+    header, a heading, an intro line, an OPTIONAL prominent one-time-code box, an
+    optional fine-print note, and the licensing footer. Inline styles only (no
+    <style>/external CSS) so it renders consistently in Gmail/Outlook/Apple Mail.
+
+    `code` is optional — omit it for message-only emails (e.g. a sign-in reminder);
+    the code box only renders when a code is supplied."""
+    code_box = (
+        '<div style="font-size:32px;font-weight:bold;letter-spacing:10px;color:#0FA295;'
+        f'background:#EAF3F1;border-radius:12px;padding:18px 10px;margin:0 0 22px;">{code}</div>'
+    ) if code else ""
+    note_p = (
+        f'<p style="font-size:12.5px;color:#737B83;line-height:1.55;margin:0;">{note}</p>'
+    ) if note else ""
     return (
         '<div style="background:#EFF7F5;padding:32px 16px;font-family:Arial,Helvetica,sans-serif;">'
         '<div style="max-width:460px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #E2EEEB;">'
-        '<div style="background:#0C3A39;padding:26px 0;text-align:center;">'
-        f'<img src="{_LOGO_URL}" width="60" height="60" alt="Zitch" style="border-radius:15px;display:inline-block;" />'
+        '<div style="background:#0C3A39;padding:24px 0;text-align:center;">'
+        f'<img src="{_LOGO_URL}" width="54" height="54" alt="Zitch" style="border-radius:14px;display:inline-block;vertical-align:middle;" />'
+        '<span style="color:#ffffff;font-size:22px;font-weight:bold;letter-spacing:0.5px;vertical-align:middle;margin-left:10px;">Zitch</span>'
         '</div>'
         '<div style="padding:32px 28px;text-align:center;">'
         f'<h1 style="font-size:20px;color:#0A0A0B;margin:0 0 8px;">{title}</h1>'
         f'<p style="font-size:14px;color:#737B83;line-height:1.55;margin:0 0 22px;">{intro}</p>'
-        f'<div style="font-size:32px;font-weight:bold;letter-spacing:10px;color:#0FA295;background:#EAF3F1;border-radius:12px;padding:18px 10px;margin:0 0 22px;">{code}</div>'
-        f'<p style="font-size:12.5px;color:#737B83;line-height:1.55;margin:0;">{note}</p>'
+        f'{code_box}{note_p}'
         '</div>'
         '<div style="background:#F4F9F8;border-top:1px solid #E2EEEB;padding:16px;text-align:center;font-size:11px;color:#9AAEB0;">'
         'Zitch &middot; Licensed by the CBN &middot; Deposits insured by the NDIC'
@@ -118,7 +129,9 @@ def phone_verification(request):
             # never the API caller.
             reminder = "You already have a Zitch account. Open the app to sign in, or use 'Forgot password' to reset."
             send_sms(phone, reminder)
-            send_email(existing.email or "", "Zitch sign-in reminder", reminder)
+            send_email(existing.email or "", "Zitch sign-in reminder", reminder,
+                       html=_branded_email("You already have a Zitch account", reminder,
+                                           note="If this wasn't you, you can safely ignore this email."))
         else:
             code = _otp_code()
             OTP.issue(phone=phone, code=code, email=email)
@@ -237,7 +250,8 @@ def password_forgot(request):
         send_email(user.email or "", "Your Zitch password reset code", message,
                    html=_branded_email("Reset your password",
                                        "Use this code to reset your Zitch password.",
-                                       code, "If you didn't request a reset, ignore this email — your password is unchanged."))
+                                       code=code,
+                                       note="If you didn't request a reset, ignore this email — your password is unchanged."))
     return ok(message="If that account exists, a reset code has been sent.")
 
 
@@ -551,7 +565,11 @@ def kyc_bvn_start(request):
     msg = f"Your Zitch BVN verification code is {code}"
     send_sms(user.phone or "", msg)
     if user.email:
-        send_email(user.email, "Your Zitch BVN code", msg)
+        send_email(user.email, "Your Zitch BVN code", msg,
+                   html=_branded_email("Verify your BVN",
+                                       "Enter this code in the app to confirm your BVN.",
+                                       code=code,
+                                       note="If you didn't start BVN verification, ignore this email."))
     return ok(success=True, otp_required=True,
               message="We sent a verification code to your phone and email.")
 
