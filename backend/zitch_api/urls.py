@@ -23,6 +23,12 @@ def health(_request):
         "funding_provider": payment_provider(),   # which rail funds the wallet (wema)
         "funding_wema": wema.wema_live(),
         "funding_wema_simulation": wema.wema_simulation(),
+        # Go-live gate (booleans, no secrets): a live payout only SETTLES when the
+        # securityInfo signing scheme is configured AND we're pointed at the live host.
+        # security_info false => live money calls are rejected and auto-refund;
+        # wema_sandbox true => still on apiplayground, so no real money moves.
+        "funding_wema_security_info": bool(settings.WEMA.get("SECURITY_INFO")),
+        "wema_sandbox": "apiplayground" in (settings.WEMA.get("BASE_URL", "") or "").lower(),
         "payout_provider": payout_provider(),     # which rail sends payouts + name enquiry (wema)
         "payout_live": payout_live(),             # payout rail has live keys
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
