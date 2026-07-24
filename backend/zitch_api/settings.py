@@ -295,10 +295,14 @@ SENDCHAMP = {
 # Email / OTP fallback — Resend. Sends the same OTP code in parallel with
 # Sendchamp so SMS delivery issues (DND, sender ID approval, carrier blocks)
 # don't strand a user. Blank API_KEY => mock mode (silent success).
+# FROM_EMAIL MUST be on a Resend-verified domain or every send is REJECTED (dropped).
+# The verified sending domain is `send.zitch.ng` (DKIM + SPF verified) — NOT the bare
+# `zitch.ng` root — so the default sends from a `send.zitch.ng` address with a friendly
+# "Zitch" display name. Resend accepts the "Name <addr>" form.
 RESEND = {
     "BASE_URL": os.environ.get("RESEND_BASE_URL", "https://api.resend.com"),
     "API_KEY": os.environ.get("RESEND_API_KEY", ""),
-    "FROM_EMAIL": os.environ.get("RESEND_FROM_EMAIL", "no-reply@zitch.ng"),
+    "FROM_EMAIL": os.environ.get("RESEND_FROM_EMAIL", "Zitch <no-reply@send.zitch.ng>"),
 }
 # KYC — selfie/liveness + address + ID-document (image/biometric) — Prembly
 # (IdentityPass). Blank => mock mode.
