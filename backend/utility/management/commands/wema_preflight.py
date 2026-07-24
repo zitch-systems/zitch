@@ -61,6 +61,15 @@ class Command(BaseCommand):
             FAIL if test_otp_on else PASS,
             "TEST_OTP is SET — a fixed OTP is accepted for one number; unset "
             "TEST_OTP_PHONE + TEST_OTP_CODE before go-live" if test_otp_on else "off"))
+        # Hard gate: the simulated-deposit endpoint must never be reachable at
+        # go-live. It is already inert once WEMA_SIMULATION is off, but fail while
+        # the token lingers so it gets cleaned up too.
+        sim_deposit_on = bool(settings.SIMULATE_DEPOSIT_TOKEN)
+        checks.append((
+            True, "Simulated-deposit token",
+            FAIL if sim_deposit_on else PASS,
+            "SIMULATE_DEPOSIT_TOKEN is SET — unset it before go-live"
+            if sim_deposit_on else "off"))
 
         # SOFT — VTU.ng (airtime/data/bills). Lean on vtu_probe's own empty-wallet
         # detection (it sets a balance hint) rather than re-parsing the amount.

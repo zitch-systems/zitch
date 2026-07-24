@@ -65,10 +65,18 @@ crons too (`render.yaml` already declares the slots on each).
 | `SENDCHAMP_API_KEY` | SMS / OTP-by-SMS. |
 | `SENDCHAMP_SENDER_NAME` | Sender ID (default `Zitch`) — **must be an approved sender ID in Sendchamp** for the DND route to deliver. |
 
-> ⚠️ **`TEST_OTP_PHONE` / `TEST_OTP_CODE` — pre-launch testing ONLY, must be UNSET for go-live.**
-> When both are set, that one number accepts a fixed OTP code (for walking the app
-> before the SMS sender ID is approved). `wema_preflight` **hard-fails** while they
-> are set, so readiness cannot pass until you remove them. Delete both before launch.
+> ⚠️ **Test-only switches — pre-launch testing ONLY, all must be UNSET for go-live.**
+> `wema_preflight` **hard-fails** while any of these is set, so readiness cannot pass
+> until you remove them.
+>
+> | Var | What it enables (test only) |
+> |---|---|
+> | `TEST_OTP_PHONE` / `TEST_OTP_CODE` | That one number accepts a fixed OTP code, so you can sign in before the SMS sender ID is approved. |
+> | `SIMULATE_DEPOSIT_TOKEN` | With `WEMA_SIMULATION=true`, `POST /api/dev/simulate-deposit/ {token, phone, amount}` credits mock money into a wallet — the missing "money-in" step so you can walk **fund → transfer → airtime** end to end. The endpoint **404s whenever `WEMA_SIMULATION` is off**, so it can never fabricate real money on a live deploy. |
+>
+> **End-to-end simulation walk:** set all four (plus `WEMA_SIMULATION=true`), sign up
+> with `TEST_OTP_PHONE`, `curl` the simulate-deposit endpoint to load a balance, then
+> transfer / buy airtime in the app. Delete all of them before launch.
 
 No `*_PROVIDER` flip is needed — `wema` is already the default funding, payout and
 KYC rail.

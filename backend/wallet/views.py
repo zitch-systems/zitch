@@ -1,6 +1,10 @@
+import hmac
 import json
 import logging
+import secrets
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import IntegrityError
 from django.views.decorators.csrf import csrf_exempt
 
@@ -21,11 +25,13 @@ from .services import (
     get_or_create_wallet,
     make_reference,
     settle_funding,
+    settle_reserved_funding,
     transfer,
     wema_account_reference,
 )
 
 log = logging.getLogger("wallet")
+User = get_user_model()
 
 
 @api
@@ -372,6 +378,57 @@ def fund_verify(request):
     settle_funding(reference, result.get("amount_naira"))  # idempotent
     wallet = get_or_create_wallet(request.user_obj)
     return ok(success=True, wallet=str(wallet.balance), message="Wallet funded")
+
+
+@api
+@ratelimit("simulate_deposit", limit=30, window=60)
+def simulate_deposit(request):
+    """POST /api/dev/simulate-deposit/ {token, phone, amount} -> {success, wallet}
+
+    TEST-ONLY. Credits a mock inbound deposit — via the SAME path a real Wema NUBAN
+    deposit takes — so the app can be walked fund -> transfer -> airtime end to end
+    without real money or an approved SMS sender. Locked down three ways, ALL of
+    which must hold:
+
+      1. WEMA_SIMULATION must be on. A live-money deploy runs with simulation OFF,
+         so this endpoint 404s there — it can NEVER fabricate real money.
+      2. SIMULATE_DEPOSIT_TOKEN must be set and match (constant-time compare).
+      3. The amount is bounded and the phone must belong to an existing user.
+
+    Every use is logged loudly; `wema_preflight` HARD-FAILS while the token is set.
+    Remove SIMULATE_DEPOSIT_TOKEN before go-live.
+    """
+    # Gate 1 — simulation only. 404 (not 403) so a live deploy gives no hint the
+    # mechanism exists.
+    if not wema_provider.wema_simulation():
+        return fail("Not found", status=404)
+    # Gate 2 — shared-secret token; fail closed when unset.
+    configured = settings.SIMULATE_DEPOSIT_TOKEN
+    supplied = (request.data.get("token") or "").strip()
+    if not configured or not hmac.compare_digest(supplied, configured):
+        return fail("Forbidden", status=403)
+    # Gate 3 — target + bounded amount.
+    phone = (request.data.get("phone") or "").strip()
+    amount = parse_amount(request.data.get("amount"))
+    if not phone:
+        return fail("phone is required")
+    if amount is None or amount < 100:
+        return fail("Enter a valid amount (min ₦100)")
+    if amount > 1_000_000:
+        return fail("Simulated deposit is capped at ₦1,000,000 per call")
+    user = User.objects.filter(phone=phone).first()
+    if user is None:
+        return fail("No user with that phone", status=404)
+
+    # WEMA-CR- prefix + unique suffix => routed and idempotent exactly like a real
+    # reconciled deposit (see apply_wema_credit / settle_reserved_funding).
+    reference = f"WEMA-CR-SIM-{secrets.token_hex(6).upper()}"
+    settle_reserved_funding(reference, amount, user)
+    wallet = get_or_create_wallet(user)
+    log.warning("simulate_deposit_used phone=%s amount=%s ref=%s — SIMULATE_DEPOSIT_TOKEN "
+                "is set (WEMA_SIMULATION on); REMOVE before go-live", phone, amount, reference)
+    return ok(success=True, wallet=str(wallet.balance), reference=reference,
+              message="Simulated deposit credited")
 
 
 # ------------------- FUND FROM ALAT ACCOUNT (Pay with Bank Account) -------------------
