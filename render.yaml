@@ -255,6 +255,11 @@ services:
         sync: false
       - key: WEMA_BASE_URL
         sync: false
+      # Paging: reconcile_wema calls utility.alerts.alert on a crashed run or a
+      # systemic gateway outage. That reaches Sentry only when SENTRY_DSN is set
+      # in THIS cron's env (crons are separate processes from the web service).
+      - key: SENTRY_DSN
+        sync: false
 
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)
@@ -277,6 +282,45 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
+      # Paging: integrity_check calls utility.alerts.alert on a mismatch, which
+      # reaches Sentry only when SENTRY_DSN is set in this cron's env.
+      - key: SENTRY_DSN
+        sync: false
+
+  # Ledger <-> BANK (Wema NUBAN) reconciliation — the EXTERNAL integrity check.
+  # integrity_check compares the ledger to our own stored balance; this compares
+  # the ledger to the real balance ALAT holds in each user's NUBAN, and pages
+  # (Sentry) when the ledger EXCEEDS the bank (a possible float leak / double
+  # credit). --fail-over also exits nonzero on that dangerous direction so Render
+  # surfaces a cron failure even before Sentry is wired; a benign bank>ledger
+  # delta (a deposit not yet swept by zitch-reconcile-wema) neither pages nor
+  # fails. Read-only. Needs the WEMA_* balance-read keys + SENTRY_DSN. Only acts
+  # when Wema is live (no-ops in sandbox/sim). Every 6 hours; tune as needed.
+  - type: cron
+    name: zitch-reconcile-balances
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "0 */6 * * *"
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py reconcile_balances --fail-over"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      - key: WEMA_CHANNEL_ID
+        sync: false
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_BASE_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
 
 databases:
   - name: zitch-db
