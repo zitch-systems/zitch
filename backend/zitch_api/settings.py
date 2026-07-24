@@ -251,6 +251,7 @@ WEMA = {
         "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
         "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment (subscribe to enable)
         "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later APIM subscription
+        "pwba": os.environ.get("WEMA_PWBA_KEY", ""),       # Pay with Bank Account (ALAT Authenticator)
     },
     # The card product id ("cardKey") ALAT's virtualCard request expects — distinct
     # from the subscription key above. Supplied by Wema; blank until then.

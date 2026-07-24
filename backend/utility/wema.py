@@ -72,6 +72,7 @@ _PATH = {
     "bills": "/bills-payment",               # bills payment (VAS)
     "remita": "/remita-payment",             # Remita RRR bill payment (VAS)
     "bnpl": "/alat-bnpl",                    # Buy-Now-Pay-Later (merchant-auth)
+    "pwba": "/pwba-authenticator",           # Pay with Bank Account — ALAT Authenticator direct debit
     "kyc": "/kyc",                           # Nigeria identity lookups (see KYC section)
     "card": "/card-management",              # Virtual Naira Card (partnerCard endpoints)
 }
@@ -1050,6 +1051,66 @@ def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
             body["amount"] = float(amount)
         data = _post("bnpl", "/api/LoanApplication/loan-liquidation", body).json()
         return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+# ---------------------------------------------------------------------------
+# Pay with Bank Account — ALAT Authenticator (/pwba-authenticator).
+#
+# A single direct debit from a customer's OWN WEMA/ALAT account, authorised by them
+# in the ALAT mobile app — a funding rail (pull money from the user's ALAT account
+# into their Zitch wallet). Async: initiate -> customer approves in-app -> poll status
+# -> credit. No securityInfo; the channel id travels in the body, not a header.
+# ---------------------------------------------------------------------------
+def _pwba_live() -> bool:
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("pwba"))
+
+
+def pwba_fund_request(amount_naira, reference: str, *, source_account: str, narration: str = "") -> dict:
+    """Initiate a direct debit from the customer's ALAT account (transfer-fund-request).
+    The customer then approves it in the ALAT app; poll pwba_status for the outcome."""
+    if not _pwba_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Pay-with-bank is not configured"}
+        return {"success": True, "mock": True, "status": "PENDING", "reference": reference}
+    try:
+        body = {"amount": float(amount_naira), "sourceAccountNumber": source_account,
+                "channelId": settings.WEMA.get("CHANNEL_ID", ""),
+                "narration": narration or "Zitch wallet funding", "transactionReference": reference}
+        data = _post("pwba", "/api/EcommerceTransfer/v2/transfer-fund-request", body).json()
+        r = data.get("result", {}) or {}
+        if not isinstance(r, dict):
+            r = {}
+        return {"success": _ok(data), "status": (r.get("status") or "").upper(),
+                "platform_reference": r.get("platformTransactionReference", ""),
+                "message": r.get("message") or _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def pwba_status(reference: str) -> dict:
+    """Check a Pay-with-Bank direct debit's status by our transactionReference.
+
+    Maps to the {success, pending, amount_naira} shape the funding verify path wants:
+    SUCCESS/SETTLED => credit; PENDING/PROCESSING => not yet; anything else => not
+    successful (no credit)."""
+    if not _pwba_live():
+        # Mock: settle immediately in dev so the funding flow is testable offline.
+        return {"success": not _mock_blocked(), "mock": True,
+                "status": "SUCCESS" if not _mock_blocked() else "FAILED"}
+    try:
+        channel = settings.WEMA.get("CHANNEL_ID", "")
+        data = _get("pwba", f"/api/EcommerceTransfer/CheckTransactionStatus/{channel}/{reference}").json()
+        r = data.get("result", {}) or {}
+        if not isinstance(r, dict):
+            r = {}
+        status = (r.get("status") or "").upper()
+        pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS", "")
+        settled = _ok(data) and status in ("SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "SETTLED")
+        return {"success": settled, "pending": pending and not settled, "status": status,
+                "platform_reference": r.get("platformTransactionReference", ""),
+                "message": r.get("message") or _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 

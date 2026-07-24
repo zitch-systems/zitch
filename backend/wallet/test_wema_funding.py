@@ -85,6 +85,62 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(b["using_bvn"])
 
 
+@override_settings(PAYMENT_PROVIDER="wema")
+class WemaAlatFundingTests(TestCase):
+    """Fund from the user's own ALAT account (Pay with Bank Account) + NUBAN statement."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08030000321", "alat@zitch.app")
+
+    def _post(self, path, payload):
+        return self.client.post(path, data=json.dumps({**payload, "access_token": self.token}),
+                                content_type="application/json")
+
+    def test_alat_fund_initiate_then_verify_credits_once(self):
+        with patch("utility.wema.pwba_fund_request",
+                   return_value={"success": True, "status": "PENDING"}):
+            r1 = self._post("/api/wallet/alat/fund/", {"account_number": "0123456789", "amount": "5000"})
+        self.assertEqual(r1.status_code, 200)
+        ref = r1.json()["reference"]
+        from wallet.models import FundingIntent
+        self.assertTrue(FundingIntent.objects.filter(reference=ref, user=self.user).exists())
+        # Awaiting approval -> pending, no credit.
+        with patch("utility.wema.pwba_status", return_value={"success": False, "pending": True}):
+            r2 = self._post("/api/wallet/alat/fund/verify/", {"reference": ref})
+        self.assertEqual(r2.status_code, 200)
+        self.assertTrue(r2.json()["pending"])
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0.00"))
+        # Settled -> credit exactly once (a replayed verify is a no-op).
+        with patch("utility.wema.pwba_status", return_value={"success": True, "pending": False}):
+            r3 = self._post("/api/wallet/alat/fund/verify/", {"reference": ref})
+            self._post("/api/wallet/alat/fund/verify/", {"reference": ref})   # replay
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+
+    def test_alat_fund_rejects_bad_account(self):
+        r = self._post("/api/wallet/alat/fund/", {"account_number": "123", "amount": "5000"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_statement_returns_normalized_rows(self):
+        w = Wallet.objects.get(user=self.user)
+        w.account_number = "0155500011"
+        w.save(update_fields=["account_number"])
+        with patch("utility.wema.get_transactions", return_value={"success": True, "transactions": [
+                {"referenceId": "D1", "amount": "2500", "creditType": "Credit", "status": "Successfull",
+                 "narration": "in", "transactionDate": "2026-07-01"}]}):
+            r = self._post("/api/wallet/statement/", {})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["account_number"], "0155500011")
+        self.assertEqual(body["transactions"][0]["reference"], "D1")
+        self.assertTrue(body["transactions"][0]["is_credit"])
+
+    def test_statement_needs_account(self):
+        r = self._post("/api/wallet/statement/", {})
+        self.assertEqual(r.status_code, 404)
+
+
 class WemaReconcileTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08030000999", "r@zitch.app")

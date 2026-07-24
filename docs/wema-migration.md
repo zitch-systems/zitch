@@ -113,6 +113,8 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 | NIP transfer charges | **wired** — `payout_charge` + `/api/transfers/charge/` (informational; debit unchanged) |
 | Account tier upgrade | **tier 3 synced** on address verify (bank-side limits); tier 2 needs BVN/NIN we don't retain |
 | BNPL | **offers wired** (read-only `/api/loans/bnpl/offers/`); consent→disburse gated on product sign-off |
+| Fund from ALAT account | **wired** — Pay-with-Bank direct debit (`/api/wallet/alat/fund/` + `/verify/`, credits once) |
+| NUBAN bank statement | **wired** — `/api/wallet/statement/` over transhistoryV2 |
 
 ## VAS (airtime / data / cable) — #189
 
@@ -296,8 +298,17 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
   built at the client layer but intentionally NOT exposed as an end-user endpoint — it creates
   real external debt and needs product/compliance sign-off first.
 
-Still portal-provisioned but not wired: `Pay with Bank Account (ALAT Authenticator)`,
-`Direct Debit / Scheduled Payments`, `Get Statement`.
+- **Pay with Bank Account (ALAT Authenticator)** — `pwba_fund_request` / `pwba_status`
+  (`/pwba-authenticator`, no securityInfo, channel id in the body). A direct-debit **funding**
+  rail: `POST /api/wallet/alat/fund/` starts a debit from the user's OWN ALAT account (they
+  approve it in the ALAT app) and `POST /api/wallet/alat/fund/verify/` polls it and credits the
+  wallet exactly once (FundingIntent + `settle_funding`).
+- **Get Statement** — `POST /api/wallet/statement/` returns the user's Wema NUBAN bank statement
+  (ALAT transhistoryV2, normalised) for a date range; distinct from the Zitch ledger history.
+
+Still unwired: **Direct Debit / Scheduled Payments** and any recurring-mandate flow — the bundle
+carries recurring *schemas* (SaveRecurringRequest/RecurringBillsResponse in bills-payment) but no
+recurring *endpoints*, so there's nothing to call yet. Confirm the endpoints with Wema.
 
 ## ⚠️ Open decisions — confirm with Wema before go-live
 

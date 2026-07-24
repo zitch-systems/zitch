@@ -516,3 +516,41 @@ class WemaBnplTests(SimpleTestCase):
         self.assertTrue(wema._bnpl_live())
         with override_settings(WEMA={**WEMA_BNPL, "BNPL_MERCHANT_ID": ""}):
             self.assertFalse(wema._bnpl_live())
+
+
+WEMA_PWBA = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "pwba": "pwbakey"}}
+
+
+@override_settings(WEMA=WEMA_PWBA)
+class WemaPwbaTests(SimpleTestCase):
+    """Pay with Bank Account (ALAT Authenticator) — a direct-debit funding rail."""
+
+    @patch("utility.wema.requests.post")
+    def test_fund_request_sends_channel_source_no_securityinfo(self, mock_post):
+        mock_post.return_value = _resp({"result": {"status": "PENDING",
+                                                   "platformTransactionReference": "PWBA-1"}, "hasError": False})
+        r = wema.pwba_fund_request(5000, "ZALAT-1", source_account="0123456789", narration="fund")
+        self.assertTrue(r["success"])
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["sourceAccountNumber"], "0123456789")
+        self.assertEqual(body["channelId"], "chan-1")      # channel id in the body, not a header
+        self.assertEqual(body["transactionReference"], "ZALAT-1")
+        self.assertNotIn("securityInfo", body)             # PWBA carries no securityInfo
+        self.assertTrue(mock_post.call_args[0][0].endswith(
+            "/pwba-authenticator/api/EcommerceTransfer/v2/transfer-fund-request"))
+
+    @patch("utility.wema.requests.get")
+    def test_status_success_settles(self, mock_get):
+        mock_get.return_value = _resp({"result": {"status": "SUCCESS"}, "hasError": False})
+        r = wema.pwba_status("ZALAT-1")
+        self.assertTrue(r["success"])
+        self.assertFalse(r["pending"])
+        self.assertTrue(mock_get.call_args[0][0].endswith(
+            "/pwba-authenticator/api/EcommerceTransfer/CheckTransactionStatus/chan-1/ZALAT-1"))
+
+    @patch("utility.wema.requests.get")
+    def test_status_pending_is_not_success(self, mock_get):
+        mock_get.return_value = _resp({"result": {"status": "PENDING"}, "hasError": False})
+        r = wema.pwba_status("ZALAT-1")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])
