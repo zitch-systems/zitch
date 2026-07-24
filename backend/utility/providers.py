@@ -177,6 +177,24 @@ def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "")
 # ---------------------------------------------------------------------------
 # SMS / OTP — Sendchamp
 # ---------------------------------------------------------------------------
+def _ng_msisdn(phone: str) -> str:
+    """Nigerian phone in Sendchamp's expected international format (234XXXXXXXXXX).
+
+    The app stores/handles numbers in local '080…' format, but Sendchamp's DND
+    route (needed to reach the DND-registered numbers most Nigerian lines are) does
+    not reliably deliver to a local-format number — so normalise before send: strip
+    non-digits, drop a single leading 0, and ensure the 234 country code.
+    """
+    digits = "".join(c for c in (phone or "") if c.isdigit())
+    if digits.startswith("234"):
+        return digits
+    if digits.startswith("0"):
+        return "234" + digits[1:]
+    if len(digits) == 10:  # 803… supplied without the leading 0
+        return "234" + digits
+    return digits  # already international, or non-NG — pass through unchanged
+
+
 def send_sms(phone: str, message: str) -> dict:
     cfg = settings.SENDCHAMP
     if not cfg["API_KEY"]:
@@ -185,7 +203,7 @@ def send_sms(phone: str, message: str) -> dict:
         resp = requests.post(
             f"{cfg['BASE_URL']}/sms/send",
             json={
-                "to": [phone],
+                "to": [_ng_msisdn(phone)],
                 "message": message,
                 "sender_name": cfg["SENDER_NAME"],
                 "route": "dnd",
@@ -230,6 +248,36 @@ def send_email(to: str, subject: str, message: str, html: str | None = None) -> 
         return {"success": resp.ok and "id" in data, "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"Email provider unreachable: {exc}"}
+
+
+def sms_probe(phone: str = "") -> dict:
+    """Live self-test for the SMS rail (Sendchamp) — returns NO secrets.
+
+    Proves the key authenticates and, when a phone is supplied, sends ONE real test
+    SMS and returns Sendchamp's raw response — so a non-delivery (unapproved sender
+    ID, empty Sendchamp wallet, bad number) is actually visible. The signup flow
+    deliberately hides send failures (anti-enumeration), so this is the only place
+    OTP delivery can be observed end to end.
+    """
+    cfg = settings.SENDCHAMP
+    out = {"config": {"base_url": cfg["BASE_URL"], "api_key_set": bool(cfg["API_KEY"]),
+                      "sender_name": cfg["SENDER_NAME"], "route": "dnd"}}
+    if not cfg["API_KEY"]:
+        out["hint"] = "SENDCHAMP_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
+        return out
+    if not phone:
+        out["hint"] = ("Key present. Add &phone=<number> to send a real test SMS and see the "
+                       "delivery status.")
+        return out
+    res = send_sms(phone, "Zitch test SMS — your OTP delivery is working.")
+    out["send"] = {"ok": bool(res.get("success")), "to_normalised": _ng_msisdn(phone),
+                   "raw": str(res.get("raw", res.get("message", "")))[:400]}
+    if not res.get("success"):
+        out["send"]["hint"] = (
+            f"Sent to Sendchamp but not accepted. Most common causes: the sender ID "
+            f"'{cfg['SENDER_NAME']}' is not approved in your Sendchamp account (required for the "
+            f"DND route), the Sendchamp wallet is empty, or the number is invalid.")
+    return out
 
 
 # ---------------------------------------------------------------------------
