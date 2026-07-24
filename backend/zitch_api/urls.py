@@ -152,6 +152,23 @@ def vtu_diagnose(request):
     return JsonResponse({"vtu": vtu_probe()})
 
 
+def sms_diagnose(request):
+    """GET /sms-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&phone=<number>]
+
+    Browser self-test for the Sendchamp SMS rail: proves the key authenticates and
+    (with &phone=) sends ONE real OTP-style SMS, surfacing Sendchamp's response so a
+    non-delivery is diagnosable. Signup hides SMS failures (anti-enumeration), so
+    this is the way to confirm the OTP actually drops. Returns NO secrets.
+    """
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    from utility.providers import sms_probe
+
+    phone = "".join(c for c in request.GET.get("phone", "") if c.isdigit())[:15]
+    return JsonResponse({"sms": sms_probe(phone)})
+
+
 urlpatterns = [
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
@@ -164,6 +181,7 @@ urlpatterns = [
     path("readyz", readyz),
     path("wema-diagnose", wema_diagnose),
     path("vtu-diagnose", vtu_diagnose),
+    path("sms-diagnose", sms_diagnose),
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
