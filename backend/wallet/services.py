@@ -9,6 +9,7 @@ import secrets
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction as db_transaction
+from django.db.models import Q, Sum
 
 from .models import FundingIntent, Transaction, Wallet
 
@@ -38,6 +39,27 @@ def make_reference(prefix: str = "ZTCH") -> str:
 def get_or_create_wallet(user) -> Wallet:
     wallet, _ = Wallet.objects.get_or_create(user=user)
     return wallet
+
+
+def wallet_expected_balance(user_id) -> Decimal:
+    """The balance implied by the append-only ledger for this user.
+
+    The ledger state machine:  expected = sum(IN, Successful) - sum(OUT, Pending
+    or Successful). Debits deduct at PENDING (a FAILED debit is refunded back);
+    credits are only ever written Successful. This is the single source of truth
+    for both integrity checks: the internal one (ledger vs stored balance) and the
+    external one (ledger vs the bank's NUBAN balance).
+    """
+    credits = (Transaction.objects
+               .filter(user_id=user_id, direction=Transaction.IN,
+                       transaction_status=Transaction.SUCCESS)
+               .aggregate(s=Sum("amount"))["s"] or Decimal("0"))
+    debits = (Transaction.objects
+              .filter(user_id=user_id, direction=Transaction.OUT)
+              .filter(Q(transaction_status=Transaction.PENDING)
+                      | Q(transaction_status=Transaction.SUCCESS))
+              .aggregate(s=Sum("amount"))["s"] or Decimal("0"))
+    return credits - debits
 
 
 def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:

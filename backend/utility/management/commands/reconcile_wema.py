@@ -52,6 +52,18 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # A crashed reconcile cron is the single thing you most want paged: it is
+        # the only settlement path (no webhooks), so silent death means deposits
+        # stop crediting and payouts stop settling. Capture + re-raise so both
+        # Sentry and the platform's nonzero-exit alerting fire.
+        from utility.alerts import alert
+        try:
+            self._run(**options)
+        except Exception:  # noqa: BLE001 — observability wrapper; original error re-raised
+            alert("reconcile_wema: run crashed", level="fatal", exc=True)
+            raise
+
+    def _run(self, **options):
         today = timezone.now().date()
         date_to = today.strftime("%Y-%m-%d")
         date_from = (today - timedelta(days=max(0, options["lookback_days"]))).strftime("%Y-%m-%d")
@@ -59,10 +71,12 @@ class Command(BaseCommand):
         # Phase 1 â€” inbound funding credits.
         scanned = 0
         credited = 0
+        fetch_failures = 0
         for wallet in wema_provisioned_wallets():
             scanned += 1
             res = wema.get_transactions(wallet.account_number, date_from, date_to)
             if not res.get("success"):
+                fetch_failures += 1
                 continue
             # The user's own payout references, fetched once per wallet: a credit
             # row matching one is a payout REVERSAL (routed through
@@ -76,11 +90,15 @@ class Command(BaseCommand):
         # payout_provider() is wema, the sole rail).
         settled = 0
         reversed_ = 0
+        payouts_seen = 0
+        status_failures = 0
         if payout_provider() == "wema":
             cutoff = timezone.now() - timedelta(minutes=max(0, options["payout_older_than_minutes"]))
             for txn in pending_bank_payouts(cutoff):
+                payouts_seen += 1
                 st = wema.confirm_transfer_status(txn.reference)
                 if not st.get("success"):
+                    status_failures += 1
                     continue  # query unreachable / unknown â€” leave PENDING for next run
                 status = (st.get("status") or "").upper()
                 if status in _SETTLED:
@@ -94,7 +112,22 @@ class Command(BaseCommand):
         from whatsapp.ops import record_audit
         record_audit("recon.wema_run", actor_type="system",
                      after={"wallets": scanned, "credited": credited,
-                            "payouts_settled": settled, "payouts_reversed": reversed_})
+                            "payouts_settled": settled, "payouts_reversed": reversed_,
+                            "fetch_failures": fetch_failures, "status_failures": status_failures})
+
+        # Systemic-outage signal: individual transient failures are expected and
+        # left PENDING for the next run, but when there was work to do and EVERY
+        # gateway call failed, that's an auth/connectivity outage (not a quiet
+        # no-op) â€” page it so "nothing is crediting" doesn't go unnoticed.
+        from utility.alerts import alert
+        if scanned and fetch_failures == scanned:
+            alert(f"reconcile_wema: all {scanned} wallet history fetches failed â€” Wema "
+                  f"unreachable or auth rejected; no deposits can be detected",
+                  level="error", wallets=scanned)
+        if payouts_seen and status_failures == payouts_seen:
+            alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed â€” "
+                  f"settlement stalled", level="error", payouts=payouts_seen)
+
         self.stdout.write(
             f"Wema reconcile: {credited} credit(s) / {scanned} wallet(s); "
             f"payouts settled {settled}, reversed {reversed_}")

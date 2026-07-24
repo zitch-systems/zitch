@@ -14,25 +14,10 @@ mismatches exit(1) for CI/cron alerting. This is the "reconciliation engine +
 balance snapshot" control from the hardening plan, kept additive: no schema
 change, the ledger itself is the source of truth.
 """
-from decimal import Decimal
-
 from django.core.management.base import BaseCommand
-from django.db.models import Q, Sum
 
-from wallet.models import Transaction, Wallet
-
-
-def wallet_expected_balance(user_id) -> Decimal:
-    credits = (Transaction.objects
-               .filter(user_id=user_id, direction=Transaction.IN,
-                       transaction_status=Transaction.SUCCESS)
-               .aggregate(s=Sum("amount"))["s"] or Decimal("0"))
-    debits = (Transaction.objects
-              .filter(user_id=user_id, direction=Transaction.OUT)
-              .filter(Q(transaction_status=Transaction.PENDING)
-                      | Q(transaction_status=Transaction.SUCCESS))
-              .aggregate(s=Sum("amount"))["s"] or Decimal("0"))
-    return credits - debits
+from wallet.models import Wallet
+from wallet.services import wallet_expected_balance  # single source of truth
 
 
 class Command(BaseCommand):
@@ -59,6 +44,13 @@ class Command(BaseCommand):
 
         for user_id, bal, exp in mismatches:
             self.stderr.write(f"MISMATCH user={user_id} balance={bal} ledger={exp}")
+        # A ledger/balance mismatch is a money bug or tampering — page it, don't
+        # let it sit silently in stderr + the audit log until someone looks.
+        if mismatches:
+            from utility.alerts import alert
+            alert("integrity_check: wallet balance diverges from ledger", level="error",
+                  wallets=checked, mismatches=len(mismatches),
+                  sample=[{"user": u, "balance": b, "ledger": e} for u, b, e in mismatches[:10]])
         self.stdout.write(f"Integrity: {checked} wallet(s), {len(mismatches)} mismatch(es)")
         if mismatches and options["fail_nonzero"]:
             raise SystemExit(1)
