@@ -29,9 +29,18 @@ MOCK mode when unconfigured; fails closed in production (providers.mock_disabled
 so a misconfigured deploy never fabricates an account/credit. WEMA_SIMULATION=true
 serves the mock flow even in production to test a real build without live keys.
 
-VERIFY-BEFORE-LIVE: paths/fields follow the ALAT OpenAPI specs but were not
-exercised against a live gateway — confirm each (esp. securityInfo, the live host,
-the tx-status code legend, and inbound-credit detection) before go-live.
+RECONCILED against the full ALAT OpenAPI spec set (see docs/wema-migration.md §Spec
+reconciliation). Funding rails — wallet-creation, balance/history, payout/transfer,
+credit-wallet, airtime/data, bills — have CONFIRMED-correct paths, fields, auth and
+envelopes. Still open before go-live:
+  * securityInfo construction (algorithm/plaintext) — provisioned out-of-band by Wema.
+  * tx-status legends — payout status strings, and the VAS/bills CheckTransactionStatus
+    INTEGER enums, are undocumented in the specs; get the code→meaning map from Wema.
+  * Card rail — the /api/VirtualCard/* paths are WRONG (see the card section) and need
+    the real /card-management endpoints + a NUBAN-keyed model.
+  * KYC rail — Wema has no standalone BVN/NIN/vNIN lookup (see the KYC section); route
+    those to Prembly or fold into account-creation.
+  * live host (WEMA_BASE_URL) + production keys.
 """
 import hashlib
 import logging
@@ -231,8 +240,17 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
         return {"success": not _mock_blocked(), "mock": True, "message": "OTP resent (demo)"}
     try:
         product = "wallet_bvn" if bvn else "wallet_nin"
-        data = _post(product, "/api/CustomerAccount/ResendOtpRequest/ResendOtp",
-                     {"trackingId": tracking_id, "phoneNumber": phone}).json()
+        resp = _post(product, "/api/CustomerAccount/ResendOtpRequest/ResendOtp",
+                     {"trackingId": tracking_id, "phoneNumber": phone})
+        # The spec documents ResendOtp as 200 No-Content: a bare .json() on an empty
+        # body raises ValueError (not a RequestException) and would crash a genuine
+        # success. Treat any 2xx with an empty/non-JSON body as resent.
+        if resp.status_code < 300 and not (resp.content or b"").strip():
+            return {"success": True, "message": "OTP resent"}
+        try:
+            data = resp.json()
+        except ValueError:
+            return {"success": resp.status_code < 300, "message": "OTP resent"}
         return {"success": _ok(data), "message": _msg(data)}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -302,14 +320,24 @@ def normalize_transaction(tx: dict) -> dict:
     needs: {reference, amount_naira, is_credit, narration, sender}.
 
     `referenceId` (fallback `tranId`) is the unique per-transaction key used as
-    the ledger idempotency guard; `creditType == "Credit"` marks an inbound
-    deposit (the only rows funding applies)."""
+    the ledger idempotency guard; a row funds the wallet only when
+    `creditType == "Credit"` AND its status is settled (not Pending/Failed)."""
     if not isinstance(tx, dict):
         return {"reference": "", "amount_naira": None, "is_credit": False, "narration": "", "sender": ""}
     ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
-    is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
+    # ALAT TransactionStatus enum is {Default, Successfull(sic), Failed, Pending}
+    # (confirmed against wallet-services-account-maintenance-api). Only a SETTLED
+    # credit is fundable: block clearly-non-final rows (Pending/Failed) so a deposit
+    # still in flight — or one that later bounces — is never credited. Unknown /
+    # blank / Successfull / Default still count, so a live gateway that omits or
+    # re-spells the field can't strand real money; a Pending row simply credits on
+    # a later sweep once it settles.
+    status = str(tx.get("status") or "").strip().lower()
+    settled = status not in ("pending", "failed")
+    is_credit = settled and str(tx.get("creditType") or "").strip().lower() == "credit"
     return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
-            "is_credit": is_credit, "narration": tx.get("narration") or "",
+            "is_credit": is_credit, "status": status,
+            "narration": tx.get("narration") or "",
             "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
 
 
@@ -602,9 +630,24 @@ def _parse_vas(data: dict, reference: str) -> dict:
 # with a deterministic fake card offline; fails closed in production when unkeyed so
 # a misconfigured deploy never fabricates a card that looks real in the app.
 #
-# VERIFY-BEFORE-LIVE: the ALAT virtual-card endpoint paths/fields and whether they
-# need securityInfo are not exercisable from CI — confirm against Wema's card
-# integration guide before go-live.
+# FIX-BEFORE-LIVE (confirmed against card-management-api spec — the paths below are
+# WRONG and will 404 on the live gateway). The real Card Management API is:
+#   • APIM suffix  /card-management   (NOT the current _PATH['card']='/virtual-card')
+#   • auth header  x-api-key          (NOT 'access'; remove 'card' from _ACCESS_PRODUCTS)
+#   • NO securityInfo on any card call (remove it from the bodies below)
+#   • operations are keyed by the customer NUBAN (accountNo), not a card token:
+#       issue   POST /api/Partner/partnerCard/virtualCard
+#               body VirtualCardRequestObject {accountNo,emailaddress,phoneNumber,
+#               amount,customerAddress,cardKey,currency:'NGN'}
+#       reveal  GET  /api/Partner/partnerCard/retrieveCard/{accountNo}   (full PAN/CVV)
+#               or   /api/Partner/partnerCard/virtual-card-details/{accountNo}
+#       freeze  POST /api/Partner/partnerCard/hotlistCard?maskedPan=&accountNumber=
+#               (query params, block-only — the rail has NO unfreeze endpoint)
+#       fund    — none; funding is only the optional `amount` at creation
+# Migrating requires threading the cardholder's NUBAN/email/phone into these calls
+# (a card-model change) + a live-key smoke test, so it is intentionally NOT done here.
+# The rail is gated off (_card_live() False until keyed) so this blocks virtual cards
+# only, not the core funding/transfer/VAS launch.
 # ---------------------------------------------------------------------------
 def _card_live() -> bool:
     """Whether the Virtual Naira Card product has its subscription key + channel id."""
@@ -697,9 +740,18 @@ def card_reveal(card_token: str) -> dict:
 # in production (fails closed via mock_disabled_in_prod, even with WEMA_SIMULATION
 # on) so a misconfigured deploy can't upgrade a real tier on a fabricated identity.
 #
-# VERIFY-BEFORE-LIVE: the Full KYC endpoint paths/fields follow the ALAT pattern but
-# were not exercised against a live gateway — confirm the request/response shapes
-# (and whether KYC needs securityInfo) against Wema's integration guide before go-live.
+# FIX-BEFORE-LIVE (confirmed against the partnership-account spec family): Wema has
+# NO standalone identity-lookup endpoint. The /api/Kyc/VerifyBvn|VerifyNin|VerifyVnin
+# paths below are fabricated and will 404 live, and there is NO virtual-NIN (vNIN)
+# endpoint anywhere on the Wema rail at all. On Wema, BVN/NIN are validated only as a
+# byproduct of account creation (tier1-bvn/nin-withoutOtp-v2) or upgrade
+# (partner-account-upgrade-tier2), and current tier is read via
+# GET /api/partnership/partner-account-kyc-status — none of which return a holder
+# name for a bare-lookup name-match, so _kyc_record/_name_mismatch have no live data
+# source here. RESOLUTION (product decision, needs live keys): either (a) route
+# BVN/NIN/vNIN identity lookups to Prembly/IdentityPass (which DO expose them — see
+# utility.providers), or (b) fold BVN/NIN validation into the account-creation/upgrade
+# flow. Left in place (fails closed without keys) pending that decision.
 # ---------------------------------------------------------------------------
 def _kyc_live() -> bool:
     """Whether the Full KYC product has its subscription key + channel id."""
