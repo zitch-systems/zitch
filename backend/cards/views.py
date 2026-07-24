@@ -63,7 +63,10 @@ def create_card(request):
         return ok(success=True, card=_card_dict(user.cards.first()), message="You already have a card")
 
     holder = (user.get_full_name() or user.phone or "Zitch User").upper()
-    result = card_issue(holder, customer_ref=str(user.id), email=user.email or "")
+    # Wema keys the virtual card by the user's NUBAN; the generic issuer ignores it.
+    account_number = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+    result = card_issue(holder, customer_ref=str(user.id), email=user.email or "",
+                        account_number=account_number, phone=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "Could not create card"), status=502)
 

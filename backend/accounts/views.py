@@ -464,6 +464,12 @@ def avatar_upload(request):
 
 
 # --------------------------------- KYC ---------------------------------
+# Nigeria identity (BVN/NIN): ALAT has NO standalone lookup — verification happens in
+# the NUBAN account-creation OTP flow (/api/wallet/wema/*), which name-matches the
+# holder record ALAT returns before lifting the tier. So in PRODUCTION the verify_bvn/
+# verify_nin calls below return an "otp_required" redirect (route the user to account
+# setup); dev/tests keep the provider mock so these endpoints still exercise offline.
+# The image/biometric steps (face/address/ID) stay on Prembly and are unaffected.
 def _reserve_wallet_account(user, bvn: str = "", nin: str = "") -> None:
     """Best-effort: mint the user's dedicated funding account once KYC supplies a
     BVN/NIN. Never lets a provider hiccup fail the KYC response — it's retried on

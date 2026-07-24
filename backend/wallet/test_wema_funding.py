@@ -132,6 +132,20 @@ class WemaReconcileTests(TestCase):
         self.assertIsNone(apply_wema_credit(self.wallet, {"referenceId": "Y", "amount": "N/A",
                                                           "creditType": "Credit"}))
 
+    def test_apply_wema_credit_skips_unsettled_status(self):
+        # Per ALAT's transhistoryV2 status legend, a Failed/Pending inbound credit
+        # row hasn't actually landed and must NOT credit (a Pending one is credited on
+        # a later sweep once it flips to Successfull). Absent/Successfull still credits.
+        for st in ("Failed", "Pending", "Reversed"):
+            row = _tx(f"UNSETTLED-{st}", 1000)
+            row["status"] = st
+            self.assertIsNone(apply_wema_credit(self.wallet, row))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0.00"))
+        settled = _tx("SETTLED-1", 1000)
+        settled["status"] = "Successfull"
+        self.assertIsNotNone(apply_wema_credit(self.wallet, settled))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("1000.00"))
+
 
 class WemaReversalGuardTests(TestCase):
     """A bounced payout landing back in the sender's OWN NUBAN as an inbound

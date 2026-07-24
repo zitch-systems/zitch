@@ -30,9 +30,11 @@ from wallet.services import (
     settle_payout, wema_provisioned_wallets,
 )
 
-# Terminal statuses from confirm_transfer_status (the ALAT legend is not published,
-# so match defensively â€” anything else leaves the row PENDING for the next run).
-_SETTLED = {"SUCCESS", "SUCCESSFUL", "COMPLETED", "PAID", "APPROVED"}
+# Terminal statuses from confirm_transfer_status. The transfer-status string legend
+# isn't enumerated in the OpenAPI, so match defensively â€” anything else leaves the
+# row PENDING for the next run. "SUCCESSFULL" is ALAT's own spelling (see the
+# transhistoryV2 status enum), included so a settled payout isn't missed.
+_SETTLED = {"SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "APPROVED"}
 _REVERSED = {"FAILED", "REVERSED", "DECLINED", "CANCELLED", "REJECTED", "RETURNED"}
 
 
