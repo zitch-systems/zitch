@@ -292,6 +292,16 @@ SENDCHAMP = {
     # (e.g. an already-approved "SC-OTP") until "Zitch" is approved.
     "SENDER_NAME": os.environ.get("SENDCHAMP_SENDER_NAME", "Zitch"),
 }
+# TEST-ONLY OTP bypass — LEAVE UNSET IN PRODUCTION. When BOTH TEST_OTP_PHONE and
+# TEST_OTP_CODE are set, that ONE phone number accepts that fixed OTP code in every
+# OTP flow, so the app can be walked end-to-end while a real SMS sender ID awaits
+# carrier approval. Every other number still requires a real delivered code. Use is
+# logged loudly (zitch.security) and `manage.py wema_preflight` HARD-FAILS while it
+# is set, so it cannot slip into go-live. Remove both env vars before launch.
+TEST_OTP = {
+    "PHONE": os.environ.get("TEST_OTP_PHONE", "").strip(),
+    "CODE": os.environ.get("TEST_OTP_CODE", "").strip(),
+}
 # Email / OTP fallback — Resend. Sends the same OTP code in parallel with
 # Sendchamp so SMS delivery issues (DND, sender ID approval, carrier blocks)
 # don't strand a user. Blank API_KEY => mock mode (silent success).

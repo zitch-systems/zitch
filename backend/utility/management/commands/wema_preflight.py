@@ -53,6 +53,14 @@ class Command(BaseCommand):
             True, "Live host",
             FAIL if on_sandbox else PASS,
             f"sandbox: {d['base_url']}" if on_sandbox else f"live: {d['base_url']}"))
+        # Hard gate: the test-OTP bypass must NEVER be live at go-live — it lets one
+        # number sign in with a fixed code. Fail readiness while it is configured.
+        test_otp_on = bool(settings.TEST_OTP["PHONE"] and settings.TEST_OTP["CODE"])
+        checks.append((
+            True, "Test-OTP bypass",
+            FAIL if test_otp_on else PASS,
+            "TEST_OTP is SET — a fixed OTP is accepted for one number; unset "
+            "TEST_OTP_PHONE + TEST_OTP_CODE before go-live" if test_otp_on else "off"))
 
         # SOFT — VTU.ng (airtime/data/bills). Lean on vtu_probe's own empty-wallet
         # detection (it sets a balance hint) rather than re-parsing the amount.

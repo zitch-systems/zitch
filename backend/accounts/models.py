@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 import secrets
 from datetime import timedelta
 from decimal import Decimal
@@ -10,6 +11,8 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.db.models.functions import Lower
 from django.utils import timezone
+
+log = logging.getLogger("zitch.security")
 
 
 def hash_identifier(value: str) -> str:
@@ -277,7 +280,22 @@ class OTP(models.Model):
         return hmac.new(key.encode(), (raw or "").encode(), hashlib.sha256).hexdigest()
 
     def verify_code(self, raw: str) -> bool:
-        """Constant-time compare of a submitted code against the stored hash."""
+        """Constant-time compare of a submitted code against the stored hash.
+
+        TEST-ONLY bypass: when BOTH settings.TEST_OTP["PHONE"] and ["CODE"] are set
+        (they are unset in production), that ONE phone accepts that fixed code in
+        every OTP flow — so the app can be walked end to end while a real SMS sender
+        ID awaits carrier approval. Every other number still needs a real delivered
+        code. Use is logged loudly and wema_preflight HARD-FAILS while it is set, so
+        it cannot slip into go-live. Remove TEST_OTP_PHONE/TEST_OTP_CODE before launch.
+        """
+        test = settings.TEST_OTP
+        if (test["PHONE"] and test["CODE"] and self.phone == test["PHONE"]
+                and hmac.compare_digest(raw or "", test["CODE"])):
+            log.warning("test_otp_bypass_used phone=%s purpose=%s — TEST_OTP is set; "
+                        "REMOVE TEST_OTP_PHONE/TEST_OTP_CODE before go-live",
+                        self.phone, self.purpose)
+            return True
         return hmac.compare_digest(self.code_hash, self.hash_code(raw))
 
     @classmethod
