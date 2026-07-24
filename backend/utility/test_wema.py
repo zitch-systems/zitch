@@ -131,40 +131,46 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(body["destinationAccountNumber"], "02")
 
 
-WEMA_KYC = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "kyc": "kyckey"}}
+class WemaKycTests(SimpleTestCase):
+    """ALAT has NO standalone BVN/NIN/vNIN lookup — identity is verified by the
+    name-matched NUBAN account-creation flow (see wallet.views.wema_wallet_verify_otp
+    + the provisioning test). holder_name_mismatch is that name-match control; the
+    verify_* entry points only format-check and (in production) redirect the caller to
+    account setup. Identity never mock-passes in production."""
 
+    def test_holder_name_match_is_order_tolerant(self):
+        # Same person, order + extra middle name -> NOT a mismatch.
+        self.assertFalse(wema.holder_name_mismatch("Eze Ada Chidinma", "ADA EZE"))
 
-@override_settings(WEMA=WEMA_KYC)
-class WemaKycNameMatchTests(SimpleTestCase):
-    """A valid identity number must belong to the requester: BVN already rejects a
-    clear name mismatch; NIN/vNIN must do the same, else any real NIN would lift the
-    caller's tier under someone else's identity."""
+    def test_holder_name_clear_mismatch(self):
+        # No shared tokens -> a clear mismatch (blocks the provisioning tier lift).
+        self.assertTrue(wema.holder_name_mismatch("Ada Eze", "JOHN DOE"))
 
-    @patch("utility.wema.requests.post")
-    def test_nin_clear_name_mismatch_rejected(self, mock_post):
-        mock_post.return_value = _resp({"status": True, "data": {"firstName": "JOHN", "lastName": "DOE"}})
-        r = wema.verify_nin("12345678901", name="Ada Eze")
-        self.assertFalse(r["success"])
-        self.assertIn("does not match", r["message"].lower())
+    def test_holder_name_missing_side_never_blocks(self):
+        # Fail-open when either name is empty (tolerant of missing gateway data).
+        self.assertFalse(wema.holder_name_mismatch("", "JOHN DOE"))
+        self.assertFalse(wema.holder_name_mismatch("Ada Eze", ""))
 
-    @patch("utility.wema.requests.post")
-    def test_nin_name_match_is_order_tolerant(self, mock_post):
-        mock_post.return_value = _resp({"status": True, "data": {"firstName": "ADA", "lastName": "EZE"}})
-        r = wema.verify_nin("12345678901", name="Eze Ada Chidinma")  # order + extra middle name
-        self.assertTrue(r["success"])
+    def test_verify_format_checks(self):
+        self.assertFalse(wema.verify_bvn("123")["success"])            # not 11 digits
+        self.assertFalse(wema.verify_nin("12ab5678901")["success"])   # non-digit
+        self.assertFalse(wema.verify_vnin("short")["success"])        # not 16 chars
 
-    @patch("utility.wema.requests.post")
-    def test_nin_without_name_still_verifies(self, mock_post):
-        # No name supplied (legacy callers) -> lookup-only, unchanged behaviour.
-        mock_post.return_value = _resp({"status": True, "data": {"firstName": "JOHN", "lastName": "DOE"}})
+    def test_verify_mock_passes_in_dev(self):
+        # dev/tests keep the mock so the offline KYC flow still exercises.
+        self.assertTrue(wema.verify_bvn("22222222222")["success"])
         self.assertTrue(wema.verify_nin("12345678901")["success"])
+        self.assertTrue(wema.verify_vnin("1234567890123456")["success"])
 
-    @patch("utility.wema.requests.post")
-    def test_vnin_clear_name_mismatch_rejected(self, mock_post):
-        mock_post.return_value = _resp({"status": True, "data": {"firstName": "JOHN", "lastName": "DOE"}})
-        r = wema.verify_vnin("1234567890123456", name="Ada Eze")
+    @override_settings(DEBUG=False, TESTING=False)
+    def test_verify_redirects_to_account_setup_in_prod(self):
+        # No standalone lookup on ALAT: production routes the user to account setup
+        # (otp_required) instead of hitting a non-existent verify endpoint.
+        r = wema.verify_bvn("22222222222", name="Ada Eze")
         self.assertFalse(r["success"])
-        self.assertIn("does not match", r["message"].lower())
+        self.assertTrue(r["otp_required"])
+        self.assertFalse(wema.verify_nin("12345678901")["success"])
+        self.assertFalse(wema.verify_vnin("1234567890123456")["success"])
 
 
 class WemaProbeTests(SimpleTestCase):
@@ -238,3 +244,158 @@ class WemaVasLiveTests(SimpleTestCase):
         r = wema.purchase_airtime(500, "R", "08030000000", "MTN", source_account="0155500011")
         self.assertFalse(r["success"])
         self.assertTrue(r["pending"])       # never refund a maybe-delivered buy
+
+    @patch("utility.wema.requests.post")
+    def test_vas_status_integer_code_stays_pending(self, mock_post):
+        # The PartnerPayment status-check returns an INTEGER transactionStatus whose
+        # legend ALAT doesn't publish -> pending (never auto-settle/refund). The
+        # requery also sends transactionType as an integer (1 = airtime).
+        mock_post.return_value = _resp({"result": {"transactionReference": "R", "transactionStatus": 3},
+                                        "hasError": False})
+        r = wema.vas_status("R", "airtime")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])
+        self.assertEqual(mock_post.call_args[1]["json"]["transactionType"], 1)
+
+    @patch("utility.wema.requests.post")
+    def test_vas_status_string_success_settles(self, mock_post):
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS", "transactionReference": "R"},
+                                        "hasError": False})
+        self.assertTrue(wema.vas_status("R", "airtime")["success"])
+
+
+class WemaCatalogueTests(SimpleTestCase):
+    """The ALAT data/bills catalogues are nested; the client flattens them to rows
+    keyed by the id PurchaseData / PayBill expect."""
+
+    def test_flatten_data_plans_nested(self):
+        result = [{"networkProvider": "MTN", "dataPackages": [
+            {"id": 101, "name": "1GB Daily", "amount": 350, "validity_Period": "1 day"},
+            {"id": 102, "name": "2GB", "amount": 600}]},
+            {"networkProvider": "Glo", "dataPackages": [{"id": 201, "name": "1.5GB", "amount": 500}]}]
+        rows = wema._flatten_data_plans(result)
+        self.assertEqual(len(rows), 3)
+        mtn = [r for r in rows if r["network"] == "MTN"][0]
+        self.assertEqual(mtn["code"], "101")            # code = dataPackage id
+        self.assertEqual(mtn["amount"], 350)
+        self.assertEqual(len(wema._flatten_data_plans(result, "glo")), 1)   # network filter
+
+    def test_flatten_bills_nested(self):
+        result = [{"id": 1, "name": "Cable TV", "billers": [
+            {"id": 10, "name": "DStv", "identifier": "smartcard", "requiredValidation": True,
+             "charge": 100, "packages": [
+                 {"id": 1001, "name": "DStv Compact", "amount": 10500},
+                 {"id": 1002, "name": "DStv Premium", "amount": 24500}]},
+            {"id": 11, "name": "Ikeja Electric", "packages": []}]}]
+        rows = wema._flatten_bills(result)
+        self.assertEqual(len(rows), 3)                  # 2 DStv packages + biller-without-packages
+        compact = [r for r in rows if r["name"] == "DStv Compact"][0]
+        self.assertEqual(compact["code"], "1001")       # code = package id
+        self.assertEqual(compact["biller"], "DStv")
+        self.assertEqual(compact["category"], "Cable TV")
+        ie = [r for r in rows if r["biller"] == "Ikeja Electric"][0]
+        self.assertEqual(ie["code"], "11")              # no packages -> biller id
+
+    @override_settings(WEMA=WEMA_VAS)
+    @patch("utility.wema.requests.get")
+    def test_get_data_plans_flattens_live_and_sends_no_network_param(self, mock_get):
+        mock_get.return_value = _resp({"result": [
+            {"networkProvider": "MTN", "dataPackages": [{"id": 101, "name": "1GB", "amount": 350}]}],
+            "hasError": False})
+        r = wema.get_data_plans("MTN")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["plans"][0]["code"], "101")
+        # GetDataPlans takes no network query param (all networks come back nested).
+        self.assertTrue(mock_get.call_args[0][0].endswith("/airtime-data/api/Data/GetDataPlans"))
+        self.assertFalse(mock_get.call_args[1].get("params"))
+
+
+class WemaStatusLegendTests(SimpleTestCase):
+    def test_failed_pending_are_unsettled(self):
+        for st in ("Failed", "Pending", "Reversed", "Declined"):
+            n = wema.normalize_transaction({"referenceId": "R", "amount": "100",
+                                            "creditType": "Credit", "status": st})
+            self.assertFalse(n["settled"], st)
+
+    def test_success_or_absent_is_settled(self):
+        for st in ("Successfull", "Default", ""):
+            n = wema.normalize_transaction({"referenceId": "R", "amount": "100",
+                                            "creditType": "Credit", "status": st})
+            self.assertTrue(n["settled"], repr(st))
+
+
+WEMA_CARD = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "card": "cardkey"},
+             "CARD_PRODUCT_KEY": "cardprod"}
+
+
+@override_settings(WEMA=WEMA_CARD)
+class WemaCardTests(SimpleTestCase):
+    """The virtual card is keyed by the NUBAN and lives on the real card-management
+    product; reversible freeze / incremental top-up aren't offered by ALAT."""
+
+    @patch("utility.wema.requests.post")
+    def test_issue_uses_partnercard_endpoint_and_nuban(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "message": "ok",
+                                        "data": {"maskedPan": "506100******1234", "expiry": "01/29"}})
+        r = wema.card_issue("ADA EZE", "42", account_number="0155500011", email="a@b.com")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["card_token"], "0155500011")     # keyed by NUBAN
+        self.assertEqual(r["last4"], "1234")
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["accountNo"], "0155500011")
+        self.assertEqual(body["cardKey"], "cardprod")
+        self.assertEqual(mock_post.call_args[1]["headers"]["x-api-key"], "chan-1")   # card uses x-api-key
+        self.assertTrue(mock_post.call_args[0][0].endswith(
+            "/card-management/api/Partner/partnerCard/virtualCard"))
+
+    def test_issue_requires_account_number(self):
+        self.assertFalse(wema.card_issue("ADA EZE", "42")["success"])   # no NUBAN -> fail closed
+
+    @patch("utility.wema.requests.get")
+    def test_reveal_uses_account_details_endpoint(self, mock_get):
+        mock_get.return_value = _resp({"status": True,
+                                       "data": {"cardPan": "5061000000001234", "cvv": "123"}})
+        r = wema.card_reveal("0155500011")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["cvv"], "123")
+        self.assertTrue(mock_get.call_args[0][0].endswith(
+            "/api/Partner/partnerCard/virtual-card-details/0155500011"))
+
+    @patch("utility.wema.requests.post")
+    def test_block_hotlists_by_account(self, mock_post):
+        mock_post.return_value = _resp({"successful": True, "message": "blocked"})
+        r = wema.card_set_status("0155500011", active=False, masked_pan="506100******1234")
+        self.assertTrue(r["success"])
+        self.assertEqual(mock_post.call_args[1]["params"]["accountNumber"], "0155500011")
+        self.assertTrue(mock_post.call_args[0][0].endswith("/api/Partner/partnerCard/hotlistCard"))
+
+    def test_unfreeze_and_topup_report_unsupported(self):
+        # ALAT virtual cards have no reversible freeze / incremental top-up.
+        self.assertFalse(wema.card_set_status("0155500011", active=True)["success"])
+        self.assertFalse(wema.card_fund("0155500011", 5000)["success"])
+
+
+@override_settings(WEMA=WEMA_LIVE)
+class WemaAccountLifecycleTests(SimpleTestCase):
+    @patch("utility.wema.requests.post")
+    def test_lift_debit_restriction(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "message": "PND lifted"})
+        r = wema.lift_debit_restriction("0155500011", bvn=True)
+        self.assertTrue(r["success"])
+        body = mock_post.call_args[1]["json"]
+        self.assertEqual(body["pndType"], "LiftPnd")
+        self.assertEqual(body["accountNumber"], "0155500011")
+        self.assertTrue(mock_post.call_args[0][0].endswith(
+            "/account-creation/api/CustomerAccount/PartnerDebitRestrictionManagement"))
+
+    @patch("utility.wema.requests.get")
+    def test_get_kyc_status(self, mock_get):
+        mock_get.return_value = _resp({"status": True, "data": {
+            "accountTier": "Tier 1", "accountStatus": "Active", "restrictionStatus": "None",
+            "addressVerificationStatus": "Pending", "accountName": "ADA EZE"}})
+        r = wema.get_kyc_status("0155500011")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["tier"], "Tier 1")
+        self.assertEqual(r["restriction_status"], "None")
+        self.assertTrue(mock_get.call_args[0][0].endswith(
+            "/account-upgrade/api/partnership/partner-account-kyc-status"))

@@ -82,6 +82,10 @@ class Command(BaseCommand):
             self._sync_cable(dry)
 
     def _sync_data(self, dry):
+        # wema.get_data_plans() flattens ALAT's result[].dataPackages[] into
+        # {code, name, amount, network} rows (code = the dataPackage id); passing a
+        # network filters client-side. Match a DataPlan within its network by exact
+        # price, then a normalised name.
         matched = 0
         by_net: dict[str, list] = {}
         for net_key in ("1", "2", "3", "4"):
@@ -102,16 +106,21 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"data: {matched} plan(s) mapped{' (dry-run)' if dry else ''}"))
 
     def _sync_cable(self, dry):
+        # wema.get_bills() already flattens categories -> billers -> packages into
+        # {code, name, amount, biller, category} rows (code = the packageId PayBill
+        # wants). Scope each CablePlan's search to rows whose biller/category names
+        # the provider (DStv/GOtv/StarTimes) so an unrelated biller package with a
+        # coincidentally equal price can't be mis-mapped; fall back to the full set.
         res = wema.get_bills()
         rows = res.get("bills", []) or [] if res.get("success") else []
-        # Flatten one level in case bills are grouped as {biller: [...packages]}.
-        flat = []
-        for r in rows:
-            flat.extend(r.get("packages", r.get("plans", [r])) if isinstance(r, dict) else [])
         matched = 0
         for plan in CablePlan.objects.all():
-            hit = next((r for r in flat if _price(r) == plan.price), None) \
-                or next((r for r in flat if _norm(_name(r)) == _norm(plan.name)), None)
+            prov = _norm(plan.get_provider_display())
+            scoped = [r for r in rows
+                      if prov and (prov in _norm(r.get("biller", "")) or prov in _norm(r.get("category", "")))]
+            pool = scoped or rows
+            hit = next((r for r in pool if _price(r) == plan.price), None) \
+                or next((r for r in pool if _norm(_name(r)) == _norm(plan.name)), None)
             code = _code(hit) if hit else ""
             if code and plan.wema_code != code:
                 matched += 1

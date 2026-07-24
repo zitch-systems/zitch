@@ -159,6 +159,14 @@ class WemaReconcileTests(TestCase):
         self._run([_tx("WEMA-LATE", 1500, status="Successfull")])
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("1500.00"))
 
+    def test_reversed_credit_row_not_funded(self):
+        # Defense-in-depth beyond the documented enum: normalize_transaction's
+        # _TX_UNSETTLED also treats a re-spelled non-final status (e.g. Reversed) as
+        # unsettled, so such a row is skipped too.
+        self.assertIsNone(apply_wema_credit(self.wallet,
+            {"referenceId": "R1", "amount": 900, "creditType": "Credit", "status": "Reversed"}))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0.00"))
+
 
 class WemaReversalGuardTests(TestCase):
     """A bounced payout landing back in the sender's OWN NUBAN as an inbound

@@ -219,9 +219,10 @@ PAYOUT_PROVIDER = os.environ.get("PAYOUT_PROVIDER", "").strip().lower()
 # betting stay on VTU.ng until their Wema billers are mapped. See
 # utility.providers.vas_provider and docs/wema-migration.md.
 VAS_PROVIDER = os.environ.get("VAS_PROVIDER", "").strip().lower()
-# The BVN/NIN/vNIN KYC rail — "wema" (Wema Full KYC, the sole rail); blank => wema.
-# The image / biometric steps (selfie/liveness, address, ID-document) stay on
-# Prembly. See utility.providers.kyc_provider.
+# The BVN/NIN KYC rail — "wema"; blank => wema. ALAT has no standalone identity lookup,
+# so BVN/NIN are verified by the NUBAN account-creation flow (name-matched before the
+# tier lifts). The image / biometric steps (selfie/liveness, address, ID-document) stay
+# on Prembly. See utility.providers.kyc_provider and docs/wema-migration.md.
 KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 # Fraud velocity guard: max outbound money movements per user per 10 minutes
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
@@ -229,9 +230,9 @@ KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 VELOCITY_MAX_OUT_10MIN = 0 if TESTING else int(os.environ.get("VELOCITY_MAX_OUT_10MIN", "20"))
 # (Observability: the Sentry init lives at the bottom of this file — already wired.)
 # Wema / ALAT (Banking-as-a-Service) — the SOLE money-movement rail: fund-in
-# (dedicated NUBANs via a BVN/NIN + OTP flow) AND bank payouts + recipient name
-# enquiry + balance, plus Nigeria KYC (BVN/NIN/vNIN via the Full KYC product), VAS
-# (airtime/data/bills) and a Virtual Naira Card. Azure APIM: a per-PRODUCT
+# (dedicated NUBANs via a BVN/NIN + OTP flow, which also verifies identity — ALAT has
+# no standalone KYC lookup) AND bank payouts + recipient name enquiry + balance, VAS
+# (airtime/data/bills) and a NUBAN-keyed virtual card. Azure APIM: a per-PRODUCT
 # subscription key (Ocp-Apim-Subscription-Key) + a channel id (x-api-key / access).
 # Sandbox host https://apiplayground.alat.ng (LIVE differs — set WEMA_BASE_URL).
 # There is NO inbound-credit webhook: deposits AND payout settlement are handled by
@@ -244,11 +245,14 @@ WEMA = {
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
     "KEYS": {
         "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services (create/acct-mgt/credit/debit)
-        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
+        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Card Management (Virtual Naira Card)
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime & Data (subscribe to enable)
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # Bills Payment (subscribe to enable)
         "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
     },
+    # The card product id ("cardKey") ALAT's virtualCard request expects — distinct
+    # from the subscription key above. Supplied by Wema; blank until then.
+    "CARD_PRODUCT_KEY": os.environ.get("WEMA_CARD_PRODUCT_KEY", ""),
     # Our own Wema pool/settlement NUBAN that funds outbound transfers (the
     # sourceAccountNumber on ProcessClientTransfer). Required for Wema payouts.
     "SOURCE_ACCOUNT": os.environ.get("WEMA_SOURCE_ACCOUNT", ""),

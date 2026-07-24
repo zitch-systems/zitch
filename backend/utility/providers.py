@@ -1,10 +1,11 @@
 """Third-party integration layer.
 
 Providers: Wema / ALAT (money movement — funding via OTP-provisioned NUBANs,
-payouts + name enquiry + balance, and KYC BVN/NIN/vNIN; client in utility/wema.py),
+payouts + name enquiry + balance, and BVN/NIN identity via the name-matched
+account-creation flow; client in utility/wema.py),
 VTU.ng (airtime/data/cable/electricity/betting), Sendchamp (SMS/OTP), Resend
 (email/OTP), Prembly/IdentityPass (selfie / liveness + address + ID-document KYC —
-the image/biometric checks Wema's number lookups don't cover), Fincra (FX). Each
+the image/biometric checks the account-creation flow doesn't cover), Fincra (FX). Each
 function returns {"success": bool, ...}. When the relevant key is blank it runs in
 MOCK mode and simulates success so the whole app flow is testable without an external
 account — EXCEPT in production (DEBUG off), where money/identity mocks fail closed
@@ -234,11 +235,11 @@ def send_email(to: str, subject: str, message: str, html: str | None = None) -> 
 # ---------------------------------------------------------------------------
 # KYC — selfie/liveness + address + ID-document — Prembly (IdentityPass)
 #
-# Prembly is retained ONLY for the image/biometric checks Wema's number lookups can't
-# do: selfie/liveness (kyc_verify_face — the ≥₦100k transfer gate + Tier 2), address
-# (kyc_verify_address — Tier 2), and document-image OCR (kyc_verify_nin_document /
-# kyc_verify_id_document — Tier 1 NIN slip / Tier 3 government ID). The number-based
-# Nigeria identity lookups (BVN / NIN / vNIN) run on Wema Full KYC (see verify_bvn/nin/vnin).
+# Prembly is retained ONLY for the image/biometric checks the Wema account-creation
+# flow can't do: selfie/liveness (kyc_verify_face — the ≥₦100k transfer gate + Tier 2),
+# address (kyc_verify_address — Tier 2), and document-image OCR (kyc_verify_nin_document /
+# kyc_verify_id_document — Tier 1 NIN slip / Tier 3 government ID). BVN/NIN identity is
+# verified by the name-matched NUBAN account-creation flow (see verify_bvn/nin/vnin).
 # ---------------------------------------------------------------------------
 def _prembly_live() -> bool:
     return bool(settings.PREMBLY["API_KEY"] and settings.PREMBLY["APP_ID"])
@@ -337,42 +338,41 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
 
 
 # ---------------------------------------------------------------------------
-# KYC — BVN / NIN / vNIN (Wema Full KYC)
+# KYC — BVN / NIN / vNIN (Wema)
 #
 # verify_bvn / verify_nin / verify_vnin are the provider-agnostic entry points the
-# rest of the app calls. All three delegate to Wema (utility.wema), keeping the
-# number-based Nigeria identity lookups on the same rail that mints the funding
-# account. The image/biometric steps (selfie/liveness, address, ID-document OCR)
-# stay on Prembly (kyc_verify_face / kyc_verify_address / kyc_verify_*_document
-# above). Each fails closed in production when unkeyed, so a money app never
-# mock-passes identity on a misconfigured deploy; dev/tests keep the mock.
+# rest of the app calls. ALAT has NO standalone identity lookup, so BVN/NIN are
+# verified by the NUBAN account-creation flow (which name-matches the holder record
+# ALAT returns — see wema.holder_name_mismatch + wallet.views.wema_wallet_verify_otp).
+# These entry points therefore no longer call a lookup endpoint: in production they
+# return an otp_required redirect to account setup; dev/tests keep the mock so the
+# offline KYC flow still exercises. The image/biometric steps (selfie/liveness,
+# address, ID-document OCR) stay on Prembly above. Identity never mock-passes in prod.
 # ---------------------------------------------------------------------------
 def kyc_provider() -> str:
-    """The BVN/NIN/vNIN backend — 'wema' (Wema Full KYC is the sole rail). Retained
-    so any caller/diagnostic that reads the selector keeps working."""
+    """The BVN/NIN backend — 'wema' (the sole rail). Retained so any caller/diagnostic
+    that reads the selector keeps working."""
     choice = (getattr(settings, "KYC_PROVIDER", "") or "").strip().lower()
     return choice if choice == "wema" else "wema"
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via Wema's Full KYC lookup (rejects a clear name mismatch when a
-    name is supplied). Fails closed in production without keys; dev/tests mock."""
+    """BVN verification entry point. ALAT has no standalone lookup — in production this
+    routes the user to the name-matched NUBAN account-creation flow; dev/tests mock."""
     from . import wema
     return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
 
 
 def verify_nin(nin: str, name: str = "") -> dict:
-    """Verify a NIN via Wema's Full KYC (rejects a clear name mismatch when a name is
-    supplied, so a NIN that isn't the requester's can't lift their tier). Fails closed
-    in prod without keys."""
+    """NIN verification entry point — see verify_bvn. Verification is the name-matched
+    NUBAN account-creation flow; production routes the caller there, dev/tests mock."""
     from . import wema
     return wema.verify_nin(nin, name=name)
 
 
 def verify_vnin(vnin: str, name: str = "") -> dict:
-    """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC (rejects a clear
-    name mismatch when a name is supplied). Fails closed in production when unkeyed;
-    dev/tests keep the mock."""
+    """Virtual-NIN verification entry point — see verify_bvn. Verification is the
+    name-matched NUBAN account-creation flow; production routes there, dev/tests mock."""
     from . import wema
     return wema.verify_vnin(vnin, name=name)
 
@@ -674,13 +674,17 @@ def payout_send(amount_naira, reference: str, narration: str, bank_code: str,
 
 
 # --- Virtual card dispatch ---
-# The generic CARD_ISSUER is the sole card backend (Wema card issuing is not wired yet). When
-# no issuer is configured the calls mock in dev/test and fail closed in production
+# Two card backends: the generic CARD_ISSUER (default) and ALAT Card-Management
+# (NUBAN-keyed; selected when card_provider() is "wema" — see wema.card_*). When no
+# backend is configured the calls mock in dev/test and fail closed in production
 # (see issue_card / card_secure_details).
-def card_issue(holder: str, customer_ref: str, email: str = "") -> dict:
+def card_issue(holder: str, customer_ref: str, email: str = "", *, account_number: str = "",
+               phone: str = "") -> dict:
     if card_provider() == "wema":
         from . import wema
-        return wema.card_issue(holder, customer_ref)
+        # Wema keys the virtual card by the user's NUBAN — thread it through.
+        return wema.card_issue(holder, customer_ref, account_number=account_number,
+                               email=email, phone=phone)
     return issue_card(holder, customer_ref)
 
 

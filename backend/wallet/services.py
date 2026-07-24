@@ -450,6 +450,15 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     norm = wema.normalize_transaction(tx)
     if not norm["is_credit"] or not norm["reference"]:
         return None
+    if not norm["settled"]:
+        # A Failed/Pending inbound row per Wema's status legend: the money hasn't
+        # actually landed. Crediting a Pending row now (before it settles) would
+        # leak float if it later fails; a Failed row must never credit. A Pending
+        # deposit is picked up on a later sweep once it flips to Successfull
+        # (idempotent on referenceId), so holding it back loses nothing.
+        log.info("wema_credit_unsettled ref=%s status=%s account=%s",
+                 norm["reference"], norm["status"], wallet.account_number)
+        return None
     if norm["amount_naira"] is None:
         # A credit row we can't price (unparseable amount) — never silently lose it.
         log.warning("wema_credit_unparseable_amount ref=%s raw_amount=%r account=%s",

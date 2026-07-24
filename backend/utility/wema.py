@@ -32,17 +32,19 @@ serves the mock flow even in production to test a real build without live keys.
 RECONCILED against the full ALAT OpenAPI spec set (see docs/wema-migration.md §Spec
 reconciliation). Funding rails — wallet-creation, balance/history, payout/transfer,
 credit-wallet, airtime/data, bills — have CONFIRMED-correct paths, fields, auth and
-envelopes. Still open before go-live:
+envelopes. The card + KYC rails were re-pointed to the real endpoints:
+  * Card rail — moved to the real /card-management partnerCard endpoints, NUBAN-keyed
+    (issue/reveal/block); no reversible freeze or top-up (report unsupported).
+  * KYC rail — Wema has no standalone BVN/NIN lookup, so identity is verified by the
+    name-matched account-creation flow (see the KYC section).
+Still open before go-live:
   * securityInfo construction (algorithm/plaintext) — provisioned out-of-band by Wema.
   * tx-status legends — payout status strings, and the VAS/bills CheckTransactionStatus
     INTEGER enums, are undocumented in the specs; get the code→meaning map from Wema.
-  * Card rail — the /api/VirtualCard/* paths are WRONG (see the card section) and need
-    the real /card-management endpoints + a NUBAN-keyed model.
-  * KYC rail — Wema has no standalone BVN/NIN/vNIN lookup (see the KYC section); route
-    those to Prembly or fold into account-creation.
   * live host (WEMA_BASE_URL) + production keys.
 """
 import hashlib
+import json
 import logging
 import re
 import secrets
@@ -56,20 +58,23 @@ from .providers import mock_disabled_in_prod
 REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
-# Per-product base path under settings.WEMA["BASE_URL"].
+# Per-product base path under settings.WEMA["BASE_URL"]. Each ALAT product is a
+# distinct Azure APIM path; the mounts below are confirmed against the ALAT OpenAPI
+# specs (Wema API bundle).
 _PATH = {
-    "wallet_nin": "/wallet-creation",       # create wallet with NIN (OTP)
+    "wallet_nin": "/wallet-creation",        # create wallet with NIN (OTP)
     "wallet_bvn": "/account-creation",       # create wallet with BVN (OTP)
     "acct_mgt": "/ws-acct-mgt",              # balance + transaction history
+    "upgrade": "/account-upgrade",           # tier upgrade + KYC/PND status read
     "credit": "/credit-wallet",              # fund a wallet from the channel account
     "debit": "/debit-wallet",                # payout / name enquiry / banks
     "airtime": "/airtime-data",              # airtime + data (VAS)
     "bills": "/bills-payment",               # bills payment (VAS)
-    "kyc": "/kyc",                           # Full KYC / Face: BVN / NIN / vNIN lookups
-    "card": "/virtual-card",                 # Virtual Naira Card (issue/freeze/fund/reveal)
+    "kyc": "/kyc",                           # Nigeria identity lookups (see KYC section)
+    "card": "/card-management",              # Virtual Naira Card (partnerCard endpoints)
 }
 # Products whose channel-id header is `access` (not `x-api-key`).
-_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills", "card"}
+_ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills"}
 
 
 def wema_live() -> bool:
@@ -89,8 +94,9 @@ def _mock_blocked() -> bool:
 
 def _sub_key(product: str) -> str:
     keys = settings.WEMA.get("KEYS") or {}
-    # Wallet Services subscription covers wallet-creation, acct-mgt, credit & debit.
-    if product in ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit"):
+    # Wallet Services subscription covers wallet-creation, acct-mgt, credit, debit
+    # and the account-lifecycle products (PND management + tier upgrade/status).
+    if product in ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit"):
         return keys.get("wallet", "")
     return keys.get(product, "")
 
@@ -148,8 +154,8 @@ def _get(product: str, path: str, params: dict | None = None) -> requests.Respon
                         headers=_headers(product), timeout=REQUEST_TIMEOUT)
 
 
-def _post(product: str, path: str, body: dict) -> requests.Response:
-    return requests.post(_url(product, path), json=body,
+def _post(product: str, path: str, body: dict, params: dict | None = None) -> requests.Response:
+    return requests.post(_url(product, path), json=body, params=params or {},
                          headers=_headers(product), timeout=REQUEST_TIMEOUT)
 
 
@@ -276,6 +282,52 @@ def get_account_details(phone: str, *, bvn: bool = False) -> dict:
         return _unreachable(exc)
 
 
+def lift_debit_restriction(account_number: str, *, bvn: bool = False, place: bool = False) -> dict:
+    """Lift (or place) the Post-No-Debit hold on a freshly provisioned NUBAN.
+
+    ALAT provisions a new Tier-1 partnership account under a PND (Post-No-Debit)
+    restriction: it can RECEIVE funds but cannot be DEBITED until the partner lifts
+    the hold. Since the per-user-balance model debits the sender's own NUBAN, a
+    payout/VAS would fail until this runs, so it is called once right after the
+    account is created. ``bvn`` selects the product the account was created under
+    (PartnerDebitRestrictionManagement lives on both wallet-creation products).
+    Best-effort: a failure leaves the NUBAN restricted and is retried later."""
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True}
+    try:
+        product = "wallet_bvn" if bvn else "wallet_nin"
+        data = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
+                     {"pndType": "PlacePnd" if place else "LiftPnd",
+                      "accountNumber": account_number}).json()
+        return {"success": _ok(data), "message": _msg(data), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
+def get_kyc_status(account_number: str) -> dict:
+    """Read a partnership NUBAN's KYC/tier + restriction state from the ALAT
+    Account-Upgrade product (partner-account-kyc-status). Read-only — used to
+    reconcile the account's real tier / PND state with our records.
+
+    Returns {success, tier, account_status, restriction_status,
+    address_verification, name}."""
+    if not wema_live():
+        if _mock_blocked():
+            return {"success": False, "message": "Account services are not configured"}
+        return {"success": True, "mock": True, "tier": "", "restriction_status": ""}
+    try:
+        data = _get("upgrade", "/api/partnership/partner-account-kyc-status",
+                    {"accountNumber": account_number}).json()
+        d = data.get("data", {}) or {}
+        return {"success": _ok(data) and bool(d), "tier": d.get("accountTier", ""),
+                "account_status": d.get("accountStatus", ""),
+                "restriction_status": d.get("restrictionStatus", ""),
+                "address_verification": d.get("addressVerificationStatus", ""),
+                "name": d.get("accountName", ""), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
 # ---------------------------------------------------------------------------
 # Account maintenance — balance + history (credit detection is by polling)
 # ---------------------------------------------------------------------------
@@ -315,29 +367,42 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
         return _unreachable(exc)
 
 
+# transhistoryV2 `status` legend (documented in the Account-Maintenance OpenAPI:
+# TransactionHistoryModel.status enum = Default | Successfull | Failed | Pending;
+# note ALAT's "Successfull" spelling). Only a genuinely SETTLED credit is funding —
+# a Failed row never arrived and a Pending one hasn't yet, so both are held back
+# from the funding sweep (a Pending deposit is credited on a later run once it
+# flips to Successfull, idempotent on referenceId). An absent/Default status
+# carries no negative signal, so it stays creditable (never regress a deposit whose
+# gateway omits the field).
+_TX_UNSETTLED = {"failed", "reversed", "declined", "returned", "cancelled",
+                 "pending", "processing", "inprogress", "in_progress"}
+
+
 def normalize_transaction(tx: dict) -> dict:
     """Flatten one ALAT TransactionHistoryModel row to the fields reconciliation
-    needs: {reference, amount_naira, is_credit, narration, sender}.
+    needs: {reference, amount_naira, is_credit, settled, status, narration, sender}.
 
     `referenceId` (fallback `tranId`) is the unique per-transaction key used as
-    the ledger idempotency guard; a row funds the wallet only when
-    `creditType == "Credit"` AND its status is settled (not Pending/Failed)."""
+    the ledger idempotency guard; `creditType == "Credit"` marks an inbound
+    deposit; `settled` is False for a row the documented `status` marks Failed/
+    Pending, so the funding sweep (apply_wema_credit) never credits a deposit that
+    hasn't actually landed."""
     if not isinstance(tx, dict):
-        return {"reference": "", "amount_naira": None, "is_credit": False, "narration": "", "sender": ""}
+        return {"reference": "", "amount_naira": None, "is_credit": False,
+                "settled": False, "status": "", "narration": "", "sender": ""}
     ref = str(tx.get("referenceId") or tx.get("tranId") or "").strip()
     # ALAT TransactionStatus enum is {Default, Successfull(sic), Failed, Pending}
     # (confirmed against wallet-services-account-maintenance-api). Only a SETTLED
-    # credit is fundable: block clearly-non-final rows (Pending/Failed) so a deposit
-    # still in flight — or one that later bounces — is never credited. Unknown /
+    # credit is fundable, so `settled` blocks clearly-non-final rows; unknown /
     # blank / Successfull / Default still count, so a live gateway that omits or
-    # re-spells the field can't strand real money; a Pending row simply credits on
-    # a later sweep once it settles.
+    # re-spells the field can't strand real money — a Pending row simply credits on
+    # a later sweep once it settles. apply_wema_credit gates on `settled`.
+    is_credit = str(tx.get("creditType") or "").strip().lower() == "credit"
     status = str(tx.get("status") or "").strip().lower()
-    settled = status not in ("pending", "failed")
-    is_credit = settled and str(tx.get("creditType") or "").strip().lower() == "credit"
     return {"reference": ref, "amount_naira": _naira(tx.get("amount")),
-            "is_credit": is_credit, "status": status,
-            "narration": tx.get("narration") or "",
+            "is_credit": is_credit, "settled": status not in _TX_UNSETTLED,
+            "status": status, "narration": tx.get("narration") or "",
             "sender": tx.get("sender") or tx.get("senderAccountNumber") or ""}
 
 
@@ -500,17 +565,49 @@ def purchase_airtime(amount_naira, reference: str, phone: str, network: str, *,
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
 
+def _flatten_data_plans(result, network: str = "") -> list:
+    """Flatten ALAT's GetDataPlans envelope (result[] of {networkProvider,
+    dataPackages[]: {id, name, amount, validity_Period, ...}}) into normalised plan
+    rows. Each row's ``code`` is the dataPackage ``id`` — the integer packageCode
+    PurchaseData expects. Optionally filter to one network (normalised substring)."""
+    want = re.sub(r"[^a-z0-9]", "", network.lower()) if network else ""
+    rows = []
+    for grp in result if isinstance(result, list) else []:
+        if not isinstance(grp, dict):
+            continue
+        prov = str(grp.get("networkProvider") or grp.get("network") or "")
+        if want and want not in re.sub(r"[^a-z0-9]", "", prov.lower()):
+            continue
+        for pkg in grp.get("dataPackages") or grp.get("packages") or []:
+            if not isinstance(pkg, dict):
+                continue
+            rows.append({
+                "code": str(pkg.get("id") or pkg.get("packageCode") or ""),
+                "name": pkg.get("name") or pkg.get("dataPlan") or "",
+                "amount": pkg.get("amount"),
+                "network": prov,
+                "validity": pkg.get("validity_Period") or pkg.get("validity") or "",
+                "description": pkg.get("description") or "",
+            })
+    return rows
+
+
 def get_data_plans(network: str = "") -> dict:
-    """Wema's own data-plan catalog (packageCode differs from our stored codes)."""
+    """Wema's own data-plan catalog, flattened to {code, name, amount, network,
+    validity, description} rows (``code`` = the dataPackage id PurchaseData wants).
+
+    ALAT returns every network in one call, nested as result[].dataPackages[]
+    (no server-side network filter), so `network` filters client-side."""
     if not _vas_live("airtime"):
         if _mock_blocked():
             return {"success": False, "message": "Data is not configured"}
         return {"success": True, "mock": True, "plans": []}
     try:
-        data = _get("airtime", "/api/Data/GetDataPlans", {"network": network} if network else None).json()
-        raw = data.get("result", []) or []
-        return {"success": _ok(data) or bool(data.get("successful")),
-                "plans": raw if isinstance(raw, list) else [raw], "raw": data}
+        data = _get("airtime", "/api/Data/GetDataPlans").json()
+        ok = _ok(data) or bool(data.get("successful"))
+        return {"success": ok,
+                "plans": _flatten_data_plans(data.get("result", []) or [], network),
+                "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -536,17 +633,49 @@ def purchase_data(amount_naira, reference: str, phone: str, network: str, packag
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
 
+def _flatten_bills(result) -> list:
+    """Flatten ALAT's GetAllBills envelope (result[] categories -> billers[] ->
+    packages[]) into purchasable rows keyed by the PackageViewModel ``id`` — the
+    integer packageId ValidateCustomer / PayBill expect. A biller with no packages
+    is emitted as its own row (code = biller id) so nothing is dropped."""
+    rows = []
+    for cat in result if isinstance(result, list) else []:
+        if not isinstance(cat, dict):
+            continue
+        cat_name = cat.get("name") or ""
+        for biller in cat.get("billers") or []:
+            if not isinstance(biller, dict):
+                continue
+            base = {"biller": biller.get("name") or "", "biller_id": biller.get("id"),
+                    "category": cat_name, "identifier": biller.get("identifier") or "",
+                    "requires_validation": bool(biller.get("requiredValidation")),
+                    "charge": biller.get("charge")}
+            pkgs = biller.get("packages") or []
+            if isinstance(pkgs, list) and pkgs:
+                for pkg in pkgs:
+                    if isinstance(pkg, dict):
+                        rows.append({**base, "code": str(pkg.get("id") or ""),
+                                     "name": pkg.get("name") or biller.get("name") or "",
+                                     "amount": pkg.get("amount")})
+            else:
+                rows.append({**base, "code": str(biller.get("id") or ""),
+                             "name": biller.get("name") or "", "amount": None})
+    return rows
+
+
 def get_bills() -> dict:
-    """Wema biller catalog (packageId differs from our VTU.ng service ids)."""
+    """Wema biller catalog, flattened to {code, name, amount, biller, category,
+    identifier, requires_validation, charge} rows (``code`` = the packageId
+    ValidateCustomer / PayBill want). ALAT nests it as
+    result[] categories -> billers[] -> packages[]."""
     if not _vas_live("bills"):
         if _mock_blocked():
             return {"success": False, "message": "Bills are not configured"}
         return {"success": True, "mock": True, "bills": []}
     try:
         data = _get("bills", "/api/BillsPayment/GetAllBills").json()
-        raw = data.get("result", []) or []
-        return {"success": _ok(data) or bool(data.get("successful")),
-                "bills": raw if isinstance(raw, list) else [raw], "raw": data}
+        ok = _ok(data) or bool(data.get("successful"))
+        return {"success": ok, "bills": _flatten_bills(data.get("result", []) or []), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -592,17 +721,23 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
 
 
 def vas_status(reference: str, txn_type: str = "") -> dict:
-    """Requery a VAS purchase by our transactionReference (settle/refund helper)."""
+    """Requery a VAS purchase by our transactionReference (settle/refund helper).
+
+    The airtime/data status check takes an INTEGER ``transactionType`` (1 = airtime,
+    2 = data); the bills check takes only the reference. Both return an integer
+    ``transactionStatus`` whose legend ALAT doesn't publish — see _parse_vas for how
+    that is handled money-safely."""
     product = "bills" if txn_type == "bill" else "airtime"
     if not _vas_live(product):
         return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
     try:
-        path = ("/api/PartnerPayment/checktransactionstatus" if product == "bills"
-                else "/api/PartnerPayment/CheckTransactionStatus")
-        body = {"transactionReference": reference}
-        if product != "bills":
-            body["transactionType"] = txn_type or "airtime"
-        data = _post(product, path, body).json()
+        if product == "bills":
+            data = _post("bills", "/api/PartnerPayment/checktransactionstatus",
+                         {"transactionReference": reference}).json()
+        else:
+            data = _post("airtime", "/api/PartnerPayment/CheckTransactionStatus",
+                         {"transactionReference": reference,
+                          "transactionType": 2 if txn_type == "data" else 1}).json()
         return _parse_vas(data, reference)
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
@@ -610,11 +745,26 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
 
 def _parse_vas(data: dict, reference: str) -> dict:
     """Normalise a VAS response to the {success, pending, status, reference} shape
-    settle_or_refund expects. A recognisably-processing status maps to pending."""
+    settle_or_refund expects.
+
+    Two response shapes: a purchase carries a STRING ``result.status``
+    (SUCCESS/PROCESSING/…), while the PartnerPayment status-check carries only an
+    INTEGER ``result.transactionStatus`` (enum 1..11) whose meaning ALAT doesn't
+    document. On the integer-only shape we cannot safely decide settled vs failed,
+    so we report ``pending`` — never auto-settle (which would strand a failed
+    purchase debited) or auto-refund (which would double-spend a delivered one) on
+    an un-decodable code — and surface the raw code for review."""
     r = data.get("result", {}) or {}
     if not isinstance(r, dict):
         r = {}
     status = str(r.get("status") or data.get("status") or "").upper()
+    if not status and "transactionStatus" in r:
+        code = r.get("transactionStatus")
+        log.warning("wema_vas_status_code ref=%s transactionStatus=%r (legend undocumented — left pending)",
+                    reference, code)
+        return {"success": False, "pending": True, "status": f"CODE_{code}",
+                "reference": r.get("transactionReference", reference),
+                "message": _msg(data), "raw": data}
     ok = _ok(data) or bool(data.get("successful"))
     pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS")
     return {"success": ok and not pending, "pending": pending, "status": status,
@@ -623,100 +773,115 @@ def _parse_vas(data: dict, reference: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Virtual Naira Card (Wema card product): issue / freeze / fund / reveal
+# Virtual Naira Card — ALAT Card-Management product (/card-management).
 #
-# Returns the same shapes the cards app + providers card_* wrappers expect
-# (issue -> {card_token, brand, last4, expiry}; reveal -> {pan, cvv}). Mock-first
-# with a deterministic fake card offline; fails closed in production when unkeyed so
-# a misconfigured deploy never fabricates a card that looks real in the app.
+# ALAT keys a customer's virtual card by their NUBAN (accountNo), NOT a card token,
+# so the "card_token" the cards app stores IS the account number. Three operations
+# map to real endpoints: issue (partnerCard/virtualCard, funded at creation),
+# reveal (partnerCard/virtual-card-details/{accountNo}) and a PERMANENT block
+# (partnerCard/hotlistCard). ALAT's virtual-card product exposes NO reversible
+# freeze and NO incremental top-up, so card_set_status(active=True) and card_fund
+# report "unsupported" (the generic CARD_ISSUER, still the default, supports both) —
+# they never fake a success against money/state ALAT can't move.
 #
-# FIX-BEFORE-LIVE (confirmed against card-management-api spec — the paths below are
-# WRONG and will 404 on the live gateway). The real Card Management API is:
-#   • APIM suffix  /card-management   (NOT the current _PATH['card']='/virtual-card')
-#   • auth header  x-api-key          (NOT 'access'; remove 'card' from _ACCESS_PRODUCTS)
-#   • NO securityInfo on any card call (remove it from the bodies below)
-#   • operations are keyed by the customer NUBAN (accountNo), not a card token:
-#       issue   POST /api/Partner/partnerCard/virtualCard
-#               body VirtualCardRequestObject {accountNo,emailaddress,phoneNumber,
-#               amount,customerAddress,cardKey,currency:'NGN'}
-#       reveal  GET  /api/Partner/partnerCard/retrieveCard/{accountNo}   (full PAN/CVV)
-#               or   /api/Partner/partnerCard/virtual-card-details/{accountNo}
-#       freeze  POST /api/Partner/partnerCard/hotlistCard?maskedPan=&accountNumber=
-#               (query params, block-only — the rail has NO unfreeze endpoint)
-#       fund    — none; funding is only the optional `amount` at creation
-# Migrating requires threading the cardholder's NUBAN/email/phone into these calls
-# (a card-model change) + a live-key smoke test, so it is intentionally NOT done here.
-# The rail is gated off (_card_live() False until keyed) so this blocks virtual cards
-# only, not the core funding/transfer/VAS launch.
+# Mock-first with a deterministic fake card offline; fails closed in production when
+# unkeyed so a misconfigured deploy never fabricates a card that looks real.
+#
+# VERIFY-BEFORE-LIVE: issue/reveal return an OPAQUE `data` field whose structure
+# isn't in the OpenAPI (masked PAN / expiry / CVV / card ref) and the virtualCard
+# request's `cardKey` (card product id) must come from Wema — confirm both against
+# Wema's card integration guide before go-live. (retrieveCard/{accountNo} is an
+# alternative reveal endpoint if virtual-card-details doesn't return the full PAN/CVV.)
 # ---------------------------------------------------------------------------
 def _card_live() -> bool:
-    """Whether the Virtual Naira Card product has its subscription key + channel id."""
+    """Whether the Card-Management product has its subscription key + channel id."""
     return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("card"))
 
 
-def _card_result(data: dict) -> dict:
-    d = data.get("result") or data.get("data") or {}
-    if not isinstance(d, dict):
-        d = {}
-    return d
+def _card_data(data: dict) -> dict:
+    """Best-effort dict view of ALAT's opaque card `data`/`result` field, which the
+    OpenAPI types only as a string — it may arrive as a nested object or a JSON
+    string. Returns {} when it can't be read as an object."""
+    d = data.get("result")
+    if d is None:
+        d = data.get("data")
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except (ValueError, TypeError):
+            return {}
+    return d if isinstance(d, dict) else {}
 
 
-def card_issue(holder: str, customer_ref: str) -> dict:
-    """Create a virtual Naira card. Returns {success, card_token, brand, last4, expiry}."""
+def card_issue(holder: str, customer_ref: str, *, account_number: str = "", email: str = "",
+               phone: str = "", amount=0, address: str = "") -> dict:
+    """Issue a virtual Naira card against the customer's NUBAN.
+
+    Returns {success, card_token, brand, last4, expiry}. ALAT keys the card by the
+    account number, so ``card_token`` is the NUBAN (the app reveals/blocks by it). A
+    live issue needs the user's provisioned NUBAN; without one it fails closed."""
     if not _card_live():
         if _mock_blocked():
             return {"success": False, "message": "Card issuing is not configured"}
-        seed = int(hashlib.sha256((customer_ref or holder or "x").encode()).hexdigest(), 16)
-        return {"success": True, "mock": True, "card_token": "wema_" + f"{seed % 10**12:012d}",
+        seed = int(hashlib.sha256((account_number or customer_ref or holder or "x").encode()).hexdigest(), 16)
+        return {"success": True, "mock": True,
+                "card_token": account_number or ("wema_" + f"{seed % 10**12:012d}"),
                 "brand": "Verve", "last4": f"{seed % 10000:04d}",
                 "expiry": f"{1 + seed % 12:02d}/{29 + seed % 3}"}
+    if not account_number:
+        return {"success": False, "message": "Set up your Zitch account before creating a card"}
     try:
-        body = {"customerReference": customer_ref, "name": holder, "currency": "NGN",
-                "securityInfo": _security_info(op="card_issue", reference=customer_ref)}
-        data = _post("card", "/api/VirtualCard/CreateCard", body).json()
-        r = _card_result(data)
-        token = r.get("cardId") or r.get("id") or r.get("cardReference") or ""
-        pan = str(r.get("maskedPan") or r.get("cardNumber") or "")
-        return {"success": _ok(data) and bool(token), "card_token": token,
-                "brand": r.get("scheme", "Verve"), "last4": pan[-4:],
-                "expiry": r.get("expiry") or f"{r.get('expiryMonth', '')}/{str(r.get('expiryYear', ''))[-2:]}",
+        body = {"emailaddress": email, "phoneNumber": phone, "amount": float(amount or 0),
+                "accountNo": account_number, "customerAddress": address,
+                "cardKey": settings.WEMA.get("CARD_PRODUCT_KEY", ""), "currency": "NGN"}
+        data = _post("card", "/api/Partner/partnerCard/virtualCard", body).json()
+        ok = bool(data.get("status")) or _ok(data)
+        d = _card_data(data)
+        pan = str(d.get("maskedPan") or d.get("cardPan") or d.get("cardNumber") or "")
+        return {"success": ok, "card_token": account_number,
+                "brand": d.get("scheme") or d.get("brand") or "Verve",
+                "last4": pan[-4:] if pan else "",
+                "expiry": d.get("expiryDate") or d.get("expiry") or "",
                 "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
 
-def card_set_status(card_token: str, active: bool) -> dict:
-    """Freeze/unfreeze a virtual card."""
+def card_set_status(card_token: str, active: bool, *, masked_pan: str = "") -> dict:
+    """Block a virtual card (permanent hotlist). ``card_token`` is the NUBAN.
+
+    ALAT has no reversible freeze, so unfreezing (active=True) is reported
+    unsupported rather than faked; blocking (active=False) hotlists the card
+    permanently (also passes the masked PAN when the caller has it)."""
     if not _card_live():
         if _mock_blocked():
             return {"success": False, "message": "Card issuing is not configured"}
         return {"success": True, "mock": True}
+    if active:
+        return {"success": False,
+                "message": "This card was blocked and can't be reactivated — request a new card."}
     try:
-        path = "/api/VirtualCard/Unfreeze" if active else "/api/VirtualCard/Freeze"
-        data = _post("card", path, {"cardId": card_token,
-                                    "securityInfo": _security_info(op="card_status", reference=card_token)}).json()
-        return {"success": _ok(data), "message": _msg(data), "raw": data}
+        data = _post("card", "/api/Partner/partnerCard/hotlistCard", {},
+                     params={"maskedPan": masked_pan, "accountNumber": card_token}).json()
+        return {"success": bool(data.get("successful")) or _ok(data), "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
 
 def card_fund(card_token: str, amount) -> dict:
-    """Top up a virtual card from the wallet."""
+    """Incremental top-up. ALAT's virtual card is funded at issue and exposes no
+    top-up endpoint, so a live call reports unsupported (the caller refunds the
+    debit) rather than faking a success against a card it can't move."""
     if not _card_live():
         if _mock_blocked():
             return {"success": False, "message": "Card issuing is not configured"}
         return {"success": True, "mock": True}
-    try:
-        body = {"cardId": card_token, "amount": float(amount),
-                "securityInfo": _security_info(op="card_fund", reference=card_token)}
-        data = _post("card", "/api/VirtualCard/Fund", body).json()
-        return {"success": _ok(data), "message": _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+    return {"success": False, "message": "Top-up isn't supported for this card"}
 
 
 def card_reveal(card_token: str) -> dict:
-    """Fetch full PAN/CVV for a one-time reveal (never persisted server-side)."""
+    """Fetch card details for a one-time reveal (never persisted). ``card_token`` is
+    the NUBAN ALAT keys the card by."""
     if not _card_live():
         if _mock_blocked():
             return {"success": False, "message": "Card issuing is not configured"}
@@ -724,132 +889,90 @@ def card_reveal(card_token: str) -> dict:
         pan = "5061" + "".join(str((seed >> (i * 4)) % 10) for i in range(12))
         return {"success": True, "mock": True, "pan": pan, "cvv": f"{seed % 1000:03d}"}
     try:
-        data = _get("card", f"/api/VirtualCard/Details/{card_token}").json()
-        r = _card_result(data)
-        return {"success": _ok(data), "pan": r.get("cardNumber") or r.get("pan", ""),
-                "cvv": r.get("cvv") or r.get("cvv2", ""), "raw": data}
+        data = _get("card", f"/api/Partner/partnerCard/virtual-card-details/{card_token}").json()
+        d = _card_data(data)
+        ok = bool(data.get("status")) or bool(data.get("successful")) or _ok(data)
+        return {"success": ok and bool(d),
+                "pan": d.get("cardPan") or d.get("cardNumber") or d.get("pan", ""),
+                "cvv": d.get("cvv") or d.get("cvv2", ""), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
 
 # ---------------------------------------------------------------------------
-# KYC — Nigeria identity lookups (Wema Full KYC product): BVN / NIN / vNIN
+# KYC — Nigeria identity (BVN / NIN / vNIN)
 #
-# On a valid lookup Wema returns the holder's record; verify_bvn additionally
-# rejects a clear name mismatch when a name is supplied. Identity NEVER mock-passes
-# in production (fails closed via mock_disabled_in_prod, even with WEMA_SIMULATION
-# on) so a misconfigured deploy can't upgrade a real tier on a fabricated identity.
+# ALAT has NO standalone BVN/NIN/vNIN lookup: its "Full KYC" product opens/upgrades
+# accounts and returns the holder's name only AFTER a full OTP account-creation
+# round-trip. So identity is verified by the NUBAN provisioning flow (the
+# /api/wallet/wema/* endpoints -> create_wallet_request / validate_wallet_otp /
+# get_account_details), and the holder name ALAT returns is name-matched against the
+# user's registered name (holder_name_mismatch) before the KYC tier is lifted — see
+# wallet.views.wema_wallet_verify_otp.
 #
-# FIX-BEFORE-LIVE (confirmed against the partnership-account spec family): Wema has
-# NO standalone identity-lookup endpoint. The /api/Kyc/VerifyBvn|VerifyNin|VerifyVnin
-# paths below are fabricated and will 404 live, and there is NO virtual-NIN (vNIN)
-# endpoint anywhere on the Wema rail at all. On Wema, BVN/NIN are validated only as a
-# byproduct of account creation (tier1-bvn/nin-withoutOtp-v2) or upgrade
-# (partner-account-upgrade-tier2), and current tier is read via
-# GET /api/partnership/partner-account-kyc-status — none of which return a holder
-# name for a bare-lookup name-match, so _kyc_record/_name_mismatch have no live data
-# source here. RESOLUTION (product decision, needs live keys): either (a) route
-# BVN/NIN/vNIN identity lookups to Prembly/IdentityPass (which DO expose them — see
-# utility.providers), or (b) fold BVN/NIN validation into the account-creation/upgrade
-# flow. Left in place (fails closed without keys) pending that decision.
+# The verify_bvn / verify_nin / verify_vnin entry points are kept for the
+# provider-agnostic contract but no longer call a (non-existent) lookup endpoint: in
+# production they direct the caller to account setup; dev/tests keep a mock so the
+# offline KYC flow still exercises. Identity NEVER mock-passes in production, so a
+# misconfigured deploy can't fabricate one.
 # ---------------------------------------------------------------------------
-def _kyc_live() -> bool:
-    """Whether the Full KYC product has its subscription key + channel id."""
-    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("kyc"))
-
-
 def _name_tokens(name: str) -> set:
     """Significant lowercased word tokens of a holder name (drops 1-char bits),
     for tolerant BVN/NIN name comparison."""
     return {t for t in re.sub(r"[^a-z ]", " ", (name or "").lower()).split() if len(t) > 1}
 
 
-def _name_mismatch(supplied: str, resolved: str) -> bool:
+def holder_name_mismatch(supplied: str, resolved: str) -> bool:
     """True only when BOTH names are non-empty and share NO tokens — a clear
     mismatch. Tolerant of order / middle names so a legitimate holder is never
-    blocked by a formatting difference."""
+    blocked by a formatting difference.
+
+    Used to name-match the holder record ALAT returns during NUBAN provisioning
+    against the user's registered name before the KYC tier is lifted, so a BVN/NIN
+    that demonstrably belongs to someone else can't lift the requester's tier."""
     a, b = _name_tokens(supplied), _name_tokens(resolved)
     return bool(a and b and not (a & b))
 
 
-def _kyc_record(data: dict) -> dict:
-    """Pull the holder's first/last name out of either ALAT envelope shape."""
-    d = data.get("result") or data.get("data") or {}
-    if not isinstance(d, dict):
-        d = {}
-    return {"first_name": d.get("firstName", "") or d.get("firstname", ""),
-            "last_name": d.get("lastName", "") or d.get("lastname", ""), "_d": d}
+def _identity_unavailable_standalone() -> dict:
+    """What verify_* returns in production: ALAT can't verify a number standalone, so
+    route the user to account setup, where provisioning does the real name-matched
+    check. otp_required signals the app to run the NUBAN OTP flow."""
+    return {"success": False, "otp_required": True,
+            "message": "Verify your identity when you set up your Zitch account."}
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """Verify a BVN via Wema's Full KYC lookup (POST /kyc /api/Kyc/VerifyBvn {bvn}).
+    """BVN verification entry point (provider-agnostic contract).
 
-    On a valid lookup Wema returns the holder's record; when ``name`` is supplied we
-    reject only a CLEAR mismatch (no shared name tokens), tolerant of order/middle
-    names. Fails closed in production without keys."""
+    ALAT has no standalone BVN lookup — verification happens in the name-matched
+    NUBAN account-creation flow. In production this directs the caller there; dev and
+    tests keep a mock so the offline flow still works."""
     if len(bvn) != 11 or not bvn.isdigit():
         return {"success": False, "message": "BVN must be 11 digits"}
-    if not _kyc_live():
-        if mock_disabled_in_prod():
-            return {"success": False, "message": "Identity verification is temporarily unavailable"}
-        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
-    try:
-        data = _post("kyc", "/api/Kyc/VerifyBvn", {"bvn": bvn}).json()
-        rec = _kyc_record(data)
-        ok = _ok(data) and bool(rec["_d"])
-        if ok and name and _name_mismatch(name, f"{rec['first_name']} {rec['last_name']}"):
-            return {"success": False, "message": "This BVN does not match your name", "raw": data}
-        return {"success": ok, "first_name": rec["first_name"], "last_name": rec["last_name"],
-                "message": _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+    if mock_disabled_in_prod():
+        return _identity_unavailable_standalone()
+    return {"success": True, "mock": True, "first_name": "", "last_name": ""}
 
 
 def verify_nin(nin: str, name: str = "") -> dict:
-    """Verify a NIN via Wema's Full KYC (POST /kyc /api/Kyc/VerifyNin {nin}) -> holder details.
-
-    When ``name`` is supplied we reject only a CLEAR mismatch (no shared name
-    tokens), tolerant of order/middle names — mirroring verify_bvn, so a NIN that
-    demonstrably belongs to someone else can't lift the requester's KYC tier.
-    Fails closed in production without keys."""
+    """NIN verification entry point — see verify_bvn. ALAT has no standalone NIN
+    lookup; verification is the name-matched NUBAN account-creation flow."""
     if len(nin) != 11 or not nin.isdigit():
         return {"success": False, "message": "NIN must be 11 digits"}
-    if not _kyc_live():
-        if mock_disabled_in_prod():
-            return {"success": False, "message": "Identity verification is temporarily unavailable"}
-        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
-    try:
-        data = _post("kyc", "/api/Kyc/VerifyNin", {"nin": nin}).json()
-        rec = _kyc_record(data)
-        ok = _ok(data) and bool(rec["_d"])
-        if ok and name and _name_mismatch(name, f"{rec['first_name']} {rec['last_name']}"):
-            return {"success": False, "message": "This NIN does not match your name", "raw": data}
-        return {"success": ok, "first_name": rec["first_name"],
-                "last_name": rec["last_name"], "message": _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+    if mock_disabled_in_prod():
+        return _identity_unavailable_standalone()
+    return {"success": True, "mock": True, "first_name": "", "last_name": ""}
 
 
 def verify_vnin(vnin: str, name: str = "") -> dict:
-    """Verify a Virtual NIN (16-char tokenised NIN) via Wema's Full KYC
-    (POST /kyc /api/Kyc/VerifyVnin {vnin}). Rejects a clear name mismatch when a
-    name is supplied. Fails closed in production when unkeyed."""
+    """Virtual-NIN (16-char) verification entry point — see verify_bvn. No standalone
+    ALAT lookup; verification is the name-matched NUBAN account-creation flow."""
     if not vnin or len(vnin) != 16:
         return {"success": False, "message": "Virtual NIN must be 16 characters"}
-    if not _kyc_live():
-        if mock_disabled_in_prod():
-            return {"success": False, "message": "Identity verification is temporarily unavailable"}
-        return {"success": True, "mock": True, "first_name": "", "last_name": ""}
-    try:
-        data = _post("kyc", "/api/Kyc/VerifyVnin", {"vnin": vnin}).json()
-        rec = _kyc_record(data)
-        ok = _ok(data) and bool(rec["_d"])
-        if ok and name and _name_mismatch(name, f"{rec['first_name']} {rec['last_name']}"):
-            return {"success": False, "message": "This NIN does not match your name", "raw": data}
-        return {"success": ok, "first_name": rec["first_name"],
-                "last_name": rec["last_name"], "message": _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+    if mock_disabled_in_prod():
+        return _identity_unavailable_standalone()
+    return {"success": True, "mock": True, "first_name": "", "last_name": ""}
 
 
 # ---------------------------------------------------------------------------

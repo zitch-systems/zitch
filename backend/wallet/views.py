@@ -223,11 +223,33 @@ def wema_wallet_verify_otp(request):
     except IntegrityError:
         log.warning("wema_account_persist_conflict user=%s account=%s", user.id, acct["account_number"])
         return fail("We couldn't finish setting up your account. Please contact support.", status=409)
-    # Best-effort KYC / tier lift if the client echoed the identifier.
+    # Lift the Post-No-Debit hold ALAT places on a new Tier-1 NUBAN — until it's
+    # lifted the account can be funded but not debited, so a payout/VAS from the
+    # user's own NUBAN would fail. Best-effort: the account is already usable for
+    # receiving; a failure here is logged and retried on the next verify/reconcile
+    # rather than blocking a successful provisioning.
+    pnd = wema_provider.lift_debit_restriction(acct["account_number"], bvn=using_bvn)
+    if not pnd.get("success"):
+        log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
+                    user.id, acct["account_number"], pnd.get("message", ""))
+    # Best-effort KYC / tier lift if the client echoed the identifier. ALAT has no
+    # standalone BVN/NIN lookup, so this account-creation round-trip IS the identity
+    # check: the tier is only lifted when the holder name ALAT returned name-matches
+    # the user's registered name (tolerant of order/middle names), so a BVN/NIN that
+    # demonstrably belongs to someone else can't lift this user's tier. The match runs
+    # only against a real gateway (wema_live); a clear mismatch still provisions the
+    # NUBAN (funding works) but holds the tier for review.
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+    name_ok = True
+    if wema_provider.wema_live():
+        name_ok = not wema_provider.holder_name_mismatch(
+            user.get_full_name() or "", acct.get("account_name", ""))
     fields: list[str] = []
-    if using_bvn and len(bvn) == 11 and not user.bvn_verified:
+    if not name_ok:
+        log.warning("wema_provision_name_mismatch user=%s account=%s wema_name=%r",
+                    user.id, acct["account_number"], acct.get("account_name", ""))
+    elif using_bvn and len(bvn) == 11 and not user.bvn_verified:
         user.set_bvn(bvn)
         user.bvn_verified = True
         fields += ["bvn_hash", "bvn_last4", "bvn_verified"]

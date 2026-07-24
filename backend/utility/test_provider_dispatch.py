@@ -175,10 +175,13 @@ class CardDispatchTests(SimpleTestCase):
 
     @override_settings(CARD_PROVIDER="wema")
     def test_card_issue_routes_to_wema_when_selected(self):
+        # Wema keys the card by the user's NUBAN — the account number is threaded through.
         with patch("utility.wema.card_issue",
-                   return_value={"success": True, "card_token": "wema_1", "last4": "1234"}) as m:
-            out = P.card_issue("ADA EZE", "42", email="ada@b.com")
-        m.assert_called_once_with("ADA EZE", "42")
+                   return_value={"success": True, "card_token": "0155500011", "last4": "1234"}) as m:
+            out = P.card_issue("ADA EZE", "42", email="ada@b.com", account_number="0155500011")
+        m.assert_called_once()
+        self.assertEqual(m.call_args.args, ("ADA EZE", "42"))
+        self.assertEqual(m.call_args.kwargs["account_number"], "0155500011")
         self.assertTrue(out["success"])
 
     @override_settings(CARD_PROVIDER="wema")
