@@ -13,7 +13,7 @@ This runbook is for the installable preview APK produced by the root
    - Install dependencies
    - Validate TypeScript
    - Run app unit tests
-   - Validate Expo configuration
+   - Validate Expo project (SDK-compatible dependencies and resolved config)
    - Expo prebuild
    - Build release APK
    - Verify APK artifact
