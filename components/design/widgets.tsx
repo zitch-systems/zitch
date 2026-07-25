@@ -12,7 +12,7 @@ export const SectionLabel = ({ children, action, onAction }: { children: string;
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
       <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>{children}</Text>
       {action && (
-        <Pressable onPress={onAction}>
+        <Pressable onPress={onAction} accessibilityRole="button" accessibilityLabel={`${action}, ${children}`}>
           <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.brand }}>{action}</Text>
         </Pressable>
       )}
@@ -88,7 +88,13 @@ export const ServiceTile = ({
   const { c, theme } = useTheme();
   const accent = ICON_COLORS[icon] ?? c.brand;
   return (
-    <Pressable onPress={onPress} style={{ alignItems: 'center', gap: 7 }}>
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: !onPress }}
+      style={{ alignItems: 'center', gap: 7 }}
+    >
       <View>
         <View
           style={{
@@ -108,3 +114,4 @@ export const ServiceTile = ({
     </Pressable>
   );
 };
+

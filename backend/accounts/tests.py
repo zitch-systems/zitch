@@ -2,6 +2,7 @@
 import json
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -13,6 +14,7 @@ from betting.models import BettingPlatform
 from exams.models import ExamProduct
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
+from common.ratelimit import client_ip
 
 from .models import OTP, AccessToken
 
@@ -362,6 +364,67 @@ class KycTierTests(TestCase):
         self.assertTrue(body["face_verified"])
 
 
+class ClientIpTests(TestCase):
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_uses_rightmost_forwarded_ip_to_reject_prepended_spoof(self):
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "203.0.113.200, 198.51.100.7",
+            "REMOTE_ADDR": "10.0.0.2",
+        })
+        self.assertEqual(client_ip(request), "198.51.100.7")
+
+    @override_settings(RATELIMIT_TRUSTED_PROXY_HOPS=0)
+    def test_ignores_forwarded_header_when_proxy_trust_is_disabled(self):
+        request = SimpleNamespace(META={
+            "HTTP_X_FORWARDED_FOR": "203.0.113.200",
+            "REMOTE_ADDR": "198.51.100.8",
+        })
+        self.assertEqual(client_ip(request), "198.51.100.8")
+
+
+@override_settings(
+    RATELIMIT_ENABLE=True,
+    USER_LOGIN_MAX_FAILS=3,
+    USER_LOGIN_LOCKOUT_SECONDS=900,
+)
+class UserLoginLockoutTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="08012345678",
+            phone="08012345678",
+            email="ada@zitch.test",
+            password="Correct#pass1",
+        )
+
+    def tearDown(self):
+        cache.clear()
+
+    def signin(self, password):
+        return self.client.post(
+            "/api/sigin/",
+            data=json.dumps({"email_or_phone": "ada@zitch.test", "password": password}),
+            content_type="application/json",
+        )
+
+    def test_distributed_guesses_lock_account_identifier(self):
+        for _ in range(3):
+            self.assertEqual(self.signin("wrong-password").status_code, 401)
+        self.assertEqual(self.signin("Correct#pass1").status_code, 429)
+
+    def test_failed_signin_log_masks_identifier(self):
+        with patch("accounts.views.log.warning") as warning:
+            self.signin("wrong-password")
+        self.assertEqual(warning.call_args.args[1], "a***@zitch.test")
+
+    def test_inactive_account_cannot_receive_new_session(self):
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+        response = self.signin("Correct#pass1")
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("access_token", response.json())
+
+
 @override_settings(RATELIMIT_ENABLE=True)
 class RateLimitTests(TestCase):
     """Per-IP rate limiting (disabled elsewhere in the suite; on here)."""
@@ -660,3 +723,4 @@ class PasswordRecoveryTests(TestCase):
     def _auth(self, token):
         return self.client.post("/api/wallet_balance/", data=json.dumps({"access_token": token}),
                                 content_type="application/json").status_code
+

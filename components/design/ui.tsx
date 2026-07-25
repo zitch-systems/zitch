@@ -121,6 +121,8 @@ export const Header = ({
       {onBack && (
         <Pressable
           onPress={onBack}
+          accessibilityRole="button"
+          accessibilityLabel="Go back"
           style={{
             width: 42,
             height: 42,
@@ -167,7 +169,7 @@ export const Card = ({
     ...cardShadow,
     ...style,
   };
-  if (onPress) return <Pressable onPress={onPress} style={({ pressed }) => [base, pressed && { opacity: 0.9 }]}>{children}</Pressable>;
+  if (onPress) return <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [base, pressed && { opacity: 0.9 }]}>{children}</Pressable>;
   return <View style={base}>{children}</View>;
 };
 
@@ -214,6 +216,10 @@ export const Btn = ({
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled }}
+      disabled={!!disabled}
       style={({ pressed }) => [
         {
           flexDirection: 'row',
@@ -311,6 +317,8 @@ export const ZItem = ({
   return (
     <Wrap
       onPress={onPress}
+      accessibilityRole={onPress ? 'button' : undefined}
+      accessibilityLabel={onPress ? [title, sub].filter(Boolean).join(', ') : undefined}
       style={{
         flexDirection: 'row',
         alignItems: 'center',
@@ -422,6 +430,7 @@ export const Field = ({
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
+          accessibilityLabel={label || placeholder || 'Input'}
           placeholderTextColor={c.ink3}
           keyboardType={keyboardType}
           secureTextEntry={secure}
@@ -436,7 +445,12 @@ export const Field = ({
         />
         )}
         {secureTextEntry ? (
-          <Pressable onPress={() => setShow((s) => !s)} hitSlop={10} accessibilityLabel={show ? 'Hide password' : 'Show password'}>
+          <Pressable
+            onPress={() => setShow((s) => !s)}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel={show ? 'Hide password' : 'Show password'}
+          >
             <ZIcon name={show ? 'eyeoff' : 'eye'} size={20} color={c.ink3} />
           </Pressable>
         ) : suffix}
@@ -602,6 +616,8 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
       <View style={{ alignItems: 'center', paddingVertical: 16 }}>
         <Pressable
           onPress={useBiometric}
+          accessibilityRole="button"
+          accessibilityLabel={bioKind === 'face' ? 'Approve with Face ID' : 'Approve with fingerprint'}
           style={{ width: 104, height: 104, borderRadius: 52, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}
         >
           <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={52} color={c.brand} />
@@ -617,6 +633,8 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
         ) : null}
         <Pressable
           onPress={() => setShowBio(false)}
+          accessibilityRole="button"
+          accessibilityLabel="Use PIN instead"
           hitSlop={12}
           style={{ marginTop: 24, width: 46, height: 46, borderRadius: 23, borderWidth: 1.5, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}
         >
@@ -658,6 +676,9 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
                 <Pressable
                   key={k}
                   disabled={busy}
+                  accessibilityRole="button"
+                  accessibilityLabel={k === 'del' ? 'Delete digit' : k === 'bio' ? 'Use biometric approval' : `Digit ${k}`}
+                  accessibilityState={{ disabled: busy }}
                   onPress={() => (k === 'del' ? del() : k === 'bio' ? useBiometric() : press(k))}
                   style={({ pressed }) => ({
                     flex: 1,
@@ -775,3 +796,4 @@ export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPre
     </Wrap>
   );
 };
+

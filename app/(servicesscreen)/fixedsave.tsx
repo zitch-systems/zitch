@@ -1,9 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, NText } from '@/components/design/ui';
 import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
@@ -33,7 +31,6 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
 const FixedSave = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [amt, setAmt] = useState('');
   const [days, setDays] = useState(90);
   const [step, setStep] = useState<Step>(null);
@@ -44,17 +41,12 @@ const FixedSave = () => {
   const [periods, setPeriods] = useState<number[]>(FALLBACK_PERIODS);
   const [minAmt, setMinAmt] = useState(1000);
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-
   // Pull the live rate table; fall back to the bundled defaults on any failure.
   useEffect(() => {
-    fetch(`${baseUrl}/api/savings/rates/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    })
-      .then((r) => r.json())
+    let active = true;
+    publicJson('/api/savings/rates/')
       .then((res) => {
+        if (!active) return;
         if (Array.isArray(res?.rates) && res.rates.length) {
           const map: Record<number, number> = {};
           res.rates.forEach((x: any) => { map[Number(x.days)] = Number(x.rate); });
@@ -69,6 +61,7 @@ const FixedSave = () => {
         if (res?.min != null) setMinAmt(Number(res.min));
       })
       .catch(() => { /* keep bundled fallbacks */ });
+    return () => { active = false; };
   }, []);
 
   const amount = Number(amt || 0);
@@ -207,3 +200,4 @@ const FixedSave = () => {
 };
 
 export default FixedSave;
+

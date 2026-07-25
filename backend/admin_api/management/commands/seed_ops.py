@@ -11,8 +11,8 @@ Two modes:
   * Create one real operator (works anywhere):
         python manage.py seed_ops --username ada --role finance --password '...'
   * Seed the demo operator set used by e2e_smoke.py (dapo/funmi/...), with a
-    known default password — blocked when DEBUG is off unless --force, so a
-    production box never gets default-credential operators by accident:
+    known default password — blocked whenever DEBUG is off, so a production
+    box never gets default-credential operators:
         python manage.py seed_ops
 """
 from django.conf import settings
@@ -42,21 +42,22 @@ class Command(BaseCommand):
         parser.add_argument("--role", choices=ROLES)
         parser.add_argument("--password")
         parser.add_argument("--email")
-        parser.add_argument("--force", action="store_true",
-                            help="Allow the demo seed (default passwords) while DEBUG is off.")
 
     def handle(self, *args, **opts):
         if opts.get("username"):
+            if not opts.get("password"):
+                raise CommandError(
+                    "--password is required when creating or updating a named operator."
+                )
             self._upsert(opts["username"], opts.get("role") or "read_only",
-                         opts.get("password") or DEMO_PASSWORD,
+                         opts["password"],
                          opts.get("email") or f"{opts['username']}@zitch.ng")
             return
 
-        if not settings.DEBUG and not opts.get("force"):
+        if not settings.DEBUG:
             raise CommandError(
                 "Refusing to seed demo operators with default passwords while DEBUG is off. "
-                "Create a real operator with --username/--role/--password, or pass --force "
-                "if you really intend to seed demo accounts."
+                "Create a real operator with --username/--role/--password."
             )
         for username, role in DEMO_OPERATORS:
             self._upsert(username, role, DEMO_PASSWORD, f"{username}@zitch.ng")
@@ -69,11 +70,15 @@ class Command(BaseCommand):
         )
         user.is_staff = True
         user.is_active = True
-        if role == "super_admin":
-            user.is_superuser = True
+        # Role updates replace privileges instead of accumulating them. Without
+        # this, downgrading a super-admin left is_superuser=True and moving an
+        # operator between groups kept the old role's capabilities.
+        user.is_superuser = role == "super_admin"
         user.set_password(password)
         user.save()
+        user.groups.clear()
         if role != "super_admin":
             group, _ = Group.objects.get_or_create(name=role)
             user.groups.add(group)
         self.stdout.write(f"  {'created' if created else 'updated'} operator '{username}' ({role})")
+

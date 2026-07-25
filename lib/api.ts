@@ -123,6 +123,34 @@ export async function publicPost(path: string, body: Record<string, any> = {}, t
 }
 
 /**
+ * Timeout-bounded public POST with safe JSON parsing. Public catalogue screens
+ * use this instead of bare fetch chains so a gateway HTML response, network
+ * failure, or hung request always settles into a predictable error object.
+ */
+export async function publicJson<T = any>(
+  path: string,
+  body: Record<string, any> = {},
+  timeoutMs = 30000,
+): Promise<T> {
+  const unavailable = {
+    success: false,
+    offline: true,
+    message: 'Service temporarily unavailable. Please try again.',
+  } as T;
+  try {
+    const res = await publicPost(path, body, timeoutMs);
+    const text = await res.text();
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return unavailable;
+    }
+  } catch {
+    return unavailable;
+  }
+}
+
+/**
  * A stable key for a single spend attempt. Pass it as `idempotency_key` on a
  * money-moving request so a double-tap / retry / network race is deduped
  * server-side and never debits twice. Generate one per authorization and reuse
@@ -131,3 +159,4 @@ export async function publicPost(path: string, body: Record<string, any> = {}, t
 export function newIdempotencyKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
 }
+

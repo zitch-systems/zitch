@@ -819,6 +819,31 @@ class SmsCodeConfirmTests(TestCase):
         self.assertEqual(self.bal(), Decimal("19800"))
 
 
+class ProductionConfirmSafetyTests(TestCase):
+    @override_settings(
+        DEBUG=False,
+        TESTING=False,
+        SENDCHAMP={"BASE_URL": "", "API_KEY": "", "SENDER_NAME": "Zitch"},
+    )
+    def test_production_never_falls_back_to_requesting_pin_in_chat(self):
+        from whatsapp.router import _arm_confirm, _confirm_prompt
+
+        user, _ = make_user()
+        action = PendingAction.objects.create(
+            user=user,
+            msisdn=MSISDN,
+            action_type="airtime",
+            state="amount",
+            payload={"amount": "200"},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+        self.assertFalse(_arm_confirm(action, user))
+        self.assertFalse(PendingAction.objects.filter(pk=action.pk).exists())
+        self.assertNotIn("your PIN", _confirm_prompt(action))
+        self.assertIn("Zitch app", _confirm_prompt(action))
+
+
 class AuditLogImmutabilityTests(TestCase):
     """The audit trail is append-only at the ORM layer: a back-office bug or a
     compromised operator must not be able to rewrite or delete history."""
@@ -878,3 +903,4 @@ class WhatsAppReceiptTests(TestCase):
         self.assertIn("Airtime receipt", text)
         self.assertTrue(WaMessageLog.objects.filter(
             msisdn="2348011112222", text__icontains="Airtime receipt").exists())
+

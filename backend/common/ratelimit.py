@@ -8,6 +8,7 @@ RATELIMIT_ENABLE setting, which is off under tests so it can't pollute
 unrelated cases (a dedicated test re-enables it).
 """
 import functools
+import ipaddress
 
 from django.conf import settings
 from django.core.cache import cache
@@ -16,11 +17,27 @@ from .http import fail
 
 
 def client_ip(request) -> str:
-    """Best-effort client IP, honouring the proxy header Render/CDNs set."""
+    """Best-effort client IP from the configured trusted proxy boundary.
+
+    Untrusted clients can prepend arbitrary values to X-Forwarded-For. Selecting
+    from the right using the known proxy-hop count prevents that spoof from
+    creating a fresh rate-limit bucket for every guess.
+    """
     xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or "unknown"
+    hops = int(getattr(settings, "RATELIMIT_TRUSTED_PROXY_HOPS", 0) or 0)
+    if xff and hops > 0:
+        forwarded = [part.strip() for part in xff.split(",") if part.strip()]
+        if len(forwarded) >= hops:
+            candidate = forwarded[-hops]
+            try:
+                return str(ipaddress.ip_address(candidate))
+            except ValueError:
+                pass
+    remote = (request.META.get("REMOTE_ADDR", "") or "").strip()
+    try:
+        return str(ipaddress.ip_address(remote))
+    except ValueError:
+        return "unknown"
 
 
 def ratelimit(scope: str, limit: int, window: int):
@@ -94,3 +111,4 @@ def clear_login_failures(scope: str, identifier: str) -> None:
     """Reset the failed-login counter for `identifier` after a success."""
     if getattr(settings, "RATELIMIT_ENABLE", True):
         cache.delete(_lockout_key(scope, identifier))
+

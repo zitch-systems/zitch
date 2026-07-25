@@ -176,6 +176,8 @@ ADMIN_MANUAL_CREDIT_DAILY_CAP = int(os.environ.get("ADMIN_MANUAL_CREDIT_DAILY_CA
 # ADMIN_LOGIN_LOCKOUT_SECONDS regardless of source IP.
 ADMIN_LOGIN_MAX_FAILS = int(os.environ.get("ADMIN_LOGIN_MAX_FAILS", "5"))
 ADMIN_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("ADMIN_LOGIN_LOCKOUT_SECONDS", "900"))
+USER_LOGIN_MAX_FAILS = int(os.environ.get("USER_LOGIN_MAX_FAILS", "8"))
+USER_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("USER_LOGIN_LOCKOUT_SECONDS", "900"))
 
 # Per-IP rate limiting (see common/ratelimit). Off under tests so the shared
 # process cache can't bleed counts across unrelated cases; a dedicated test
@@ -186,6 +188,12 @@ TESTING = "test" in sys.argv
 # .env, so a dev's local rate-limit setting can't bleed shared cache counts into
 # unrelated test cases (RateLimitTests opts back in via override_settings).
 RATELIMIT_ENABLE = False if TESTING else env_bool("RATELIMIT_ENABLE", True)
+# Number of trusted reverse-proxy hops represented at the RIGHT side of
+# X-Forwarded-For. Render is one hop. Taking the configured right-side entry
+# prevents a client from prepending a fake address to rotate rate-limit buckets.
+RATELIMIT_TRUSTED_PROXY_HOPS = max(
+    0, int(os.environ.get("RATELIMIT_TRUSTED_PROXY_HOPS", "1"))
+)
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.
@@ -491,3 +499,4 @@ if SENTRY_DSN and not TESTING:
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
+

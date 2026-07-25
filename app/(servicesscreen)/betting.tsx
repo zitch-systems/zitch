@@ -1,9 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
@@ -20,7 +18,6 @@ type Step = null | 'confirm' | 'pin';
 const Betting = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [platforms, setPlatforms] = useState<Platform[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState('');
@@ -37,13 +34,13 @@ const Betting = () => {
   // stale one can't replay the PRIOR attempt for the edited one (mirrors sendmoney).
   useEffect(() => { idemKey.current = ''; }, [selected, userId, amt]);
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    fetch(`${baseUrl}/api/betting/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then((r) => r.json())
-      .then((res) => { if (Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
+    let active = true;
+    publicJson('/api/betting/list/')
+      .then((res) => { if (active && Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
       .catch(() => {})
-      .finally(() => setLoadingList(false));
+      .finally(() => { if (active) setLoadingList(false); });
+    return () => { active = false; };
   }, []);
 
   const platform = platforms.find((p) => p.code === selected);
@@ -155,3 +152,4 @@ const Betting = () => {
 };
 
 export default Betting;
+

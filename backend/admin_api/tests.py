@@ -500,7 +500,7 @@ class SeedOpsCommandTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json().get("role"), "finance")
 
-    def test_demo_seed_blocked_in_production_without_force(self):
+    def test_demo_seed_blocked_in_production(self):
         from django.core.management import call_command
         from django.core.management.base import CommandError
         from django.test import override_settings
@@ -508,6 +508,24 @@ class SeedOpsCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 call_command("seed_ops")
         self.assertFalse(User.objects.filter(username="amara").exists())
+
+    def test_named_operator_requires_explicit_password(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("seed_ops", username="zoe", role="finance")
+        self.assertFalse(User.objects.filter(username="zoe").exists())
+
+    def test_role_update_removes_stale_superuser_and_group_privileges(self):
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="zoe", role="super_admin", password="First#pass1")
+        call_command("seed_ops", username="zoe", role="support", password="Second#pass2")
+        user = User.objects.get(username="zoe")
+        self.assertFalse(user.is_superuser)
+        self.assertEqual(list(user.groups.values_list("name", flat=True)), ["support"])
+        self.assertTrue(user.check_password("Second#pass2"))
 
 
 class TokenScopeTests(TestCase):
@@ -667,3 +685,4 @@ class ManualCreditCapTests(TestCase):
             res = self.credit("400000", key="d2")
             self.assertEqual(res.status_code, 403)
             self.assertEqual(res.json().get("code"), "credit_daily_cap")
+

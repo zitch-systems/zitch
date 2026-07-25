@@ -226,7 +226,7 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     return bool(res.get("success"))
 
 
-def _arm_confirm(pa: PendingAction, user) -> None:
+def _arm_confirm(pa: PendingAction, user) -> bool:
     """Move a money flow to its confirm step. Preference, most-secure first:
 
     1. A WhatsApp Flow (secure PIN pad) when configured — the PIN is typed into a
@@ -234,9 +234,10 @@ def _arm_confirm(pa: PendingAction, user) -> None:
        never carries it at all.
     2. A single-use 6-digit SMS code (live SMS, no Flow) — the chat carries a code
        that's worthless after one use / 5 minutes, never the PIN.
-    3. The PIN in chat (dev/mock, neither available) so flows never brick."""
+    3. The PIN in chat only in explicit dev/test mode. Production fails closed
+       when neither secure channel is available."""
     if flows_live() and _send_pin_flow(pa, user):
-        return
+        return True
     if settings.SENDCHAMP.get("API_KEY"):
         code = f"{secrets.randbelow(10**6):06d}"
         sent = send_sms(user.phone or "",
@@ -244,10 +245,21 @@ def _arm_confirm(pa: PendingAction, user) -> None:
         if sent.get("success"):
             pa.payload["otp_hash"] = make_password(code)
             pa.payload["otp_exp"] = (timezone.now() + timedelta(minutes=5)).isoformat()
-    _touch(pa, state="pin", payload=pa.payload)
+            _touch(pa, state="pin", payload=pa.payload)
+            return True
+    if settings.DEBUG or getattr(settings, "TESTING", False):
+        _touch(pa, state="pin", payload=pa.payload)
+        return True
+    # Never ask a production user to disclose their permanent transaction PIN
+    # in a chat. Clear the armed action so a later message cannot execute it.
+    pa.state = "blocked"
+    _clear_actions(pa.msisdn)
+    return False
 
 
 def _confirm_prompt(pa: PendingAction) -> str:
+    if pa.state == "blocked":
+        return "Secure confirmation is unavailable right now. Please complete this payment in the Zitch app."
     if pa.payload.get("otp_hash"):
         return "🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". (Never type your PIN here.)"
     return "Reply with your PIN to confirm, or \"cancel\"."
@@ -1494,3 +1506,4 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         _clear_actions(pa.msisdn)
         return "Sorry, this action can't be completed here. Please try again in the chat."
     return fn(pa, user, pa.msisdn) or "Done ✅"
+

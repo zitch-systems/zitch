@@ -2,12 +2,19 @@ import logging
 import secrets
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
 from django.utils import timezone
 
-from common.http import api, fail, ok, require_user, resolve_token
-from common.ratelimit import client_ip, ratelimit
+from common.http import api, fail, mask_pii, ok, require_user, resolve_token
+from common.ratelimit import (
+    clear_login_failures,
+    client_ip,
+    login_locked,
+    note_login_failure,
+    ratelimit,
+)
 
 log = logging.getLogger("zitch.security")
 from utility.providers import (
@@ -95,13 +102,19 @@ def signin(request):
     if not ident or not password:
         return fail("Email/phone and password are required")
 
+    if login_locked("user", ident, settings.USER_LOGIN_MAX_FAILS):
+        log.warning("signin_locked ident=%r ip=%s", mask_pii(ident), client_ip(request))
+        return fail("Too many failed attempts. Please wait before trying again.", status=429)
+
     user = User.objects.filter(Q(email__iexact=ident) | Q(phone=ident) | Q(username=ident)).first()
-    if user is None or not user.check_password(password):
+    if user is None or not user.is_active or not user.check_password(password):
         # Security event: surfaces credential-stuffing / targeted brute force in
         # the logs (the per-IP rate limiter caps it; this makes it observable).
-        log.warning("signin_failed ident=%r ip=%s", ident, client_ip(request))
+        note_login_failure("user", ident, settings.USER_LOGIN_LOCKOUT_SECONDS)
+        log.warning("signin_failed ident=%r ip=%s", mask_pii(ident), client_ip(request))
         return fail("Incorrect details", status=401)
 
+    clear_login_failures("user", ident)
     get_or_create_wallet(user)
     token = AccessToken.issue(user)
     return ok(access_token=token.key, message="Signed in")
@@ -722,3 +735,4 @@ def kyc_id_document(request):
     user.recompute_tier()
     user.save(update_fields=["id_document_type", "id_document_verified", "tier"])
     return ok(success=True, message="ID document verified", **_kyc_state(user))
+
