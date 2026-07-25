@@ -33,6 +33,15 @@ log = logging.getLogger("zitch")
 # contract the views and the reconcile job call, so callers never import the
 # provider module directly.
 # ---------------------------------------------------------------------------
+def simulation_mode() -> bool:
+    """WEMA_SIMULATION doubles as the DEPLOY-WIDE simulation switch: when on, the whole
+    payment/identity stack (Wema, VTU.ng airtime/data/bills, cards, FX, Mono, KYC)
+    serves its MOCK paths, so the app can be walked end-to-end with no real money or
+    identity. It is a HARD go-live blocker — wema_preflight fails while it is set — so
+    it can only ever be on in a test deploy, never in production."""
+    return bool(settings.WEMA.get("SIMULATION"))
+
+
 def mock_disabled_in_prod() -> bool:
     """True when a provider's MOCK responses must be suppressed.
 
@@ -41,7 +50,14 @@ def mock_disabled_in_prod() -> bool:
     their airtime/data purchase succeeded while nothing was delivered (and the
     wallet was debited). When this returns True, the provider must fail closed
     instead — the debit is then refunded by the normal failure path.
+
+    A simulation deploy is the deliberate exception: WEMA_SIMULATION marks the deploy
+    as fake-money end-to-end, so mocks are allowed even with DEBUG off. This is safe
+    because simulation is a hard go-live gate (see wema_preflight), so it is never on
+    in a real-money deploy.
     """
+    if simulation_mode():
+        return False
     return not settings.DEBUG and not getattr(settings, "TESTING", False)
 
 
