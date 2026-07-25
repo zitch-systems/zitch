@@ -17,7 +17,8 @@ workflows:
       node: 20
       java: 17
       vars:
-        # Mirrors eas.json's "preview" profile so the app talks to the live API.
+        # Preview APK target. Keep secrets out of EXPO_PUBLIC_* variables because
+        # Expo inlines them into the app bundle.
         EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
     cache:
       cache_paths:
@@ -26,35 +27,41 @@ workflows:
     scripts:
       - name: Install dependencies
         script: npm ci
+      - name: Validate TypeScript
+        script: npx tsc --noEmit
+      - name: Run app unit tests
+        script: npm test -- --runInBand
+      - name: Validate Expo configuration
+        script: npx expo config --type public
       - name: Expo prebuild (generate the native android/ project)
-        script: npx expo prebuild --platform android --clean
+        script: npx expo prebuild --platform android --clean --no-install
       - name: Build release APK
-        # Expo's prebuild template signs the release variant with the debug key,
-        # so this APK is installable for testing/sideloading out of the box.
-        # For a Play Store upload, configure Android code signing in Codemagic
-        # and switch to `assembleRelease`/`bundleRelease` with that keystore.
+        # Expo's prebuild template signs this preview release with the debug key,
+        # so it is installable for testing/sideloading. For Play Store or external
+        # distribution, configure Android code signing in Codemagic first.
         script: |
           cd android
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease --stacktrace
+      - name: Verify APK artifact
+        script: |
+          APK_PATH="$(find android/app/build/outputs/apk/release -name '*.apk' -type f | head -n 1)"
+          if [ -z "$APK_PATH" ]; then
+            echo "Release APK was not produced"
+            exit 1
+          fi
+          ls -lh "$APK_PATH"
     artifacts:
-      - android/app/build/outputs/**/*.apk
+      - android/app/build/outputs/apk/release/*.apk
+      - android/app/build/reports/**
     # Build on every push to main, AND on demand from the dashboard
     # ("Start new build" → android-apk).
-    #
-    # NOTE: the previous `when: changeset` filter (only build when app/ etc.
-    # changed) was removed — it also skipped manually-started builds in this
-    # setup, so backend-only work on main left no way to produce an APK without
-    # a code change. Builds now always run. If free build minutes become tight,
-    # re-add a changeset filter for AUTO builds only, or move to a cheaper
-    # `linux_x2` instance.
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
           include: true
-    # Email the APK download link when a build finishes (so you don't have to
-    # dig it out of the dashboard artifacts).
+    # Email the APK download link when a build finishes.
     publishing:
       email:
         recipients:
