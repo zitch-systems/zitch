@@ -13,7 +13,7 @@ This runbook is for the installable preview APK produced by the root
    - Install dependencies
    - Validate TypeScript
    - Run app unit tests
-   - Validate Expo configuration
+   - Validate Expo project (SDK-compatible dependencies and resolved config)
    - Expo prebuild
    - Build release APK
    - Verify APK artifact
@@ -41,7 +41,22 @@ Deploy a separate staging/simulation backend and change
 `EXPO_PUBLIC_API_URL` in the Codemagic workflow to that HTTPS host before
 building the test APK.
 
-## 3. Walk the app end to end
+## 3. Pre-warm and verify the backend
+
+Render's free web tier can sleep between requests. Before opening the APK, verify
+both process and database readiness from a trusted terminal:
+
+```bash
+curl --fail --show-error "https://<simulation-api>/healthz"
+curl --fail --show-error "https://<simulation-api>/readyz"
+```
+
+Continue only when `/healthz` reports `"status": true`,
+`funding_wema_simulation` is `true`, and `/readyz` reports
+`{"status": true, "db": true}`. If the first request shows a Render wake-up page,
+wait for the instance to start and repeat both checks.
+
+## 4. Walk the app end to end
 
 1. Install the new APK (remove an older build first if Android reports a signing
    conflict).
@@ -63,7 +78,7 @@ building the test APK.
 9. Confirm every successful debit appears once in transaction history and that a
    retried request does not double-charge.
 
-## 4. Record failures
+## 5. Record failures
 
 For each failure capture:
 
@@ -74,7 +89,7 @@ For each failure capture:
 - expected vs actual result
 - time of failure, so backend logs can be correlated
 
-## 5. Mandatory cleanup
+## 6. Mandatory cleanup
 
 Immediately after the simulation pass:
 

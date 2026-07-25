@@ -31,8 +31,10 @@ workflows:
         script: npx tsc --noEmit
       - name: Run app unit tests
         script: npm test -- --runInBand
-      - name: Validate Expo configuration
-        script: npx expo config --type public
+      - name: Validate Expo project
+        script: |
+          npx expo install --check
+          npx expo config --type public
       - name: Expo prebuild (generate the native android/ project)
         script: npx expo prebuild --platform android --clean --no-install
       - name: Build release APK
