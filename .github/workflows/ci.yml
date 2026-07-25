@@ -72,7 +72,7 @@ jobs:
             backend=true
           fi
           if matches '^(app|components|constants|hooks|lib|assets|shims|scripts)/' \
-            || matches '^(package\.json|package-lock\.json|tsconfig\.json|app\.json|babel\.config\.js|metro\.config\.js|eas\.json)$' \
+            || matches '^(package\.json|package-lock\.json|tsconfig\.json|app\.json|babel\.config\.js|metro\.config\.js|eas\.json|codemagic\.yaml)$' \
             || matches '^\.github/workflows/ci\.yml$'; then
             app=true
           fi
