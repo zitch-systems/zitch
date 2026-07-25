@@ -168,6 +168,8 @@ jobs:
           node-version: "20"
           cache: npm
       - run: npm ci
+      - name: Expo dependency compatibility
+        run: npx expo install --check
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Unit tests
