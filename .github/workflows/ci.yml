@@ -92,6 +92,9 @@ jobs:
       # SECRET_KEY when DEBUG is off" boot guard. Not a real secret; the test
       # step is unaffected (Django forces DEBUG off under tests anyway).
       DJANGO_SECRET_KEY: "ci-only-throwaway-secret-not-used-in-production-000"
+      # This job is deliberately single-process; production keeps the secure
+      # default and must provide Redis for cross-worker rate-limit state.
+      DJANGO_REQUIRE_SHARED_CACHE: "false"
     defaults:
       run:
         working-directory: backend
@@ -148,13 +151,12 @@ jobs:
           pip-audit -r backend/requirements.txt --no-deps
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "20"
-      # npm audit is ADVISORY (continue-on-error) for now: the tree carries ~60
-      # known vulns rooted in the EOL Expo SDK 51 / RN 0.74 toolchain, which only
-      # the SDK upgrade can clear. Flip this to blocking after that upgrade.
-      - name: npm audit (advisory until the Expo SDK upgrade)
-        continue-on-error: true
-        run: npm audit --package-lock-only --omit=dev --audit-level=high
+          node-version: "22"
+      # SDK 54 removed the former critical toolchain exposure. Keep critical
+      # production advisories blocking while moderate/high transitive build-tool
+      # advisories remain visible in Codemagic logs.
+      - name: npm audit (production critical)
+        run: npm audit --package-lock-only --omit=dev --audit-level=critical
 
   app:
     name: App (Expo)
@@ -165,11 +167,15 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
       - run: npm ci
       - name: Expo dependency compatibility
         run: npx expo install --check
+      - name: Expo project health
+        run: npx expo-doctor
+      - name: Lint
+        run: npm run lint
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Unit tests
