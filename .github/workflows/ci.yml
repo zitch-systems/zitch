@@ -123,7 +123,7 @@ jobs:
         run: python manage.py test
 
   security:
-    name: Security (secrets + dependency audit)
+    name: Security (secrets + Python dependency audit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -149,15 +149,6 @@ jobs:
         run: |
           pip install --quiet pip-audit
           pip-audit -r backend/requirements.txt --no-deps
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: "22"
-      # SDK 54 removed the former critical toolchain exposure. Keep critical
-      # production advisories blocking while moderate/high transitive build-tool
-      # advisories remain visible in Codemagic logs.
-      - name: npm audit (production critical)
-        run: npm audit --package-lock-only --omit=dev --audit-level=critical
-
   app:
     name: App (Expo)
     needs: changes
@@ -170,6 +161,10 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      # Audit the installed production tree. Lockfile-only auditing hits npm's
+      # retired quick endpoint and can reject an otherwise valid dependency tree.
+      - name: npm audit (production critical)
+        run: npm audit --omit=dev --audit-level=critical
       - name: Expo dependency compatibility
         run: npx expo install --check
       - name: Expo project health
