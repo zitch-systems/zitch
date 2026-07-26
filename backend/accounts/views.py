@@ -1,8 +1,11 @@
+import hmac
 import logging
 import secrets
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.db.models import Q
 from django.utils import timezone
 
@@ -10,11 +13,13 @@ from common.http import api, fail, ok, require_user, resolve_token
 from common.ratelimit import client_ip, ratelimit
 
 log = logging.getLogger("zitch.security")
+from utility import wema
 from utility.providers import (
     kyc_verify_address, kyc_verify_face, kyc_verify_id_document, kyc_verify_nin_document,
     send_email, send_sms, verify_bvn, verify_nin,
 )
-from wallet.services import get_or_create_wallet
+from wallet.models import Wallet
+from wallet.services import get_or_create_wallet, wema_account_reference
 
 from .models import OTP, AccessToken, User
 
@@ -538,6 +543,93 @@ def _kyc_state(user) -> dict:
 def kyc_status(request):
     """POST /api/kyc/status/ {access_token} -> tier + verification flags"""
     return ok(success=True, **_kyc_state(request.user_obj))
+
+
+def _simulate_provision_account(user) -> str:
+    """Provision a mock NUBAN for a test user the way the OTP flow does in simulation:
+    get_account_details returns a demo account when WEMA_SIMULATION is on. Idempotent —
+    returns the existing number untouched, or the freshly minted one ('' on a
+    miss/conflict)."""
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return wallet.account_number
+    acct = wema.get_account_details(user.phone or "", bvn=True)
+    num = (acct.get("account_number") or "").strip()
+    if not num or Wallet.objects.filter(account_number=num).exclude(pk=wallet.pk).exists():
+        return wallet.account_number
+    wallet.account_number = num
+    wallet.account_name = acct.get("account_name") or (user.get_full_name() or "").strip() or "ZITCH USER"
+    wallet.bank_name = acct.get("bank_name") or "Wema Bank"
+    wallet.account_reference = wema_account_reference(user)
+    try:
+        wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                   "account_reference", "updated"])
+    except IntegrityError:
+        return wallet.account_number
+    wema.lift_debit_restriction(num, bvn=True)  # mock-lifts the PND hold in simulation
+    return num
+
+
+@api
+@ratelimit("simulate_kyc", limit=30, window=60)
+def simulate_kyc(request):
+    """POST /api/dev/simulate-kyc/ {token, phone, tier?} -> {success, ...kyc, account_number}
+
+    TEST-ONLY. Marks a test user KYC-verified to the requested tier (default 3) and
+    provisions a mock NUBAN, so the app's KYC-gated features — tiers, virtual account,
+    higher limits — can be walked without real identity data or deliverable ownership
+    OTPs. Same three-gate lockdown as /api/dev/simulate-deposit/ (and the SAME token),
+    ALL required:
+
+      1. WEMA_SIMULATION on (else 404 — cannot exist on a live-money deploy).
+      2. SIMULATE_DEPOSIT_TOKEN set and matching (constant-time compare).
+      3. tier in 1..3 for an existing user.
+
+    Every use is logged loudly; wema_preflight HARD-FAILS while the token is set.
+    Remove SIMULATE_DEPOSIT_TOKEN before go-live.
+    """
+    # Gate 1 — simulation only. 404 so a live deploy gives no hint the route exists.
+    if not wema.wema_simulation():
+        return fail("Not found", status=404)
+    # Gate 2 — shared-secret token (the same one that gates simulate-deposit).
+    configured = settings.SIMULATE_DEPOSIT_TOKEN
+    supplied = (request.data.get("token") or "").strip()
+    if not configured or not hmac.compare_digest(supplied, configured):
+        return fail("Forbidden", status=403)
+    # Gate 3 — target user + tier.
+    phone = (request.data.get("phone") or "").strip()
+    if not phone:
+        return fail("phone is required")
+    try:
+        tier = int(request.data.get("tier", 3))
+    except (TypeError, ValueError):
+        return fail("tier must be 1, 2, or 3")
+    if tier not in (1, 2, 3):
+        return fail("tier must be 1, 2, or 3")
+    user = User.objects.filter(phone=phone).first()
+    if user is None:
+        return fail("No user with that phone", status=404)
+
+    # Set the flags recompute_tier() derives the tier from (see User.recompute_tier):
+    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Dummy BVN/NIN
+    # values just populate the hash/last4 the way a real verification would.
+    user.set_bvn("22222222222")
+    user.set_nin("11111111111")
+    user.bvn_verified = True
+    user.nin_verified = True
+    user.face_verified = tier >= 2
+    user.address_verified = tier >= 2
+    user.id_document_verified = tier >= 3
+    user.recompute_tier()
+    user.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
+                             "bvn_verified", "nin_verified", "face_verified",
+                             "address_verified", "id_document_verified", "tier"])
+
+    account_number = _simulate_provision_account(user)
+    log.warning("simulate_kyc_used phone=%s tier=%s account=%s — SIMULATE_DEPOSIT_TOKEN is "
+                "set (WEMA_SIMULATION on); REMOVE before go-live", phone, user.tier, account_number)
+    return ok(success=True, account_number=account_number,
+              message="Simulated KYC applied", **_kyc_state(user))
 
 
 _KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid

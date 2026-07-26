@@ -51,7 +51,7 @@ crons too (`render.yaml` already declares the slots on each).
 | `WEMA_SOURCE_ACCOUNT` | Pool NUBAN that funds pool-sourced payouts | Wema |
 | `WEMA_SECURITY_INFO` | The encrypted securityInfo value/scheme | Wema (out-of-band) |
 | `WEMA_BASE_URL` | Live ALAT host (differs from `apiplayground.alat.ng`) | Wema |
-| `WEMA_SIMULATION` | `true` exercises the flow without live keys; **unset/blank for live** | — |
+| `WEMA_SIMULATION` | **Deploy-wide simulation switch.** `true` puts the WHOLE stack (Wema, VTU airtime/data/bills, cards, FX, Mono, KYC) into mock mode so every feature can be walked end-to-end with no real money. **Must be unset/blank for live** — `wema_preflight` hard-fails while it is on. | — |
 
 ### Supporting
 
@@ -72,11 +72,14 @@ crons too (`render.yaml` already declares the slots on each).
 > | Var | What it enables (test only) |
 > |---|---|
 > | `TEST_OTP_PHONE` / `TEST_OTP_CODE` | That one number accepts a fixed OTP code, so you can sign in before the SMS sender ID is approved. |
-> | `SIMULATE_DEPOSIT_TOKEN` | With `WEMA_SIMULATION=true`, `POST /api/dev/simulate-deposit/ {token, phone, amount}` credits mock money into a wallet — the missing "money-in" step so you can walk **fund → transfer → airtime** end to end. The endpoint **404s whenever `WEMA_SIMULATION` is off**, so it can never fabricate real money on a live deploy. |
+> | `SIMULATE_DEPOSIT_TOKEN` | With `WEMA_SIMULATION=true`, gates two dev endpoints (both **404 whenever `WEMA_SIMULATION` is off**, so neither can touch a live deploy): `POST /api/dev/simulate-deposit/ {token, phone, amount}` credits mock money (the "money-in" step), and `POST /api/dev/simulate-kyc/ {token, phone, tier?}` marks a user KYC-verified to `tier` (1–3, default 3) and provisions a mock NUBAN — so tiers / virtual-account / limit-gated features work without real identity data. |
 >
-> **End-to-end simulation walk:** set all four (plus `WEMA_SIMULATION=true`), sign up
-> with `TEST_OTP_PHONE`, `curl` the simulate-deposit endpoint to load a balance, then
-> transfer / buy airtime in the app. Delete all of them before launch.
+> **End-to-end simulation walk:** with `WEMA_SIMULATION=true` the whole stack is mocked,
+> so **every** feature works — transfers, airtime/data/bills, virtual cards, FX, loans,
+> savings, statements. Set the test vars, sign up with `TEST_OTP_PHONE`, then `curl`
+> **simulate-kyc** (get verified + an account number) and **simulate-deposit** (load a
+> balance), and walk the app. Delete all of them before launch (`wema_preflight`
+> enforces this).
 
 No `*_PROVIDER` flip is needed — `wema` is already the default funding, payout and
 KYC rail.

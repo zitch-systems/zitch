@@ -53,6 +53,17 @@ class Command(BaseCommand):
             True, "Live host",
             FAIL if on_sandbox else PASS,
             f"sandbox: {d['base_url']}" if on_sandbox else f"live: {d['base_url']}"))
+        # Hard gate: simulation mode serves MOCK responses across the ENTIRE stack
+        # (Wema + VTU + cards + FX + Mono + KYC) — a customer would be told a purchase
+        # succeeded while nothing was delivered. It must be off for real money to move.
+        sim_flags = [name for name, cfg in (("WEMA_SIMULATION", settings.WEMA),
+                                            ("MONO_SIMULATION", getattr(settings, "MONO", {})))
+                     if (cfg or {}).get("SIMULATION")]
+        checks.append((
+            True, "Simulation mode",
+            FAIL if sim_flags else PASS,
+            f"ON via {', '.join(sim_flags)} — the whole stack is serving mocks; unset "
+            f"before go-live" if sim_flags else "off (live rails)"))
         # Hard gate: the test-OTP bypass must NEVER be live at go-live — it lets one
         # number sign in with a fixed code. Fail readiness while it is configured.
         test_otp_on = bool(settings.TEST_OTP["PHONE"] and settings.TEST_OTP["CODE"])
