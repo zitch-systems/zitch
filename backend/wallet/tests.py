@@ -250,6 +250,14 @@ class ReservedAccountTests(TestCase):
         self.assertEqual(body2["account_number"], "7012345678")
         self.assertEqual(body2["bank_name"], "Wema Bank")
 
+    def test_wallet_account_returns_registered_holder_name(self):
+        # The read always carries the customer's registered legal name so the
+        # Add-money screen can show whose account this is — even before it's
+        # provisioned, or if a provider response omits the holder name.
+        res, body = self.post("/api/wallet/account/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["holder_name"], self.user.get_full_name())  # "Ada Eze"
+
 
 class LedgerConstraintTests(TestCase):
     """DB-level guards that back up the service-layer money checks."""

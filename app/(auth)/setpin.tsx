@@ -6,6 +6,7 @@ import { apiPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
+import { Stepper } from '@/components/design/Stepper';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
 import { isTrivialPin } from '@/lib/format';
@@ -90,7 +91,10 @@ const SetPin = () => {
   return (
     <Screen scroll={false}>
       <View style={{ flex: 1, alignItems: 'center' }}>
-        <View style={{ marginTop: 26 }}>
+        <View style={{ width: '100%', paddingTop: 8 }}>
+          <Stepper step={4} total={4} label="Step 4 of 4 · Transaction PIN" />
+        </View>
+        <View style={{ marginTop: 4 }}>
           <ZMark size={44} />
         </View>
         <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1, marginTop: 20 }}>

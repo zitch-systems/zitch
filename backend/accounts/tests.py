@@ -41,6 +41,30 @@ class OnboardingOtpTests(TestCase):
         # The stored value is a hash, not the plaintext code.
         self.assertNotEqual(OTP.objects.get(phone="08011112222").code_hash, "112233")
 
+    def test_verify_otp_stores_legal_name(self):
+        # The name captured at register is sent to verify_otp so the account — and
+        # its later dedicated funding NUBAN — is created with a holder name (an
+        # unnamed funding account can't be safely paid into by transfer).
+        with patch("accounts.views._otp_code", return_value="445566"):
+            self.post("/api/phone_verification/", {"phone": "08099001122", "email": "named@zitch.test"})
+        res, _ = self.post("/api/verify_otp/",
+                           {"phone": "08099001122", "otp": "445566",
+                            "first_name": "Ada", "last_name": "Okafor"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(phone="08099001122")
+        self.assertEqual(u.first_name, "Ada")
+        self.assertEqual(u.last_name, "Okafor")
+        self.assertEqual(u.get_full_name(), "Ada Okafor")
+
+    def test_verify_otp_without_name_still_verifies(self):
+        # Name is optional at the endpoint (older app builds) — omitting it must
+        # never break verification.
+        with patch("accounts.views._otp_code", return_value="778811"):
+            self.post("/api/phone_verification/", {"phone": "08099002233", "email": ""})
+        res, body = self.post("/api/verify_otp/", {"phone": "08099002233", "otp": "778811"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+
     def test_signup_otp_is_sent_by_sms_only_not_email(self):
         # The signup OTP proves control of the PHONE, so it must never be emailed
         # to the caller-supplied (unverified) address — that would let an attacker

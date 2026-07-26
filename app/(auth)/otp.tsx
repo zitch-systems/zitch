@@ -7,6 +7,7 @@ import { publicPost } from '@/lib/api';
 import { saveToken } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header } from '@/components/design/ui';
+import { Stepper } from '@/components/design/Stepper';
 import { useTheme, font } from '@/lib/theme';
 
 const OTP_LEN = 6;
@@ -38,7 +39,14 @@ const OTPVerification = () => {
     submittedRef.current = otp;
     setIsCheckingOtp(true);
     try {
-      const response = await publicPost('/api/verify_otp/', { otp, phone: userPhone });
+      // Read the name (captured at register) at submit time rather than from
+      // async-loaded state, so an instant SMS autofill can't race the load and
+      // send an unnamed verify — the account is created here, and it's opened in
+      // this name.
+      const [[, first], [, last]] = await AsyncStorage.multiGet(['UserFirstName', 'UserLastName']);
+      const response = await publicPost('/api/verify_otp/', {
+        otp, phone: userPhone, first_name: first || '', last_name: last || '',
+      });
       const result = await response.json();
       if (response.ok && result.access_token) {
         await saveToken(result.access_token);
@@ -91,6 +99,7 @@ const OTPVerification = () => {
   return (
     <Screen scroll={false}>
       <Header onBack={() => { AsyncStorage.removeItem('otpPending'); router.replace('/register'); }} />
+      <Stepper step={2} total={4} label="Step 2 of 4 · Verify phone" />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular }}>
         Enter the {OTP_LEN}-digit code sent to <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{masked}</Text>

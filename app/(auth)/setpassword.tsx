@@ -8,6 +8,7 @@ import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { Stepper } from '@/components/design/Stepper';
 import { useTheme, font } from '@/lib/theme';
 
 const Rule = ({ ok, text }: { ok: boolean; text: string }) => {
@@ -82,9 +83,10 @@ const SetPassword = () => {
         <Header title="Change password" sub="Confirm your current password, then set a new one" onBack={() => router.back()} />
       ) : (
         <>
-          <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 8 }}>
+          <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 16 }}>
             <ZMark size={44} />
           </View>
+          <Stepper step={3} total={4} label="Step 3 of 4 · Secure your account" />
           <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1 }}>Set up password</Text>
           <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 22, fontFamily: font.regular }}>
             Create a strong password for your account
