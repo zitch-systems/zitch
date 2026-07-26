@@ -176,6 +176,8 @@ ADMIN_MANUAL_CREDIT_DAILY_CAP = int(os.environ.get("ADMIN_MANUAL_CREDIT_DAILY_CA
 # ADMIN_LOGIN_LOCKOUT_SECONDS regardless of source IP.
 ADMIN_LOGIN_MAX_FAILS = int(os.environ.get("ADMIN_LOGIN_MAX_FAILS", "5"))
 ADMIN_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("ADMIN_LOGIN_LOCKOUT_SECONDS", "900"))
+USER_LOGIN_MAX_FAILS = int(os.environ.get("USER_LOGIN_MAX_FAILS", "8"))
+USER_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("USER_LOGIN_LOCKOUT_SECONDS", "900"))
 
 # Per-IP rate limiting (see common/ratelimit). Off under tests so the shared
 # process cache can't bleed counts across unrelated cases; a dedicated test
@@ -186,6 +188,12 @@ TESTING = "test" in sys.argv
 # .env, so a dev's local rate-limit setting can't bleed shared cache counts into
 # unrelated test cases (RateLimitTests opts back in via override_settings).
 RATELIMIT_ENABLE = False if TESTING else env_bool("RATELIMIT_ENABLE", True)
+# Number of trusted reverse-proxy hops represented at the RIGHT side of
+# X-Forwarded-For. Render is one hop. Taking the configured right-side entry
+# prevents a client from prepending a fake address to rotate rate-limit buckets.
+RATELIMIT_TRUSTED_PROXY_HOPS = max(
+    0, int(os.environ.get("RATELIMIT_TRUSTED_PROXY_HOPS", "1"))
+)
 
 # Third-party credentials. Blank key => that integration runs in MOCK mode so
 # the full flow is testable without external accounts.
@@ -437,7 +445,29 @@ if _PROD and (WHATSAPP["TOKEN"] or WHATSAPP["PHONE_NUMBER_ID"]):
 # is SHARED. Point CACHES at Redis by setting REDIS_URL; the default stays the
 # in-process LocMem cache (single worker / dev) so no extra infra is required to
 # boot. Tests always use LocMem for isolation.
-REDIS_URL = os.environ.get("REDIS_URL", "")
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+# A dedicated, isolated test deployment may deliberately exercise simulated
+# provider flows with DEBUG off. Requiring this second explicit switch prevents
+# a single stale simulation flag from silently turning off real money rails.
+ALLOW_PRODUCTION_SIMULATION = env_bool("ALLOW_PRODUCTION_SIMULATION", False)
+# Multi-worker deployments must share rate-limit/idempotency state. Operators can
+# opt out only for a deliberately single-process environment.
+REQUIRE_SHARED_CACHE = env_bool("DJANGO_REQUIRE_SHARED_CACHE", _PROD)
+
+from zitch_api.production_checks import validate_production_configuration
+
+validate_production_configuration(
+    is_production=_PROD,
+    test_otp_phone=TEST_OTP["PHONE"],
+    test_otp_code=TEST_OTP["CODE"],
+    simulate_deposit_token=SIMULATE_DEPOSIT_TOKEN,
+    wema_simulation=WEMA["SIMULATION"],
+    mono_simulation=MONO["SIMULATION"],
+    allow_simulation=ALLOW_PRODUCTION_SIMULATION,
+    redis_url=REDIS_URL,
+    require_shared_cache=REQUIRE_SHARED_CACHE,
+)
+
 if REDIS_URL and not TESTING:
     CACHES = {
         "default": {
@@ -491,3 +521,4 @@ if SENTRY_DSN and not TESTING:
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
+

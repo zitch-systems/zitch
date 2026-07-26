@@ -82,7 +82,7 @@ const Signin = () => {
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsChecking(false);
@@ -131,6 +131,8 @@ const Signin = () => {
       </View>
       <Text
         onPress={() => router.push('/forgotpassword')}
+        accessibilityRole="link"
+        accessibilityLabel="Forgot password"
         style={{ textAlign: 'right', marginTop: 10, fontSize: 13, fontFamily: font.semibold, color: c.brand }}
       >
         Forgot password?
@@ -147,7 +149,12 @@ const Signin = () => {
       </View>
 
       {/* instant biometric sign-in — auto-prompts on open; tap to retry */}
-      <Pressable onPress={handleBiometricSignin}>
+      <Pressable
+        onPress={handleBiometricSignin}
+        accessibilityRole="button"
+        accessibilityLabel="Instant biometric sign in"
+        accessibilityHint="Uses Face ID or fingerprint when enabled"
+      >
         <Hero style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 }} watermark={0}>
           <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.2)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="faceid" size={26} color="#fff" />
@@ -171,3 +178,4 @@ const Signin = () => {
 };
 
 export default Signin;
+

@@ -18,7 +18,7 @@ const FUND_AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 const Cards = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   const [card, setCard] = useState<VCard | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -201,3 +201,4 @@ const Cards = () => {
 };
 
 export default Cards;
+

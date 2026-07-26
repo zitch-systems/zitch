@@ -14,7 +14,7 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
-      node: 20
+      node: 22
       java: 17
       vars:
         # Preview APK target. Keep secrets out of EXPO_PUBLIC_* variables because
@@ -26,13 +26,37 @@ workflows:
         - $HOME/.gradle/caches
     scripts:
       - name: Install dependencies
-        script: npm ci
+        script: |
+          npm install --global npm@11.6.2
+          npm ci
+      - name: Lint app source
+        script: npm run lint
       - name: Validate TypeScript
-        script: npx tsc --noEmit
+        script: npm run typecheck
       - name: Run app unit tests
-        script: npm test -- --runInBand
+        script: npm run test:ci
+      - name: Audit production dependencies
+        # Block actual critical advisories. Retry registry transport/parser faults;
+        # after three recognized service failures, warn and preserve the build log.
+        script: |
+          audit_status=0
+          for attempt in 1 2 3; do
+            if audit_output="$(npm audit --omit=dev --audit-level=critical 2>&1)"; then
+              printf '%s\n' "$audit_output"
+              exit 0
+            else
+              audit_status=$?
+            fi
+            printf '%s\n' "$audit_output"
+            if ! printf '%s\n' "$audit_output" | grep -Eq 'audit endpoint returned an error|invalid json response body|400 Bad Request'; then
+              exit "$audit_status"
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          echo "WARNING: npm advisory service unavailable after 3 attempts; no advisory result was returned."
       - name: Validate Expo project
         script: |
+          npm run doctor
           npx expo install --check
           npx expo config --type public
       - name: Expo prebuild (generate the native android/ project)
@@ -71,3 +95,4 @@ workflows:
         notify:
           success: true
           failure: true
+

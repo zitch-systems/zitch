@@ -1,80 +1,96 @@
 {
-  "expo": {
-    "name": "Zitch",
-    "slug": "zitch",
-    "description": "Zitch is a Nigerian money app for instant transfers, airtime, data, bills, virtual dollar cards, savings and multi-currency wallets — plus banking on WhatsApp.",
-    "version": "1.0.10",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "scheme": "Zitch",
-    "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#03304C"
-    },
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.zitch.app",
-      "infoPlist": {
-        "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": false
-        }
-      }
-    },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "monochromeImage": "./assets/adaptive-icon-mono.png",
-        "backgroundColor": "#03304C"
-      },
-      "permissions": [
-        "android.permission.INTERNET",
-        "android.permission.CAMERA",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
-      ],
-      "usesCleartextTraffic": false,
-      "package": "com.zitch.app"
-    },
-    "web": {
-      "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/favicon.png"
-    },
-    "plugins": [
-      "expo-router",
-      [
-        "expo-local-authentication",
-        {
-          "faceIDPermission": "Allow Zitch to use Face ID to sign you in and approve payments."
-        }
-      ],
-      [
-        "expo-image-picker",
-        {
-          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check)."
-        }
-      ],
-      [
-        "expo-camera",
-        {
-          "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
-          "recordAudioAndroid": false
-        }
-      ]
-    ],
-    "experiments": {
-      "typedRoutes": true
-    },
-    "extra": {
-      "router": {
-        "origin": false
-      },
-      "eas": {
-        "projectId": "a2e8a1ed-506f-4fc8-9783-210c8aab1060"
-      }
-    },
-    "owner": "zitch"
-  }
+    "expo":  {
+                 "name":  "Zitch",
+                 "slug":  "zitch",
+                 "description":  "Zitch is a Nigerian money app for instant transfers, airtime, data, bills, virtual dollar cards, savings and multi-currency wallets — plus banking on WhatsApp.",
+                 "version":  "1.0.11",
+                 "orientation":  "portrait",
+                 "icon":  "./assets/icon.png",
+                 "scheme":  "zitch",
+                 "userInterfaceStyle":  "automatic",
+                 "splash":  {
+                                "image":  "./assets/splash-icon.png",
+                                "resizeMode":  "contain",
+                                "backgroundColor":  "#03304C"
+                            },
+                 "ios":  {
+                             "supportsTablet":  true,
+                             "bundleIdentifier":  "com.zitch.app",
+                             "infoPlist":  {
+                                               "NSAppTransportSecurity":  {
+                                                                              "NSAllowsArbitraryLoads":  false
+                                                                          }
+                                           },
+                             "buildNumber":  "11"
+                         },
+                 "android":  {
+                                 "adaptiveIcon":  {
+                                                      "foregroundImage":  "./assets/adaptive-icon.png",
+                                                      "monochromeImage":  "./assets/adaptive-icon-mono.png",
+                                                      "backgroundColor":  "#03304C"
+                                                  },
+                                 "permissions":  [
+                                                     "android.permission.INTERNET",
+                                                     "android.permission.CAMERA",
+                                                     "android.permission.USE_BIOMETRIC",
+                                                     "android.permission.USE_FINGERPRINT"
+                                                 ],
+                                 "package":  "com.zitch.app",
+                                 "allowBackup":  false,
+                                 "versionCode":  11,
+                                 "blockedPermissions":  [
+                                                            "android.permission.RECORD_AUDIO",
+                                                            "android.permission.SYSTEM_ALERT_WINDOW"
+                                                        ]
+                             },
+                 "web":  {
+                             "bundler":  "metro",
+                             "output":  "static",
+                             "favicon":  "./assets/favicon.png"
+                         },
+                 "plugins":  [
+                                 "expo-router",
+                                 [
+                                     "expo-local-authentication",
+                                     {
+                                         "faceIDPermission":  "Allow Zitch to use Face ID to sign you in and approve payments."
+                                     }
+                                 ],
+                                 [
+                                     "expo-image-picker",
+                                     {
+                                         "cameraPermission":  "Allow Zitch to use the camera to verify your identity (face check)."
+                                     }
+                                 ],
+                                 [
+                                     "expo-camera",
+                                     {
+                                         "cameraPermission":  "Allow Zitch to use the camera to scan QR codes for payments.",
+                                         "recordAudioAndroid":  false
+                                     }
+                                 ],
+                                 [
+                                     "expo-build-properties",
+                                     {
+                                         "android":  {
+                                                         "usesCleartextTraffic":  false
+                                                     }
+                                     }
+                                 ]
+                             ],
+                 "experiments":  {
+                                     "typedRoutes":  true
+                                 },
+                 "extra":  {
+                               "router":  {
+                                              "origin":  false
+                                          },
+                               "eas":  {
+                                           "projectId":  "a2e8a1ed-506f-4fc8-9783-210c8aab1060"
+                                       }
+                           },
+                 "owner":  "zitch",
+                 "newArchEnabled":  true
+             }
 }
+

@@ -49,7 +49,7 @@ const OTPVerification = () => {
         setOtp('');
         submittedRef.current = ''; // let them try a fresh code
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
       submittedRef.current = '';
     } finally {
@@ -73,7 +73,7 @@ const OTPVerification = () => {
       } else {
         notify('Error', result.message || 'Failed to resend OTP');
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     }
   };
@@ -138,7 +138,7 @@ const OTPVerification = () => {
       </Pressable>
 
       <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
-        Didn't get it?{' '}
+        Didn’t get it?{' '}
         <Text onPress={handleResendOtp} style={{ color: c.brand, fontFamily: font.bold }}>
           {seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
         </Text>
@@ -159,3 +159,4 @@ const OTPVerification = () => {
 };
 
 export default OTPVerification;
+

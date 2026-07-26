@@ -23,7 +23,7 @@ type ActiveLoan = {
 const Loans = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   // Start at 0 so the pre-load (and API-failure) state is honest — never a
   // fabricated credit line. The real limit/available overwrite these once
   // /api/loans/status/ returns.
@@ -145,3 +145,4 @@ const Loans = () => {
 };
 
 export default Loans;
+

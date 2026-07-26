@@ -3,7 +3,8 @@ import { View, Text, Pressable, Image, ScrollView } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
-import { useTheme, font, radius } from '@/lib/theme';
+import { useTheme, font } from '@/lib/theme';
+import { router } from 'expo-router';
 
 // Network/provider id → brand color, for monograms & accents.
 export const NET_COLORS: Record<string, string> = {
@@ -36,7 +37,14 @@ export const Segmented = ({
       {options.map((o) => {
         const on = value === o.v;
         return (
-          <Pressable key={o.v} onPress={() => onChange(o.v)} style={{ flex: 1 }}>
+          <Pressable
+            key={o.v}
+            onPress={() => onChange(o.v)}
+            accessibilityRole="radio"
+            accessibilityLabel={o.label}
+            accessibilityState={{ selected: on }}
+            style={{ flex: 1 }}
+          >
             {/* Pill radius = container radius (14) − padding (4) = 10, so the active
                 pill's corners nest cleanly inside the track instead of poking past
                 its rounded edge. alignSelf:'stretch' keeps the pill full-tab-width. */}
@@ -68,6 +76,9 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
           <Pressable
             key={a}
             onPress={() => onPick(String(a))}
+            accessibilityRole="radio"
+            accessibilityLabel={`Select ${money(a)}`}
+            accessibilityState={{ selected: on }}
             style={{
               paddingHorizontal: 16,
               paddingVertical: 9,
@@ -145,6 +156,9 @@ export const ProviderGrid = ({
           <View key={it.id} style={{ width: `${100 / cols}%`, padding: 5 }}>
             <Pressable
               onPress={() => onPick(it.id)}
+              accessibilityRole="radio"
+              accessibilityLabel={it.name}
+              accessibilityState={{ selected: on }}
               style={{ alignItems: 'center', gap: 7, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
             >
               {it.logo ? (
@@ -189,6 +203,9 @@ export const PlanList = ({
           <Pressable
             key={p.id}
             onPress={() => onPick(p.id)}
+            accessibilityRole="radio"
+            accessibilityLabel={`${p.label}, ${money(p.price)}`}
+            accessibilityState={{ selected: on }}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 15, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
           >
             <View style={{ flex: 1 }}>
@@ -211,7 +228,14 @@ export const BalanceHint = ({ amount, balance }: { amount: number; balance: numb
     return (
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, marginBottom: 14 }}>
         <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.red }}>Insufficient balance</Text>
-        <Text style={{ fontSize: 12, fontFamily: font.bold, color: c.brand }}>+ Add money</Text>
+        <Pressable
+          onPress={() => router.push('/addmoney')}
+          accessibilityRole="button"
+          accessibilityLabel="Add money"
+          hitSlop={8}
+        >
+          <Text style={{ fontSize: 12, fontFamily: font.bold, color: c.brand }}>+ Add money</Text>
+        </Pressable>
       </View>
     );
   }
@@ -295,3 +319,4 @@ export const ConfirmSheet = ({
     </Sheet>
   );
 };
+

@@ -150,7 +150,7 @@ const AddMoney = () => {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 18, paddingHorizontal: 4 }}>
             <ZIcon name="check" size={16} color={c.lime} stroke={2.6} />
             <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
-              Save this account — it's permanently yours. Transfers reflect automatically, no need to confirm anything here.
+              Save this account — it’s permanently yours. Transfers reflect automatically, no need to confirm anything here.
             </Text>
           </View>
         </>
@@ -200,7 +200,7 @@ const AddMoney = () => {
               Get a dedicated account number
             </Text>
             <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
-              Enter your BVN to get a dedicated account for funding by bank transfer. It's verified
+              Enter your BVN to get a dedicated account for funding by bank transfer. It’s verified
               securely; we never store it.
             </Text>
           </View>
@@ -234,3 +234,4 @@ const AddMoney = () => {
 };
 
 export default AddMoney;
+

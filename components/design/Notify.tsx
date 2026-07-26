@@ -55,11 +55,13 @@ export const NotifyHost = () => {
     <Modal transparent animationType="fade" visible onRequestClose={close}>
       <Pressable
         onPress={close}
+        accessible={false}
         style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 }}
       >
         {/* absorbs taps so pressing the card doesn't dismiss; backdrop tap does */}
         <Pressable
           onPress={() => {}}
+          accessible={false}
           style={{ width: '100%', maxWidth: 360, backgroundColor: c.surface, borderRadius: 22, padding: 24, alignItems: 'center' }}
         >
           <View style={{ width: 58, height: 58, borderRadius: 29, backgroundColor: s.tint, alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
@@ -71,7 +73,7 @@ export const NotifyHost = () => {
               {item.message}
             </Text>
           ) : null}
-          <Pressable onPress={close} style={{ marginTop: 22, alignSelf: 'stretch', height: 50, borderRadius: 14, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
+          <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close notification" style={{ marginTop: 22, alignSelf: 'stretch', height: 50, borderRadius: 14, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
             <Text style={{ color: c.inkOnBrand, fontSize: 15, fontFamily: font.bold }}>OK</Text>
           </Pressable>
         </Pressable>
@@ -79,3 +81,4 @@ export const NotifyHost = () => {
     </Modal>
   );
 };
+

@@ -28,7 +28,7 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
 const GetLoan = () => {
   const { c } = useTheme();
   const { reload } = useWallet();
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   // Start at 0 so the Hero never advertises a fabricated ₦500,000 eligibility
   // before /api/loans/status/ returns the user's real available credit.
   const [available, setAvailable] = useState(0);
@@ -118,7 +118,7 @@ const GetLoan = () => {
       <Header title="Get Loan" sub="Instant, no paperwork" onBack={() => router.back()} />
 
       <Hero style={{ marginBottom: 18 }}>
-        <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You're eligible for up to</Text>
+        <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You’re eligible for up to</Text>
         <Text style={{ fontSize: 34, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <Text style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>Based on your Zitch activity & repayment history</Text>
       </Hero>
@@ -191,3 +191,4 @@ const GetLoan = () => {
 };
 
 export default GetLoan;
+

@@ -23,7 +23,7 @@ const BuyAirtime = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
   const params = useLocalSearchParams<{ phone?: string }>();
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   const [net, setNet] = useState('1');
   const [phone, setPhone] = useState(params.phone ?? '');
   const [amt, setAmt] = useState('');
@@ -151,3 +151,4 @@ const BuyAirtime = () => {
 };
 
 export default BuyAirtime;
+

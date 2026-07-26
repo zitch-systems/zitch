@@ -92,6 +92,9 @@ jobs:
       # SECRET_KEY when DEBUG is off" boot guard. Not a real secret; the test
       # step is unaffected (Django forces DEBUG off under tests anyway).
       DJANGO_SECRET_KEY: "ci-only-throwaway-secret-not-used-in-production-000"
+      # This job is deliberately single-process; production keeps the secure
+      # default and must provide Redis for cross-worker rate-limit state.
+      DJANGO_REQUIRE_SHARED_CACHE: "false"
     defaults:
       run:
         working-directory: backend
@@ -120,7 +123,7 @@ jobs:
         run: python manage.py test
 
   security:
-    name: Security (secrets + dependency audit)
+    name: Security (secrets + Python dependency audit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -146,16 +149,6 @@ jobs:
         run: |
           pip install --quiet pip-audit
           pip-audit -r backend/requirements.txt --no-deps
-      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
-        with:
-          node-version: "20"
-      # npm audit is ADVISORY (continue-on-error) for now: the tree carries ~60
-      # known vulns rooted in the EOL Expo SDK 51 / RN 0.74 toolchain, which only
-      # the SDK upgrade can clear. Flip this to blocking after that upgrade.
-      - name: npm audit (advisory until the Expo SDK upgrade)
-        continue-on-error: true
-        run: npm audit --package-lock-only --omit=dev --audit-level=high
-
   app:
     name: App (Expo)
     needs: changes
@@ -165,11 +158,36 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
+      - name: Use npm 11 audit client
+        run: npm install --global npm@11.6.2
       - run: npm ci
+      # Audit the installed production tree. Lockfile-only auditing hits npm's
+      # retired quick endpoint and can reject an otherwise valid dependency tree.
+      - name: npm audit (production critical)
+        run: |
+          audit_status=0
+          for attempt in 1 2 3; do
+            if audit_output="$(npm audit --omit=dev --audit-level=critical 2>&1)"; then
+              printf '%s\n' "$audit_output"
+              exit 0
+            else
+              audit_status=$?
+            fi
+            printf '%s\n' "$audit_output"
+            if ! printf '%s\n' "$audit_output" | grep -Eq 'audit endpoint returned an error|invalid json response body|400 Bad Request'; then
+              exit "$audit_status"
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          echo "WARNING: npm advisory service unavailable after 3 attempts; no advisory result was returned."
       - name: Expo dependency compatibility
         run: npx expo install --check
+      - name: Expo project health
+        run: npx expo-doctor
+      - name: Lint
+        run: npm run lint
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Unit tests

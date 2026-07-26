@@ -38,7 +38,7 @@ const Register = () => {
       } else {
         notify('Error', result.message || 'Failed to register an account');
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsRegistering(false);
@@ -80,7 +80,7 @@ const Register = () => {
         />
       </View>
       <Text style={{ fontSize: 12, color: c.ink3, lineHeight: 18, marginTop: 14, fontFamily: font.regular }}>
-        By continuing you agree to Zitch's{' '}
+        By continuing you agree to Zitch’s{' '}
         <Link href={TERMS_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Terms</Text></Link> &{' '}
         <Link href={PRIVACY_URL as any}><Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy</Text></Link>.
       </Text>
@@ -99,3 +99,4 @@ const Register = () => {
 };
 
 export default Register;
+

@@ -2,9 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
-import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { apiPost, newIdempotencyKey, publicJson } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
@@ -23,7 +21,6 @@ type Step = null | 'confirm' | 'pin';
 const BuyCable = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [prov, setProv] = useState('1');
   const [iuc, setIuc] = useState('');
   const [plan, setPlan] = useState('');
@@ -37,23 +34,17 @@ const BuyCable = () => {
   const [done, setDone] = useState(false);
   const [pinError, setPinError] = useState('');
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-
   // Fetch bouquets for the chosen provider.
   useEffect(() => {
     if (!prov) return;
+    let active = true;
     setLoadingPlans(true);
     setPlan('');
     setPlans([]);
     setValidatedName('');
-    fetch(`${baseUrl}/api/utility/get_cable_plans/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cablenetwork: prov }),
-    })
-      .then((r) => r.json())
+    publicJson('/api/utility/get_cable_plans/', { cablenetwork: prov })
       .then((res) => {
-        if (res?.cable_plans) {
+        if (active && res?.cable_plans) {
           setPlans(res.cable_plans.map((p: any) => ({
             id: String(p.cable_plan_code),
             label: p.name,
@@ -63,20 +54,18 @@ const BuyCable = () => {
         }
       })
       .catch(() => {})
-      .finally(() => setLoadingPlans(false));
+      .finally(() => { if (active) setLoadingPlans(false); });
+    return () => { active = false; };
   }, [prov]);
 
   // Authoritative price for the chosen bouquet.
   useEffect(() => {
     if (!plan) { setPrice(''); return; }
-    fetch(`${baseUrl}/api/utility/get_cable_plans_price/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cable_plan_code: plan }),
-    })
-      .then((r) => r.json())
-      .then((res) => { if (res?.cable_plans_price != null) setPrice(String(res.cable_plans_price)); })
+    let active = true;
+    publicJson('/api/utility/get_cable_plans_price/', { cable_plan_code: plan })
+      .then((res) => { if (active && res?.cable_plans_price != null) setPrice(String(res.cable_plans_price)); })
       .catch(() => {});
+    return () => { active = false; };
   }, [plan]);
 
   const provider = PROVIDERS.find((p) => p.id === prov)!;
@@ -217,3 +206,4 @@ const BuyCable = () => {
 };
 
 export default BuyCable;
+

@@ -39,7 +39,7 @@ const MORE = [
 ];
 
 const Home = () => {
-  const { c, theme } = useTheme();
+  const { c } = useTheme();
   const { balance, firstName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -220,3 +220,4 @@ const Home = () => {
 };
 
 export default Home;
+

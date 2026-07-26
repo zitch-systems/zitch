@@ -48,7 +48,7 @@ const ForgotPassword = () => {
       </View>
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1 }}>Reset password</Text>
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 24, fontFamily: font.regular }}>
-        Enter your phone number or email and we'll send a code to reset your password.
+        Enter your phone number or email and we’ll send a code to reset your password.
       </Text>
 
       <Field
@@ -69,3 +69,4 @@ const ForgotPassword = () => {
 };
 
 export default ForgotPassword;
+

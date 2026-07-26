@@ -1,9 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
@@ -22,7 +20,6 @@ type Step = null | 'confirm' | 'pin';
 const Exams = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [exams, setExams] = useState<Exam[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState('');
@@ -39,13 +36,13 @@ const Exams = () => {
   // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
   useEffect(() => { idemKey.current = ''; }, [selected, qty, phone]);
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    fetch(`${baseUrl}/api/exams/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then((r) => r.json())
-      .then((res) => { if (Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
+    let active = true;
+    publicJson('/api/exams/list/')
+      .then((res) => { if (active && Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
       .catch(() => {})
-      .finally(() => setLoadingList(false));
+      .finally(() => { if (active) setLoadingList(false); });
+    return () => { active = false; };
   }, []);
 
   const exam = exams.find((e) => e.code === selected);
@@ -175,3 +172,4 @@ const Exams = () => {
 };
 
 export default Exams;
+

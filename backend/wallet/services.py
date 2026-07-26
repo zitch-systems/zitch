@@ -5,6 +5,7 @@ always written together, atomically, with row locking to prevent double-spend.
 """
 import json
 import logging
+import re
 import secrets
 from decimal import Decimal
 
@@ -448,6 +449,27 @@ def _reversal_reference(tx: dict, references) -> str | None:
     return None
 
 
+_WEMA_REVERSAL_MARKER = re.compile(
+    r"\b(?:REVERSAL|REVERSED|BOUNCED)\b|BOUNCE\s+BACK|RETURN\s+OF\s+FUNDS|RETURNED\s+TRANSFER",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_unmatched_reversal(tx: dict) -> bool:
+    """Whether a Wema credit row carries an explicit reversal marker.
+
+    Some Wema reversal rows omit the original payout reference. When the wallet
+    has outbound payouts, treating such a row as fresh funding can double-credit
+    the user once the payout poller also refunds it. These rows are quarantined
+    for manual reconciliation instead of moving money automatically.
+    """
+    try:
+        blob = json.dumps(tx, default=str)
+    except (TypeError, ValueError):
+        blob = str(tx)
+    return bool(_WEMA_REVERSAL_MARKER.search(blob))
+
+
 def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> Transaction | None:
     """Credit `wallet` for one inbound Wema transaction-history row, exactly once.
 
@@ -494,6 +516,12 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
         reversed_txn = reverse_transfer(matched)
         log.warning("wema_credit_payout_reversal ref=%s payout=%s reversed=%s account=%s",
                     norm["reference"], matched, bool(reversed_txn), wallet.account_number)
+        return None
+    if refs and _looks_like_unmatched_reversal(tx):
+        log.error(
+            "wema_credit_unmatched_reversal_quarantined ref=%s account=%s amount=%s",
+            norm["reference"], wallet.account_number, norm["amount_naira"],
+        )
         return None
     ledger_ref = f"WEMA-CR-{norm['reference']}"
     return settle_reserved_funding(ledger_ref, norm["amount_naira"], wallet.user)
@@ -573,3 +601,4 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
             raise DuplicateTransaction(idempotency_key)
         raise
     return debit_txn, credit_txn
+

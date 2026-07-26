@@ -16,7 +16,7 @@ const PUBLIC_KEY = process.env.EXPO_PUBLIC_MONO_PUBLIC_KEY ?? '';
 
 let SDK: any = null;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   SDK = require('@mono.co/connect-react-native');
 } catch {
   SDK = null;
@@ -107,3 +107,4 @@ export const MonoLauncherProvider = ({ children }: { children: React.ReactNode }
     </MonoContext.Provider>
   );
 };
+

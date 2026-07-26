@@ -8,6 +8,7 @@ import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { BANK_WHATSAPP } from '@/components/configFiles/links';
+import { safeWhatsAppUrl } from '@/lib/externalLinks';
 
 const WA_GREEN = '#25D366';
 
@@ -15,7 +16,8 @@ type Stage = 'loading' | 'unlinked' | 'code' | 'linked';
 
 // Open WhatsApp at the Zitch banking number, optionally with prefilled text.
 const openWa = (text?: string, link?: string) => {
-  const url = link || `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+  const fallback = `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
+  const url = safeWhatsAppUrl(link) || fallback;
   Linking.openURL(url).catch(() => notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.'));
 };
 
@@ -171,3 +173,4 @@ const LinkWhatsApp = () => {
 };
 
 export default LinkWhatsApp;
+

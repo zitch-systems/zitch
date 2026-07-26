@@ -43,6 +43,9 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
           const event = navigation.emit({ type: 'tabPress', target: it.name, canPreventDefault: true });
           if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
         }}
+        accessibilityRole="tab"
+        accessibilityLabel={it.label}
+        accessibilityState={{ selected: on }}
         // Tactile 3D press: the tab scales down + dims on touch.
         style={({ pressed }) => ({
           flex: 1,
@@ -124,3 +127,4 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
 };
 
 export default BottomNav;
+

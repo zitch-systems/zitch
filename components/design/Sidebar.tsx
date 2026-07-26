@@ -46,6 +46,9 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
                 const event = navigation.emit({ type: 'tabPress', target: it.name, canPreventDefault: true });
                 if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
               }}
+              accessibilityRole="tab"
+              accessibilityLabel={it.label}
+              accessibilityState={{ selected: on }}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, paddingHorizontal: 14, borderRadius: 14, backgroundColor: on ? 'rgba(15,162,149,.12)' : 'transparent' }}
             >
               <ZIcon name={it.icon} size={22} color={on ? c.brand : c.ink2} stroke={on ? 2.1 : 1.7} />
@@ -57,6 +60,8 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
 
       <Pressable
         onPress={() => navigation.navigate('me' as never)}
+        accessibilityRole="button"
+        accessibilityLabel="Open my account"
         style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingTop: 14, paddingHorizontal: 8, borderTopWidth: 1, borderTopColor: c.line }}
       >
         <Avatar size={38} ring={c.brand} surface={c.surface} />
@@ -70,3 +75,4 @@ const Sidebar = ({ state, navigation, width }: BottomTabBarProps & { width?: num
 };
 
 export default Sidebar;
+

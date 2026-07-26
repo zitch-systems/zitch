@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import baseUrl from '@/components/configFiles/apiConfig';
+import baseUrl, { FALLBACK_API_URL } from '@/components/configFiles/apiConfig';
 
 // An identifiable User-Agent for the app. React Native's default is
 // `okhttp/<ver>` on Android and `CFNetwork/...` on iOS — user agents that
@@ -20,7 +20,6 @@ export const USER_AGENT = `ZitchApp/${APP_VERSION} (${Platform.OS})`;
 // as the documented fallback), and the fallback becomes sticky for the session
 // so every later call skips the blocked edge. Scoped to the default production
 // domain only — a local-dev EXPO_PUBLIC_API_URL override never switches hosts.
-export const FALLBACK_API_URL = 'https://zitch-api.onrender.com';
 const FALLBACK_ELIGIBLE = baseUrl === 'https://api.zitch.ng';
 let useFallbackHost = false;
 
@@ -118,3 +117,4 @@ if (!g.__zitchFetchPatched && typeof g.fetch === 'function') {
     return orig(input, init);
   };
 }
+

@@ -19,7 +19,7 @@ const SetPin = () => {
   const [err, setErr] = useState(false);
   const [errMsg, setErrMsg] = useState("PINs don't match, try again");
   const [submitting, setSubmitting] = useState(false);
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
 
   const active = confirm === null ? pin : confirm;
 
@@ -47,7 +47,7 @@ const SetPin = () => {
         setConfirm('');
         setSubmitting(false);
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
       setConfirm('');
       setSubmitting(false);
@@ -76,7 +76,7 @@ const SetPin = () => {
       const t = setTimeout(() => { setErr(false); setConfirm(''); }, 700);
       return () => clearTimeout(t);
     }
-  }, [pin, confirm]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pin, confirm]);
 
   const onKey = (k: string) => {
     if (submitting) return;
@@ -130,3 +130,4 @@ const SetPin = () => {
 };
 
 export default SetPin;
+

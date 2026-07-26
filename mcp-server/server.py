@@ -38,7 +38,6 @@ def _call(path: str, body: dict | None = None) -> dict:
     headers = {"Content-Type": "application/json"}
     if TOKEN:
         headers["Authorization"] = f"Bearer {TOKEN}"
-        payload.setdefault("access_token", TOKEN)  # body fallback the API also accepts
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
             resp = client.post(f"{API_URL}{path}", json=payload, headers=headers)
@@ -151,3 +150,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

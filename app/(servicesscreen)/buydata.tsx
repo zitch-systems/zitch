@@ -2,9 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
-import baseUrl from '@/components/configFiles/apiConfig';
-import { getToken } from '@/lib/secureStore';
-import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { apiPost, newIdempotencyKey, publicJson } from '@/lib/api';
 import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, Segmented, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
@@ -30,7 +28,6 @@ type Step = null | 'confirm' | 'pin';
 const BuyData = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
   const [net, setNet] = useState('1');
   const [planType, setPlanType] = useState('1');
   const [plan, setPlan] = useState('');
@@ -43,22 +40,16 @@ const BuyData = () => {
   const [done, setDone] = useState(false);
   const [pinError, setPinError] = useState('');
 
-  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-
   // Fetch plans whenever network + plan type are chosen.
   useEffect(() => {
     if (!net || !planType) return;
+    let active = true;
     setLoadingPlans(true);
     setPlan('');
     setPlans([]);
-    fetch(`${baseUrl}/api/utility/get_data_plans/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ datanetwork: net, selectedPlanType: planType }),
-    })
-      .then((r) => r.json())
+    publicJson('/api/utility/get_data_plans/', { datanetwork: net, selectedPlanType: planType })
       .then((res) => {
-        if (res?.data_plans) {
+        if (active && res?.data_plans) {
           setPlans(res.data_plans.map((p: any) => ({
             id: String(p.plan_code),
             label: p.name,
@@ -68,20 +59,18 @@ const BuyData = () => {
         }
       })
       .catch(() => {})
-      .finally(() => setLoadingPlans(false));
+      .finally(() => { if (active) setLoadingPlans(false); });
+    return () => { active = false; };
   }, [net, planType]);
 
   // Fetch authoritative price for the chosen plan.
   useEffect(() => {
     if (!plan) { setPrice(''); return; }
-    fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selectedDataPlan: plan }),
-    })
-      .then((r) => r.json())
-      .then((res) => { if (res?.price != null) setPrice(String(res.price)); })
+    let active = true;
+    publicJson('/api/utility/get_data_plans_price/', { selectedDataPlan: plan })
+      .then((res) => { if (active && res?.price != null) setPrice(String(res.price)); })
       .catch(() => {});
+    return () => { active = false; };
   }, [plan]);
 
   const network = NETWORKS.find((n) => n.id === net)!;
@@ -198,3 +187,4 @@ const BuyData = () => {
 };
 
 export default BuyData;
+
