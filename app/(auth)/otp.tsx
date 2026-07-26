@@ -17,18 +17,11 @@ const OTPVerification = () => {
   const [otp, setOtp] = useState('');
   const [isCheckingOtp, setIsCheckingOtp] = useState(false);
   const [userPhone, setUserPhone] = useState('');
-  // Captured at register; sent to verify_otp so the account is created WITH a
-  // name (its dedicated funding account is opened in this name).
-  const [name, setName] = useState({ first: '', last: '' });
   const [seconds, setSeconds] = useState(24);
   const inputRef = useRef<TextInput>(null);
 
   useEffect(() => {
     AsyncStorage.getItem('UserPhone').then((p) => p && setUserPhone(p));
-    AsyncStorage.multiGet(['UserFirstName', 'UserLastName']).then((pairs) => {
-      const map = Object.fromEntries(pairs);
-      setName({ first: map.UserFirstName || '', last: map.UserLastName || '' });
-    });
   }, []);
 
   useEffect(() => {
@@ -46,8 +39,13 @@ const OTPVerification = () => {
     submittedRef.current = otp;
     setIsCheckingOtp(true);
     try {
+      // Read the name (captured at register) at submit time rather than from
+      // async-loaded state, so an instant SMS autofill can't race the load and
+      // send an unnamed verify — the account is created here, and it's opened in
+      // this name.
+      const [[, first], [, last]] = await AsyncStorage.multiGet(['UserFirstName', 'UserLastName']);
       const response = await publicPost('/api/verify_otp/', {
-        otp, phone: userPhone, first_name: name.first, last_name: name.last,
+        otp, phone: userPhone, first_name: first || '', last_name: last || '',
       });
       const result = await response.json();
       if (response.ok && result.access_token) {
@@ -65,7 +63,7 @@ const OTPVerification = () => {
     } finally {
       setIsCheckingOtp(false);
     }
-  }, [otp, userPhone, name]);
+  }, [otp, userPhone]);
 
   // Auto-submit once all digits are entered (guarded above against re-runs).
   useEffect(() => {
