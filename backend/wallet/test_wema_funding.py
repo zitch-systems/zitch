@@ -63,6 +63,23 @@ class WemaWalletProvisioningTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
 
+    def test_provisioned_account_name_falls_back_to_registered_name(self):
+        # If the provider hands back an account with no holder name, the wallet must
+        # still persist a name — the customer's registered legal name — so the
+        # funding card is never nameless (which would block a bank transfer).
+        r1 = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+        tracking = r1.json()["tracking_id"]
+        with patch("utility.wema.get_account_details",
+                   return_value={"success": True, "account_number": "9911223344",
+                                 "account_name": "   ", "bank_name": "Wema Bank"}):
+            r2 = self._post("/api/wallet/wema/verify-otp/",
+                            {"otp": "123456", "tracking_id": tracking,
+                             "using_bvn": True, "bvn": "22222222222"})
+        self.assertEqual(r2.status_code, 200)
+        w = Wallet.objects.get(user=self.user)
+        self.assertEqual(w.account_number, "9911223344")
+        self.assertEqual(w.account_name, self.user.get_full_name())  # "Ada Eze"
+
     def test_verify_requires_otp_and_tracking(self):
         r = self._post("/api/wallet/wema/verify-otp/", {"otp": "", "tracking_id": ""})
         self.assertEqual(r.status_code, 400)

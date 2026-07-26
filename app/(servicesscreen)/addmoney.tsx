@@ -21,6 +21,10 @@ const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
+  // The customer's registered legal name — shown as the account name whenever the
+  // provider omits it, so the funding card never renders a nameless account (which
+  // a payer can't confirm before transferring).
+  const [holderName, setHolderName] = useState('');
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
 
@@ -37,7 +41,11 @@ const AddMoney = () => {
     // resolves later, it still fills in (account state).
     const guard = setTimeout(() => { if (alive) setLoading(false); }, 8000);
     apiJson('/api/wallet/account/')
-      .then((r) => { if (alive && r?.success && r.account_number) setAccount(r as DediAccount); })
+      .then((r) => {
+        if (!alive || !r?.success) return;
+        if (r.holder_name) setHolderName(r.holder_name);
+        if (r.account_number) setAccount(r as DediAccount);
+      })
       .catch(() => {})
       .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
     return () => { alive = false; clearTimeout(guard); };
@@ -127,23 +135,42 @@ const AddMoney = () => {
               Transfer any amount to this account from any bank app — your Zitch wallet is credited
               automatically, usually within seconds.
             </Text>
+            {/* Account number + one-tap copy */}
             <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16 }}>
               <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.medium, marginBottom: 2 }}>Account number</Text>
                 <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5 }}>
                   {account.account_number}
-                </Text>
-                <Text style={{ fontSize: 13.5, color: c.ink2, fontFamily: font.medium, marginTop: 4 }}>
-                  {account.bank_name}{account.account_name ? ` · ${account.account_name}` : ''}
                 </Text>
               </View>
               <Pressable
                 onPress={copyAccount}
                 hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Copy account number"
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(15,162,149,.12)', borderRadius: 12, paddingVertical: 10, paddingHorizontal: 14 }}
               >
                 <ZIcon name="copy" size={15} color={c.brand} />
                 <Text style={{ fontSize: 13.5, color: c.brand, fontFamily: font.bold }}>Copy</Text>
               </Pressable>
+            </View>
+            {/* Bank + account name — the details a payer confirms before sending.
+                account_name always resolves to a name (provider → registered name),
+                so the card is never nameless. */}
+            <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <View style={{ minWidth: 0 }}>
+                <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.medium }}>Bank</Text>
+                <Text style={{ fontSize: 14.5, color: c.ink1, fontFamily: font.bold, marginTop: 3 }}>
+                  {account.bank_name || 'Wema Bank'}
+                </Text>
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.medium, textAlign: 'right' }}>Account name</Text>
+                <Text numberOfLines={2} style={{ fontSize: 14.5, color: c.ink1, fontFamily: font.bold, marginTop: 3, textAlign: 'right' }}>
+                  {account.account_name || holderName || 'Your Zitch account'}
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -203,6 +230,11 @@ const AddMoney = () => {
               Enter your BVN to get a dedicated account for funding by bank transfer. It’s verified
               securely; we never store it.
             </Text>
+            {holderName ? (
+              <Text style={{ fontSize: 12.5, color: c.ink2, fontFamily: font.semibold, marginTop: 10, textAlign: 'center' }}>
+                Opened in your name · {holderName}
+              </Text>
+            ) : null}
           </View>
 
           <View style={{ height: 18 }} />

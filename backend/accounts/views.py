@@ -188,9 +188,17 @@ def verify_otp(request):
     otp.used = True
     otp.save(update_fields=["used"])
 
+    # The customer's legal name is captured at register (before this OTP round-trip)
+    # and sent here so the account is created WITH a name. It matters beyond display:
+    # the dedicated funding account (Wema NUBAN) is later opened in this name, and an
+    # account with no holder name can't be safely funded by transfer — the payer has
+    # no name to confirm against. Trim + length-cap to the User field width.
+    first_name = (request.data.get("first_name") or "").strip()[:150]
+    last_name = (request.data.get("last_name") or "").strip()[:150]
     user, created = User.objects.get_or_create(
         phone=phone,
-        defaults={"username": phone, "email": otp.email or ""},
+        defaults={"username": phone, "email": otp.email or "",
+                  "first_name": first_name, "last_name": last_name},
     )
     # Defense in depth: a SIGNUP OTP must never sign anyone into an already
     # established account. A genuine new signup has no usable password at this
@@ -199,6 +207,13 @@ def verify_otp(request):
     if not created and user.has_usable_password():
         log.warning("signup_otp_for_existing_account phone=%r ip=%s", phone, client_ip(request))
         return fail("Invalid OTP", status=400)
+    # Backfill the name onto a mid-signup account (created on a prior attempt, or
+    # before name capture existed) that has no name yet — so re-verifying still
+    # lands a named account. Never overwrite a name already on file.
+    if not created and (first_name or last_name) and not (user.first_name or user.last_name):
+        user.first_name = first_name or user.first_name
+        user.last_name = last_name or user.last_name
+        user.save(update_fields=["first_name", "last_name"])
     get_or_create_wallet(user)
     token = AccessToken.issue(user)
     return ok(access_token=token.key, message="Verified")

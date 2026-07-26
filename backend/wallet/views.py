@@ -71,13 +71,18 @@ def wallet_account(request):
     a slow provider call.) Provisioning is explicit: at BVN verification time, or via
     /api/wallet/account/create/, both of which have the BVN in hand.
     """
-    wallet = get_or_create_wallet(request.user_obj)
+    user = request.user_obj
+    wallet = get_or_create_wallet(user)
     return ok(
         success=True,
         account_number=wallet.account_number,
         account_name=wallet.account_name,
         bank_name=wallet.bank_name,
         bank_accounts=wallet.bank_accounts or [],
+        # The customer's registered legal name, so the Add-money screen can always
+        # show whose account this is — even before it's provisioned, or on the rare
+        # provider response that omits the holder name (account_name is blank).
+        holder_name=(user.get_full_name() or "").strip(),
     )
 
 
@@ -220,7 +225,12 @@ def wema_wallet_verify_otp(request):
         log.warning("wema_account_number_conflict user=%s account=%s", user.id, acct["account_number"])
         return fail("We couldn't finish setting up your account. Please contact support.", status=409)
     wallet.account_number = acct["account_number"]
-    wallet.account_name = acct.get("account_name", "") or (user.get_full_name() or "").strip()
+    # Never persist a blank holder name: prefer the name the bank returned, else the
+    # customer's registered legal name (now captured at onboarding). A funding
+    # account with no name can't be safely paid into. `.strip()` guards a
+    # whitespace-only provider value, which a bare `or` would let through.
+    wallet.account_name = ((acct.get("account_name") or "").strip()
+                           or (user.get_full_name() or "").strip())
     wallet.bank_name = acct.get("bank_name", "") or "Wema Bank"
     wallet.account_reference = wema_account_reference(user)
     try:
