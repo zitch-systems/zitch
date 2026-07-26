@@ -1,0 +1,111 @@
+appId: com.zitch.app
+# Full fake-money end-to-end: onboarding -> sign-up -> OTP -> password -> PIN ->
+# dedicated funding account (Wema simulation) -> simulated deposit -> balance.
+#
+# Requires the backend at API_URL to be running in SIMULATION mode with:
+#   WEMA_SIMULATION=true, TEST_OTP_PHONE, TEST_OTP_CODE, SIMULATE_DEPOSIT_TOKEN
+# (see docs/CODEMAGIC_APK_E2E_TEST.md). Never point this at a live-money backend
+# that serves real users.
+#
+# Run (secrets are passed at runtime, never committed):
+#   maestro test .maestro/signup_fund.yaml \
+#     -e API_URL=https://api.zitch.ng \
+#     -e TEST_PHONE=08160000001 \
+#     -e TEST_OTP_CODE=123456 \
+#     -e SIMULATE_DEPOSIT_TOKEN=<server secret> \
+#     -e DEPOSIT_AMOUNT=50000
+#
+# ONE-SHOT per phone: the API refuses a sign-up OTP into an account that already
+# has a password, so the sign-up leg only works on a phone with no account yet.
+# To re-run, reset (delete) the TEST_PHONE user on the backend first.
+env:
+  API_URL: "https://api.zitch.ng"
+  DEPOSIT_AMOUNT: "50000"
+  BVN: "22222222222"
+  # The dedicated-account (Wema) provisioning OTP. In WEMA_SIMULATION the provider
+  # OTP is mocked and any value is accepted — this is NOT the phone signup OTP.
+  WEMA_SIM_OTP: "123456"
+---
+- launchApp:
+    clearState: true
+
+# --- onboarding carousel ---
+- extendedWaitUntil:
+    visible: "Send money instantly"
+    timeout: 20000
+- tapOn: "Next"
+- tapOn: "Next"
+- tapOn: "Get Started"
+
+# --- register (redesigned: Full name is required) ---
+- assertVisible: "Create your account"
+- tapOn: "e.g. Ada Okafor"
+- inputText: "Ada Okafor"
+- tapOn: "0801 234 5678"
+- inputText: "${TEST_PHONE}"
+- tapOn: "Continue"
+
+# --- verify phone (hidden field is auto-focused on this screen) ---
+- assertVisible: "Verify your number"
+- inputText: "${TEST_OTP_CODE}"
+
+# --- set password (>=8 chars, letter, number, special) ---
+- assertVisible: "Set up password"
+- tapOn: "Enter password"
+- inputText: "Zitch#2026"
+- tapOn: "Re-enter password"
+- inputText: "Zitch#2026"
+- tapOn: "Continue"
+
+# --- set transaction PIN (create, then confirm; 1357 is non-trivial) ---
+- assertVisible: "Create a 4-digit PIN"
+- tapOn: "1"
+- tapOn: "3"
+- tapOn: "5"
+- tapOn: "7"
+- assertVisible: "Confirm your PIN"
+- tapOn: "1"
+- tapOn: "3"
+- tapOn: "5"
+- tapOn: "7"
+
+# --- completion screen (personalised: "You're all set…") ---
+- assertVisible:
+    text: "all set"
+    timeout: 20000
+- tapOn: "Go to home"
+
+# --- provision the dedicated funding account (Wema simulation) ---
+- assertVisible: "Add Money"
+- tapOn: "Add Money"
+- assertVisible: "Get a dedicated account number"
+- tapOn: "Enter your 11-digit BVN"
+- inputText: "${BVN}"
+- tapOn: "Get my account"
+- assertVisible:
+    text: "Enter the OTP"
+    timeout: 20000
+- tapOn: "Enter the code"
+- inputText: "${WEMA_SIM_OTP}"
+- tapOn: "Confirm code"
+# Redesigned funding card: the account is never nameless — assert the labelled
+# "Account name" row is shown alongside the account number.
+- assertVisible:
+    text: "Account name"
+    timeout: 20000
+
+# --- credit the wallet via the test-only simulated-deposit endpoint ---
+# Authoritative check: this throws if the backend does not credit the wallet.
+- runScript: scripts/simulate_deposit.js
+
+# --- back to home; confirm the credit is reflected ---
+- tapOn: "Go back"
+# Pull to refresh so the freshly-credited balance loads.
+- swipe:
+    start: 50%, 30%
+    end: 50%, 80%
+# Best-effort UI confirmation of the credited amount (the runScript above is the
+# hard gate). Adjust the number if you change DEPOSIT_AMOUNT.
+- assertVisible:
+    text: "50,000"
+    timeout: 15000

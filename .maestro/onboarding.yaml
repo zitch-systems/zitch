@@ -1,4 +1,13 @@
 appId: com.zitch.app
+# Onboarding carousel -> redesigned register screen.
+#
+# Validates the redesign: the 4-step progress indicator and the restored,
+# required "Full name" field (a customer's dedicated funding account is opened in
+# this name, so a nameless account can't be safely funded by transfer).
+#
+# UI-only — it does not submit, because completing sign-up needs a live OTP. For
+# the full fake-money walkthrough (sign-up -> OTP -> PIN -> funding), see
+# signup_fund.yaml, which drives the backend simulation endpoints.
 ---
 - launchApp:
     clearState: true
@@ -11,5 +20,14 @@ appId: com.zitch.app
 - assertVisible: "Everything in one app"
 - tapOn: "Get Started"
 - assertVisible: "Create your account"
+# Redesign checkpoints: the progress stepper + the restored Full name field.
+- assertVisible: "Step 1 of 4"
+- assertVisible: "Full name"
 - assertVisible: "Phone number"
 - assertVisible: "Email (optional)"
+# The Full name field must accept input (it gates the Continue button).
+- tapOn: "e.g. Ada Okafor"
+- inputText: "Ada Okafor"
+- tapOn: "0801 234 5678"
+- inputText: "08100000000"
+- assertVisible: "Continue"
