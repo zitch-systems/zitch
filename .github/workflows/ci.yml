@@ -166,7 +166,22 @@ jobs:
       # Audit the installed production tree. Lockfile-only auditing hits npm's
       # retired quick endpoint and can reject an otherwise valid dependency tree.
       - name: npm audit (production critical)
-        run: npm audit --omit=dev --audit-level=critical
+        run: |
+          audit_status=0
+          for attempt in 1 2 3; do
+            if audit_output="$(npm audit --omit=dev --audit-level=critical 2>&1)"; then
+              printf '%s\n' "$audit_output"
+              exit 0
+            else
+              audit_status=$?
+            fi
+            printf '%s\n' "$audit_output"
+            if ! printf '%s\n' "$audit_output" | grep -Eq 'audit endpoint returned an error|invalid json response body|400 Bad Request'; then
+              exit "$audit_status"
+            fi
+            [ "$attempt" -eq 3 ] || sleep 5
+          done
+          echo "WARNING: npm advisory service unavailable after 3 attempts; no advisory result was returned."
       - name: Expo dependency compatibility
         run: npx expo install --check
       - name: Expo project health
