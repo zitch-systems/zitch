@@ -29,7 +29,7 @@ type Step = null | 'confirm' | 'pin';
 const BuyElectricity = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   const [disco, setDisco] = useState('1');
   const [meterType, setMeterType] = useState('prepaid');
   const [meter, setMeter] = useState('');
@@ -195,3 +195,4 @@ const BuyElectricity = () => {
 };
 
 export default BuyElectricity;
+

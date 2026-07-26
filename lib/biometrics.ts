@@ -20,10 +20,11 @@ const isWeb = Platform.OS === 'web';
 const hasWebAuthn = () =>
   typeof window !== 'undefined' && !!(window as any).PublicKeyCredential && !!window.navigator?.credentials;
 
-function randomBytes(n: number): Uint8Array {
-  const a = new Uint8Array(n);
-  (window.crypto || (window as any).msCrypto).getRandomValues(a);
-  return a;
+function randomBuffer(n: number): ArrayBuffer {
+  const buffer = new ArrayBuffer(n);
+  const bytes = new Uint8Array(buffer);
+  (window.crypto || (window as any).msCrypto).getRandomValues(bytes);
+  return buffer;
 }
 
 function bufToB64url(buf: ArrayBuffer): string {
@@ -59,9 +60,9 @@ async function webAuthenticate(): Promise<boolean> {
     if (!stored) {
       const cred = (await navigator.credentials.create({
         publicKey: {
-          challenge: randomBytes(32),
+          challenge: randomBuffer(32),
           rp: { name: 'Zitch', id: window.location.hostname },
-          user: { id: randomBytes(16), name: 'zitch-user', displayName: 'Zitch user' },
+          user: { id: randomBuffer(16), name: 'zitch-user', displayName: 'Zitch user' },
           pubKeyCredParams: [
             { type: 'public-key', alg: -7 },
             { type: 'public-key', alg: -257 },
@@ -80,7 +81,7 @@ async function webAuthenticate(): Promise<boolean> {
     }
     const assertion = await navigator.credentials.get({
       publicKey: {
-        challenge: randomBytes(32),
+        challenge: randomBuffer(32),
         allowCredentials: [{ type: 'public-key', id: b64urlToBuf(stored), transports: ['internal'] }],
         userVerification: 'required',
         timeout: 60000,
@@ -192,3 +193,4 @@ export async function setBiometricEnabled(on: boolean): Promise<void> {
   // On the web, forget the platform credential when disabling so re-enabling re-enrols cleanly.
   if (!on && isWeb) await AsyncStorage.removeItem(CRED_KEY);
 }
+

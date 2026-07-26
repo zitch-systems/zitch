@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
 import { router } from 'expo-router';
 import { Screen, Header, Card, Btn, NText } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
@@ -78,3 +78,4 @@ const FeatureScreen = ({
 };
 
 export default FeatureScreen;
+

@@ -11,10 +11,13 @@ Two modes:
   * Create one real operator (works anywhere):
         python manage.py seed_ops --username ada --role finance --password '...'
   * Seed the demo operator set used by e2e_smoke.py (dapo/funmi/...), with a
-    known default password — blocked whenever DEBUG is off, so a production
-    box never gets default-credential operators:
+    password supplied through ZITCH_DEMO_OPERATOR_PASSWORD — blocked whenever
+    DEBUG is off, so a production box never gets default-credential operators
+    by accident:
         python manage.py seed_ops
 """
+import os
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
@@ -23,7 +26,7 @@ from django.core.management.base import BaseCommand, CommandError
 User = get_user_model()
 
 ROLES = ["finance", "support", "read_only", "super_admin"]
-DEMO_PASSWORD = "Operator#1"
+DEMO_PASSWORD = os.environ.get("ZITCH_DEMO_OPERATOR_PASSWORD", "")
 # (username, role) — matches the operators e2e_smoke.py logs into across the ops
 # (/api/ops/) and console admin (/api/admin/) sections.
 DEMO_OPERATORS = [
@@ -56,8 +59,12 @@ class Command(BaseCommand):
 
         if not settings.DEBUG:
             raise CommandError(
-                "Refusing to seed demo operators with default passwords while DEBUG is off. "
+                "Refusing to seed demo operators while DEBUG is off. "
                 "Create a real operator with --username/--role/--password."
+            )
+        if not DEMO_PASSWORD:
+            raise CommandError(
+                "Set ZITCH_DEMO_OPERATOR_PASSWORD before seeding local demo operators."
             )
         for username, role in DEMO_OPERATORS:
             self._upsert(username, role, DEMO_PASSWORD, f"{username}@zitch.ng")

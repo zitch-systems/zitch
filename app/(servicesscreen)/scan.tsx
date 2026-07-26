@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, Pressable, Platform } from 'react-native';
+import { View, Text, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Screen, Header, Card, Field, Btn } from '@/components/design/ui';
@@ -24,7 +24,7 @@ const Scan = () => {
   const [manual, setManual] = useState('');
   const handled = useRef(false); // guard against the camera firing repeatedly
 
-  const useResult = (raw: string) => {
+  const handleResult = (raw: string) => {
     const id = extractIdentifier(raw);
     if (id) {
       router.replace({ pathname: '/sendmoney', params: { identifier: id } });
@@ -37,12 +37,12 @@ const Scan = () => {
   const onScan = ({ data }: { data: string }) => {
     if (handled.current) return;
     handled.current = true;
-    useResult(data);
+    handleResult(data);
   };
 
   const submitManual = () => {
     if (!manual.trim()) return;
-    useResult(manual);
+    handleResult(manual);
   };
 
   // Web (and any platform without camera support) → manual entry fallback.
@@ -107,3 +107,4 @@ const Scan = () => {
 };
 
 export default Scan;
+

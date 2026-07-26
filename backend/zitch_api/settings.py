@@ -445,7 +445,29 @@ if _PROD and (WHATSAPP["TOKEN"] or WHATSAPP["PHONE_NUMBER_ID"]):
 # is SHARED. Point CACHES at Redis by setting REDIS_URL; the default stays the
 # in-process LocMem cache (single worker / dev) so no extra infra is required to
 # boot. Tests always use LocMem for isolation.
-REDIS_URL = os.environ.get("REDIS_URL", "")
+REDIS_URL = os.environ.get("REDIS_URL", "").strip()
+# A dedicated, isolated test deployment may deliberately exercise simulated
+# provider flows with DEBUG off. Requiring this second explicit switch prevents
+# a single stale simulation flag from silently turning off real money rails.
+ALLOW_PRODUCTION_SIMULATION = env_bool("ALLOW_PRODUCTION_SIMULATION", False)
+# Multi-worker deployments must share rate-limit/idempotency state. Operators can
+# opt out only for a deliberately single-process environment.
+REQUIRE_SHARED_CACHE = env_bool("DJANGO_REQUIRE_SHARED_CACHE", _PROD)
+
+from zitch_api.production_checks import validate_production_configuration
+
+validate_production_configuration(
+    is_production=_PROD,
+    test_otp_phone=TEST_OTP["PHONE"],
+    test_otp_code=TEST_OTP["CODE"],
+    simulate_deposit_token=SIMULATE_DEPOSIT_TOKEN,
+    wema_simulation=WEMA["SIMULATION"],
+    mono_simulation=MONO["SIMULATION"],
+    allow_simulation=ALLOW_PRODUCTION_SIMULATION,
+    redis_url=REDIS_URL,
+    require_shared_cache=REQUIRE_SHARED_CACHE,
+)
+
 if REDIS_URL and not TESTING:
     CACHES = {
         "default": {

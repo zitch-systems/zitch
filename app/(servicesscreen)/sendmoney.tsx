@@ -25,7 +25,7 @@ const SendMoney = () => {
   const { balance, reload } = useWallet();
   const params = useLocalSearchParams<{ identifier?: string }>();
 
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   const [mode, setMode] = useState<'bank' | 'zitch'>('bank');
   const [banks, setBanks] = useState<Bank[]>([]);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
@@ -474,3 +474,4 @@ const SendMoney = () => {
 };
 
 export default SendMoney;
+

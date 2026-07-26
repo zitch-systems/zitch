@@ -82,7 +82,7 @@ const Signin = () => {
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }
-    } catch (error) {
+    } catch {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsChecking(false);

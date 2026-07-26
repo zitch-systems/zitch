@@ -7,9 +7,7 @@ import {
   ScrollView,
   RefreshControl,
   Modal,
-  StyleSheet,
   ViewStyle,
-  TextStyle,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -21,7 +19,7 @@ import ZIcon from '@/components/design/ZIcon';
 import AmbientBackground from '@/components/design/AmbientBackground';
 import { Loading, LoadingMark } from '@/components/design/Loading';
 import { Naira, NText } from '@/components/design/Naira';
-import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
+import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 import { isBiometricTxnEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
@@ -537,7 +535,7 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
   const busyRef = React.useRef(busy);
   onCompleteRef.current = onComplete;
   busyRef.current = busy;
-  const useBiometric = React.useCallback(async () => {
+  const handleBiometric = React.useCallback(async () => {
     try {
       if (busyRef.current) return;
       // biometricOnly: the device passcode must NOT be able to release the cached
@@ -572,14 +570,14 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
         setResolved(true);
         if (useBio && !autoTried.current && !busyRef.current) {
           autoTried.current = true;
-          useBiometric();
+          handleBiometric();
         }
       } catch {
         if (alive) setResolved(true); // any failure → just show the keypad
       }
     })();
     return () => { alive = false; };
-  }, [autoBiometric, useBiometric]);
+  }, [autoBiometric, handleBiometric]);
   const press = (d: string) => {
     if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
@@ -615,7 +613,7 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
     return (
       <View style={{ alignItems: 'center', paddingVertical: 16 }}>
         <Pressable
-          onPress={useBiometric}
+          onPress={handleBiometric}
           accessibilityRole="button"
           accessibilityLabel={bioKind === 'face' ? 'Approve with Face ID' : 'Approve with fingerprint'}
           style={{ width: 104, height: 104, borderRadius: 52, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}
@@ -679,7 +677,7 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
                   accessibilityRole="button"
                   accessibilityLabel={k === 'del' ? 'Delete digit' : k === 'bio' ? 'Use biometric approval' : `Digit ${k}`}
                   accessibilityState={{ disabled: busy }}
-                  onPress={() => (k === 'del' ? del() : k === 'bio' ? useBiometric() : press(k))}
+                  onPress={() => (k === 'del' ? del() : k === 'bio' ? handleBiometric() : press(k))}
                   style={({ pressed }) => ({
                     flex: 1,
                     height: 62,

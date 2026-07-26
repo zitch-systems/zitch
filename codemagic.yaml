@@ -14,7 +14,7 @@ workflows:
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
-      node: 20
+      node: 22
       java: 17
       vars:
         # Preview APK target. Keep secrets out of EXPO_PUBLIC_* variables because
@@ -27,12 +27,19 @@ workflows:
     scripts:
       - name: Install dependencies
         script: npm ci
+      - name: Lint app source
+        script: npm run lint
       - name: Validate TypeScript
-        script: npx tsc --noEmit
+        script: npm run typecheck
       - name: Run app unit tests
-        script: npm test -- --runInBand
+        script: npm run test:ci
+      - name: Audit production dependencies
+        # Block critical production advisories. High/moderate transitive build-tool
+        # advisories remain visible in the log without preventing preview APKs.
+        script: npm audit --omit=dev --audit-level=critical
       - name: Validate Expo project
         script: |
+          npm run doctor
           npx expo install --check
           npx expo config --type public
       - name: Expo prebuild (generate the native android/ project)
@@ -71,3 +78,4 @@ workflows:
         notify:
           success: true
           failure: true
+

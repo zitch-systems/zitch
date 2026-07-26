@@ -34,6 +34,7 @@ from django.contrib.auth.models import Group  # noqa: E402
 from accounts.models import OTP, User  # noqa: E402
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8000"
+OPS_PASSWORD = os.environ.get("ZITCH_DEMO_OPERATOR_PASSWORD", "")
 PASSED, FAILED = [], []
 
 
@@ -268,7 +269,7 @@ def main():
 
     # =================================================================== B
     print("\n[B] Ops portal API (/api/ops/)")
-    r = post("/api/ops/login/", {"identifier": "dapo", "password": "Operator#1"})
+    r = post("/api/ops/login/", {"identifier": "dapo", "password": OPS_PASSWORD})
     fin = j(r).get("token")
     check("ops login (finance)", bool(fin) and j(r).get("role") == "finance", str(j(r))[:160])
     for path in ("summary", "users", "transactions", "fx", "products", "kyc-queue",
@@ -290,7 +291,7 @@ def main():
     uid_b = User.objects.get(phone=phone_b).id
     r = post("/api/ops/user-action/", {"user_id": uid_b, "action": "unlock_pin"}, token=fin)
     check("ops user-action unlock_pin", j(r).get("success") is True, str(j(r)))
-    r = post("/api/ops/login/", {"identifier": "funmi", "password": "Operator#1"})
+    r = post("/api/ops/login/", {"identifier": "funmi", "password": OPS_PASSWORD})
     sup = j(r).get("token")
     check("ops login (support)", bool(sup) and j(r).get("role") == "support", str(j(r))[:160])
     r = post("/api/ops/fx-margin/", {"bps": 60}, token=sup)
@@ -318,14 +319,14 @@ def main():
 
     # =================================================================== C
     print("\n[C] Console admin API (/api/admin/)")
-    r = post("/api/admin/login", {"username": "amara", "password": "Operator#1"})
+    r = post("/api/admin/login", {"username": "amara", "password": OPS_PASSWORD})
     adm = j(r).get("token")
     check("admin login (super_admin)", bool(adm) and j(r).get("role") == "super_admin", str(j(r))[:160])
-    r = post("/api/admin/login", {"username": "dapo", "password": "Operator#1"})
+    r = post("/api/admin/login", {"username": "dapo", "password": OPS_PASSWORD})
     afin = j(r).get("token")
-    r = post("/api/admin/login", {"username": "funmi", "password": "Operator#1"})
+    r = post("/api/admin/login", {"username": "funmi", "password": OPS_PASSWORD})
     asup = j(r).get("token")
-    r = post("/api/admin/login", {"username": "ada", "password": "Operator#1"})
+    r = post("/api/admin/login", {"username": "ada", "password": OPS_PASSWORD})
     aro = j(r).get("token")
     check("admin logins (finance/support/read_only)", all([afin, asup, aro]), "")
 
@@ -492,3 +493,4 @@ def report():
 
 if __name__ == "__main__":
     main()
+

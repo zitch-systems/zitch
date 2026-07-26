@@ -3,7 +3,7 @@ import { View, Text, Pressable, Image, ScrollView } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
-import { useTheme, font, radius } from '@/lib/theme';
+import { useTheme, font } from '@/lib/theme';
 import { router } from 'expo-router';
 
 // Network/provider id → brand color, for monograms & accents.

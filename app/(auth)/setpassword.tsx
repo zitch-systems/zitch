@@ -30,7 +30,7 @@ const SetPassword = () => {
   const params = useLocalSearchParams<{ change?: string }>();
   const isChange = params.change === '1';
   const [isUpdating, setIsUpdating] = useState(false);
-  const [token, setToken] = useState('');
+  const [, setToken] = useState('');
   const [form, setForm] = useState({ current: '', password1: '', password2: '' });
 
   const p1 = form.password1;
@@ -151,3 +151,4 @@ const SetPassword = () => {
 };
 
 export default SetPassword;
+

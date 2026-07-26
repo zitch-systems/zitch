@@ -1,9 +1,8 @@
 import React from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Image } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
-import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
+import { useTheme, font, ICON_COLORS, iconTint } from '@/lib/theme';
 
 // Section label with optional right-aligned action (e.g. "See all").
 export const SectionLabel = ({ children, action, onAction }: { children: string; action?: string; onAction?: () => void }) => {

@@ -288,6 +288,16 @@ class WemaReversalGuardTests(TestCase):
         self.assertFalse(Transaction.objects.filter(
             reference=f"WEMA-CR-{self.PAYOUT_REF}").exists())
 
+    def test_unmatched_reversal_marker_is_quarantined(self):
+        # Banks do not always echo our payout reference on a returned transfer.
+        # With an outbound payout on this wallet, an explicit reversal marker is
+        # held for manual reconciliation instead of being credited as funding.
+        row = _tx("ALAT-REV-UNKNOWN", 1000,
+                  narration="TRANSFER REVERSAL - ORIGINAL REFERENCE UNAVAILABLE")
+        self.assertIsNone(apply_wema_credit(self.wallet, row, [self.PAYOUT_REF]))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("4000.00"))
+        self.assertFalse(Transaction.objects.filter(
+            reference="WEMA-CR-ALAT-REV-UNKNOWN").exists())
     def test_third_party_deposit_still_credits_alongside_payouts(self):
         # A genuine deposit (no payout reference anywhere) credits normally even
         # while the user has an outstanding payout.
@@ -350,3 +360,4 @@ class WemaPayoutSettlementTests(TestCase):
         self._run("IN_PROGRESS")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
+

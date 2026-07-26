@@ -1,0 +1,15 @@
+appId: com.zitch.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Send money instantly"
+    timeout: 20000
+- tapOn: "Next"
+- assertVisible: "Bank on WhatsApp"
+- tapOn: "Next"
+- assertVisible: "Everything in one app"
+- tapOn: "Get Started"
+- assertVisible: "Create your account"
+- assertVisible: "Phone number"
+- assertVisible: "Email (optional)"
