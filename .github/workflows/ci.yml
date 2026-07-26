@@ -160,6 +160,8 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Use npm 11 audit client
+        run: npm install --global npm@11.6.2
       - run: npm ci
       # Audit the installed production tree. Lockfile-only auditing hits npm's
       # retired quick endpoint and can reject an otherwise valid dependency tree.

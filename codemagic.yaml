@@ -26,7 +26,9 @@ workflows:
         - $HOME/.gradle/caches
     scripts:
       - name: Install dependencies
-        script: npm ci
+        script: |
+          npm install --global npm@11.6.2
+          npm ci
       - name: Lint app source
         script: npm run lint
       - name: Validate TypeScript
