@@ -36,7 +36,7 @@ _LOGO_URL = "https://zitch.ng/assets/brand/zitch-icon.png"
 def _branded_email(title: str, intro: str, *, code: str = "", note: str = "") -> str:
     """An email-client-safe branded HTML body: the Zitch logo + wordmark on the brand
     header, a heading, an intro line, an OPTIONAL prominent one-time-code box, an
-    optional fine-print note, and the licensing footer. Inline styles only (no
+    optional fine-print note, and a brand footer. Inline styles only (no
     <style>/external CSS) so it renders consistently in Gmail/Outlook/Apple Mail.
 
     `code` is optional — omit it for message-only emails (e.g. a sign-in reminder);
@@ -61,7 +61,7 @@ def _branded_email(title: str, intro: str, *, code: str = "", note: str = "") ->
         f'{code_box}{note_p}'
         '</div>'
         '<div style="background:#F4F9F8;border-top:1px solid #E2EEEB;padding:16px;text-align:center;font-size:11px;color:#9AAEB0;">'
-        'Zitch &middot; Licensed by the CBN &middot; Deposits insured by the NDIC'
+        'Zitch Technologies Limited'
         '</div></div></div>'
     )
 
