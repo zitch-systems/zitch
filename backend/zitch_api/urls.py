@@ -188,6 +188,12 @@ urlpatterns = [
     path("webhooks/whatsapp", whatsapp_webhook),
     # WhatsApp Flows data-exchange endpoint (encrypted secure PIN submit).
     path("webhooks/whatsapp/flow", whatsapp_flow_endpoint),
+    # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
+    # rails do not work until it has: account creation is refused without a profiled
+    # Account Creation URL, and transactions fail authentication without the
+    # Authentication URL. The trailing path segment is a shared secret; they sit
+    # outside /api/ because they are bank-authenticated, not user-authenticated.
+    path("webhooks/wema/", include("wallet.wema_urls")),
     path("api/admin/", include("admin_api.urls")),
     path("api/whatsapp/", include("whatsapp.urls")),
     path("api/ops/", include("portal.urls")),

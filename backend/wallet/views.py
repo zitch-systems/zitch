@@ -5,7 +5,6 @@ import secrets
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import (
@@ -24,10 +23,10 @@ from .services import (
     existing_for_key,
     get_or_create_wallet,
     make_reference,
+    provision_wema_account,
     settle_funding,
     settle_reserved_funding,
     transfer,
-    wema_account_reference,
 )
 
 log = logging.getLogger("wallet")
@@ -204,8 +203,12 @@ def wema_wallet_verify_otp(request):
         return fail("Bank account creation is not available right now")
     user = request.user_obj
     wallet = get_or_create_wallet(user)
-    if wallet.account_number:
-        return ok(**_account_payload(wallet, already=True))
+    # NOTE: no early return when a NUBAN already exists. The bank's Account Creation
+    # callback can provision it before the customer finishes the OTP step, and an
+    # early return here would skip the KYC/tier block below — leaving them with a
+    # working account permanently stuck at the tier-0 limit. Provisioning is skipped
+    # when it is already done; identity verification still runs.
+    already = bool(wallet.account_number)
     otp = (request.data.get("otp") or "").strip()
     tracking_id = (request.data.get("tracking_id") or "").strip()
     using_bvn = bool(request.data.get("using_bvn"))
@@ -214,40 +217,34 @@ def wema_wallet_verify_otp(request):
     val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
     if not val.get("success"):
         return fail(val.get("message", "OTP verification failed"), status=502)
-    acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
-    if not acct.get("success") or not acct.get("account_number"):
-        return fail(acct.get("message", "Your account is being created — try again shortly"),
-                    status=502)
-    # Guard the unique account_number/account_reference constraints: if Wema hands
-    # back a NUBAN already owned by another wallet (provider bug / reused sandbox
-    # number), fail cleanly instead of a 500.
-    if Wallet.objects.filter(account_number=acct["account_number"]).exclude(pk=wallet.pk).exists():
-        log.warning("wema_account_number_conflict user=%s account=%s", user.id, acct["account_number"])
-        return fail("We couldn't finish setting up your account. Please contact support.", status=409)
-    wallet.account_number = acct["account_number"]
-    # Never persist a blank holder name: prefer the name the bank returned, else the
-    # customer's registered legal name (now captured at onboarding). A funding
-    # account with no name can't be safely paid into. `.strip()` guards a
-    # whitespace-only provider value, which a bare `or` would let through.
-    wallet.account_name = ((acct.get("account_name") or "").strip()
-                           or (user.get_full_name() or "").strip())
-    wallet.bank_name = acct.get("bank_name", "") or "Wema Bank"
-    wallet.account_reference = wema_account_reference(user)
-    try:
-        wallet.save(update_fields=["account_number", "account_name", "bank_name",
-                                   "account_reference", "updated"])
-    except IntegrityError:
-        log.warning("wema_account_persist_conflict user=%s account=%s", user.id, acct["account_number"])
-        return fail("We couldn't finish setting up your account. Please contact support.", status=409)
-    # Lift the Post-No-Debit hold ALAT places on a new Tier-1 NUBAN — until it's
-    # lifted the account can be funded but not debited, so a payout/VAS from the
-    # user's own NUBAN would fail. Best-effort: the account is already usable for
-    # receiving; a failure here is logged and retried on the next verify/reconcile
-    # rather than blocking a successful provisioning.
-    pnd = wema_provider.lift_debit_restriction(acct["account_number"], bvn=using_bvn)
-    if not pnd.get("success"):
-        log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
-                    user.id, acct["account_number"], pnd.get("message", ""))
+    if already:
+        # Provisioned already (by an earlier verify, or by the bank's Account Creation
+        # callback). Skip the provisioning write and name-match against what we hold.
+        holder_name = wallet.account_name
+    else:
+        acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
+        if not acct.get("success") or not acct.get("account_number"):
+            return fail(acct.get("message", "Your account is being created — try again shortly"),
+                        status=502)
+        wallet, outcome = provision_wema_account(
+            user, account_number=acct["account_number"],
+            account_name=acct.get("account_name", ""), bank_name=acct.get("bank_name", ""),
+            source="otp")
+        if outcome.startswith("conflict"):
+            log.warning("wema_account_conflict user=%s account=%s outcome=%s",
+                        user.id, acct["account_number"], outcome)
+            return fail("We couldn't finish setting up your account. Please contact support.",
+                        status=409)
+        # Lift the Post-No-Debit hold ALAT places on a new Tier-1 NUBAN — until it's
+        # lifted the account can be funded but not debited, so a payout/VAS from the
+        # user's own NUBAN would fail. Best-effort: the account is already usable for
+        # receiving; a failure here is logged and retried on the next verify/reconcile
+        # rather than blocking a successful provisioning.
+        pnd = wema_provider.lift_debit_restriction(acct["account_number"], bvn=using_bvn)
+        if not pnd.get("success"):
+            log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
+                        user.id, acct["account_number"], pnd.get("message", ""))
+        holder_name = acct.get("account_name", "")
     # Best-effort KYC / tier lift if the client echoed the identifier. ALAT has no
     # standalone BVN/NIN lookup, so this account-creation round-trip IS the identity
     # check: the tier is only lifted when the holder name ALAT returned name-matches
@@ -260,11 +257,11 @@ def wema_wallet_verify_otp(request):
     name_ok = True
     if wema_provider.wema_live():
         name_ok = not wema_provider.holder_name_mismatch(
-            user.get_full_name() or "", acct.get("account_name", ""))
+            user.get_full_name() or "", holder_name)
     fields: list[str] = []
     if not name_ok:
         log.warning("wema_provision_name_mismatch user=%s account=%s wema_name=%r",
-                    user.id, acct["account_number"], acct.get("account_name", ""))
+                    user.id, wallet.account_number, holder_name)
     elif using_bvn and len(bvn) == 11 and not user.bvn_verified:
         user.set_bvn(bvn)
         user.bvn_verified = True

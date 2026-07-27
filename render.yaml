@@ -90,6 +90,23 @@ services:
         sync: false
       - key: WEMA_SIMULATION
         sync: false
+      # Bank-called callbacks. Wema PROFILES these URLs and the rails do not work
+      # until it has them (account creation is refused without the Account Creation
+      # URL; transactions fail auth without the Authentication URL). The token is the
+      # shared secret in the URL path — the bank signs nothing.
+      #   https://api.zitch.ng/webhooks/wema/{account,authorize,transaction,notification}/<TOKEN>
+      - key: WEMA_CALLBACK_TOKEN
+        sync: false
+      - key: WEMA_CALLBACK_TOKEN_PREV
+        sync: false
+      - key: WEMA_CALLBACK_ENFORCE_IPS
+        sync: false
+      - key: WEMA_CALLBACK_IPS
+        sync: false
+      - key: WEMA_AUTH_MAX_AGE
+        sync: false
+      - key: WEMA_AUTH_REQUIRE_SECURITY_INFO
+        sync: false
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
       # defaults to https://api.withmono.com in code.

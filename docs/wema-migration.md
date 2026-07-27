@@ -30,15 +30,17 @@ catalogue nesting, VAS status-requery codes, the real card-management endpoints,
 model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs.
 
 **⚠️ Still blocked on Wema before real money can move (VERIFY-BEFORE-LIVE):**
-1. **`securityInfo` (the one true blocker)** — the encrypted field required on every
-   money-movement call (transfer / credit_wallet / VAS) is **still not in any spec**.
-   `utility.wema._security_info` returns `WEMA_SECURITY_INFO` (a static prebuilt value) or
-   `""`; until it's set, a **live payout fails at the gateway → the debit auto-refunds** (an
-   outage, not a leak). Sandbox does not enforce it.
-2. **Sandbox provisioning + PND** — `apiplayground.alat.ng` returns a canned "download ALAT"
-   response for BVN/NIN wallet-creation, so the account → lift-PND → fund → transfer loop
-   can't be exercised end-to-end against sandbox. Needs a working provisioning path or a
-   funded test source account. (The PND lift itself is now wired — see below.)
+1. **Webhook profiling (the actual blocker)** — ALAT's Getting Started guide requires the
+   bank to profile our callback URLs *before* the rails work: account creation is refused
+   without an Account Creation URL, and transactions fail authentication without an
+   Authentication URL. The endpoints now exist (see "Callbacks and reconciliation") — the
+   URLs must be sent to Wema for profiling in both dev and production.
+2. **`securityInfo` — reframed.** It is not (only) a field we encrypt and send: ALAT's guide
+   shows the bank POSTing `{transactionReference, securityInfo}` to our **Authentication
+   Callback** and expecting `{transactionReference, authorized}` back. The historic
+   "payouts fail without securityInfo" symptom is consistent with an unprofiled
+   Authentication URL. Matching the value is opt-in
+   (`WEMA_AUTH_REQUIRE_SECURITY_INFO`) until Wema supplies one.
 3. **VAS status-requery legend** — `PartnerPayment/CheckTransactionStatus` returns an
    INTEGER `transactionStatus` (enum 1..11) whose meaning ALAT doesn't publish; the client
    reads it but leaves such a purchase **PENDING** (never auto-settle/refund on an
@@ -369,38 +371,76 @@ recurring *endpoints*, so there's nothing to call yet. Confirm the endpoints wit
    and add a ledger-vs-polled-NUBAN reconciliation invariant that alarms on divergence — that
    part still needs Wema's live reversal history shape.
 
-## No-webhook reconciliation
+## Callbacks and reconciliation
 
-ALAT exposes no webhooks, so `python manage.py reconcile_wema` (render cron, every 10 min):
+ALAT's integration guide requires the partner to **profile callback URLs with the bank**, and
+the rails do not work until it has them: account creation is refused without a profiled
+Account Creation URL, and transactions fail authentication without the Authentication URL.
+(An earlier version of this doc claimed ALAT exposes no webhooks and that we deliberately
+registered none. That was wrong, and it is the reason sandbox wallet creation returned a
+canned "use the bank's own app" message with no tracking id.)
+
+### The four callbacks — `backend/wallet/wema_callbacks.py`
+
+| Purpose | Route | Behaviour |
+|---|---|---|
+| Account Creation (`requestType 2`) | `/webhooks/wema/account/<token>` | provisions the NUBAN idempotently; does **not** lift KYC tier |
+| Authentication | `/webhooks/wema/authorize/<token>` | the bank asks whether a payout may proceed; we answer `{transactionReference, authorized}` |
+| Transaction (`requestType 3`) | `/webhooks/wema/transaction/<token>` | settles/refunds by **re-querying**, never from the payload |
+| Transaction Notification (prod) | `/webhooks/wema/notification/<token>` | recorded only; payload undocumented |
+
+**Security.** ALAT signs nothing, so the endpoints stack a secret in the URL path
+(`WEMA_CALLBACK_TOKEN`), a source-IP allowlist against the egress addresses below
+(`WEMA_CALLBACK_ENFORCE_IPS`), and a rate limit — all applied *before* the body is parsed.
+On top of that neither money-moving handler trusts its payload:
+
+- **`authorize`** answers `true` only when our own ledger holds a *fresh PENDING bank payout*
+  under that exact reference (`meta["bank"]`, younger than `WEMA_AUTH_MAX_AGE`). Holding the
+  URL is not sufficient. Every refusal returns an identical body, so it is not an oracle for
+  "is a payout in flight right now". Any error fails closed to `authorized: false` — a wrong
+  deny is an outage, a wrong approve is irreversible.
+- **`transaction`** is a *trigger, not an oracle*: it re-queries `confirm_transfer_status` over
+  the authenticated APIM channel and settles from that, so a forged, replayed or out-of-order
+  callback is at worst an unnecessary requery. ALAT publishes no status legend, so this also
+  avoids inventing one.
+- **Nothing credits a wallet from a callback.** The `requestType 3` payload carries no amount
+  and no account number; a credit path under a no-signature trust model would be a
+  money-printing primitive.
+
+`securityInfo` appears on the **authentication callback** — the bank sends it to us alongside
+the transaction reference and expects an authorisation decision back. Matching it against
+`WEMA_SECURITY_INFO` is opt-in (`WEMA_AUTH_REQUIRE_SECURITY_INFO`, default off) because that
+value is blank in every environment, and requiring a match against a blank value would deny
+every payout.
+
+### Still polled
+
+`python manage.py reconcile_wema` (render cron, every 10 min) remains the safety net, and is
+still the **only** source of deposit credits — ALAT exposes no inbound-credit webhook:
 - **Funding:** sweeps each Wema-provisioned wallet's history and credits inbound deposits,
   idempotent on Wema's `referenceId` stored as `WEMA-CR-<referenceId>` (namespaced so it can
   never collide with a `ZTRF`/`ZPAY`/`ZFND` ledger reference).
-- **Payouts:** settles/reverses PENDING bank payouts by polling `confirm_transfer_status`
-  (only when `payout_provider() == "wema"`, which is the default).
+- **Payouts:** settles/reverses PENDING bank payouts by polling `confirm_transfer_status`.
+  The transaction callback routes through the same settlement path, so whichever arrives
+  first wins and the other is a no-op.
 
-### Wema egress IPs / allowlisting
+### Wema egress IPs
 
-Wema confirmed (2026-07-27) that **IP allowlisting is done on the partner's side** — they
-do not allowlist our outbound addresses. Their gateway's egress IPs (the addresses Wema
-calls **from**) are:
+Wema confirmed (2026-07-27) that IP allowlisting is done on the partner's side — they do not
+allowlist our outbound addresses. Their gateway's egress IPs, the addresses the callbacks
+above arrive **from**, are:
 
 | | Address |
 |---|---|
 | Egress IP 1 | `135.236.18.76` |
 | Egress IP 2 | `74.178.162.156` |
 
-**Nothing enforces these today, and nothing needs to.** The rail is poll-based: we call
-Wema, Wema never calls us, so there is no inbound Wema traffic to filter. We deliberately
-did **not** register a callback URL — account details come from
-`GetPartnershipAccountDetails` and credits from `reconcile_wema`, per the section above.
-
-They are recorded here (and in `backend/.env.example`) purely so the values aren't lost in
-Slack. They become actionable only if one of these changes:
-- a **network-level allowlist** is introduced (Render / Cloudflare / edge firewall) — allow
-  inbound from both addresses; this is infrastructure config, not application code, and
-  there is no such config in this repo today; or
-- a **Wema callback endpoint** is ever added — restrict it to these two sources *in addition
-  to* a shared secret / signature check, never IP alone.
+These are now enforced in application code, but **off by default**
+(`WEMA_CALLBACK_ENFORCE_IPS=false`) so the first profiling round cannot be mistaken for "the
+bank never called". Turn enforcement on once a real callback confirms the observed source IP,
+and keep `WEMA_CALLBACK_IPS` env-overridable — Azure egress addresses rotate. The allowlist is
+a second factor, never the only one: the path secret and the ledger-state checks above are
+what actually protect the money.
 
 Our own outbound addresses (`209.97.130.65`, `68.183.254.113`) were shared with Wema on
 2026-07-24. Wema has not confirmed whether calls **to** their API are IP-filtered on their
