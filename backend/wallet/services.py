@@ -602,3 +602,52 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
         raise
     return debit_txn, credit_txn
 
+
+
+# ---------------------------------------------------------------------------
+# Wema account provisioning — shared by the OTP flow and the bank's
+# Account Creation callback, so the two can never drift apart.
+# ---------------------------------------------------------------------------
+def provision_wema_account(user, *, account_number: str, account_name: str = "",
+                           bank_name: str = "", source: str = "otp") -> tuple:
+    """Attach a Wema NUBAN to ``user``'s wallet. Returns ``(wallet, outcome)``.
+
+    outcome is one of:
+      "provisioned" — newly attached
+      "already"     — this wallet already had this exact NUBAN (idempotent replay)
+      "conflict:owned"    — the NUBAN belongs to a DIFFERENT wallet
+      "conflict:replaced" — this wallet already has a different NUBAN
+
+    Both conflicts are refusals: silently overwriting a funding account would
+    strand money already sent to the old NUBAN, and stealing one from another
+    wallet would misdirect deposits. The caller decides how to surface them.
+
+    ``account_reference`` is what makes the reconcile poller sweep the wallet for
+    deposits (wema_provisioned_wallets), so it is always written together with the
+    number — a NUBAN without it is invisible to reconciliation.
+    """
+    number = (account_number or "").strip()
+    if not number:
+        return None, "conflict:blank"
+    with db_transaction.atomic():
+        wallet = Wallet.objects.select_for_update().get(pk=get_or_create_wallet(user).pk)
+        if wallet.account_number:
+            return wallet, "already" if wallet.account_number == number else "conflict:replaced"
+        if Wallet.objects.filter(account_number=number).exclude(pk=wallet.pk).exists():
+            return wallet, "conflict:owned"
+        wallet.account_number = number
+        # Never persist a blank holder name — a funding account with no name can't be
+        # safely paid into. Prefer the bank's name, else the registered legal name.
+        wallet.account_name = ((account_name or "").strip()
+                               or (user.get_full_name() or "").strip())
+        wallet.bank_name = (bank_name or "").strip() or "Wema Bank"
+        wallet.account_reference = wema_account_reference(user)
+        try:
+            wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                       "account_reference", "updated"])
+        except IntegrityError:
+            log.warning("wema_account_persist_conflict user=%s account=%s source=%s",
+                        user.id, number, source)
+            return wallet, "conflict:owned"
+    log.info("wema_account_provisioned user=%s account=%s source=%s", user.id, number, source)
+    return wallet, "provisioned"

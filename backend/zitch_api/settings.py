@@ -273,6 +273,22 @@ WEMA = {
     "SOURCE_ACCOUNT": os.environ.get("WEMA_SOURCE_ACCOUNT", ""),
     "SECURITY_INFO": os.environ.get("WEMA_SECURITY_INFO", ""),
     "SIMULATION": env_bool("WEMA_SIMULATION", False),
+    # Bank-called callbacks (see wallet/wema_callbacks.py). ALAT signs nothing, so the
+    # secret lives in the URL path the bank profiles; _PREV keeps a rotation overlap.
+    "CALLBACK_TOKEN": os.environ.get("WEMA_CALLBACK_TOKEN", ""),
+    "CALLBACK_TOKEN_PREV": os.environ.get("WEMA_CALLBACK_TOKEN_PREV", ""),
+    # Source-IP allowlist of the bank's gateway egress addresses. Enforcement is
+    # opt-in so the first profiling round can't be mistaken for "the bank never
+    # called"; turn it on once a real callback confirms the observed source IP.
+    "CALLBACK_ENFORCE_IPS": env_bool("WEMA_CALLBACK_ENFORCE_IPS", False),
+    "CALLBACK_IPS": [ip for ip in os.environ.get(
+        "WEMA_CALLBACK_IPS", "135.236.18.76,74.178.162.156").split(",") if ip.strip()],
+    # Payout authorisation: only authorise a PENDING bank payout younger than this
+    # (seconds). Requiring a securityInfo match is off by default because
+    # WEMA_SECURITY_INFO is blank everywhere — enabling it with no value denies every
+    # payout. Turn on once Wema supplies the value.
+    "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
+    "AUTH_REQUIRE_SECURITY_INFO": env_bool("WEMA_AUTH_REQUIRE_SECURITY_INFO", False),
 }
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
