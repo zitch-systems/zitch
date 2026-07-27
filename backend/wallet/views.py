@@ -25,6 +25,7 @@ from .services import (
     make_reference,
     provision_wema_account,
     settle_funding,
+    sync_bank_tier,
     settle_reserved_funding,
     transfer,
 )
@@ -273,6 +274,14 @@ def wema_wallet_verify_otp(request):
     if fields:
         user.recompute_tier()
         user.save(update_fields=fields + ["tier"])
+    # Read back the tier the BANK holds the NUBAN at. It runs its own ladder with its
+    # own caps and enforces them regardless of ours, so knowing the real value lets us
+    # refuse an over-limit transfer with a clear message instead of a failed payout.
+    # Best-effort: a failure here must never block a successful provisioning.
+    try:
+        sync_bank_tier(wallet)
+    except Exception:                                        # noqa: BLE001
+        log.warning("wema_bank_tier_sync_failed user=%s", user.id, exc_info=True)
     return ok(**_account_payload(
         wallet, message="Your Zitch account is ready", tier=user.tier,
         bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))

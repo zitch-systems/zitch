@@ -651,3 +651,48 @@ def provision_wema_account(user, *, account_number: str, account_name: str = "",
             return wallet, "conflict:owned"
     log.info("wema_account_provisioned user=%s account=%s source=%s", user.id, number, source)
     return wallet, "provisioned"
+
+
+def sync_bank_tier(wallet) -> int:
+    """Read the partner bank's tier for this NUBAN and store it. Returns the tier
+    (0 when unknown/unreadable, which asserts no bank cap).
+
+    The bank runs its own tier ladder with its own inflow/spend/balance caps, and it
+    enforces them on the account regardless of our KYC tier — so knowing the real
+    value is what lets us refuse a transfer the gateway would refuse anyway, with a
+    useful message instead of a failed payout.
+    """
+    from utility import wema as wema_provider
+    if not wallet.account_number:
+        return 0
+    res = wema_provider.get_kyc_status(wallet.account_number)
+    if not res.get("success"):
+        return wallet.bank_tier or 0
+    raw = str(res.get("tier") or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    tier = int(digits) if digits and int(digits) in (1, 2, 3) else 0
+    if tier and tier != wallet.bank_tier:
+        wallet.bank_tier = tier
+        wallet.save(update_fields=["bank_tier", "updated"])
+        log.info("wema_bank_tier_synced wallet=%s account=%s tier=%s",
+                 wallet.pk, wallet.account_number, tier)
+    return tier or (wallet.bank_tier or 0)
+
+
+def bank_spend_error(user, amount) -> str | None:
+    """The partner bank's own ceiling on a single outbound amount, or None.
+
+    Checked in ADDITION to our KYC-tier limit, never instead of it: the two ladders
+    are independent and the customer is bound by whichever is tighter. Silent (None)
+    while the account's bank tier is unknown, so this can only ever tighten behaviour
+    for accounts we have actually read back.
+    """
+    from utility import wema as wema_provider
+    wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
+    if wallet is None or not wallet.bank_tier:
+        return None
+    cap = wema_provider.bank_tier_limit(wallet.bank_tier, "daily_spend")
+    if cap is not None and Decimal(str(amount)) > cap:
+        return (f"Your bank account's daily limit is ₦{cap:,.0f}. "
+                "Complete the next verification step to raise it.")
+    return None

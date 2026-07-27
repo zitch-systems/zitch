@@ -79,6 +79,28 @@ _PATH = {
 _ACCESS_PRODUCTS = {"credit", "debit", "airtime", "bills", "remita"}
 
 
+# ALAT's published wallet tier limits (Getting Started guide, 2026-07-27). The BANK
+# enforces these on the NUBAN itself, on its own tier ladder — Tier 1 = BVN or NIN,
+# Tier 2 = BVN and NIN, Tier 3 = both plus address verification — which is NOT our KYC
+# ladder. A transfer our tier permits can therefore still be refused at the gateway, so
+# these are checked as an additional ceiling wherever we know the account's bank tier.
+# None means the bank imposes no cap at that tier.
+BANK_TIER_LIMITS = {
+    1: {"single_inflow": Decimal("50000"), "daily_spend": Decimal("30000"),
+        "max_balance": Decimal("300000")},
+    2: {"single_inflow": Decimal("100000"), "daily_spend": Decimal("100000"),
+        "max_balance": Decimal("500000")},
+    3: {"single_inflow": None, "daily_spend": None, "max_balance": None},
+}
+
+
+def bank_tier_limit(tier, kind: str):
+    """The bank's cap for `kind` ("single_inflow" | "daily_spend" | "max_balance") at
+    `tier`, or None when unknown or uncapped. Tier 0 means we have never read the
+    account's tier back, so no bank cap is asserted."""
+    return (BANK_TIER_LIMITS.get(int(tier or 0)) or {}).get(kind)
+
+
 def wema_live() -> bool:
     """Whether Wema has the channel id + the Wallet-Services subscription key."""
     m = settings.WEMA
