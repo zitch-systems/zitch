@@ -554,3 +554,35 @@ class WemaPwbaTests(SimpleTestCase):
         r = wema.pwba_status("ZALAT-1")
         self.assertFalse(r["success"])
         self.assertTrue(r["pending"])
+
+
+class WemaSubscriptionKeyTests(SimpleTestCase):
+    """The ALAT portal catalogue exposes no separate Airtime & Data or Bills Payment
+    product, so both VAS rails authenticate with the Wallet Services key. A dedicated
+    per-product key still wins if Wema ever issues one."""
+
+    @override_settings(WEMA=WEMA_LIVE)  # wallet keyed; airtime/bills blank
+    def test_vas_products_fall_back_to_wallet_key(self):
+        self.assertEqual(wema._sub_key("airtime"), "subkey")
+        self.assertEqual(wema._sub_key("bills"), "subkey")
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_wallet_covered_products_unchanged(self):
+        for product in ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit"):
+            self.assertEqual(wema._sub_key(product), "subkey")
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_unkeyed_own_product_does_not_borrow_wallet_key(self):
+        # Card-Management IS its own APIM subscription — an unkeyed card rail must
+        # stay disabled rather than silently authenticating with the wallet key.
+        self.assertEqual(wema._sub_key("card"), "")
+
+    @override_settings(WEMA=WEMA_VAS)  # dedicated airtime/bills keys present
+    def test_dedicated_key_wins_over_wallet_fallback(self):
+        self.assertEqual(wema._sub_key("airtime"), "airkey")
+        self.assertEqual(wema._sub_key("bills"), "billkey")
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_vas_live_on_wallet_key_alone(self):
+        self.assertTrue(wema._vas_live("airtime"))
+        self.assertTrue(wema._vas_live("bills"))
