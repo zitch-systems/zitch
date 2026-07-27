@@ -259,6 +259,17 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
         tracking = (d.get("trackingId") or d.get("otpTrackingID")
                     or data.get("trackingId") or data.get("otpTrackingID") or "")
         dest = d.get("otpDestination") or data.get("otpDestination") or phone
+        # ALAT can answer status=True with NO data envelope and no tracking id — e.g.
+        # for an identity that already belongs to an ALAT customer it replies "Kindly
+        # download ALAT and sign in to see Wema Bank account details" and provisions
+        # nothing (observed against sandbox 2026-07-27). Reporting that as success
+        # sends the client to an OTP screen it can never satisfy: validation needs the
+        # tracking id, so the flow dead-ends with no recovery path. Fail closed instead
+        # and surface the gateway's own message, which explains what happened.
+        if _ok(data) and not tracking:
+            return {"success": False, "tracking_id": "", "otp_destination": dest,
+                    "message": _msg(data) or ("Bank account creation did not return a "
+                                              "tracking reference"), "raw": data}
         return {"success": _ok(data), "tracking_id": tracking,
                 "otp_destination": dest, "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
