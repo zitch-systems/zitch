@@ -72,7 +72,6 @@ _PATH = {
     "bills": "/bills-payment",               # bills payment (VAS)
     "remita": "/remita-payment",             # Remita RRR bill payment (VAS)
     "bnpl": "/alat-bnpl",                    # Buy-Now-Pay-Later (merchant-auth)
-    "pwba": "/pwba-authenticator",           # Pay with Bank Account — ALAT Authenticator direct debit
     "kyc": "/kyc",                           # Nigeria identity lookups (see KYC section)
     "card": "/card-management",              # Virtual Naira Card (partnerCard endpoints)
 }
@@ -101,15 +100,18 @@ def _mock_blocked() -> bool:
 # Address Verification, Credit Wallet, Debit Wallet, Airtime and Data, Bills Payment,
 # Remita-Payment and Card Management. So none of these needs its own key.
 #
-# `card` is deliberately EXCLUDED. The Card Management API bundled here is for
-# PHYSICAL card requests, while our card rail issues VIRTUAL cards — a separate
-# "Virtual Naira Card" product with its own subscription key. Letting `card` borrow
-# the wallet key would also silently flip card_provider() to Wema, which supports
-# neither reversible freeze nor top-up (the generic CARD_ISSUER supports both), so an
-# unkeyed card rail must stay disabled. `bnpl` and `pwba` are likewise their own
-# products and stay excluded.
+# `card` IS covered: the portal catalogue has exactly one card API — Card Management —
+# and the virtual-card operations (VirtualCardRequest, VirtualCard-GetCardDetails) are
+# operations OF it, alongside the physical-card ones. There is no separate "Virtual
+# Naira Card" product, so the wallet key authenticates our card calls too. Switching
+# the card BACKEND is a separate decision from being able to authenticate: see
+# card_opted_in(), which still requires an explicit WEMA_CARD_KEY so a wallet-keyed
+# deploy never silently moves cards onto the Wema rail (it supports neither reversible
+# freeze nor top-up, while the generic CARD_ISSUER supports both).
+#
+# `bnpl` stays excluded — it is genuinely its own product with its own merchant auth.
 _WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit",
-                   "airtime", "bills", "remita", "kyc")
+                   "airtime", "bills", "remita", "kyc", "card")
 
 
 def _sub_key(product: str) -> str:
@@ -1135,66 +1137,6 @@ def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Pay with Bank Account — ALAT Authenticator (/pwba-authenticator).
-#
-# A single direct debit from a customer's OWN WEMA/ALAT account, authorised by them
-# in the ALAT mobile app — a funding rail (pull money from the user's ALAT account
-# into their Zitch wallet). Async: initiate -> customer approves in-app -> poll status
-# -> credit. No securityInfo; the channel id travels in the body, not a header.
-# ---------------------------------------------------------------------------
-def _pwba_live() -> bool:
-    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("pwba"))
-
-
-def pwba_fund_request(amount_naira, reference: str, *, source_account: str, narration: str = "") -> dict:
-    """Initiate a direct debit from the customer's ALAT account (transfer-fund-request).
-    The customer then approves it in the ALAT app; poll pwba_status for the outcome."""
-    if not _pwba_live():
-        if _mock_blocked():
-            return {"success": False, "message": "Pay-with-bank is not configured"}
-        return {"success": True, "mock": True, "status": "PENDING", "reference": reference}
-    try:
-        body = {"amount": float(amount_naira), "sourceAccountNumber": source_account,
-                "channelId": settings.WEMA.get("CHANNEL_ID", ""),
-                "narration": narration or "Zitch wallet funding", "transactionReference": reference}
-        data = _post("pwba", "/api/EcommerceTransfer/v2/transfer-fund-request", body).json()
-        r = data.get("result", {}) or {}
-        if not isinstance(r, dict):
-            r = {}
-        return {"success": _ok(data), "status": (r.get("status") or "").upper(),
-                "platform_reference": r.get("platformTransactionReference", ""),
-                "message": r.get("message") or _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
-
-
-def pwba_status(reference: str) -> dict:
-    """Check a Pay-with-Bank direct debit's status by our transactionReference.
-
-    Maps to the {success, pending, amount_naira} shape the funding verify path wants:
-    SUCCESS/SETTLED => credit; PENDING/PROCESSING => not yet; anything else => not
-    successful (no credit)."""
-    if not _pwba_live():
-        # Mock: settle immediately in dev so the funding flow is testable offline.
-        return {"success": not _mock_blocked(), "mock": True,
-                "status": "SUCCESS" if not _mock_blocked() else "FAILED"}
-    try:
-        channel = settings.WEMA.get("CHANNEL_ID", "")
-        data = _get("pwba", f"/api/EcommerceTransfer/CheckTransactionStatus/{channel}/{reference}").json()
-        r = data.get("result", {}) or {}
-        if not isinstance(r, dict):
-            r = {}
-        status = (r.get("status") or "").upper()
-        pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS", "")
-        settled = _ok(data) and status in ("SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "SETTLED")
-        return {"success": settled, "pending": pending and not settled, "status": status,
-                "platform_reference": r.get("platformTransactionReference", ""),
-                "message": r.get("message") or _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
-
-
-# ---------------------------------------------------------------------------
 # Virtual Naira Card — ALAT Card-Management product (/card-management).
 #
 # ALAT keys a customer's virtual card by their NUBAN (accountNo), NOT a card token,
@@ -1216,8 +1158,22 @@ def pwba_status(reference: str) -> dict:
 # alternative reveal endpoint if virtual-card-details doesn't return the full PAN/CVV.)
 # ---------------------------------------------------------------------------
 def _card_live() -> bool:
-    """Whether the Card-Management product has its subscription key + channel id."""
+    """Whether Card-Management can AUTHENTICATE — own key, or the Wallet Services key
+    that bundles the product. Gates mock-vs-real inside the card_* calls."""
     return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("card"))
+
+
+def card_opted_in() -> bool:
+    """Whether Wema should be AUTO-SELECTED as the card backend.
+
+    Deliberately stricter than _card_live(): it requires a dedicated WEMA_CARD_KEY.
+    The wallet key authenticates the product, but letting that alone flip the backend
+    would silently move every wallet-keyed deploy onto the Wema card rail, which
+    supports neither reversible freeze nor top-up while the generic CARD_ISSUER
+    supports both. CARD_PROVIDER=wema still forces it explicitly.
+    """
+    keys = settings.WEMA.get("KEYS") or {}
+    return bool(settings.WEMA.get("CHANNEL_ID") and keys.get("card"))
 
 
 def _card_data(data: dict) -> dict:

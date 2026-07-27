@@ -114,31 +114,6 @@ class WemaAlatFundingTests(TestCase):
         return self.client.post(path, data=json.dumps({**payload, "access_token": self.token}),
                                 content_type="application/json")
 
-    def test_alat_fund_initiate_then_verify_credits_once(self):
-        with patch("utility.wema.pwba_fund_request",
-                   return_value={"success": True, "status": "PENDING"}):
-            r1 = self._post("/api/wallet/alat/fund/", {"account_number": "0123456789", "amount": "5000"})
-        self.assertEqual(r1.status_code, 200)
-        ref = r1.json()["reference"]
-        from wallet.models import FundingIntent
-        self.assertTrue(FundingIntent.objects.filter(reference=ref, user=self.user).exists())
-        # Awaiting approval -> pending, no credit.
-        with patch("utility.wema.pwba_status", return_value={"success": False, "pending": True}):
-            r2 = self._post("/api/wallet/alat/fund/verify/", {"reference": ref})
-        self.assertEqual(r2.status_code, 200)
-        self.assertTrue(r2.json()["pending"])
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0.00"))
-        # Settled -> credit exactly once (a replayed verify is a no-op).
-        with patch("utility.wema.pwba_status", return_value={"success": True, "pending": False}):
-            r3 = self._post("/api/wallet/alat/fund/verify/", {"reference": ref})
-            self._post("/api/wallet/alat/fund/verify/", {"reference": ref})   # replay
-        self.assertEqual(r3.status_code, 200)
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
-
-    def test_alat_fund_rejects_bad_account(self):
-        r = self._post("/api/wallet/alat/fund/", {"account_number": "123", "amount": "5000"})
-        self.assertEqual(r.status_code, 400)
-
     def test_statement_returns_normalized_rows(self):
         w = Wallet.objects.get(user=self.user)
         w.account_number = "0155500011"

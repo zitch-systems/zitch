@@ -441,60 +441,6 @@ def simulate_deposit(request):
               message="Simulated deposit credited")
 
 
-# ------------------- FUND FROM ALAT ACCOUNT (Pay with Bank Account) -------------------
-@api
-@ratelimit("alat_fund", limit=20, window=60)
-@require_user
-def alat_fund_initiate(request):
-    """POST /api/wallet/alat/fund/ {access_token, account_number, amount}
-    -> {success, reference, message}
-
-    Start a direct debit from the user's OWN WEMA/ALAT account (they approve it in the
-    ALAT app), then poll /alat/fund/verify/ to credit the wallet once it settles."""
-    user = request.user_obj
-    src = "".join(ch for ch in (request.data.get("account_number") or "") if ch.isdigit())
-    if len(src) != 10:
-        return fail("Enter your 10-digit ALAT account number")
-    amount = parse_amount(request.data.get("amount"))
-    if amount is None or amount < 100:
-        return fail("Minimum funding amount is ₦100")
-    reference = make_reference("ZALAT")
-    FundingIntent.objects.create(user=user, reference=reference, amount=amount,
-                                 meta={"provider": "wema_pwba"})
-    res = wema_provider.pwba_fund_request(amount, reference, source_account=src,
-                                          narration=f"Zitch funding {user.phone or ''}".strip())
-    if not res.get("success"):
-        return fail(res.get("message", "Could not start the debit"), status=502)
-    return ok(success=True, reference=reference, mock=bool(res.get("mock")),
-              message="Approve the debit in your ALAT app, then verify.")
-
-
-@api
-@ratelimit("alat_fund_verify", limit=30, window=60)
-@require_user
-def alat_fund_verify(request):
-    """POST /api/wallet/alat/fund/verify/ {access_token, reference}
-    -> {success, wallet} or {success:false, pending:true} while awaiting approval.
-
-    Polls the direct debit and credits the wallet exactly once on a settled debit."""
-    user = request.user_obj
-    reference = (request.data.get("reference") or "").strip()
-    if not reference:
-        return fail("Reference is required")
-    intent = FundingIntent.objects.filter(reference=reference).first()
-    if intent is not None and intent.user_id != user.id:
-        return fail("Reference not found", status=404)
-    res = wema_provider.pwba_status(reference)
-    if res.get("pending"):
-        return ok(success=False, pending=True,
-                  message="Waiting for you to approve the debit in your ALAT app.")
-    if not res.get("success"):
-        return fail(res.get("message", "The debit was not completed"), status=402)
-    settle_funding(reference)  # idempotent credit of the intent's amount
-    wallet = get_or_create_wallet(user)
-    return ok(success=True, wallet=str(wallet.balance), message="Wallet funded")
-
-
 @api
 @ratelimit("wema_statement", limit=20, window=60)
 @require_user

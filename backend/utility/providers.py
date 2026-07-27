@@ -652,13 +652,17 @@ def payout_live() -> bool:
 
 def card_provider() -> str:
     """Virtual-card backend — 'wema' or 'issuer'. Explicit CARD_PROVIDER wins; blank
-    => AUTO: use Wema's Virtual Naira Card once its card key is configured, else the
-    generic CARD_ISSUER — so cards never break on a deploy without a Wema card key."""
+    => AUTO: use Wema's card rail only when a DEDICATED WEMA_CARD_KEY is set, else the
+    generic CARD_ISSUER — so cards never break on a deploy without one.
+
+    Keys off card_opted_in(), not _card_live(): the Wallet Services key authenticates
+    Card-Management, but that must not by itself move cards onto the Wema rail, which
+    supports neither reversible freeze nor top-up."""
     choice = (getattr(settings, "CARD_PROVIDER", "") or "").strip().lower()
     if choice in ("wema", "issuer"):
         return choice
     from . import wema
-    return "wema" if wema._card_live() else "issuer"
+    return "wema" if wema.card_opted_in() else "issuer"
 
 
 # --- Funding (wallet top-up) dispatch — Wema (OTP-provisioned NUBAN) ---
