@@ -674,7 +674,8 @@ def funding_initialize(email: str, amount_naira, reference: str, *,
 def funding_verify(reference: str, provider: str = "") -> dict:
     """Wema deposits are credited by the reconcile poller, not a synchronous verify
     call, so there is nothing to confirm here."""
-    return {"success": False, "message": "Wema funding is credited automatically on receipt."}
+    # White-label: no provider name in customer-facing copy.
+    return {"success": False, "message": "Deposits are credited automatically on receipt."}
 
 
 def funding_account_reserve(account_reference: str, account_name: str, customer_email: str,
