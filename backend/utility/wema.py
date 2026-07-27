@@ -168,9 +168,23 @@ def _ok(data: dict) -> bool:
     return False
 
 
+# Zitch is white-labelled: the customer must never see the upstream bank's brand.
+# Gateway messages are written for the bank's own channels and can name it outright
+# — e.g. "Hi, Kindly download ALAT and sign in to see Wema Bank account details" —
+# which would both leak the provider and push our customer into another app. Any
+# message naming the provider is therefore dropped in favour of a neutral string.
+# The word-boundary anchor is only at the START so "ALATbyWEMA" is caught while
+# ordinary words that merely contain the letters (e.g. "escalate") are not.
+# The untouched envelope is still returned as `raw` for logs and diagnostics.
+_PROVIDER_BRAND = re.compile(r"\b(alat|wema)", re.I)
+
+
 def _msg(data: dict) -> str:
-    return (data.get("message") or data.get("errorMessage")
-            or (data.get("errorMessages") or [""])[0] or "Request failed")
+    text = (data.get("message") or data.get("errorMessage")
+            or (data.get("errorMessages") or [""])[0] or "")
+    if not text or _PROVIDER_BRAND.search(text):
+        return "Request failed"
+    return text
 
 
 def _naira(v) -> Decimal | None:
@@ -259,17 +273,19 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
         tracking = (d.get("trackingId") or d.get("otpTrackingID")
                     or data.get("trackingId") or data.get("otpTrackingID") or "")
         dest = d.get("otpDestination") or data.get("otpDestination") or phone
-        # ALAT can answer status=True with NO data envelope and no tracking id — e.g.
-        # for an identity that already belongs to an ALAT customer it replies "Kindly
-        # download ALAT and sign in to see Wema Bank account details" and provisions
-        # nothing (observed against sandbox 2026-07-27). Reporting that as success
-        # sends the client to an OTP screen it can never satisfy: validation needs the
-        # tracking id, so the flow dead-ends with no recovery path. Fail closed instead
-        # and surface the gateway's own message, which explains what happened.
+        # The gateway can answer status=True with NO data envelope and no tracking id —
+        # observed against sandbox 2026-07-27 for an identity already registered with
+        # the partner bank, which provisions nothing and replies with a message telling
+        # the customer to use the bank's own app. Reporting that as success sends the
+        # client to an OTP screen it can never satisfy: validation needs the tracking
+        # id, so the flow dead-ends with no recovery path. Fail closed instead, with OUR
+        # wording — the gateway's message names the provider and would both break
+        # white-labelling and push the customer into another app. `raw` keeps the
+        # original for support.
         if _ok(data) and not tracking:
             return {"success": False, "tracking_id": "", "otp_destination": dest,
-                    "message": _msg(data) or ("Bank account creation did not return a "
-                                              "tracking reference"), "raw": data}
+                    "message": "We couldn't complete your account setup. "
+                               "Please contact support.", "raw": data}
         return {"success": _ok(data), "tracking_id": tracking,
                 "otp_destination": dest, "message": _msg(data), "raw": data}
     except requests.RequestException as exc:

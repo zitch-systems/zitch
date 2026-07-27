@@ -613,8 +613,12 @@ class WemaWalletCreateEnvelopeTests(SimpleTestCase):
         r = wema.create_wallet_request("08030000000", "a@b.com", nin="12345678901")
         self.assertFalse(r["success"])
         self.assertEqual(r["tracking_id"], "")
-        # the gateway's own explanation is preserved for the caller to display
-        self.assertIn("download ALAT", r["message"])
+        # White-label: our own wording, never the gateway's — which names the provider
+        # and tells the customer to go and use the bank's app instead.
+        self.assertNotIn("ALAT", r["message"].upper())
+        self.assertIn("contact support", r["message"])
+        # the untouched envelope is still available for logs / support
+        self.assertIn("download ALAT", r["raw"]["message"])
 
     @patch("utility.wema.requests.post")
     def test_tracking_id_under_data_envelope_succeeds(self, mock_post):
@@ -625,3 +629,30 @@ class WemaWalletCreateEnvelopeTests(SimpleTestCase):
         r = wema.create_wallet_request("08030000000", "a@b.com", nin="12345678901")
         self.assertTrue(r["success"])
         self.assertEqual(r["tracking_id"], "TRK-1")
+
+
+class WemaMessageWhiteLabelTests(SimpleTestCase):
+    """Zitch never shows the upstream bank's brand to customers, so any gateway
+    message naming the provider is replaced with a neutral string before it can
+    reach a client. ~19 view call sites pass this message straight through, so the
+    guard lives at the single extraction point rather than at each of them."""
+
+    def test_provider_named_message_is_replaced(self):
+        for text in ("Hi, Kindly download ALAT and sign in to see Wema Bank account details.",
+                     "Please visit any WEMA BANK branch",
+                     "Your ALATbyWEMA profile is incomplete"):
+            self.assertEqual(wema._msg({"message": text}), "Request failed", text)
+
+    def test_neutral_message_passes_through(self):
+        # Genuinely useful gateway text must survive — it is what the customer needs.
+        for text in ("Insufficient funds", "Invalid account number",
+                     "Transaction has been escalated"):  # 'escalated' contains 'alat'
+            self.assertEqual(wema._msg({"message": text}), text)
+
+    def test_error_message_fields_are_also_scrubbed(self):
+        self.assertEqual(wema._msg({"errorMessage": "Download the ALAT app"}), "Request failed")
+        self.assertEqual(wema._msg({"errorMessages": ["Wema could not process this"]}),
+                         "Request failed")
+
+    def test_empty_envelope_still_defaults(self):
+        self.assertEqual(wema._msg({}), "Request failed")
