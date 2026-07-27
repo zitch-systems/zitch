@@ -656,3 +656,57 @@ class WemaMessageWhiteLabelTests(SimpleTestCase):
 
     def test_empty_envelope_still_defaults(self):
         self.assertEqual(wema._msg({}), "Request failed")
+
+
+@override_settings(WEMA=WEMA_VAS)
+class WemaConformanceFixTests(SimpleTestCase):
+    """Fixes from the 2026-07-27 portal-conformance audit."""
+
+    # --- bills packageId must go out as an int32, not a JSON string ---
+    @patch("utility.wema.requests.post")
+    def test_validate_customer_sends_integer_packageid(self, mock_post):
+        mock_post.return_value = _resp({"result": {"customerName": "ADA"}, "hasError": False})
+        wema.validate_bill_customer("1234567890", "42")   # code stored as a string
+        self.assertEqual(mock_post.call_args[1]["json"]["packageId"], 42)  # int, not "42"
+
+    @patch("utility.wema.requests.post")
+    def test_pay_bill_sends_integer_packageid(self, mock_post):
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS"}, "hasError": False})
+        wema.pay_bill(2000, "R", package_id="7", identifier="1234567890", source_account="01")
+        self.assertEqual(mock_post.call_args[1]["json"]["packageId"], 7)
+
+    def test_as_int_leaves_non_numeric_visible(self):
+        # A blank/garbage wema_code must not be coerced to 0 — fail visibly instead.
+        self.assertEqual(wema._as_int(""), "")
+        self.assertEqual(wema._as_int("abc"), "abc")
+        self.assertEqual(wema._as_int("15"), 15)
+
+    # --- _parse_vas must not settle without a positive signal ---
+    @patch("utility.wema.requests.post")
+    def test_paybill_empty_result_stays_pending(self, mock_post):
+        # hasError=false with no result payload is NOT a delivery confirmation.
+        mock_post.return_value = _resp({"hasError": False, "result": None})
+        r = wema.pay_bill(2000, "R", package_id="7", identifier="1", source_account="01")
+        self.assertFalse(r["success"])
+        self.assertTrue(r["pending"])       # re-queried, never auto-settled
+
+    @patch("utility.wema.requests.post")
+    def test_airtime_failed_status_refunds(self, mock_post):
+        # A FAILED buy must refund (success=False, pending=False), not settle.
+        mock_post.return_value = _resp({"result": {"status": "FAILED"}, "hasError": False})
+        r = wema.purchase_airtime(500, "R", "08030000000", "MTN", source_account="01")
+        self.assertFalse(r["success"])
+        self.assertFalse(r["pending"])
+
+    @patch("utility.wema.requests.post")
+    def test_airtime_success_still_settles(self, mock_post):
+        # Regression guard: a real success is unchanged.
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS"}, "hasError": False})
+        self.assertTrue(wema.purchase_airtime(500, "R", "0803", "MTN", source_account="01")["success"])
+
+    # --- _msg reads the account-creation errors[] array ---
+    def test_msg_reads_errors_array(self):
+        self.assertEqual(wema._msg({"message": None, "errors": ["Invalid OTP supplied"]}),
+                         "Invalid OTP supplied")
+        # message still wins when present
+        self.assertEqual(wema._msg({"message": "Enter the OTP", "errors": ["x"]}), "Enter the OTP")

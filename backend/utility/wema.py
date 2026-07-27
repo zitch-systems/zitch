@@ -180,11 +180,26 @@ _PROVIDER_BRAND = re.compile(r"\b(alat|wema)", re.I)
 
 
 def _msg(data: dict) -> str:
+    # `errors[]` is the error-detail array on the account-creation ResponseModel;
+    # `errorMessage`/`errorMessages` are the credit/debit envelope's. This helper is
+    # shared across both, so it reads all three (message wins when present).
     text = (data.get("message") or data.get("errorMessage")
-            or (data.get("errorMessages") or [""])[0] or "")
+            or (data.get("errorMessages") or [""])[0]
+            or (data.get("errors") or [""])[0] or "")
     if not text or _PROVIDER_BRAND.search(text):
         return "Request failed"
     return text
+
+
+def _as_int(v):
+    """ALAT types bills/cable ``packageId`` as int32, but our catalogue stores the
+    code as a string (``CablePlan.wema_code``). Coerce to int for the wire so the
+    gateway's System.Text.Json binding accepts it; leave a non-numeric value as-is so
+    a misconfigured code fails visibly rather than being silently mistyped."""
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return v
 
 
 def _naira(v) -> Decimal | None:
@@ -845,7 +860,7 @@ def validate_bill_customer(identifier: str, package_id: str) -> dict:
         return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
     try:
         body = {"channelId": settings.WEMA.get("CHANNEL_ID", ""), "identifier": identifier,
-                "packageId": package_id}
+                "packageId": _as_int(package_id)}
         data = _post("bills", "/api/BillsPayment/ValidateCustomer", body).json()
         r = data.get("result", {}) or {}
         return {"success": _ok(data) or bool(data.get("successful")),
@@ -867,7 +882,7 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
     try:
         body = {"clientId": settings.WEMA.get("CHANNEL_ID", ""), "customerAccount": src,
                 "amount": float(amount_naira), "charge": float(charge),
-                "transactionReference": reference, "packageId": package_id,
+                "transactionReference": reference, "packageId": _as_int(package_id),
                 "customerIdentifier": identifier, "customerEmail": email,
                 "customerPhoneNumber": phone, "customerName": name,
                 "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
@@ -929,10 +944,25 @@ def _parse_vas(data: dict, reference: str) -> dict:
                 "reference": r.get("transactionReference", reference),
                 "message": _msg(data), "raw": data}
     ok = _ok(data) or bool(data.get("successful"))
+    ref = r.get("transactionReference", reference)
+    msg = r.get("message") or _msg(data)
+    # hasError=false is NOT itself a delivery confirmation. A purchase — or a requery
+    # of a reference the bank never recorded — can answer hasError=false with an
+    # empty/absent result and no status string; settling on that would mark an
+    # undelivered top-up Successful with no refund. Require a positive status signal,
+    # mirroring the integer-only branch above, which also refuses to guess.
+    if not status:
+        return {"success": False, "pending": True, "status": "",
+                "reference": ref, "message": msg, "raw": data}
+    # An explicit failure string must refund, not settle — previously any non-pending
+    # status with hasError=false was treated as success, so a FAILED/DECLINED buy left
+    # the customer debited for nothing.
+    if status in ("FAILED", "FAILURE", "DECLINED", "REJECTED", "REVERSED", "NOT_PROCESSED"):
+        return {"success": False, "pending": False, "status": status,
+                "reference": ref, "message": msg, "raw": data}
     pending = status in ("PENDING", "PROCESSING", "IN_PROGRESS", "INPROGRESS")
     return {"success": ok and not pending, "pending": pending, "status": status,
-            "reference": r.get("transactionReference", reference),
-            "message": r.get("message") or _msg(data), "raw": data}
+            "reference": ref, "message": msg, "raw": data}
 
 
 # ---------------------------------------------------------------------------
