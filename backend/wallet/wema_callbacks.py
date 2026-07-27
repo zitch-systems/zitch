@@ -195,21 +195,29 @@ def wema_account_callback(request):
 
 
 def _resolve_user(*, phone: str = "", email: str = ""):
-    """Find the customer a callback refers to, by phone (in any Nigerian spelling) or
-    email. Returns None rather than guessing when nothing matches exactly."""
+    """Find the customer a callback refers to. Returns None rather than guessing.
+
+    Phone is authoritative (it is unique on the user) and is tried in every Nigerian
+    spelling, since the bank sends local 070... form while we may hold +234...
+    Email is only a fallback and only when it identifies EXACTLY ONE user: the field
+    is not unique, so a `.first()` on a duplicated address could attach a bank account
+    to the wrong customer.
+    """
     from accounts.models import User
     from utility.providers import _ng_msisdn
-    candidates = []
     if phone:
         digits = "".join(ch for ch in phone if ch.isdigit())
         local = "0" + digits[-10:] if len(digits) >= 10 else ""
-        candidates = [v for v in {phone, digits, local, _ng_msisdn(phone)} if v]
-        for value in candidates:
+        for value in {v for v in (phone, digits, local, _ng_msisdn(phone)) if v}:
             user = User.objects.filter(phone=value).first()
             if user is not None:
                 return user
     if email:
-        return User.objects.filter(email__iexact=email).first()
+        matches = list(User.objects.filter(email__iexact=email)[:2])
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            log.warning("wema_cb_ambiguous_email matches=%d", len(matches))
     return None
 
 

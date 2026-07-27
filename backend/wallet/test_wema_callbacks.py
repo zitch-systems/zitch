@@ -71,9 +71,9 @@ class WemaAccountCallbackTests(TestCase):
         return self.client.post(f"/webhooks/wema/account/{TOKEN}",
                                 data=json.dumps(payload), content_type="application/json")
 
-    def _payload(self, nuban="0155500099", phone="08030000777"):
+    def _payload(self, nuban="0155500099", phone="08030000777", email="cb@zitch.app"):
         return {"title": "t", "message": "m", "requestType": 2,
-                "data": {"email": "cb@zitch.app", "nuban": nuban, "nubanName": "ADA EZE",
+                "data": {"email": email, "nuban": nuban, "nubanName": "ADA EZE",
                          "type": 1, "nubanStatus": "Active", "phoneNumber": phone}}
 
     @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
@@ -100,9 +100,28 @@ class WemaAccountCallbackTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0155500099")
 
     def test_unknown_customer_is_recorded_not_guessed(self):
-        r = self._post(self._payload(nuban="0999999999", phone="08099999999"))
+        r = self._post(self._payload(nuban="0999999999", phone="08099999999",
+                                     email="nobody@example.com"))
         self.assertEqual(r.status_code, 200)          # never 4xx — the bank would retry
         self.assertFalse(Wallet.objects.filter(account_number="0999999999").exists())
+
+    @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
+    def test_email_fallback_resolves_when_phone_is_unrecognised(self, _pnd):
+        # The bank's phone spelling may not match ours; a UNIQUE email still identifies
+        # the customer.
+        r = self._post(self._payload(phone="0000000000"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0155500099")
+
+    def test_ambiguous_email_never_provisions(self):
+        # email is NOT unique on the user model — two customers can share one. Attaching
+        # a bank account to a guess would be worse than not provisioning at all.
+        make_user("08055550001", "shared@zitch.app")
+        make_user("08055550002", "shared@zitch.app")
+        r = self._post(self._payload(nuban="0888888888", phone="08077777777",
+                                     email="shared@zitch.app"))
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(Wallet.objects.filter(account_number="0888888888").exists())
 
     @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
     def test_never_overwrites_an_existing_different_nuban(self, _pnd):
