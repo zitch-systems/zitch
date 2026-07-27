@@ -95,13 +95,27 @@ def _mock_blocked() -> bool:
     return mock_disabled_in_prod() and not wema_simulation()
 
 
+# Products the ALAT portal does not expose as their own APIM subscription — the
+# Wallet Services key authenticates them. Besides wallet-creation / acct-mgt /
+# credit / debit and the account-lifecycle products (PND + tier upgrade/status),
+# this covers airtime-data and bills-payment: the portal catalogue has no separate
+# product for either, so they ride the wallet key (confirmed with Wema 2026-07-27).
+_WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit",
+                   "airtime", "bills")
+
+
 def _sub_key(product: str) -> str:
+    """Subscription key for a product: its own key if one is set, else the wallet key.
+
+    A product-specific key always wins, so if Wema later issues a dedicated
+    airtime/bills subscription, setting WEMA_AIRTIME_KEY / WEMA_BILLS_KEY switches
+    to it with no code change.
+    """
     keys = settings.WEMA.get("KEYS") or {}
-    # Wallet Services subscription covers wallet-creation, acct-mgt, credit, debit
-    # and the account-lifecycle products (PND management + tier upgrade/status).
-    if product in ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit"):
-        return keys.get("wallet", "")
-    return keys.get(product, "")
+    own = keys.get(product, "")
+    if own:
+        return own
+    return keys.get("wallet", "") if product in _WALLET_COVERED else ""
 
 
 def _bnpl_headers() -> dict:

@@ -164,7 +164,15 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
 - `WEMA_KYC_KEY` — reserved. BVN/NIN identity is now verified through the wallet-creation
   (provisioning) products, which use `WEMA_WALLET_KEY`; ALAT has no standalone KYC-lookup
   product to key, so this is unused today (kept for a future Full-KYC account product).
-- `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` — VAS subscription keys (airtime+data / bills).
+- `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` — **optional; normally left blank.** The ALAT
+  portal catalogue has no separate Airtime & Data or Bills Payment product, so both VAS
+  rails authenticate with the **Wallet Services** key (confirmed with Wema 2026-07-27) —
+  `_sub_key` falls back to it. Set these only if Wema ever issues dedicated subscriptions;
+  a value here always wins over the wallet key.
+  > ⚠️ Because `vas_provider()` AUTO-selects Wema once its VAS keys resolve, a deploy with
+  > `WEMA_WALLET_KEY` set and `VAS_PROVIDER` blank now routes **airtime to Wema** instead of
+  > VTU.ng (data/cable follow once `wema_code` is seeded; electricity/betting stay on
+  > VTU.ng). Set `VAS_PROVIDER=vtung` to keep the old routing.
 - `WEMA_CARD_KEY` — Card-Management subscription key (enables the Wema virtual-card backend).
 - `WEMA_CARD_PRODUCT_KEY` — the `cardKey` (card product id) ALAT's `virtualCard` request
   needs; distinct from the subscription key above. Supplied by Wema; blank until then.

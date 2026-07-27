@@ -254,8 +254,8 @@ WEMA = {
     "KEYS": {
         "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services (create/acct-mgt/credit/debit/upgrade)
         "card": os.environ.get("WEMA_CARD_KEY", ""),       # Card Management (Virtual Naira Card)
-        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime & Data (subscribe to enable)
-        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # Bills Payment (subscribe to enable)
+        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # optional — falls back to the wallet key
+        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional — falls back to the wallet key
         "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
         "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment (subscribe to enable)
         "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later APIM subscription

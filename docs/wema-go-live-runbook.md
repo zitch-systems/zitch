@@ -45,8 +45,8 @@ crons too (`render.yaml` already declares the slots on each).
 | `WEMA_CHANNEL_ID` | Channel identifier (travels in the `access`/`x-api-key` header) | Wema |
 | `WEMA_WALLET_KEY` | Subscription key for wallet/account/transfer (`Ocp-Apim-Subscription-Key`) | Wema |
 | `WEMA_CARD_KEY` | Subscription key for card-management | Wema |
-| `WEMA_AIRTIME_KEY` | Subscription key for VAS/airtime (if using Wema VAS vs VTU.ng) | Wema |
-| `WEMA_BILLS_KEY` | Subscription key for bills | Wema |
+| `WEMA_AIRTIME_KEY` | **Optional — leave blank.** No separate Airtime & Data product exists; the Wallet Services key authenticates VAS. Set only if Wema issues a dedicated subscription. | Wema |
+| `WEMA_BILLS_KEY` | **Optional — leave blank.** Same as above: bills ride the Wallet Services key. | Wema |
 | `WEMA_KYC_KEY` | Subscription key for Full KYC (account open/upgrade) | Wema |
 | `WEMA_SOURCE_ACCOUNT` | Pool NUBAN that funds pool-sourced payouts | Wema |
 | `WEMA_SECURITY_INFO` | The encrypted securityInfo value/scheme | Wema (out-of-band) |
