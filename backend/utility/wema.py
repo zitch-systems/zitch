@@ -95,13 +95,21 @@ def _mock_blocked() -> bool:
     return mock_disabled_in_prod() and not wema_simulation()
 
 
-# Products the ALAT portal does not expose as their own APIM subscription — the
-# Wallet Services key authenticates them. Besides wallet-creation / acct-mgt /
-# credit / debit and the account-lifecycle products (PND + tier upgrade/status),
-# this covers airtime-data and bills-payment: the portal catalogue has no separate
-# product for either, so they ride the wallet key (confirmed with Wema 2026-07-27).
+# Products the ALAT Wallet Services subscription authenticates. Its portal listing
+# (confirmed 2026-07-27) bundles 13 APIs: Wallet Creation BVN + NIN, Wallet Services
+# Account Management, Account Upgrade, Partnership Account KYC / Face Biometric /
+# Address Verification, Credit Wallet, Debit Wallet, Airtime and Data, Bills Payment,
+# Remita-Payment and Card Management. So none of these needs its own key.
+#
+# `card` is deliberately EXCLUDED. The Card Management API bundled here is for
+# PHYSICAL card requests, while our card rail issues VIRTUAL cards — a separate
+# "Virtual Naira Card" product with its own subscription key. Letting `card` borrow
+# the wallet key would also silently flip card_provider() to Wema, which supports
+# neither reversible freeze nor top-up (the generic CARD_ISSUER supports both), so an
+# unkeyed card rail must stay disabled. `bnpl` and `pwba` are likewise their own
+# products and stay excluded.
 _WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit",
-                   "airtime", "bills")
+                   "airtime", "bills", "remita", "kyc")
 
 
 def _sub_key(product: str) -> str:

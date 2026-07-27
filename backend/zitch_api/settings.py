@@ -252,12 +252,12 @@ WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
     "KEYS": {
-        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services (create/acct-mgt/credit/debit/upgrade)
-        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Card Management (Virtual Naira Card)
+        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services — bundles 13 APIs (see _WALLET_COVERED)
+        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card — its OWN product, no wallet fallback
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # optional — falls back to the wallet key
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional — falls back to the wallet key
-        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Full KYC / Face (subscribe to enable)
-        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment (subscribe to enable)
+        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # optional — falls back to the wallet key
+        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # optional — falls back to the wallet key
         "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later APIM subscription
         "pwba": os.environ.get("WEMA_PWBA_KEY", ""),       # Pay with Bank Account (ALAT Authenticator)
     },
