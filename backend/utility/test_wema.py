@@ -594,3 +594,34 @@ class WemaSubscriptionKeyTests(SimpleTestCase):
     @override_settings(WEMA=WEMA_LIVE)
     def test_card_rail_stays_disabled_without_its_own_key(self):
         self.assertFalse(wema._card_live())
+
+
+@override_settings(WEMA=WEMA_LIVE)
+class WemaWalletCreateEnvelopeTests(SimpleTestCase):
+    """ALAT answers wallet creation with status=True even when it provisions nothing
+    and returns no OTP tracking id. Without that id the OTP round-trip cannot be
+    completed, so such a response must not be reported as success."""
+
+    @patch("utility.wema.requests.post")
+    def test_ok_without_tracking_id_is_not_success(self, mock_post):
+        # Verbatim sandbox response for an identity that already has an ALAT account.
+        mock_post.return_value = _resp({
+            "data": None,
+            "message": "Hi, Kindly download ALAT and sign in to see Wema Bank account details.",
+            "status": True, "code": 0, "statusCode": 200, "errors": None,
+        })
+        r = wema.create_wallet_request("08030000000", "a@b.com", nin="12345678901")
+        self.assertFalse(r["success"])
+        self.assertEqual(r["tracking_id"], "")
+        # the gateway's own explanation is preserved for the caller to display
+        self.assertIn("download ALAT", r["message"])
+
+    @patch("utility.wema.requests.post")
+    def test_tracking_id_under_data_envelope_succeeds(self, mock_post):
+        mock_post.return_value = _resp({
+            "data": {"otpTrackingID": "TRK-1", "otpDestination": "0803*****00"},
+            "message": "OTP sent", "status": True, "statusCode": 200,
+        })
+        r = wema.create_wallet_request("08030000000", "a@b.com", nin="12345678901")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["tracking_id"], "TRK-1")
