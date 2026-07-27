@@ -557,25 +557,29 @@ class WemaPwbaTests(SimpleTestCase):
 
 
 class WemaSubscriptionKeyTests(SimpleTestCase):
-    """The ALAT portal catalogue exposes no separate Airtime & Data or Bills Payment
-    product, so both VAS rails authenticate with the Wallet Services key. A dedicated
-    per-product key still wins if Wema ever issues one."""
+    """The ALAT Wallet Services subscription bundles 13 APIs — including Airtime and
+    Data, Bills Payment, Remita-Payment and Partnership Account KYC — so none of those
+    needs its own key. A dedicated per-product key still wins if Wema issues one, and
+    products that ARE their own subscription never borrow the wallet key."""
 
-    @override_settings(WEMA=WEMA_LIVE)  # wallet keyed; airtime/bills blank
-    def test_vas_products_fall_back_to_wallet_key(self):
-        self.assertEqual(wema._sub_key("airtime"), "subkey")
-        self.assertEqual(wema._sub_key("bills"), "subkey")
+    @override_settings(WEMA=WEMA_LIVE)  # wallet keyed; the rest blank
+    def test_bundled_products_fall_back_to_wallet_key(self):
+        for product in ("airtime", "bills", "remita", "kyc"):
+            self.assertEqual(wema._sub_key(product), "subkey", product)
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_wallet_covered_products_unchanged(self):
         for product in ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit"):
-            self.assertEqual(wema._sub_key(product), "subkey")
+            self.assertEqual(wema._sub_key(product), "subkey", product)
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_unkeyed_own_product_does_not_borrow_wallet_key(self):
-        # Card-Management IS its own APIM subscription — an unkeyed card rail must
-        # stay disabled rather than silently authenticating with the wallet key.
-        self.assertEqual(wema._sub_key("card"), "")
+    def test_own_subscription_products_never_borrow_wallet_key(self):
+        # Virtual Naira Card, BNPL and Pay-with-Bank-Account are their own APIM
+        # subscriptions. Unkeyed, they must resolve empty so the rail stays disabled
+        # rather than silently authenticating — for `card` that also keeps
+        # card_provider() on the generic issuer, which supports freeze and top-up.
+        for product in ("card", "bnpl", "pwba"):
+            self.assertEqual(wema._sub_key(product), "", product)
 
     @override_settings(WEMA=WEMA_VAS)  # dedicated airtime/bills keys present
     def test_dedicated_key_wins_over_wallet_fallback(self):
@@ -584,5 +588,9 @@ class WemaSubscriptionKeyTests(SimpleTestCase):
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_vas_live_on_wallet_key_alone(self):
-        self.assertTrue(wema._vas_live("airtime"))
-        self.assertTrue(wema._vas_live("bills"))
+        for product in ("airtime", "bills", "remita"):
+            self.assertTrue(wema._vas_live(product), product)
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_card_rail_stays_disabled_without_its_own_key(self):
+        self.assertFalse(wema._card_live())
