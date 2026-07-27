@@ -518,44 +518,6 @@ class WemaBnplTests(SimpleTestCase):
             self.assertFalse(wema._bnpl_live())
 
 
-WEMA_PWBA = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "pwba": "pwbakey"}}
-
-
-@override_settings(WEMA=WEMA_PWBA)
-class WemaPwbaTests(SimpleTestCase):
-    """Pay with Bank Account (ALAT Authenticator) — a direct-debit funding rail."""
-
-    @patch("utility.wema.requests.post")
-    def test_fund_request_sends_channel_source_no_securityinfo(self, mock_post):
-        mock_post.return_value = _resp({"result": {"status": "PENDING",
-                                                   "platformTransactionReference": "PWBA-1"}, "hasError": False})
-        r = wema.pwba_fund_request(5000, "ZALAT-1", source_account="0123456789", narration="fund")
-        self.assertTrue(r["success"])
-        body = mock_post.call_args[1]["json"]
-        self.assertEqual(body["sourceAccountNumber"], "0123456789")
-        self.assertEqual(body["channelId"], "chan-1")      # channel id in the body, not a header
-        self.assertEqual(body["transactionReference"], "ZALAT-1")
-        self.assertNotIn("securityInfo", body)             # PWBA carries no securityInfo
-        self.assertTrue(mock_post.call_args[0][0].endswith(
-            "/pwba-authenticator/api/EcommerceTransfer/v2/transfer-fund-request"))
-
-    @patch("utility.wema.requests.get")
-    def test_status_success_settles(self, mock_get):
-        mock_get.return_value = _resp({"result": {"status": "SUCCESS"}, "hasError": False})
-        r = wema.pwba_status("ZALAT-1")
-        self.assertTrue(r["success"])
-        self.assertFalse(r["pending"])
-        self.assertTrue(mock_get.call_args[0][0].endswith(
-            "/pwba-authenticator/api/EcommerceTransfer/CheckTransactionStatus/chan-1/ZALAT-1"))
-
-    @patch("utility.wema.requests.get")
-    def test_status_pending_is_not_success(self, mock_get):
-        mock_get.return_value = _resp({"result": {"status": "PENDING"}, "hasError": False})
-        r = wema.pwba_status("ZALAT-1")
-        self.assertFalse(r["success"])
-        self.assertTrue(r["pending"])
-
-
 class WemaSubscriptionKeyTests(SimpleTestCase):
     """The ALAT Wallet Services subscription bundles 13 APIs — including Airtime and
     Data, Bills Payment, Remita-Payment and Partnership Account KYC — so none of those
@@ -564,7 +526,9 @@ class WemaSubscriptionKeyTests(SimpleTestCase):
 
     @override_settings(WEMA=WEMA_LIVE)  # wallet keyed; the rest blank
     def test_bundled_products_fall_back_to_wallet_key(self):
-        for product in ("airtime", "bills", "remita", "kyc"):
+        # `card` is included: the portal has one Card Management API and the
+        # virtual-card operations are part of it, so the wallet key authenticates it.
+        for product in ("airtime", "bills", "remita", "kyc", "card"):
             self.assertEqual(wema._sub_key(product), "subkey", product)
 
     @override_settings(WEMA=WEMA_LIVE)
@@ -574,12 +538,10 @@ class WemaSubscriptionKeyTests(SimpleTestCase):
 
     @override_settings(WEMA=WEMA_LIVE)
     def test_own_subscription_products_never_borrow_wallet_key(self):
-        # Virtual Naira Card, BNPL and Pay-with-Bank-Account are their own APIM
-        # subscriptions. Unkeyed, they must resolve empty so the rail stays disabled
-        # rather than silently authenticating — for `card` that also keeps
-        # card_provider() on the generic issuer, which supports freeze and top-up.
-        for product in ("card", "bnpl", "pwba"):
-            self.assertEqual(wema._sub_key(product), "", product)
+        # BNPL is genuinely its own APIM subscription with its own merchant auth.
+        # Unkeyed it must resolve empty so the rail stays disabled rather than
+        # silently authenticating on a key that does not cover it.
+        self.assertEqual(wema._sub_key("bnpl"), "")
 
     @override_settings(WEMA=WEMA_VAS)  # dedicated airtime/bills keys present
     def test_dedicated_key_wins_over_wallet_fallback(self):
@@ -592,8 +554,17 @@ class WemaSubscriptionKeyTests(SimpleTestCase):
             self.assertTrue(wema._vas_live(product), product)
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_card_rail_stays_disabled_without_its_own_key(self):
-        self.assertFalse(wema._card_live())
+    def test_card_authenticates_on_wallet_key_but_is_not_auto_selected(self):
+        # The wallet key DOES authenticate Card-Management (the product is bundled),
+        # but that alone must not move the card backend onto the Wema rail, which has
+        # no reversible freeze and no top-up. Auto-selection needs a dedicated key.
+        self.assertTrue(wema._card_live())
+        self.assertFalse(wema.card_opted_in())
+
+    @override_settings(WEMA=WEMA_CARD)  # dedicated WEMA_CARD_KEY present
+    def test_dedicated_card_key_opts_in(self):
+        self.assertTrue(wema._card_live())
+        self.assertTrue(wema.card_opted_in())
 
 
 @override_settings(WEMA=WEMA_LIVE)

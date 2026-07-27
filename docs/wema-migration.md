@@ -113,7 +113,7 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 | NIP transfer charges | **wired** — `payout_charge` + `/api/transfers/charge/` (informational; debit unchanged) |
 | Account tier upgrade | **tier 3 synced** on address verify (bank-side limits); tier 2 needs BVN/NIN we don't retain |
 | BNPL | **offers wired** (read-only `/api/loans/bnpl/offers/`); consent→disburse gated on product sign-off |
-| Fund from ALAT account | **wired** — Pay-with-Bank direct debit (`/api/wallet/alat/fund/` + `/verify/`, credits once) |
+| Fund from partner-bank account | **removed** — Pay-with-Bank required the customer to bank with the provider and named it in-app |
 | NUBAN bank statement | **wired** — `/api/wallet/statement/` over transhistoryV2 |
 
 ## VAS (airtime / data / cable) — #189
@@ -174,12 +174,15 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
   > `WEMA_WALLET_KEY` set and `VAS_PROVIDER` blank now routes **airtime to Wema** instead of
   > VTU.ng (data/cable follow once `wema_code` is seeded; electricity/betting stay on
   > VTU.ng). Set `VAS_PROVIDER=vtung` to keep the old routing.
-- `WEMA_CARD_KEY` — the **Virtual Naira Card** subscription key (enables the Wema
-  virtual-card backend). **No wallet fallback**, deliberately: the Card Management API
-  bundled into Wallet Services is for *physical* card requests, whereas our rail issues
-  *virtual* cards from the separate Virtual Naira Card product. Borrowing the wallet key
-  would also flip `card_provider()` to Wema, which supports neither reversible freeze nor
-  top-up (the generic `CARD_ISSUER` supports both), so an unkeyed card rail stays disabled.
+- `WEMA_CARD_KEY` — **optional; opts the card backend in.** Correcting an earlier note:
+  there is no separate "Virtual Naira Card" product. The portal catalogue has exactly one
+  card API — **Card Management** — and the virtual-card operations (`VirtualCardRequest`,
+  `VirtualCard-GetCardDetails`) are operations *of it*, alongside the physical-card ones,
+  so the Wallet Services key already authenticates our card calls (`_card_live()`).
+  Setting this key is what makes `card_provider()` **auto-select** Wema (`card_opted_in()`);
+  without it cards stay on the generic `CARD_ISSUER`, because the Wema card rail supports
+  neither reversible freeze nor top-up while `CARD_ISSUER` supports both.
+  `CARD_PROVIDER=wema` still forces the Wema rail explicitly.
 - `WEMA_CARD_PRODUCT_KEY` — the `cardKey` (card product id) ALAT's `virtualCard` request
   needs; distinct from the subscription key above. Supplied by Wema; blank until then.
 - `WEMA_SOURCE_ACCOUNT` — our pool NUBAN that funds outbound transfers (see money-flow note).
@@ -312,11 +315,13 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
   built at the client layer but intentionally NOT exposed as an end-user endpoint — it creates
   real external debt and needs product/compliance sign-off first.
 
-- **Pay with Bank Account (ALAT Authenticator)** — `pwba_fund_request` / `pwba_status`
-  (`/pwba-authenticator`, no securityInfo, channel id in the body). A direct-debit **funding**
-  rail: `POST /api/wallet/alat/fund/` starts a debit from the user's OWN ALAT account (they
-  approve it in the ALAT app) and `POST /api/wallet/alat/fund/verify/` polls it and credits the
-  wallet exactly once (FundingIntent + `settle_funding`).
+- **Pay with Bank Account (ALAT Authenticator)** — **removed** (2026-07-27). It pulled funds
+  from the customer's *own* account at the partner bank, which they approved in that bank's
+  app, so it only worked for customers who already banked there and it named the provider in
+  user-facing copy — both wrong for Zitch, whose customers are on a separate platform and must
+  never see the upstream brand. The endpoints (`/api/wallet/alat/fund/` + `/verify/`), the
+  `pwba_*` client and `WEMA_PWBA_KEY` are all gone; funding is by bank transfer to the
+  dedicated NUBAN, reconciled by the poller. Recoverable from git history if ever needed.
 - **Get Statement** — `POST /api/wallet/statement/` returns the user's Wema NUBAN bank statement
   (ALAT transhistoryV2, normalised) for a date range; distinct from the Zitch ledger history.
 
