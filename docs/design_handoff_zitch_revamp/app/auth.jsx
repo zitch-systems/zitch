@@ -20,7 +20,7 @@
         <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: '.18em', color: '#fff', marginTop: 4 }}>ZITCH</div>
         <div style={{ fontSize: 14, color: 'rgba(255,255,255,.7)' }}>Pay. Send. Grow.</div>
       </div>
-      <div style={{ textAlign: 'center', paddingBottom: 40, color: 'rgba(255,255,255,.45)', fontSize: 12 }}>Secured by Zitch · NDIC insured</div>
+      <div style={{ textAlign: 'center', paddingBottom: 40, color: 'rgba(255,255,255,.45)', fontSize: 12 }}>Secured by Zitch</div>
     </AuthShell>;
   }
 
