@@ -358,3 +358,32 @@ ALAT exposes no webhooks, so `python manage.py reconcile_wema` (render cron, eve
   never collide with a `ZTRF`/`ZPAY`/`ZFND` ledger reference).
 - **Payouts:** settles/reverses PENDING bank payouts by polling `confirm_transfer_status`
   (only when `payout_provider() == "wema"`, which is the default).
+
+### Wema egress IPs / allowlisting
+
+Wema confirmed (2026-07-27) that **IP allowlisting is done on the partner's side** — they
+do not allowlist our outbound addresses. Their gateway's egress IPs (the addresses Wema
+calls **from**) are:
+
+| | Address |
+|---|---|
+| Egress IP 1 | `135.236.18.76` |
+| Egress IP 2 | `74.178.162.156` |
+
+**Nothing enforces these today, and nothing needs to.** The rail is poll-based: we call
+Wema, Wema never calls us, so there is no inbound Wema traffic to filter. We deliberately
+did **not** register a callback URL — account details come from
+`GetPartnershipAccountDetails` and credits from `reconcile_wema`, per the section above.
+
+They are recorded here (and in `backend/.env.example`) purely so the values aren't lost in
+Slack. They become actionable only if one of these changes:
+- a **network-level allowlist** is introduced (Render / Cloudflare / edge firewall) — allow
+  inbound from both addresses; this is infrastructure config, not application code, and
+  there is no such config in this repo today; or
+- a **Wema callback endpoint** is ever added — restrict it to these two sources *in addition
+  to* a shared secret / signature check, never IP alone.
+
+Our own outbound addresses (`209.97.130.65`, `68.183.254.113`) were shared with Wema on
+2026-07-24. Wema has not confirmed whether calls **to** their API are IP-filtered on their
+side; auth appears to be `Ocp-Apim-Subscription-Key` + channel id rather than source IP.
+Worth confirming before go-live if outbound calls start failing from a new egress address.
