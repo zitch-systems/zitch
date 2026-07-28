@@ -257,20 +257,27 @@ def _unreachable(exc: Exception) -> dict:
 
 
 def _security_info(**kwargs) -> str:
-    """Build the encrypted ``securityInfo`` Wema requires on money-movement calls.
+    """The ``securityInfo`` sent on money-movement calls.
 
-    NOT documented in the OpenAPI — construction (algorithm, what is encrypted,
-    key/certificate) must come from Wema's integration guide. This is the single
-    place to implement it; until then it returns "" and logs a warning so a live
-    money call fails loudly rather than silently sending an unsigned payload.
+    There is no algorithm to implement and nothing to obtain from the bank. Wema
+    confirmed the semantics directly (2026-07-27): "the security info is a private
+    key best known to you", and "all we do is to call your authentication webhook
+    URL to confirm if the transactions are coming from you… by passing the security
+    info and the custom transaction reference in your payload for you to authorize
+    either true or false".
+
+    So it is a value WE choose, which the bank echoes back to our authentication
+    callback. It is not a signature over the payload — the kwargs are accepted only
+    so callers read naturally at the call site and a per-operation scheme could be
+    introduced later without touching them.
+
+    Blank is legal and does not break payouts: the bank stores and returns whatever
+    we send, and our authentication callback authorises from OUR OWN LEDGER (a fresh
+    PENDING bank payout under that exact reference) — a strictly stronger check than
+    comparing an echoed constant. Setting one is still worth doing: it costs nothing
+    and lets WEMA_AUTH_REQUIRE_SECURITY_INFO add a second factor to that decision.
     """
-    conf = settings.WEMA.get("SECURITY_INFO", "")
-    if conf:
-        return conf  # a static prebuilt value, if Wema issues one
-    if wema_live():
-        log.warning("wema_security_info_unset — money-movement calls will be rejected until "
-                    "the securityInfo scheme is configured")
-    return ""
+    return settings.WEMA.get("SECURITY_INFO", "") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -1446,11 +1453,13 @@ def wema_diagnostics() -> dict:
            "wema_live": wema_live(), "simulation": wema_simulation()}
     if not wema_live():
         out["status"] = "simulation" if wema_simulation() else "keys_incomplete"
-        out["hint"] = ("Set WEMA_CHANNEL_ID + WEMA_WALLET_KEY (and the per-product keys), the live "
-                       "WEMA_BASE_URL, and the securityInfo scheme. WEMA_SIMULATION=true tests the flow "
-                       "without live keys.")
+        out["hint"] = ("Set WEMA_CHANNEL_ID + WEMA_WALLET_KEY (and the per-product keys) and the "
+                       "live WEMA_BASE_URL. WEMA_SIMULATION=true tests the flow without live keys.")
         return out
-    out["status"] = "configured" if m.get("SECURITY_INFO") else "security_info_missing"
-    out["hint"] = ("Keys present. Confirm the securityInfo construction, live host, and tx-status legend "
-                   "against Wema's integration guide before go-live.")
+    # securityInfo is OUR value, echoed back by the bank to the authentication callback
+    # (Wema, 2026-07-27) — never a bank-issued scheme, so its absence is not an error
+    # status. Reported as a boolean above; the hint stays about things that gate.
+    out["status"] = "configured"
+    out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
+                   "integration guide before go-live.")
     return out

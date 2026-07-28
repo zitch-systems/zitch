@@ -56,12 +56,26 @@ class PreflightGoTests(TestCase):
 
 
 class PreflightGateTests(TestCase):
-    def test_missing_security_info_blocks(self):
+    def test_missing_security_info_warns_but_does_not_block(self):
+        # This test used to assert the opposite, on the reading that securityInfo was a
+        # signing scheme Wema had yet to issue. Wema corrected that on 2026-07-27: it is
+        # "a private key best known to you", which the bank only echoes back to our
+        # authentication callback. Blocking a launch on it would have held the platform
+        # for a value nobody was ever going to send us.
         diag = dict(_LIVE_DIAG, security_info_set=False)
         with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()
-        self.assertIn("NOT READY", out)
-        self.assertIn("securityInfo", out)
+        self.assertIn("GO for money rails", out)
+        self.assertIn("securityInfo", out)        # still surfaced, as a WARN
+        self.assertEqual(code, 0)
+
+    def test_missing_security_info_still_fails_under_strict(self):
+        # Soft, not silent: --strict is the setting for an operator who wants every
+        # recommendation satisfied, and this remains one.
+        diag = dict(_LIVE_DIAG, security_info_set=False)
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run("--strict")
+        self.assertIn("NOT READY (strict)", out)
         self.assertEqual(code, 1)
 
     def test_sandbox_host_blocks(self):

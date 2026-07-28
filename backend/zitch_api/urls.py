@@ -26,9 +26,10 @@ def health(_request):
         "funding_provider": payment_provider(),   # which rail funds the wallet (wema)
         "funding_wema": wema.wema_live(),
         "funding_wema_simulation": wema.wema_simulation(),
-        # Go-live gate (booleans, no secrets): a live payout only SETTLES when the
-        # securityInfo signing scheme is configured AND we're pointed at the live host.
-        # security_info false => live money calls are rejected and auto-refund;
+        # securityInfo is a value WE choose that the bank echoes back to our
+        # authentication callback (confirmed by Wema 2026-07-27) — NOT a signing
+        # scheme the bank issues, and NOT a precondition for a payout to settle.
+        # False here means one optional factor is unused, not that money is blocked.
         # wema_sandbox true => still on apiplayground, so no real money moves.
         "funding_wema_security_info": bool(settings.WEMA.get("SECURITY_INFO")),
         "wema_sandbox": "apiplayground" in (settings.WEMA.get("BASE_URL", "") or "").lower(),
