@@ -4,6 +4,7 @@ from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
 from django.urls import include, path
+from django.views.decorators.http import require_http_methods
 
 from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
@@ -74,8 +75,16 @@ def robots_txt(_request):
     return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
 
 
+# GET only — HEAD is REFUSED, and that matters here rather than being pedantry.
+# Django runs a function view for HEAD exactly as for GET, and this endpoint has real
+# side effects: it starts account creation, sends an OTP, and validates one. An OTP is
+# single-use, so an automatic HEAD consumes it and the operator sees a failure for a
+# step that already succeeded. Observed in production 2026-07-28 — Chrome issued HEAD
+# for a pasted diagnose URL and ran the live OTP validation against the bank. Link
+# unfurlers (Slack) do the same to any URL shared in a ticket or chat.
+@require_http_methods(["GET"])
 def wema_diagnose(request):
-    """GET /wema-diagnose?token=<WEMA_DIAG_TOKEN>[&account=&bank=&phone=&bvn=&nin=]
+    """GET /wema-diagnose?token=<WEMA_DIAG_TOKEN|DIAG_TOKEN>[&account=&bank=&phone=&bvn=&nin=]
 
     Browser-accessible Wema/ALAT connectivity self-test for hosts without shell
     access (e.g. Render). Runs the real calls a deploy needs against the configured
@@ -163,6 +172,10 @@ def vtu_diagnose(request):
     return JsonResponse({"vtu": vtu_probe()})
 
 
+# GET only, for the same reason as wema_diagnose: with &phone= this sends a REAL SMS,
+# so an automatic HEAD from a prefetch or a link unfurl would spend real credit and
+# text a real person.
+@require_http_methods(["GET"])
 def sms_diagnose(request):
     """GET /sms-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&phone=<number>]
 

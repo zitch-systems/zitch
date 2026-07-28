@@ -214,6 +214,24 @@ class WemaDiagnoseViewTests(SimpleTestCase):
         mock_probe.assert_called_once_with("", "", "08030000000", bvn="", nin="",
                                            otp="123456", tracking_id="WEMA-TRK-1")
 
+    def test_head_is_refused_so_a_prefetch_cannot_spend_the_otp(self):
+        # Django runs a function view for HEAD exactly as for GET, and this endpoint
+        # starts account creation, sends an OTP and validates one. An OTP is
+        # single-use, so an automatic HEAD (browser prefetch, Slack unfurl) would
+        # consume it and the operator would see a failure for a step that already
+        # succeeded. Observed in production 2026-07-28.
+        with patch("utility.wema.wema_probe", return_value={}) as mock_probe:
+            r = self.client.head("/wema-diagnose", {"token": "test-token",
+                                                    "phone": "08030000000", "otp": "123456",
+                                                    "tracking_id": "T-1"})
+        self.assertEqual(r.status_code, 405)
+        mock_probe.assert_not_called()          # no live bank call was made
+
+    def test_get_still_works(self):
+        with patch("utility.wema.wema_probe", return_value={}):
+            self.assertEqual(
+                self.client.get("/wema-diagnose", {"token": "test-token"}).status_code, 200)
+
     def test_diag_token_also_opens_it(self):
         # It used to read WEMA_DIAG_TOKEN alone, so a deploy that set only DIAG_TOKEN
         # got a 404 here while the other three probes worked — indistinguishable from
