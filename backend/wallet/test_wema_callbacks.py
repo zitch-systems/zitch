@@ -352,3 +352,36 @@ class WemaCallbacksDiagnoseTests(TestCase):
     def test_wema_diag_token_also_opens_it(self):
         r = self.client.get("/wema-callbacks-diagnose", {"token": "wema-only-secret"})
         self.assertEqual(r.status_code, 200)
+
+    def test_reports_the_proxy_hop_chain_for_ip_enforcement(self):
+        # On a platform that fronts the app with its own proxies, client_ip() can
+        # resolve to an INTERNAL hop. An allowlist compared against that refuses every
+        # bank callback while looking correctly configured, so the raw chain is shown.
+        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"},
+                            HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        det = json.loads(r.content)["callbacks"]["source_ip_detection"]
+        self.assertEqual(det["x_forwarded_for"], ["41.58.1.9", "10.30.28.8"])
+        self.assertEqual(det["suggested_trusted_proxy_hops"], 2)   # 41.58.1.9 is 2nd from right
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_enforcing_ips_on_a_private_hop_is_a_blocker(self):
+        # hops=1 selects the right-most entry — a private platform address. Turning the
+        # allowlist on here would 403 the bank on every call, so it must not read ready.
+        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"},
+                            HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        body = json.loads(r.content)["callbacks"]
+        self.assertFalse(body["ready_to_send_to_the_bank"])
+        self.assertFalse(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
+        self.assertTrue(any("not a public address" in b for b in body["blockers"]))
+        self.assertTrue(any("RATELIMIT_TRUSTED_PROXY_HOPS=2" in b for b in body["blockers"]))
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=2)
+    def test_correct_hop_count_clears_the_blocker(self):
+        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"},
+                            HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        body = json.loads(r.content)["callbacks"]
+        self.assertEqual(body["this_request_came_from"], "41.58.1.9")
+        self.assertTrue(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
+        self.assertTrue(body["ready_to_send_to_the_bank"])
