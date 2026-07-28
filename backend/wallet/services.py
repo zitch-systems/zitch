@@ -11,6 +11,7 @@ from decimal import Decimal
 
 from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q, Sum
+from django.utils import timezone
 
 from .models import FundingIntent, Transaction, Wallet
 
@@ -679,20 +680,55 @@ def sync_bank_tier(wallet) -> int:
     return tier or (wallet.bank_tier or 0)
 
 
+def bank_spent_today(user) -> Decimal:
+    """Total already sent OUT of the NUBAN today, against the bank's daily cap.
+
+    Counts bank payouts only (``meta.bank``, the same predicate the authorisation
+    callback uses) — a VTU purchase settles with the VAS provider and never debits
+    the NUBAN, so counting it would restrict the customer for spend the bank never
+    saw.
+
+    PENDING rows count: a payout in flight can still settle, and excluding it would
+    let a burst of concurrent transfers each see an empty day. FAILED rows do not —
+    those are already refunded.
+
+    The day boundary is local (Africa/Lagos), matching the bank's own.
+    """
+    start = timezone.localtime().replace(hour=0, minute=0, second=0, microsecond=0)
+    rows = Transaction.objects.filter(
+        user=user, direction=Transaction.OUT, created__gte=start,
+        transaction_status__in=(Transaction.PENDING, Transaction.SUCCESS),
+    ).only("amount", "meta")
+    return sum((r.amount for r in rows if is_bank_payout(r)), Decimal("0"))
+
+
 def bank_spend_error(user, amount) -> str | None:
-    """The partner bank's own ceiling on a single outbound amount, or None.
+    """The partner bank's own DAILY ceiling on outbound spend, or None.
 
     Checked in ADDITION to our KYC-tier limit, never instead of it: the two ladders
     are independent and the customer is bound by whichever is tighter. Silent (None)
     while the account's bank tier is unknown, so this can only ever tighten behaviour
     for accounts we have actually read back.
+
+    The cap is CUMULATIVE — ALAT publishes it as "Daily Max Spend", not a per-transfer
+    limit. Comparing only the single amount would let N transfers each under the cap
+    sum past it, and the gateway would refuse whichever one crossed: the debit-then-
+    reverse this check exists to prevent. So today's spend counts toward it.
     """
     from utility import wema as wema_provider
     wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
     if wallet is None or not wallet.bank_tier:
         return None
     cap = wema_provider.bank_tier_limit(wallet.bank_tier, "daily_spend")
-    if cap is not None and Decimal(str(amount)) > cap:
-        return (f"Your bank account's daily limit is ₦{cap:,.0f}. "
+    if cap is None:
+        return None
+    amount = Decimal(str(amount))
+    remaining = cap - bank_spent_today(user)
+    if amount > remaining:
+        if remaining <= 0:
+            return (f"You've reached your bank account's daily limit of ₦{cap:,.0f}. "
+                    "Complete the next verification step to raise it.")
+        return (f"This would pass your bank account's daily limit of ₦{cap:,.0f} — "
+                f"₦{remaining:,.0f} left today. "
                 "Complete the next verification step to raise it.")
     return None

@@ -13,7 +13,7 @@ from django.test import TestCase
 
 from common.http import send_limit_error
 from utility import wema
-from wallet.models import Wallet
+from wallet.models import Transaction, Wallet
 from wallet.services import bank_spend_error, sync_bank_tier
 from wallet.tests import make_user
 
@@ -54,6 +54,49 @@ class BankSpendErrorTests(TestCase):
         msg = bank_spend_error(self.user, Decimal("30001"))
         self.assertIsNotNone(msg)
         self.assertIn("30,000", msg)
+
+    def _payout(self, amount, status=Transaction.SUCCESS, bank=True):
+        return Transaction.objects.create(
+            user=self.user, service="transfer", amount=Decimal(amount),
+            direction=Transaction.OUT, transaction_status=status,
+            reference=f"REF-{Transaction.objects.count()}-{amount}",
+            meta={"bank": "035"} if bank else {"vtu": True})
+
+    def test_the_daily_cap_is_cumulative_not_per_transfer(self):
+        # ALAT publishes this as "Daily Max Spend". Ten transfers each under the cap
+        # must not be able to sum past it — the gateway would refuse whichever one
+        # crossed, which is the debit-then-reverse this check exists to prevent.
+        self._set_bank_tier(1)                       # 30,000/day
+        for _ in range(9):
+            self._payout("3000")                     # 27,000 spent
+        self.assertIsNone(bank_spend_error(self.user, Decimal("3000")))    # lands exactly on cap
+        msg = bank_spend_error(self.user, Decimal("3001"))
+        self.assertIsNotNone(msg)
+        self.assertIn("3,000", msg)                  # tells them what is actually left
+
+    def test_pending_payouts_count_against_the_day(self):
+        # A payout in flight can still settle; ignoring it would let a burst of
+        # concurrent transfers each see an empty day.
+        self._set_bank_tier(1)
+        self._payout("29000", status=Transaction.PENDING)
+        self.assertIsNotNone(bank_spend_error(self.user, Decimal("2000")))
+
+    def test_failed_payouts_do_not_count(self):
+        self._set_bank_tier(1)
+        self._payout("29000", status=Transaction.FAILED)   # already refunded
+        self.assertIsNone(bank_spend_error(self.user, Decimal("1000")))
+
+    def test_non_bank_spend_does_not_count(self):
+        # A VTU purchase settles with the VAS provider and never debits the NUBAN.
+        self._set_bank_tier(1)
+        self._payout("29000", bank=False)
+        self.assertIsNone(bank_spend_error(self.user, Decimal("1000")))
+
+    def test_exhausted_day_says_so_plainly(self):
+        self._set_bank_tier(1)
+        self._payout("30000")
+        msg = bank_spend_error(self.user, Decimal("100"))
+        self.assertIn("reached", msg)
 
     def test_tier3_is_uncapped(self):
         self._set_bank_tier(3)
