@@ -169,6 +169,78 @@ def sms_diagnose(request):
     return JsonResponse({"sms": sms_probe(phone)})
 
 
+def wema_callbacks_diagnose(request):
+    """GET /wema-callbacks-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
+
+    Browser self-test for the four bank-called callbacks, for hosts with no shell
+    access (e.g. Render). ALAT will not enable the rails until it has PROFILED
+    these exact URLs, so this prints the strings to hand the bank and proves, in
+    process, that each one resolves to its handler and that the endpoint actually
+    refuses a wrong secret.
+
+    Checked in process rather than over loopback HTTP deliberately: a self-call
+    would have to escape and re-enter the platform's own routing, so a failure
+    would say more about the network than about the configuration.
+
+    The output DOES embed the callback secret, because that secret is the URL —
+    handing the bank the URL is what it's for. That is why it sits behind the
+    diagnose token.
+    """
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    from django.urls import Resolver404, resolve
+
+    from common.ratelimit import client_ip
+    from wallet.wema_callbacks import DEFAULT_CALLBACK_IPS, _fingerprint, _token_ok
+
+    conf = getattr(settings, "WEMA", None) or {}
+    token = (conf.get("CALLBACK_TOKEN") or "").strip()
+    base = f"{'https' if request.is_secure() else 'http'}://{request.get_host()}"
+    blockers = []
+
+    # ALAT's own names for the four, so the output can be read straight against the
+    # profiling form the bank sends. `notification` is production-only.
+    routes = []
+    for label, segment in (("Account Creation Callback URL", "account"),
+                           ("Authentication Callback URL", "authorize"),
+                           ("Transaction Callback URL", "transaction"),
+                           ("Transaction Notification URL (production only)", "notification")):
+        fragment = f"/webhooks/wema/{segment}/{token or 'SET-WEMA_CALLBACK_TOKEN'}"
+        try:
+            handler = resolve(fragment).func.__name__
+        except Resolver404:
+            handler = ""
+            blockers.append(f"{segment}: route does not resolve — is this deploy current?")
+        routes.append({"give_the_bank_as": label, "url": base + fragment,
+                       "resolves": bool(handler), "handler": handler})
+
+    # The meaningful assertion is the negative one: that a WRONG secret is turned
+    # away. Comparing the configured token against itself would pass trivially and
+    # prove nothing — this catches the open-endpoint case (no token configured, and
+    # simulation or DEBUG letting it through).
+    secret_required = not _token_ok("zitch-diagnose-deliberately-wrong-secret")
+    if not token:
+        blockers.append("WEMA_CALLBACK_TOKEN is unset — the URL carries no secret.")
+    if not secret_required:
+        blockers.append("The callbacks accept ANY secret right now — do not profile these URLs.")
+
+    return JsonResponse({"callbacks": {
+        "ready_to_send_to_the_bank": not blockers,
+        "blockers": blockers,
+        "routes": routes,
+        "secret_configured": bool(token),
+        "secret_fingerprint": _fingerprint(token),   # never the secret itself
+        "secret_rotation_pending": bool((conf.get("CALLBACK_TOKEN_PREV") or "").strip()),
+        "wrong_secret_is_refused": secret_required,
+        "enforce_source_ips": bool(conf.get("CALLBACK_ENFORCE_IPS", False)),
+        "allowed_source_ips": list(conf.get("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS),
+        "this_request_came_from": client_ip(request),
+        "authorization_max_age_seconds": int(conf.get("AUTH_MAX_AGE", 900) or 900),
+        "require_security_info": bool(conf.get("AUTH_REQUIRE_SECURITY_INFO", False)),
+    }})
+
+
 urlpatterns = [
     # Canonical web surfaces: the marketing landing + operator portal (portal app).
     # The health probe keeps its JSON shape at /healthz; /readyz also round-trips
@@ -180,6 +252,7 @@ urlpatterns = [
     path("healthz", health),
     path("readyz", readyz),
     path("wema-diagnose", wema_diagnose),
+    path("wema-callbacks-diagnose", wema_callbacks_diagnose),
     path("vtu-diagnose", vtu_diagnose),
     path("sms-diagnose", sms_diagnose),
     path("robots.txt", robots_txt),

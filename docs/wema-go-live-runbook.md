@@ -59,7 +59,7 @@ crons too (`render.yaml` already declares the slots on each).
 |---|---|
 | `SENTRY_DSN` | So the reconcile crons can page on drift/outage (they call `utility.alerts.alert`). Set it on the **web service and every cron**. |
 | `WEMA_DIAG_TOKEN` | Enables the `/wema-diagnose?token=…` browser self-test. |
-| `DIAG_TOKEN` | Enables `/vtu-diagnose?token=…`. |
+| `DIAG_TOKEN` | Enables `/vtu-diagnose?token=…` and `/wema-callbacks-diagnose?token=…` (either token opens the latter). |
 | `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
 | `SENDCHAMP_API_KEY` | SMS / OTP-by-SMS. |
@@ -119,6 +119,17 @@ KYC rail.
   proves auth + a real name-enquiry against the live gateway.
 - `GET /vtu-diagnose?token=<DIAG_TOKEN>` — proves the VTU.ng wallet authenticates
   and shows its balance (VAS buys fail on an empty provider wallet).
+- `GET /wema-callbacks-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>` — prints the
+  four callback URLs **exactly as the bank must be given them** and confirms each
+  resolves and that a wrong secret is refused. Read
+  `ready_to_send_to_the_bank: true` before handing anything to the bank; the
+  `blockers` list says what to fix otherwise. Note its output contains the
+  callback secret, since that secret *is* the URL.
+
+  Cheapest possible check without any tooling: open a callback URL in a browser.
+  The method check runs before the secret check, so a live route answers **405**
+  (POST-only). A **404** means the route isn't deployed; a **502/503** means the
+  service isn't up.
 
 ### Step 6 — seed the catalogue
 - `python manage.py seed_wema_plans` — maps the live data/cable catalogue onto

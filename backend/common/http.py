@@ -44,7 +44,12 @@ def send_limit_error(user, amount) -> str | None:
     from accounts.models import User
     if amount >= User.LARGE_TXN_THRESHOLD and not user.face_verified:
         return "Face verification required for this amount."
-    return None
+    # The partner bank enforces its OWN per-tier caps on the NUBAN, on a different
+    # ladder from ours — so an amount our tier allows can still be refused at the
+    # gateway. Refusing here turns that into a clear message instead of a failed
+    # payout that has to be reversed. Silent until the account's bank tier is known.
+    from wallet.services import bank_spend_error
+    return bank_spend_error(user, amount)
 
 
 def velocity_exceeded(user) -> bool:

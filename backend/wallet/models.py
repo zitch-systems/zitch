@@ -22,6 +22,11 @@ class Wallet(models.Model):
     bank_name = models.CharField(max_length=80, blank=True, default="")
     account_reference = models.CharField(max_length=64, blank=True, default="", db_index=True)
     bank_accounts = models.JSONField(default=list, blank=True)
+    # The tier the PARTNER BANK holds this NUBAN at (1/2/3), which is a different
+    # ladder from our own KYC tier and is enforced by the bank regardless of ours.
+    # 0 = not yet known: we have never read it back, so no bank cap is applied and
+    # behaviour is unchanged. Synced from partner-account-kyc-status.
+    bank_tier = models.PositiveSmallIntegerField(default=0)
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
 
