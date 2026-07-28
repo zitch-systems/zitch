@@ -8,7 +8,7 @@ from common.http import (
     provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
 from utility.providers import vtu_purchase
-from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import BettingPlatform
 
@@ -82,4 +82,6 @@ def fund_betting(request):
         return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
+    except LimitExceeded as exc:
+        return fail(str(exc), status=403, code="limit_exceeded")
     return provider_purchase_response(status, txn, result, success_message="Betting wallet funded")

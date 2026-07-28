@@ -25,7 +25,7 @@ from utility.providers import (
     card_set_status,
 )
 from wallet.models import Transaction
-from wallet.services import DuplicateTransaction, InsufficientFunds, debit, existing_for_key, refund
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, debit, existing_for_key, refund
 
 from .models import VirtualCard
 
@@ -178,6 +178,8 @@ def fund_card(request):
         return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
+    except LimitExceeded as exc:
+        return fail(str(exc), status=403, code="limit_exceeded")
 
     result = issuer_fund_card(card.card_token, amount)
     if not result.get("success"):
