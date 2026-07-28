@@ -307,6 +307,23 @@ MONO = {
     "SIMULATION": env_bool("MONO_SIMULATION", False),
 }
 # SMS / OTP — Sendchamp.
+# SMS rail. "termii" | "sendchamp"; blank => AUTO (termii when its key is set, else
+# sendchamp). Both are kept wired so an unapproved sender ID on one is a one-env-var
+# switch back rather than a deploy — sender-ID approval is the usual reason OTPs stop
+# arriving, and it is a carrier decision we don't control.
+SMS_PROVIDER = os.environ.get("SMS_PROVIDER", "").strip().lower()
+TERMII = {
+    # Termii serves several regional hosts and the dashboard shows the one for YOUR
+    # account, so this is configurable rather than assumed.
+    "BASE_URL": os.environ.get("TERMII_BASE_URL", "https://v3.api.termii.com").rstrip("/"),
+    "API_KEY": os.environ.get("TERMII_API_KEY", "").strip(),
+    "SENDER_ID": os.environ.get("TERMII_SENDER_ID", "Zitch").strip(),
+    # "dnd" is the TRANSACTIONAL route and the only correct one for OTP: most Nigerian
+    # lines are DND-registered, and Termii documents the "generic" route as promotional
+    # only. The sender ID must be whitelisted for DND or messages are accepted and never
+    # delivered — the same failure mode Sendchamp had.
+    "CHANNEL": os.environ.get("TERMII_CHANNEL", "dnd").strip() or "dnd",
+}
 SENDCHAMP = {
     "BASE_URL": os.environ.get("SENDCHAMP_BASE_URL", "https://api.sendchamp.com/api/v1"),
     "API_KEY": os.environ.get("SENDCHAMP_API_KEY", ""),

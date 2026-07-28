@@ -19,7 +19,8 @@ def health(_request):
     page can own "/". (The platform health check points at /healthz.)
     """
     from utility.providers import (_prembly_live, kyc_provider, payment_provider,
-                                    payout_live, payout_provider, vas_provider, vtu_live)
+                                    payout_live, payout_provider, sms_live, sms_provider,
+                                    vas_provider, vtu_live)
     from utility import wema
 
     integrations = {
@@ -37,6 +38,10 @@ def health(_request):
         "payout_live": payout_live(),             # payout rail has live keys
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
         "vtu_vtung": vtu_live(),
+        # Which rail actually sends, plus whether it is keyed. sms_sendchamp is kept
+        # so existing dashboards/alerts that read it don't break.
+        "sms_provider": sms_provider(),
+        "sms_live": sms_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
         "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)

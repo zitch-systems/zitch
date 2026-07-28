@@ -115,10 +115,11 @@ class Command(BaseCommand):
                        PASS if settings.RESEND["API_KEY"] else WARN,
                        "keyed" if settings.RESEND["API_KEY"]
                        else "RESEND_API_KEY unset — no transactional email"))
-        checks.append((False, "SMS (Sendchamp)",
-                       PASS if settings.SENDCHAMP["API_KEY"] else WARN,
-                       "keyed" if settings.SENDCHAMP["API_KEY"]
-                       else "SENDCHAMP API key unset — no SMS/OTP-by-SMS"))
+        from utility.providers import sms_live, sms_provider
+        checks.append((False, f"SMS ({sms_provider()})",
+                       PASS if sms_live() else WARN,
+                       "keyed" if sms_live()
+                       else f"no API key for the {sms_provider()} rail — no SMS/OTP-by-SMS"))
         checks.append((False, "Card issuer",
                        PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
                        "keyed" if settings.CARD_ISSUER["API_KEY"]
