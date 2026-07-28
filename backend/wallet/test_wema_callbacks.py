@@ -385,3 +385,9 @@ class WemaCallbacksDiagnoseTests(TestCase):
         self.assertEqual(body["this_request_came_from"], "41.58.1.9")
         self.assertTrue(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
         self.assertTrue(body["ready_to_send_to_the_bank"])
+
+    def test_head_is_refused_on_the_sms_probe(self):
+        # With &phone= that endpoint sends a REAL SMS; a prefetch must not spend credit.
+        with patch.dict(os.environ, {"DIAG_TOKEN": "diag-secret"}):
+            r = self.client.head("/sms-diagnose", {"token": "diag-secret", "phone": "08030000000"})
+        self.assertEqual(r.status_code, 405)

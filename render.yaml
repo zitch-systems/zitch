@@ -11,11 +11,24 @@ services:
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
     # Render can't see -> "no open ports detected" and the deploy times out. Render
     # injects PORT (default 10000, which the health check targets).
-    # 2 workers x 4 threads so one slow provider call (Wema/VTU do
-    # network I/O in-request) can't stall every other request; --timeout bounds
-    # a hung worker. Sized for the 512MB free/starter tiers. NOTE: with more
-    # than one worker, set REDIS_URL so rate limits share one cache (see below).
-    startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 2 --threads 4 --timeout 60"
+    # ONE worker x 8 threads. Threads still absorb slow provider calls (Wema/VTU do
+    # network I/O in-request) so one can't stall every other request; --timeout
+    # bounds a hung worker.
+    #
+    # One worker, not two, for two independent reasons:
+    #   * MEMORY. Two workers each load Django plus the whole provider stack and
+    #     then hold provider payloads (the bank list alone is ~499 entries). On the
+    #     512MB free/starter tiers that OOMs — observed 2026-07-28, "Worker was sent
+    #     SIGKILL! Perhaps out of memory?", which returns 503 to live callers.
+    #   * CORRECTNESS. Without REDIS_URL the cache is per-process LocMem, and the
+    #     BVN KYC handshake stores its pending code there — so with 2 workers the
+    #     confirm request lands on the wrong process about half the time. Rate
+    #     limits and login lockouts are likewise per-worker, doubling every cap.
+    #
+    # To go back to multiple workers: provision a Render Key Value instance, set
+    # REDIS_URL, and raise this — in that order. REQUIRE_SHARED_CACHE exists to
+    # enforce exactly that ordering.
+    startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 8 --timeout 60"
     healthCheckPath: /healthz
     envVars:
       - key: DJANGO_SECRET_KEY
