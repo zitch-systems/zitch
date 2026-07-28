@@ -390,8 +390,18 @@ canned "use the bank's own app" message with no tracking id.)
 | Transaction Notification (prod) | `/webhooks/wema/notification/<token>` | recorded only; payload undocumented |
 
 **Security.** ALAT signs nothing, so the endpoints stack a secret in the URL path
-(`WEMA_CALLBACK_TOKEN`), a source-IP allowlist against the egress addresses below
-(`WEMA_CALLBACK_ENFORCE_IPS`), and a rate limit — all applied *before* the body is parsed.
+(`WEMA_CALLBACK_TOKEN`) and a source-IP allowlist against the egress addresses below
+(`WEMA_CALLBACK_ENFORCE_IPS`), both applied *before* the body is parsed.
+
+There is deliberately **no per-IP rate limit**. `client_ip()` resolves through
+`RATELIMIT_TRUSTED_PROXY_HOPS`, and on this deployment every bank callback currently
+arrives bearing the same platform-internal address (observed `10.30.1.250`) — so a
+per-IP bucket would be shared by all of the bank's traffic rather than isolating an
+attacker, throttling real callbacks while bounding nobody. Add one once the hop count
+is corrected and the bank's true source address is visible. Until then the abuse that
+actually costs something — the transaction callback acting as a 1:1 amplifier into
+ALAT's own API — is bounded per-reference by `REQUERY_COOLDOWN` instead.
+
 On top of that neither money-moving handler trusts its payload:
 
 - **`authorize`** answers `true` only when our own ledger holds a *fresh PENDING bank payout*
