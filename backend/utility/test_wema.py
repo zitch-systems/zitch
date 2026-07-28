@@ -214,6 +214,24 @@ class WemaDiagnoseViewTests(SimpleTestCase):
         mock_probe.assert_called_once_with("", "", "08030000000", bvn="", nin="",
                                            otp="123456", tracking_id="WEMA-TRK-1")
 
+    def test_diag_token_also_opens_it(self):
+        # It used to read WEMA_DIAG_TOKEN alone, so a deploy that set only DIAG_TOKEN
+        # got a 404 here while the other three probes worked — indistinguishable from
+        # "the route isn't deployed", which is what these endpoints exist to answer.
+        with patch.dict(os.environ, {"WEMA_DIAG_TOKEN": "", "DIAG_TOKEN": "shared"}), \
+                patch("utility.wema.wema_probe", return_value={}):
+            r = self.client.get("/wema-diagnose", {"token": "shared"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_disabled_only_when_neither_token_is_set(self):
+        with patch.dict(os.environ, {"WEMA_DIAG_TOKEN": "", "DIAG_TOKEN": ""}):
+            self.assertEqual(self.client.get("/wema-diagnose").status_code, 404)
+
+    def test_trailing_slash_also_resolves(self):
+        with patch("utility.wema.wema_probe", return_value={}):
+            r = self.client.get("/wema-diagnose/", {"token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+
     def test_missing_bvn_or_phone_skips_wallet_create(self):
         # Mirrors the real report: hitting the URL without both phone and bvn must
         # not silently attempt wallet creation (wema_probe itself already guards

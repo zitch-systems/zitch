@@ -121,8 +121,16 @@ services:
       # and no real money moves, but the link flow is testable in a production
       # build. !! Set to "false" (or delete) the moment MONO_SECRET_KEY goes
       # live — leaving it on would keep serving fake links to real users.
+      #
+      # Dashboard-owned (sync: false), NOT a literal `value:`. A literal here is
+      # Blueprint-owned, so every Blueprint sync force-restores it — and since
+      # production_checks rejects any simulation flag without
+      # ALLOW_PRODUCTION_SIMULATION, a committed "true" re-breaks the boot after
+      # an operator has already turned it off in the dashboard. That failure
+      # looks like the fix "not sticking", with nothing in the diff to explain
+      # it. Every other provider flag is sync: false for the same reason.
       - key: MONO_SIMULATION
-        value: "true"
+        sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).

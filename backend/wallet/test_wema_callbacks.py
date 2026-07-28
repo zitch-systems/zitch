@@ -339,3 +339,16 @@ class WemaCallbacksDiagnoseTests(TestCase):
         body = self._body()
         self.assertFalse(body["wrong_secret_is_refused"])
         self.assertTrue(any("accept ANY secret" in b for b in body["blockers"]))
+
+    def test_trailing_slash_also_resolves(self):
+        # These get pasted into an address bar by hand. APPEND_SLASH only ever ADDS
+        # a slash, so a slashless-only route answers a bare HTML 404 for the slashed
+        # spelling — which reads as "not deployed", the exact question this endpoint
+        # exists to answer.
+        r = self.client.get("/wema-callbacks-diagnose/", {"token": "diag-secret"})
+        self.assertEqual(r.status_code, 200)
+
+    @patch.dict(os.environ, {"DIAG_TOKEN": "", "WEMA_DIAG_TOKEN": "wema-only-secret"})
+    def test_wema_diag_token_also_opens_it(self):
+        r = self.client.get("/wema-callbacks-diagnose", {"token": "wema-only-secret"})
+        self.assertEqual(r.status_code, 200)

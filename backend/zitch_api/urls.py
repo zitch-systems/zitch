@@ -90,19 +90,27 @@ def wema_diagnose(request):
     # Strip surrounding whitespace on both sides: a trailing space/newline pasted
     # into the env value (or the URL) would otherwise fail the byte-exact compare
     # with an unexplainable "forbidden".
-    diag_token = os.environ.get("WEMA_DIAG_TOKEN", "").strip()
-    if not diag_token:
+    # Accepts EITHER token, like the other three probes. This one used to read
+    # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /vtu-diagnose,
+    # /sms-diagnose and /wema-callbacks-diagnose while this one kept 404ing —
+    # indistinguishable from "the route isn't deployed", which is the exact
+    # question these endpoints exist to answer.
+    diag_tokens = [t for t in (os.environ.get("WEMA_DIAG_TOKEN", "").strip(),
+                               os.environ.get("DIAG_TOKEN", "").strip()) if t]
+    if not diag_tokens:
         return JsonResponse(
-            {"detail": "Set WEMA_DIAG_TOKEN (any secret value) in the environment to enable this."},
+            {"detail": "Set WEMA_DIAG_TOKEN or DIAG_TOKEN (any secret value) in the "
+                       "environment to enable this."},
             status=404,
         )
     supplied = request.GET.get("token", "").strip()
-    if not hmac.compare_digest(supplied, diag_token):
+    if not any(hmac.compare_digest(supplied, t) for t in diag_tokens):
         # Length-only hint (no token content) — pinpoints paste truncation/typos.
         return JsonResponse(
             {"detail": "forbidden",
              "hint": f"supplied token has {len(supplied)} chars; the configured "
-                     f"WEMA_DIAG_TOKEN has {len(diag_token)}. They must match exactly."},
+                     f"token(s) have {sorted({len(t) for t in diag_tokens})}. "
+                     f"They must match exactly."},
             status=403,
         )
     from utility.wema import wema_probe
@@ -251,10 +259,16 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
-    path("wema-diagnose", wema_diagnose),
-    path("wema-callbacks-diagnose", wema_callbacks_diagnose),
-    path("vtu-diagnose", vtu_diagnose),
-    path("sms-diagnose", sms_diagnose),
+    # Both spellings, for the same reason wema_urls.py registers both: these are
+    # pasted into an address bar by hand, and APPEND_SLASH only ever ADDS a
+    # slash — it cannot strip one. So a trailing slash on a slashless-only route
+    # falls through to a bare HTML 404 that reads as "not deployed" rather than
+    # "you typed one extra character".
+    *[p for frag, view in (("wema-diagnose", wema_diagnose),
+                           ("wema-callbacks-diagnose", wema_callbacks_diagnose),
+                           ("vtu-diagnose", vtu_diagnose),
+                           ("sms-diagnose", sms_diagnose))
+      for p in (path(frag, view), path(frag + "/", view))],
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
