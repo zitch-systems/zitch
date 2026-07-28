@@ -211,10 +211,65 @@ def _ng_msisdn(phone: str) -> str:
     return digits  # already international, or non-NG — pass through unchanged
 
 
-def send_sms(phone: str, message: str) -> dict:
+def sms_provider() -> str:
+    """Which SMS rail sends: "termii" | "sendchamp".
+
+    Explicit SMS_PROVIDER wins; blank means AUTO — Termii when its key is present,
+    else Sendchamp. So adding TERMII_API_KEY is enough to cut over, and clearing it
+    (or setting SMS_PROVIDER=sendchamp) is enough to cut back.
+    """
+    choice = getattr(settings, "SMS_PROVIDER", "") or ""
+    if choice in ("termii", "sendchamp"):
+        return choice
+    return "termii" if settings.TERMII["API_KEY"] else "sendchamp"
+
+
+def sms_live() -> bool:
+    """Whether the ACTIVE SMS rail has a key (i.e. a real send will be attempted)."""
+    if sms_provider() == "termii":
+        return bool(settings.TERMII["API_KEY"])
+    return bool(settings.SENDCHAMP["API_KEY"])
+
+
+def _send_sms_termii(phone: str, message: str) -> dict:
+    """Termii `POST /api/sms/send`.
+
+    Two shape differences from Sendchamp that are easy to get wrong and fail silently:
+    the api_key travels in the BODY (not an Authorization header), and `to` is a bare
+    string, not a list. A malformed request here is accepted-looking but never
+    delivers, which the signup flow hides by design — hence sms_probe.
+    """
+    cfg = settings.TERMII
+    try:
+        resp = requests.post(
+            f"{cfg['BASE_URL']}/api/sms/send",
+            json={
+                "to": _ng_msisdn(phone),
+                "from": cfg["SENDER_ID"],
+                "sms": message,
+                "type": "plain",
+                "channel": cfg["CHANNEL"],
+                "api_key": cfg["API_KEY"],
+            },
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json() if resp.content else {}
+        if not isinstance(data, dict):
+            data = {"raw": str(data)[:200]}
+        # Accepted == a message_id came back. Termii also returns
+        # message="Successfully Sent", but the id is the load-bearing field: it is what
+        # a delivery report later refers to.
+        return {"success": bool(resp.ok and data.get("message_id")),
+                "message_id": str(data.get("message_id") or ""), "raw": data}
+    except requests.RequestException as exc:
+        return {"success": False, "message": f"SMS provider unreachable: {exc}"}
+    except ValueError as exc:                       # non-JSON body (HTML error page)
+        return {"success": False, "message": f"SMS provider returned non-JSON: {exc}"}
+
+
+def _send_sms_sendchamp(phone: str, message: str) -> dict:
     cfg = settings.SENDCHAMP
-    if not cfg["API_KEY"]:
-        return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
     try:
         resp = requests.post(
             f"{cfg['BASE_URL']}/sms/send",
@@ -235,6 +290,17 @@ def send_sms(phone: str, message: str) -> dict:
         return {"success": resp.ok and str(data.get("status", "")).lower() == "success", "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
+
+
+def send_sms(phone: str, message: str) -> dict:
+    """Send one SMS over the active rail. Blank key => mock success, unchanged: the
+    OTP flow deliberately ignores the result (anti-enumeration), so branching on
+    configuration here would change nothing for the caller."""
+    if not sms_live():
+        return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
+    if sms_provider() == "termii":
+        return _send_sms_termii(phone, message)
+    return _send_sms_sendchamp(phone, message)
 
 
 def send_email(to: str, subject: str, message: str, html: str | None = None) -> dict:
@@ -267,19 +333,41 @@ def send_email(to: str, subject: str, message: str, html: str | None = None) -> 
 
 
 def sms_probe(phone: str = "") -> dict:
-    """Live self-test for the SMS rail (Sendchamp) — returns NO secrets.
+    """Live self-test for the ACTIVE SMS rail — returns NO secrets.
 
     Proves the key authenticates and, when a phone is supplied, sends ONE real test
-    SMS and returns Sendchamp's raw response — so a non-delivery (unapproved sender
-    ID, empty Sendchamp wallet, bad number) is actually visible. The signup flow
-    deliberately hides send failures (anti-enumeration), so this is the only place
-    OTP delivery can be observed end to end.
+    SMS and returns the provider's raw response — so a non-delivery (unapproved or
+    non-whitelisted sender ID, empty provider wallet, bad number) is actually
+    visible. The signup flow deliberately hides send failures (anti-enumeration), so
+    this is the only place OTP delivery can be observed end to end.
     """
-    cfg = settings.SENDCHAMP
-    out = {"config": {"base_url": cfg["BASE_URL"], "api_key_set": bool(cfg["API_KEY"]),
-                      "sender_name": cfg["SENDER_NAME"], "route": "dnd"}}
+    provider = sms_provider()
+    if provider == "termii":
+        cfg = settings.TERMII
+        config = {"provider": "termii", "base_url": cfg["BASE_URL"],
+                  "api_key_set": bool(cfg["API_KEY"]), "sender_id": cfg["SENDER_ID"],
+                  "channel": cfg["CHANNEL"]}
+        unset_hint = "TERMII_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
+        fail_hint = (
+            f"Termii accepted the request but returned no message_id. Most common causes: "
+            f"the sender ID '{cfg['SENDER_ID']}' is not whitelisted for the '{cfg['CHANNEL']}' "
+            f"route (DND whitelisting is required to reach most Nigerian numbers), the Termii "
+            f"wallet is empty, the number is invalid, or TERMII_BASE_URL is not the host for "
+            f"this account.")
+    else:
+        cfg = settings.SENDCHAMP
+        config = {"provider": "sendchamp", "base_url": cfg["BASE_URL"],
+                  "api_key_set": bool(cfg["API_KEY"]), "sender_name": cfg["SENDER_NAME"],
+                  "route": "dnd"}
+        unset_hint = "SENDCHAMP_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
+        fail_hint = (
+            f"Sent to Sendchamp but not accepted. Most common causes: the sender ID "
+            f"'{cfg['SENDER_NAME']}' is not approved in your Sendchamp account (required for the "
+            f"DND route), the Sendchamp wallet is empty, or the number is invalid.")
+
+    out = {"config": config}
     if not cfg["API_KEY"]:
-        out["hint"] = "SENDCHAMP_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
+        out["hint"] = unset_hint
         return out
     if not phone:
         out["hint"] = ("Key present. Add &phone=<number> to send a real test SMS and see the "
@@ -288,11 +376,14 @@ def sms_probe(phone: str = "") -> dict:
     res = send_sms(phone, "Zitch test SMS — your OTP delivery is working.")
     out["send"] = {"ok": bool(res.get("success")), "to_normalised": _ng_msisdn(phone),
                    "raw": str(res.get("raw", res.get("message", "")))[:400]}
+    if res.get("message_id"):
+        out["send"]["message_id"] = res["message_id"]
     if not res.get("success"):
-        out["send"]["hint"] = (
-            f"Sent to Sendchamp but not accepted. Most common causes: the sender ID "
-            f"'{cfg['SENDER_NAME']}' is not approved in your Sendchamp account (required for the "
-            f"DND route), the Sendchamp wallet is empty, or the number is invalid.")
+        out["send"]["hint"] = fail_hint
+    # Accepted is not delivered. Both rails answer "accepted" long before the handset
+    # sees anything, and an unapproved sender ID fails at exactly that later step.
+    out["note"] = ("ok=true means the provider ACCEPTED the message, not that it was "
+                   "delivered. Confirm the handset actually received it.")
     return out
 
 

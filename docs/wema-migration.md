@@ -35,12 +35,10 @@ model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs
    without an Account Creation URL, and transactions fail authentication without an
    Authentication URL. The endpoints now exist (see "Callbacks and reconciliation") — the
    URLs must be sent to Wema for profiling in both dev and production.
-2. **`securityInfo` — reframed.** It is not (only) a field we encrypt and send: ALAT's guide
-   shows the bank POSTing `{transactionReference, securityInfo}` to our **Authentication
-   Callback** and expecting `{transactionReference, authorized}` back. The historic
-   "payouts fail without securityInfo" symptom is consistent with an unprofiled
-   Authentication URL. Matching the value is opt-in
-   (`WEMA_AUTH_REQUIRE_SECURITY_INFO`) until Wema supplies one.
+2. ~~**`securityInfo`**~~ — **RESOLVED, not a blocker.** Wema confirmed (2026-07-27) it is
+   "a private key best known to you" which the bank simply echoes back to our Authentication
+   Callback. We choose the value; nothing is issued and nothing is owed. See the
+   `securityInfo` section below.
 3. **VAS status-requery legend** — `PartnerPayment/CheckTransactionStatus` returns an
    INTEGER `transactionStatus` (enum 1..11) whose meaning ALAT doesn't publish; the client
    reads it but leaves such a purchase **PENDING** (never auto-settle/refund on an
@@ -53,9 +51,8 @@ model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs
    supply. Reveal/last4 depend on that shape. Confirm before relying on Wema cards.
 5. **Live host** — set `WEMA_BASE_URL` to the live host (differs from sandbox).
 
-**To go live:** get from Wema (a) the `securityInfo` spec, (b) a working provisioning path /
-funded source account, (c) the VAS integer status legend + the `cardKey`, (d) the live host
-+ keys — then set the `WEMA_*` env vars (already declared `sync:false` on the web service
+**To go live:** get from Wema (a) a working provisioning path / funded source account,
+(b) the VAS integer status legend + the `cardKey`, (c) the live host + keys — then set the `WEMA_*` env vars (already declared `sync:false` on the web service
 **and** the `zitch-reconcile-wema` cron in `render.yaml`, schedule `*/10 * * * *`), and run
 `manage.py seed_wema_plans` to map the data/cable catalogue. No `*_PROVIDER` flip is needed;
 wema is already the default.
@@ -100,8 +97,8 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 
 | Capability | Status |
 |-----------|--------|
-| Recipient name enquiry | **live-capable** (no securityInfo needed) |
-| Bank payout (transfer out) | **wired**; needs `securityInfo` to settle live (else refunds) |
+| Recipient name enquiry | **live-capable** |
+| Bank payout (transfer out) | **wired**; `securityInfo` is optional (see below) |
 | Payout settlement (no webhook) | polled by `reconcile_wema` (Phase 2) |
 | Wallet funding account (NUBAN) | **wired** — BVN→OTP→NUBAN, app drives it in `addmoney.tsx` |
 | Inbound deposit crediting (no webhook) | polled by `reconcile_wema` (Phase 1); **only settled (Successfull) credit rows** |
@@ -188,8 +185,9 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
 - `WEMA_CARD_PRODUCT_KEY` — the `cardKey` (card product id) ALAT's `virtualCard` request
   needs; distinct from the subscription key above. Supplied by Wema; blank until then.
 - `WEMA_SOURCE_ACCOUNT` — our pool NUBAN that funds outbound transfers (see money-flow note).
-- `WEMA_SECURITY_INFO` — the encrypted `securityInfo` for money-movement calls. **Not
-  enforced in sandbox**; required before live.
+- `WEMA_SECURITY_INFO` — a value **we** choose, echoed back by the bank to our Authentication
+  Callback. Not issued by Wema and not required for a payout to settle; set any long random
+  value to enable `WEMA_AUTH_REQUIRE_SECURITY_INFO`.
 - `WEMA_BASE_URL` — `https://apiplayground.alat.ng` (sandbox). Set the live host for go-live.
 - `WEMA_SIMULATION=true` — serve the mock flow in a real build without live keys (no money moves).
 - `PAYOUT_PROVIDER` / `PAYMENT_PROVIDER` / `VAS_PROVIDER` / `KYC_PROVIDER` / `CARD_PROVIDER` —
@@ -225,36 +223,47 @@ new Remita / pay-with-bank / BNPL products). Summary:
 before it settles. Unknown/blank still counts (a live gateway that omits the field can't
 strand real money); a Pending row credits on a later sweep once it settles.
 
-### `securityInfo` — the crux (still needs Wema)
+### `securityInfo` — ANSWERED (nothing to build, nothing to obtain)
 
-The specs reveal the **shape** but not the **algorithm**. `EncryptionCredentials`
-`{encryptionPassword, encryptionIV, encryptionSalt, encryptionIdentifier}` (all `readOnly`,
-wrapped in the standard result envelope) is **issued to the partner** — no endpoint in any of
-the 19 specs returns or accepts it, so credentials are provisioned out-of-band. The quartet
-(password + **salt** + IV + identifier) is the classic **AES-CBC + PBKDF2** signature
-(salt ⇒ derived, not pre-shared key; IV ⇒ chaining mode; identifier ⇒ which credential set
-Wema decrypts with). Confidence ~MEDIUM on that shape, LOW on the runnable parameters.
+**Wema settled this directly on 2026-07-27** (Temi Orekunrin, #zitch):
+
+> "the security info is a **private key best known to you** to make your transactions secure"
+
+> "All we do is to call your authentication webhook URL to confirm if the transactions are
+> coming from you. This will be done by **passing the security info and the custom transaction
+> reference in your payload for you to authorize either true or false**"
+
+So it is **a value we choose**, which the bank stores and echoes back to our Authentication
+Callback alongside the transaction reference. There is no algorithm, no credential to be
+issued, and nothing to wait for.
+
+**This supersedes the earlier reading recorded here**, which inferred an AES-CBC + PBKDF2
+signing scheme from the `EncryptionCredentials` shape in the specs and listed nine questions
+for Wema about cipher, KDF, iterations and encodings. That inference was wrong: the quartet
+appears in the specs but is not what `securityInfo` is, and every one of those questions was
+aimed at a construction that does not exist. Kept in the git history rather than the document
+so nobody re-opens it.
+
+**Consequences, all now corrected in code:**
+
+- It is **not a go-live gate**. `wema_preflight` used to hard-fail on it; a blank value does
+  not stop a payout settling. It is now a soft WARN.
+- `/healthz`'s `funding_wema_security_info: false` means one optional factor is unused — not
+  that live money calls are rejected and auto-refunded, which is what the field used to claim.
+- `_security_info()` is no longer a fail-loud stub and no longer logs a warning telling
+  operators to go and find a scheme.
+
+**Still worth setting.** Generate any long random value and put it in `WEMA_SECURITY_INFO`.
+It costs nothing and it is what lets `WEMA_AUTH_REQUIRE_SECURITY_INFO=true` add a second
+factor to the payout-authorisation decision. Note it is a *static* value that travels on every
+money-movement call, so treat it as a shared secret, not a signature: the real authority in
+that decision is the ledger check (a fresh PENDING bank payout under that exact reference),
+which is strictly stronger than comparing an echoed constant.
 
 `securityInfo` is carried by: `ProcessClientTransfer`, `FundWallet`, `PurchaseAirtime`/`Data`
-(Client **and** pool — **required, minLength 1** on the pool variants), `PayBill`
-(+ pool), `ProcessRemitaPayment`. It is **absent** from account-creation, balance/history,
-name-enquiry, **cards, and KYC** — so those rails are fully buildable without it.
-
-**Send Wema exactly these questions to close it:**
-1. How are our production `EncryptionCredentials` (password/IV/salt/identifier) issued? (They appear in no endpoint.)
-2. What plaintext is encrypted into `securityInfo` — a fixed credential string, or a per-transaction canonical string? If the latter, which fields and in what order (e.g. `reference|amount|sourceAccount|timestamp`)?
-3. Is `securityInfo` static-per-channel (cacheable) or per-transaction?
-4. Cipher: AES-CBC or AES-GCM? Key size (128/192/256)? Padding (PKCS7)? If GCM, where/how long is the auth tag?
-5. KDF: PBKDF2-HMAC over password+salt? Which hash (SHA1/SHA256), how many iterations, what derived key length? Or is `encryptionPassword` already the raw key?
-6. Encodings: are IV/salt/password delivered Base64/hex/raw-UTF-8, and is the `securityInfo` output Base64 or hex?
-7. Is `encryptionIdentifier` sent in the request, or inferred by Wema from our subscription key / channel id?
-8. Please provide **one fully worked example** (sample plaintext + credential set → resulting `securityInfo`) so we can match it byte-for-byte.
-9. A C# reference snippet (the specs are .NET) would let us match iterations/padding exactly.
-
-`_security_info()` is a fail-loud stub: it returns a static `WEMA_SECURITY_INFO` if set, else
-`""` (which makes a live money call fail at the gateway rather than send an unsigned payload).
-Slot the real construction into that one function; keep the static-value fast path; add a unit
-test reproducing Wema's worked example before flipping `wema_live()`.
+(Client **and** pool — **required, minLength 1** on the pool variants), `PayBill` (+ pool),
+`ProcessRemitaPayment`. It is **absent** from account-creation, balance/history, name-enquiry,
+cards and KYC.
 
 ### Card rail — DONE (re-pointed to the real Card Management API)
 
@@ -339,10 +348,8 @@ recurring *endpoints*, so there's nothing to call yet. Confirm the endpoints wit
    pool is only a fallback for a sender who has no Wema NUBAN yet. A live payout with neither
    fails closed (refundable). To pay out via Wema a user must have a Wema NUBAN with balance,
    or `WEMA_SOURCE_ACCOUNT` must be funded to cover pool-sourced payouts.
-2. **`securityInfo` construction.** The encryption scheme (algorithm / what is signed / key
-   material) is NOT in the OpenAPI. Implement in `utility.wema._security_info` once Wema
-   supplies it; it carries on the transfer / credit_wallet / VAS / bills money-movement calls.
-   Sandbox does not enforce it.
+2. ~~**`securityInfo` construction.**~~ **CLOSED 2026-07-27** — there is no construction. It
+   is a value we pick that the bank echoes back to our Authentication Callback.
 3. **Transaction-status legends.** `transhistoryV2` history status is now documented and
    honored (`{Default, Successfull, Failed, Pending}` — only settled credits fund). Two legends
    remain: the `confirm_transfer_status` bank-payout status STRING (matched defensively via

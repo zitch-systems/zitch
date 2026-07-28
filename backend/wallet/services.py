@@ -22,6 +22,16 @@ class InsufficientFunds(Exception):
     pass
 
 
+class LimitExceeded(Exception):
+    """A spend cap was breached, detected while holding the wallet row lock.
+
+    Views check the same caps up front and answer with a proper 403, so reaching
+    this means two spends raced: both read the same "spent today", both passed, and
+    the lock serialised them here. Carries the user-facing message so the caller can
+    surface it verbatim rather than inventing a second wording.
+    """
+
+
 class DuplicateTransaction(Exception):
     """A spend was retried with an idempotency key already used — the caller
     should replay the original outcome instead of debiting again."""
@@ -111,18 +121,31 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
 
 @db_transaction.atomic
 def debit(user, amount, service: str, meta: dict | None = None, reference: str | None = None,
-          idempotency_key: str = "") -> Transaction:
+          idempotency_key: str = "", enforce_limits: bool = True) -> Transaction:
     """Atomically debit the wallet and write a PENDING ledger row.
 
     Raises InsufficientFunds if the balance can't cover `amount`. With an
     `idempotency_key`, a duplicate (same user + key) raises DuplicateTransaction
     and the debit is rolled back, so a retried/raced request never debits twice.
     The caller flips the row to Successful/Failed after the provider responds.
+
+    Raises LimitExceeded when a spend cap is breached. That check runs HERE, inside
+    the row lock, and not only in the view: read outside a lock, the daily caps and
+    the velocity brake are advisory, because two concurrent requests both read the
+    same "spent today" and both pass. The lock the balance check already relies on
+    serialises them, so the same reasoning that prevents an overdraw now also
+    prevents a cap being raced. Pass enforce_limits=False only for a movement that
+    is not customer-initiated spend (a reversal, a settlement, an operator action).
     """
     amount = Decimal(str(amount))
     wallet = Wallet.objects.select_for_update().get(user=user)
     if wallet.balance < amount:
         raise InsufficientFunds("Insufficient wallet balance")
+    if enforce_limits:
+        from common.http import spend_limit_error   # local: common.http imports from here
+        breach = spend_limit_error(user, amount, service)
+        if breach:
+            raise LimitExceeded(breach)
     wallet.balance -= amount
     wallet.save(update_fields=["balance", "updated"])
     try:

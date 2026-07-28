@@ -25,6 +25,7 @@ from wallet.forex import FxError, all_balances, create_fx_quote, currency_balanc
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
+    LimitExceeded,
     get_or_create_wallet,
     run_provider_purchase,
 )
@@ -935,6 +936,10 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         _clear_actions(msisdn)
         reply(msisdn, "Insufficient balance — cancelled.")
         return "Insufficient balance — cancelled."
+    except LimitExceeded as exc:
+        _clear_actions(msisdn)
+        reply(msisdn, str(exc))
+        return str(exc)
     except DuplicateTransaction:
         _clear_actions(msisdn)
         reply(msisdn, "That request was already processed.")

@@ -19,16 +19,18 @@ def health(_request):
     page can own "/". (The platform health check points at /healthz.)
     """
     from utility.providers import (_prembly_live, kyc_provider, payment_provider,
-                                    payout_live, payout_provider, vas_provider, vtu_live)
+                                    payout_live, payout_provider, sms_live, sms_provider,
+                                    vas_provider, vtu_live)
     from utility import wema
 
     integrations = {
         "funding_provider": payment_provider(),   # which rail funds the wallet (wema)
         "funding_wema": wema.wema_live(),
         "funding_wema_simulation": wema.wema_simulation(),
-        # Go-live gate (booleans, no secrets): a live payout only SETTLES when the
-        # securityInfo signing scheme is configured AND we're pointed at the live host.
-        # security_info false => live money calls are rejected and auto-refund;
+        # securityInfo is a value WE choose that the bank echoes back to our
+        # authentication callback (confirmed by Wema 2026-07-27) — NOT a signing
+        # scheme the bank issues, and NOT a precondition for a payout to settle.
+        # False here means one optional factor is unused, not that money is blocked.
         # wema_sandbox true => still on apiplayground, so no real money moves.
         "funding_wema_security_info": bool(settings.WEMA.get("SECURITY_INFO")),
         "wema_sandbox": "apiplayground" in (settings.WEMA.get("BASE_URL", "") or "").lower(),
@@ -36,6 +38,10 @@ def health(_request):
         "payout_live": payout_live(),             # payout rail has live keys
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
         "vtu_vtung": vtu_live(),
+        # Which rail actually sends, plus whether it is keyed. sms_sendchamp is kept
+        # so existing dashboards/alerts that read it don't break.
+        "sms_provider": sms_provider(),
+        "sms_live": sms_live(),
         "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
         "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)

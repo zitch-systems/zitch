@@ -12,21 +12,17 @@ fail-closed, so going live is a config + verification exercise, not a code chang
 
 ## 0. What "go-live" actually gates on
 
-Four things must be true before real money can move. Three are hard gates the
-preflight enforces; the fourth is operational.
+Three things must be true before real money can move. Two are hard gates the
+preflight enforces; the third is operational.
 
 1. **Wema live keys present** — channel id + wallet key + per-product keys.
-2. **`securityInfo` scheme configured** — the encrypted field on every
-   money-movement call. **Without it, every live payout fails at the gateway and
-   the debit auto-refunds** (an outage, not a leak). It is not in any spec; Wema
-   provisions it out-of-band. See `utility.wema._security_info`.
-3. **Pointed at the live host** — `WEMA_BASE_URL` is the live ALAT host, not
+2. **Pointed at the live host** — `WEMA_BASE_URL` is the live ALAT host, not
    `apiplayground.alat.ng`.
-4. **A funded / provisionable path** — either a working BVN/NIN provisioning path
+3. **A funded / provisionable path** — either a working BVN/NIN provisioning path
    on the live host, or a funded `WEMA_SOURCE_ACCOUNT`, so the
    account → lift-PND → fund → transfer loop can actually be exercised.
 
-Get all four from Wema (see `docs/wema-migration.md` → "To go live"). Until then,
+Get these from Wema (see `docs/wema-migration.md` → "To go live"). Until then,
 the preflight will correctly report **NOT READY** and no real money can move.
 
 ---
@@ -49,7 +45,7 @@ crons too (`render.yaml` already declares the slots on each).
 | `WEMA_BILLS_KEY` | **Optional — leave blank.** Same as above: bills ride the Wallet Services key. | Wema |
 | `WEMA_KYC_KEY` | **Optional — leave blank.** Partnership Account KYC is bundled into Wallet Services. | Wema |
 | `WEMA_SOURCE_ACCOUNT` | Pool NUBAN that funds pool-sourced payouts | Wema |
-| `WEMA_SECURITY_INFO` | The encrypted securityInfo value/scheme | Wema (out-of-band) |
+| `WEMA_SECURITY_INFO` | A value **we** choose; the bank echoes it back to our Authentication Callback (Wema confirmed 2026-07-27 — nothing is issued). Any long random string; enables `WEMA_AUTH_REQUIRE_SECURITY_INFO`. | us |
 | `WEMA_BASE_URL` | Live ALAT host (differs from `apiplayground.alat.ng`) | Wema |
 | `WEMA_SIMULATION` | **Deploy-wide simulation switch.** `true` puts the WHOLE stack (Wema, VTU airtime/data/bills, cards, FX, Mono, KYC) into mock mode so every feature can be walked end-to-end with no real money. **Must be unset/blank for live** — `wema_preflight` hard-fails while it is on. | — |
 
@@ -62,7 +58,11 @@ crons too (`render.yaml` already declares the slots on each).
 | `DIAG_TOKEN` | Enables `/vtu-diagnose?token=…` and `/wema-callbacks-diagnose?token=…` (either token opens the latter). |
 | `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
-| `SENDCHAMP_API_KEY` | SMS / OTP-by-SMS. |
+| `TERMII_API_KEY` | SMS / OTP-by-SMS (default rail once set). |
+| `TERMII_SENDER_ID` | Sender ID (default `Zitch`) — **must be approved AND whitelisted for DND**, or messages are accepted by the API and never reach the handset. |
+| `TERMII_BASE_URL` | Termii's regional host for *your* account (see the Termii dashboard). |
+| `SMS_PROVIDER` | `termii` \| `sendchamp`; blank = auto. The one-env-var switch back if a sender ID isn't approved yet. |
+| `SENDCHAMP_API_KEY` | Fallback SMS rail. |
 | `SENDCHAMP_SENDER_NAME` | Sender ID (default `Zitch`) — **must be an approved sender ID in Sendchamp** for the DND route to deliver. |
 
 > ⚠️ **Test-only switches — pre-launch testing ONLY, all must be UNSET for go-live.**
@@ -99,10 +99,12 @@ KYC rail.
 
 ### Step 2 — confirm keys load (still sandbox)
 - Run: `python manage.py wema_preflight`
-  - Expect: `Wema live keys` → **PASS**, `securityInfo` → PASS if set,
-    `Live host` → **FAIL** (still sandbox — correct at this step).
-- Or hit `/healthz` and confirm `funding_wema: true`, `funding_wema_security_info: true`,
-  `wema_sandbox: true`.
+  - Expect: `Wema live keys` → **PASS**, `Live host` → **FAIL** (still sandbox —
+    correct at this step). `securityInfo` is a soft check: WARN just means the
+    optional callback second factor is unused.
+- Or hit `/healthz` and confirm `funding_wema: true`, `wema_sandbox: true`.
+  (`funding_wema_security_info` just reports whether the optional callback second
+  factor is set.)
 
 ### Step 3 — live host
 - Set `WEMA_BASE_URL` to the **live** ALAT host on the web service and all crons.
@@ -110,9 +112,8 @@ KYC rail.
 
 ### Step 4 — preflight must now say GO
 - Run: `python manage.py wema_preflight`
-  - Expect: **`RESULT: GO`** (all three hard gates PASS). If not, stop and fix.
-- `/healthz` should now show `wema_sandbox: false` and
-  `funding_wema_security_info: true`.
+  - Expect: **`RESULT: GO`** (every hard gate PASS). If not, stop and fix.
+- `/healthz` should now show `wema_sandbox: false`.
 
 ### Step 5 — live connectivity probes (no money moved)
 - `GET /wema-diagnose?token=<WEMA_DIAG_TOKEN>&account=<10-digit>&bank=<code>` —

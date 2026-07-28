@@ -8,13 +8,17 @@ read-only and moves no money: the same live self-tests as /wema-diagnose and
 
 HARD gates block real money and cause a nonzero exit:
   * Wema live keys present (channel id + wallet + per-product keys)
-  * securityInfo scheme configured — THE blocker: without it every live payout
-    fails at the gateway and the debit auto-refunds
   * pointed at the LIVE host, not apiplayground (the sandbox)
+  * simulation off, test-OTP bypass off, simulated-deposit token unset
 
-SOFT checks are features that degrade without putting money at risk (VTU wallet
-balance, email, SMS, card issuer). They print WARN and only fail the run under
---strict.
+SOFT checks are features that degrade without putting money at risk (securityInfo,
+VTU wallet balance, email, SMS, card issuer). They print WARN and only fail the run
+under --strict.
+
+securityInfo used to be a hard gate on the belief that it was a signing scheme the
+bank had yet to issue. Wema corrected that on 2026-07-27 — it is a value WE choose
+that the bank echoes back to our authentication callback — so it no longer blocks a
+launch. See utility.wema._security_info.
 """
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -43,11 +47,19 @@ class Command(BaseCommand):
             PASS if d["wema_live"] else FAIL,
             "channel + wallet + product keys present" if d["wema_live"]
             else f"status={d['status']} — {d['hint']}"))
+        # SOFT, not a gate. Wema confirmed (2026-07-27) that securityInfo is "a private
+        # key best known to you" which the bank merely echoes back to our authentication
+        # callback — it is not issued by the bank and nothing indicates the bank
+        # validates it. Blocking go-live on it was based on the earlier, wrong reading
+        # that it was a signing scheme the bank had yet to supply. Still recommended:
+        # it costs nothing and enables WEMA_AUTH_REQUIRE_SECURITY_INFO.
         checks.append((
-            True, "securityInfo scheme",
-            PASS if d["security_info_set"] else FAIL,
-            "configured" if d["security_info_set"]
-            else "WEMA_SECURITY_INFO unset — live payouts fail at the gateway and auto-refund"))
+            False, "securityInfo",
+            PASS if d["security_info_set"] else WARN,
+            "set (echoed back to the authentication callback)" if d["security_info_set"]
+            else "WEMA_SECURITY_INFO unset — payouts still work (the callback authorises "
+                 "from our ledger), but set any strong random value to enable "
+                 "WEMA_AUTH_REQUIRE_SECURITY_INFO"))
         on_sandbox = "apiplayground" in (d["base_url"] or "").lower()
         checks.append((
             True, "Live host",
@@ -103,10 +115,11 @@ class Command(BaseCommand):
                        PASS if settings.RESEND["API_KEY"] else WARN,
                        "keyed" if settings.RESEND["API_KEY"]
                        else "RESEND_API_KEY unset — no transactional email"))
-        checks.append((False, "SMS (Sendchamp)",
-                       PASS if settings.SENDCHAMP["API_KEY"] else WARN,
-                       "keyed" if settings.SENDCHAMP["API_KEY"]
-                       else "SENDCHAMP API key unset — no SMS/OTP-by-SMS"))
+        from utility.providers import sms_live, sms_provider
+        checks.append((False, f"SMS ({sms_provider()})",
+                       PASS if sms_live() else WARN,
+                       "keyed" if sms_live()
+                       else f"no API key for the {sms_provider()} rail — no SMS/OTP-by-SMS"))
         checks.append((False, "Card issuer",
                        PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
                        "keyed" if settings.CARD_ISSUER["API_KEY"]

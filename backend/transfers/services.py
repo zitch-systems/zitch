@@ -12,6 +12,7 @@ from wallet.models import Transaction
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
+    LimitExceeded,
     debit,
     refund,
 )
@@ -116,6 +117,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         raise PayoutError("duplicate", "This request was already processed.")
     except InsufficientFunds:
         raise PayoutError("insufficient", "Insufficient wallet balance.")
+    except LimitExceeded as exc:
+        raise PayoutError("limit_exceeded", str(exc))
 
     # Wema per-user-balance model: debit the sender's own NUBAN.
     sender_source = getattr(getattr(user, "wallet", None), "account_number", "") or ""

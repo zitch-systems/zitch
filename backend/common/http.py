@@ -163,6 +163,45 @@ def daily_limit_error(user, amount, kind) -> "str | None":
     return None
 
 
+def daily_kind_for(service: str) -> str:
+    """Which daily bucket a ledger label counts toward: 'transfer', 'bill', or ''.
+
+    Single source of truth for the mapping, so the cap CHECKED before a spend and
+    the bucket the row later COUNTS toward can't drift apart — they are now derived
+    from the same label by the same function.
+    """
+    label = str(service or "")
+    if label.startswith(_TRANSFER_PREFIXES):
+        return "transfer"
+    if label.startswith(_BILL_PREFIXES):
+        return "bill"
+    return ""
+
+
+def spend_limit_error(user, amount, service: str) -> "str | None":
+    """EVERY cap that applies to an outbound debit of `amount` labelled `service`,
+    as one user-facing message — or None when the spend is allowed.
+
+    This is the authoritative gate. `wallet.services.debit` calls it a second time
+    while holding the wallet row lock, which is what makes the daily caps and the
+    velocity brake actually hold: checked outside a lock they are advisory, because
+    two concurrent requests both read the same "spent today" and both pass.
+
+    The views still call the check_* wrappers first, because a 403 with the right
+    code and a helpful message is a better experience than an exception — but that
+    call is now an optimisation, not the guarantee.
+    """
+    if velocity_exceeded(user):
+        return "Too many transactions in a short time. Please wait a few minutes and try again."
+    msg = send_limit_error(user, amount)
+    if msg:
+        return msg
+    kind = daily_kind_for(service)
+    if kind:
+        return daily_limit_error(user, amount, kind)
+    return None
+
+
 def check_daily_limit(user, amount, kind):
     """HTTP wrapper around `daily_limit_error`: a 403 JsonResponse if the daily
     cap would be exceeded, else None."""

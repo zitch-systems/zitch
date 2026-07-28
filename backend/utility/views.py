@@ -9,7 +9,7 @@ from common.http import (
     api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
     provider_purchase_response, require_user, spend_key, verify_transaction_pin,
 )
-from wallet.services import DuplicateTransaction, InsufficientFunds, existing_for_key, run_provider_purchase
+from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
 from .providers import remita_pay, remita_validate, vtu_purchase, vtu_verify_customer
@@ -60,6 +60,8 @@ def _run_purchase(user, amount, service, meta, provider_call, idempotency_key=""
         return idempotent_replay(existing_for_key(user, idempotency_key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
+    except LimitExceeded as exc:
+        return fail(str(exc), status=403, code="limit_exceeded")
 
 
 # ---------------- AIRTIME ----------------
