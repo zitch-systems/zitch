@@ -5,6 +5,7 @@ plus a source-IP allowlist, and neither money-moving handler trusts its payload:
 `authorize` decides from our own ledger, `transaction` re-queries the bank.
 """
 import json
+import os
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -274,3 +275,67 @@ class WemaTransactionCallbackTests(TestCase):
         before = Wallet.objects.get(user=self.user).balance
         self._post(self._payload("ZTRF-unknown"))
         self.assertEqual(Wallet.objects.get(user=self.user).balance, before)
+
+
+@override_settings(WEMA=WEMA_CB)
+class WemaCallbacksDiagnoseTests(TestCase):
+    """/wema-callbacks-diagnose — the browser check for a host with no shell.
+
+    The four URLs must be PROFILED with ALAT before any rail works, so the cost of
+    handing over a wrong one is a silent dead end at the bank. This view is what
+    makes them verifiable from an address bar.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self._env = patch.dict(os.environ, {"DIAG_TOKEN": "diag-secret"})
+        self._env.start()
+        self.addCleanup(self._env.stop)
+
+    def _get(self, token="diag-secret"):
+        return self.client.get("/wema-callbacks-diagnose", {"token": token})
+
+    def _body(self, **kw):
+        return json.loads(self._get(**kw).content)["callbacks"]
+
+    def test_requires_the_diagnose_token(self):
+        self.assertEqual(self._get(token="wrong").status_code, 403)
+
+    def test_lists_all_four_urls_and_they_all_resolve(self):
+        body = self._body()
+        self.assertEqual(len(body["routes"]), 4)
+        for route in body["routes"]:
+            self.assertTrue(route["resolves"], route)
+            self.assertIn(TOKEN, route["url"])          # the string to give the bank
+        handlers = {r["handler"] for r in body["routes"]}
+        self.assertEqual(handlers, {"wema_account_callback", "wema_authenticate_callback",
+                                    "wema_transaction_callback", "wema_notification_callback"})
+
+    def test_reports_ready_when_configured(self):
+        body = self._body()
+        self.assertTrue(body["ready_to_send_to_the_bank"])
+        self.assertEqual(body["blockers"], [])
+        self.assertTrue(body["wrong_secret_is_refused"])
+
+    def test_never_returns_the_callback_secret_itself(self):
+        # The URLs necessarily contain it — nothing else may, and the fingerprint
+        # must not be reversible to it.
+        body = self._body()
+        self.assertNotIn(TOKEN, body["secret_fingerprint"])
+        for key, value in body.items():
+            if key != "routes":
+                self.assertNotIn(TOKEN, str(value), key)
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": ""})
+    def test_unset_secret_blocks_the_handover(self):
+        body = self._body()
+        self.assertFalse(body["ready_to_send_to_the_bank"])
+        self.assertTrue(any("WEMA_CALLBACK_TOKEN is unset" in b for b in body["blockers"]))
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": ""})
+    def test_warns_when_the_endpoints_would_accept_any_secret(self):
+        # An open callback must never be profiled with the bank: from then on the
+        # URL is public and anyone can drive it.
+        body = self._body()
+        self.assertFalse(body["wrong_secret_is_refused"])
+        self.assertTrue(any("accept ANY secret" in b for b in body["blockers"]))
