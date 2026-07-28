@@ -391,3 +391,76 @@ class WemaCallbacksDiagnoseTests(TestCase):
         with patch.dict(os.environ, {"DIAG_TOKEN": "diag-secret"}):
             r = self.client.head("/sms-diagnose", {"token": "diag-secret", "phone": "08030000000"})
         self.assertEqual(r.status_code, 405)
+
+
+@override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
+class WemaCallbackAbuseBoundsTests(TestCase):
+    """The endpoints are reachable by anyone holding the URL, so the COST of driving
+    them has to be bounded even when the caller is authenticated."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user("08033330001", "abuse@zitch.app")
+        get_or_create_wallet(self.user).balance = Decimal("50000")
+        Wallet.objects.filter(user=self.user).update(balance=Decimal("50000"))
+
+    def _pending_payout(self):
+        txn = debit(self.user, Decimal("1000"), "Transfer to X",
+                    meta={"bank": "Wema Bank", "account": "0155500011", "reconcile": True})
+        return txn
+
+    def _post_txn(self, ref, status="Successful"):
+        return self.client.post(
+            f"/webhooks/wema/transaction/{TOKEN}",
+            data=json.dumps({"requestType": 3, "data": {"transactionReference": ref,
+                                                        "status": status}}),
+            content_type="application/json")
+
+    @patch("utility.wema.confirm_transfer_status", return_value={"success": False, "pending": True})
+    def test_repeat_callbacks_do_not_re_query_the_bank(self, mock_status):
+        # Without a bound this endpoint is a 1:1 amplifier into ALAT's API: one inbound
+        # callback, one outbound confirm. Anyone holding the URL could drive unbounded
+        # traffic against the bank in our name.
+        txn = self._pending_payout()
+        for _ in range(5):
+            self.assertEqual(self._post_txn(txn.reference).status_code, 200)
+        self.assertEqual(mock_status.call_count, 1)
+
+    @patch("utility.wema.confirm_transfer_status", return_value={"success": False, "pending": True})
+    def test_the_callback_is_still_recorded_while_cooled(self, _s):
+        # Cooling suppresses the REQUERY, never the record — a suppressed callback must
+        # not become an invisible one.
+        txn = self._pending_payout()
+        self._post_txn(txn.reference, status="Successful")
+        self._post_txn(txn.reference, status="Failed")
+        txn.refresh_from_db()
+        self.assertEqual(txn.meta["wema_callback"]["status"], "Failed")
+
+    @patch("utility.wema.confirm_transfer_status", return_value={"success": False, "pending": True})
+    def test_cooldown_expires_so_a_real_update_is_not_lost_forever(self, mock_status):
+        txn = self._pending_payout()
+        self._post_txn(txn.reference)
+        meta = dict(txn.meta or {})
+        meta["wema_callback"] = {"received": (timezone.now() - timedelta(seconds=120)).isoformat()}
+        Transaction.objects.filter(pk=txn.pk).update(meta=meta)
+        self._post_txn(txn.reference)
+        self.assertEqual(mock_status.call_count, 2)
+
+    @patch("wallet.wema_callbacks.alert")
+    def test_a_retry_against_a_settled_payout_does_not_page_anyone(self, mock_alert):
+        # ALAT retries. Alerting when the protocol works correctly trains operators to
+        # ignore the alert that matters.
+        txn = self._pending_payout()
+        Transaction.objects.filter(pk=txn.pk).update(transaction_status=Transaction.SUCCESS)
+        r = self.client.post(f"/webhooks/wema/authorize/{TOKEN}",
+                             data=json.dumps({"transactionReference": txn.reference}),
+                             content_type="application/json")
+        self.assertFalse(json.loads(r.content)["authorized"])   # still refused
+        mock_alert.assert_not_called()                          # but not alerted
+
+    @patch("wallet.wema_callbacks.alert")
+    def test_an_unknown_reference_still_alerts(self, mock_alert):
+        self.client.post(f"/webhooks/wema/authorize/{TOKEN}",
+                         data=json.dumps({"transactionReference": "ZTRF-not-ours"}),
+                         content_type="application/json")
+        mock_alert.assert_called()

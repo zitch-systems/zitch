@@ -13,9 +13,18 @@ Three are profiled for dev, four for production:
   notification  — production-only real-time notifications (payload undocumented)
 
 SECURITY MODEL. ALAT signs nothing, so these endpoints stack what is available:
-a secret in the URL path, a source-IP allowlist against the bank's published egress
-addresses, and a rate limit — all applied BEFORE the body is parsed. On top of that,
-neither money-moving handler trusts its payload:
+a secret in the URL path and a source-IP allowlist against the bank's published
+egress addresses, both applied BEFORE the body is parsed.
+
+There is deliberately NO per-IP rate limit. It would be worse than nothing here:
+client_ip() resolves through RATELIMIT_TRUSTED_PROXY_HOPS, and on this deployment
+every bank callback currently arrives bearing the SAME platform-internal address
+(observed 10.30.1.250). A per-IP bucket would therefore be shared by all of the
+bank's traffic rather than isolating an attacker — throttling real callbacks while
+bounding nobody. Add one once the hop count is correct and the bank's true source
+address is visible; until then the cost of abuse is bounded per-reference instead
+(see the requery cooldown below). On top of that, neither money-moving handler
+trusts its payload:
 
   * `authorize` answers true only when OUR OWN ledger already holds a fresh PENDING
     bank payout under that exact reference. Possessing the URL is not sufficient.
@@ -37,6 +46,7 @@ from functools import wraps
 from django.db import transaction as db_transaction
 from django.http import JsonResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 
 from common.ratelimit import client_ip
@@ -54,6 +64,21 @@ DEFAULT_CALLBACK_IPS = ("135.236.18.76", "74.178.162.156")
 
 _REF_MAX = 64          # Transaction.reference is max_length=64
 _SECURITY_INFO_MAX = 4096
+
+# Shortest gap between two BANK requeries for the same reference. Without it this
+# endpoint is a 1:1 amplifier into ALAT's own API — one inbound callback, one
+# outbound confirm_transfer_status — so anyone holding the URL can drive unbounded
+# traffic against the bank in our name and burn our API quota. A second callback for
+# the same reference inside the window carries no information the first didn't, so
+# skipping the requery costs nothing: the row is still recorded, and the reconcile
+# poller remains the backstop.
+REQUERY_COOLDOWN = 30  # seconds
+
+# Authorisation denials that are NORMAL bank behaviour rather than a signal. ALAT
+# retries, so a payout we already settled gets asked about again — alerting on those
+# pages an operator for the protocol working correctly, and drowns the reasons that
+# do matter (an unknown reference, a non-payout reference, a securityInfo mismatch).
+_BENIGN_DENIALS = {"state_Successful", "state_Failed", "stale"}
 
 
 def _conf(key, default=None):
@@ -254,7 +279,10 @@ def wema_authenticate_callback(request):
 
     log.info("wema_auth_cb ref=%s authorized=%s reason=%s si=%s ip=%s",
              ref, authorized, reason, _fingerprint(security_info), request.wema_ip)
-    if not authorized:
+    # Alert on denials that mean something. A retry against an already-settled payout
+    # is the bank behaving normally; paging on it trains operators to ignore the alert
+    # that matters. Always logged above either way.
+    if not authorized and reason not in _BENIGN_DENIALS:
         alert("Wema payout authorisation denied", level="warning",
               reference=ref, reason=reason)
     return JsonResponse({"transactionReference": ref, "authorized": bool(authorized)},
@@ -305,6 +333,26 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
     return True, "authorized"
 
 
+def _requery_cooled(txn) -> bool:
+    """True when this reference was already requeried inside REQUERY_COOLDOWN.
+
+    Read off the ledger row's own last-callback stamp rather than a cache, so the
+    bound survives a restart, an empty cache and a worker change. A missing or
+    unparseable stamp means "not cooled" — the safe direction, since the cost of a
+    false negative is one extra requery, while a false positive would skip a
+    settlement the bank was trying to tell us about.
+    """
+    stamp = ((txn.meta or {}).get("wema_callback") or {}).get("received")
+    if not stamp:
+        return False
+    seen = parse_datetime(str(stamp))
+    if seen is None:
+        return False
+    if timezone.is_naive(seen):
+        seen = timezone.make_aware(seen)
+    return (timezone.now() - seen).total_seconds() < REQUERY_COOLDOWN
+
+
 # ---------------------------------------------------------------------------
 # 3. Transaction callback (requestType 3) — a trigger, never an oracle
 # ---------------------------------------------------------------------------
@@ -338,7 +386,11 @@ def wema_transaction_callback(request):
 
     outcome = "noop"
     if txn.transaction_status == Transaction.PENDING:
-        if is_bank_payout(txn):
+        if _requery_cooled(txn):
+            # Recorded below, just not re-asked. Duplicated and out-of-order callbacks
+            # are normal here, and the poller still sweeps anything left pending.
+            outcome = "requery_cooled"
+        elif is_bank_payout(txn):
             result = wema_provider.confirm_transfer_status(ref)
             outcome = settle_or_refund(txn, result)
         else:
