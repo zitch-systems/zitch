@@ -1,3 +1,5 @@
+import ipaddress
+
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
@@ -80,16 +82,17 @@ def wema_diagnose(request):
     (test or live) keys and shows exactly what auth/connectivity error the gateway
     returns — turning "nothing works" into a precise fix. Returns NO secrets.
 
-    Opt-in + protected: 404 unless WEMA_DIAG_TOKEN is set, and it must be supplied
-    as ?token= (constant-time compared). Optional account+bank probe name enquiry;
-    optional phone+bvn/nin probe wallet creation (sends a real OTP).
+    Opt-in + protected: 404 unless WEMA_DIAG_TOKEN or DIAG_TOKEN is set, and it must
+    be supplied as ?token= (constant-time compared). Optional account+bank probe name
+    enquiry; optional phone+bvn/nin probe wallet creation (sends a real OTP).
     """
     import hmac
     import os
 
-    # Strip surrounding whitespace on both sides: a trailing space/newline pasted
-    # into the env value (or the URL) would otherwise fail the byte-exact compare
-    # with an unexplainable "forbidden".
+    # Whitespace is stripped on both sides: a trailing space/newline pasted into the
+    # env value (or the URL) would otherwise fail the byte-exact compare with an
+    # unexplainable "forbidden".
+    #
     # Accepts EITHER token, like the other three probes. This one used to read
     # WEMA_DIAG_TOKEN alone, so setting only DIAG_TOKEN opened /vtu-diagnose,
     # /sms-diagnose and /wema-callbacks-diagnose while this one kept 404ing —
@@ -233,6 +236,34 @@ def wema_callbacks_diagnose(request):
     if not secret_required:
         blockers.append("The callbacks accept ANY secret right now — do not profile these URLs.")
 
+    # Source-IP detection, shown in full so the trusted-proxy hop count can be read
+    # off a real request instead of guessed. If client_ip() resolves to a private
+    # address, it is reporting a hop INSIDE the platform rather than the true caller,
+    # and an allowlist compared against it would refuse every bank callback while
+    # looking correctly configured. Surfacing the raw chain is what makes that
+    # diagnosable — the alternative is a silent 403 storm the bank sees and we don't.
+    enforce_ips = bool(conf.get("CALLBACK_ENFORCE_IPS", False))
+    resolved = client_ip(request)
+    xff = [p.strip() for p in request.META.get("HTTP_X_FORWARDED_FOR", "").split(",") if p.strip()]
+    hops = int(getattr(settings, "RATELIMIT_TRUSTED_PROXY_HOPS", 0) or 0)
+
+    def _public(value):
+        try:
+            return ipaddress.ip_address(value).is_global
+        except ValueError:
+            return False
+
+    # The hop count that WOULD land on the right-most public address in the chain.
+    suggested = next((i for i, v in enumerate(reversed(xff), start=1) if _public(v)), None)
+    resolved_public = _public(resolved)
+    if enforce_ips and not resolved_public:
+        blockers.append(
+            f"CALLBACK_ENFORCE_IPS is on but the source IP resolves to {resolved}, "
+            f"which is not a public address — every bank callback would be refused. "
+            + (f"Set RATELIMIT_TRUSTED_PROXY_HOPS={suggested} (currently {hops})."
+               if suggested else "Fix RATELIMIT_TRUSTED_PROXY_HOPS before enabling it.")
+        )
+
     return JsonResponse({"callbacks": {
         "ready_to_send_to_the_bank": not blockers,
         "blockers": blockers,
@@ -241,9 +272,20 @@ def wema_callbacks_diagnose(request):
         "secret_fingerprint": _fingerprint(token),   # never the secret itself
         "secret_rotation_pending": bool((conf.get("CALLBACK_TOKEN_PREV") or "").strip()),
         "wrong_secret_is_refused": secret_required,
-        "enforce_source_ips": bool(conf.get("CALLBACK_ENFORCE_IPS", False)),
+        "enforce_source_ips": enforce_ips,
         "allowed_source_ips": list(conf.get("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS),
-        "this_request_came_from": client_ip(request),
+        "this_request_came_from": resolved,
+        "source_ip_detection": {
+            # Read this off a request you made yourself: if `resolved_is_public` is
+            # false, the allowlist cannot work yet and rate limits are bucketing on a
+            # platform hop rather than per-caller.
+            "resolved_is_public": resolved_public,
+            "trusted_proxy_hops": hops,
+            "suggested_trusted_proxy_hops": suggested,
+            "x_forwarded_for": xff,
+            "remote_addr": request.META.get("REMOTE_ADDR", ""),
+            "safe_to_enable_ip_enforcement": resolved_public,
+        },
         "authorization_max_age_seconds": int(conf.get("AUTH_MAX_AGE", 900) or 900),
         "require_security_info": bool(conf.get("AUTH_REQUIRE_SECURITY_INFO", False)),
     }})
