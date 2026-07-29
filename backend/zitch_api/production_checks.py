@@ -7,6 +7,7 @@ def validate_production_configuration(
     is_production: bool,
     test_otp_phone: str,
     test_otp_code: str,
+    allow_test_otp: bool,
     simulate_deposit_token: str,
     wema_simulation: bool,
     mono_simulation: bool,
@@ -19,8 +20,11 @@ def validate_production_configuration(
         return
 
     problems: list[str] = []
-    if test_otp_phone or test_otp_code:
-        problems.append("TEST_OTP_PHONE and TEST_OTP_CODE must both be unset")
+    if (test_otp_phone or test_otp_code) and not allow_test_otp:
+        problems.append(
+            "TEST_OTP_PHONE and TEST_OTP_CODE require "
+            "ALLOW_PRODUCTION_TEST_OTP=true on a pre-launch deployment"
+        )
     if simulate_deposit_token:
         problems.append("SIMULATE_DEPOSIT_TOKEN must be unset")
     if (wema_simulation or mono_simulation) and not allow_simulation:

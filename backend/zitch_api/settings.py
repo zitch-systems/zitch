@@ -338,6 +338,8 @@ SENDCHAMP = {
 # carrier approval. Every other number still requires a real delivered code. Use is
 # logged loudly (zitch.security) and `manage.py wema_preflight` HARD-FAILS while it
 # is set, so it cannot slip into go-live. Remove both env vars before launch.
+# With DEBUG off these two ALSO require ALLOW_PRODUCTION_TEST_OTP=true or the app
+# refuses to boot — see production_checks.validate_production_configuration.
 TEST_OTP = {
     "PHONE": os.environ.get("TEST_OTP_PHONE", "").strip(),
     "CODE": os.environ.get("TEST_OTP_CODE", "").strip(),
@@ -482,6 +484,15 @@ REDIS_URL = os.environ.get("REDIS_URL", "").strip()
 # provider flows with DEBUG off. Requiring this second explicit switch prevents
 # a single stale simulation flag from silently turning off real money rails.
 ALLOW_PRODUCTION_SIMULATION = env_bool("ALLOW_PRODUCTION_SIMULATION", False)
+# The test-OTP bypass is refused on a live deploy for the same reason: one number
+# signing in with a fixed code is an account takeover if the pair ever leaks. But a
+# pre-launch deploy has a real need for it — SMS cannot deliver until a sender ID is
+# carrier-approved, so without this there is NO way to sign in on the deployed host
+# and the app cannot be walked end to end. Requiring a second explicit switch keeps
+# the bypass a deliberate act rather than a stale env var nobody noticed. It does NOT
+# make the deploy launch-ready: `wema_preflight` still HARD-FAILS on TEST_OTP, so
+# go-live readiness cannot pass while the bypass is on.
+ALLOW_PRODUCTION_TEST_OTP = env_bool("ALLOW_PRODUCTION_TEST_OTP", False)
 # Multi-worker deployments must share rate-limit/idempotency state. Operators can
 # opt out only for a deliberately single-process environment.
 REQUIRE_SHARED_CACHE = env_bool("DJANGO_REQUIRE_SHARED_CACHE", _PROD)
@@ -492,6 +503,7 @@ validate_production_configuration(
     is_production=_PROD,
     test_otp_phone=TEST_OTP["PHONE"],
     test_otp_code=TEST_OTP["CODE"],
+    allow_test_otp=ALLOW_PRODUCTION_TEST_OTP,
     simulate_deposit_token=SIMULATE_DEPOSIT_TOKEN,
     wema_simulation=WEMA["SIMULATION"],
     mono_simulation=MONO["SIMULATION"],

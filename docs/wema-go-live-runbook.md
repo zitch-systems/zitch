@@ -72,6 +72,7 @@ crons too (`render.yaml` already declares the slots on each).
 > | Var | What it enables (test only) |
 > |---|---|
 > | `TEST_OTP_PHONE` / `TEST_OTP_CODE` | That one number accepts a fixed OTP code, so you can sign in before the SMS sender ID is approved. |
+> | `ALLOW_PRODUCTION_TEST_OTP` | Required alongside the two above whenever `DEBUG` is off — without it the app **refuses to boot** (`production_checks.py`), because a fixed code on a live host is an account takeover if the pair leaks. Setting it does **not** make the deploy launch-ready: `wema_preflight` still hard-fails on `TEST_OTP`. |
 > | `SIMULATE_DEPOSIT_TOKEN` | With `WEMA_SIMULATION=true`, gates two dev endpoints (both **404 whenever `WEMA_SIMULATION` is off**, so neither can touch a live deploy): `POST /api/dev/simulate-deposit/ {token, phone, amount}` credits mock money (the "money-in" step), and `POST /api/dev/simulate-kyc/ {token, phone, tier?}` marks a user KYC-verified to `tier` (1–3, default 3) and provisions a mock NUBAN — so tiers / virtual-account / limit-gated features work without real identity data. |
 >
 > **End-to-end simulation walk:** with `WEMA_SIMULATION=true` the whole stack is mocked,
