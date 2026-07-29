@@ -14,6 +14,7 @@
     --bg:#F4F7F8; --card:#fff; --line:#E5EAEC;
     --disp:'Space Grotesk',sans-serif;
     --mono:ui-monospace,'SF Mono',Menlo,monospace;
+    --modebar-h:46px;
   }
   *{box-sizing:border-box;}
   body{margin:0;font-family:'Inter',system-ui,sans-serif;font-size:14px;color:var(--ink);background:var(--bg);-webkit-font-smoothing:antialiased;}
@@ -24,8 +25,11 @@
   .r{text-align:right;} .w100{width:100%;}
 
   /* shell */
-  .shell{display:flex;min-height:100vh;}
-  .side{width:236px;flex-shrink:0;background:var(--navy);color:#A9C6CF;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;}
+  /* Both offset by the mode bar, which is sticky above them — without this the
+     sidebar is a full viewport tall starting below the bar, so the page scrolls
+     by exactly the bar's height with nothing in it. */
+  .shell{display:flex;min-height:calc(100vh - var(--modebar-h));}
+  .side{width:236px;flex-shrink:0;background:var(--navy);color:#A9C6CF;display:flex;flex-direction:column;position:sticky;top:var(--modebar-h);height:calc(100vh - var(--modebar-h));}
   .side-brand{display:flex;align-items:center;gap:10px;padding:22px 20px 18px;font-family:var(--disp);font-weight:700;letter-spacing:.14em;color:#fff;font-size:15px;}
   .side-brand img{height:24px;} .side-brand em{font-style:normal;color:var(--cyan);font-weight:500;letter-spacing:.02em;}
   .side-nav{display:flex;flex-direction:column;gap:2px;padding:8px 12px;flex:1;}
@@ -176,13 +180,76 @@
 .login-veil { position: fixed; inset: 0; display: grid; place-items: center; background: var(--bg, #F4F6F8); }
 .login-card { width: 360px; padding: 28px 26px; display: block; }
 .login-card .f-input { width: 100%; box-sizing: border-box; margin-bottom: 12px; }
+
+/* --- Live / Demo mode bar ---
+   Demo styling is deliberately garish. The two portals were previously
+   indistinguishable on screen, and /api/ops/ carries wallet/credit, kyc-review,
+   card-action and run-recon — so mistaking one for the other cuts both ways:
+   reading fixture money as real, or firing a real action believing it is a
+   rehearsal. Loud beats tasteful here. */
+.mode-bar{position:sticky;top:0;z-index:100;height:var(--modebar-h);display:flex;
+  align-items:center;justify-content:space-between;gap:16px;padding:0 18px;
+  background:var(--navy);color:#A9C6CF;font-size:13px;font-weight:500;
+  border-bottom:1px solid rgba(255,255,255,.08);}
+.mode-bar-what{display:flex;align-items:center;gap:9px;letter-spacing:.01em;}
+.mode-bar-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--teal);
+  box-shadow:0 0 0 3px rgba(35,177,168,.25);}
+.mode-switch{display:flex;background:rgba(255,255,255,.09);border-radius:9px;padding:3px;gap:2px;}
+.mode-opt{padding:6px 20px;border-radius:7px;font-weight:600;font-size:13px;color:#A9C6CF;
+  transition:background .15s ease,color .15s ease;}
+.mode-opt:hover{color:#fff;}
+.mode-opt.is-on{background:var(--teal);color:#04302C;}
+
+.mode-bar--demo{color:#3A2A00;border-bottom-color:rgba(0,0,0,.2);
+  background:repeating-linear-gradient(135deg,#F5B32B,#F5B32B 14px,#E7A519 14px,#E7A519 28px);}
+.mode-bar--demo .mode-bar-what{font-weight:700;text-transform:uppercase;letter-spacing:.045em;font-size:12px;}
+.mode-bar--demo .mode-bar-dot{background:#3A2A00;box-shadow:0 0 0 3px rgba(58,42,0,.18);}
+.mode-bar--demo .mode-switch{background:rgba(0,0,0,.17);}
+.mode-bar--demo .mode-opt{color:#3A2A00;}
+.mode-bar--demo .mode-opt:hover{color:#000;}
+.mode-bar--demo .mode-opt.is-on{background:#3A2A00;color:#F5B32B;}
+/* The bar scrolls away on a long table, so demo state is also carried by a
+   frame pinned to the viewport — above the toast layer (120) and click-through
+   so it never eats an operator's input. */
+body.is-demo::after{content:'';position:fixed;inset:0;border:3px solid #F5B32B;
+  pointer-events:none;z-index:130;}
+
+@media (max-width:720px){
+  .mode-bar{padding:0 12px;gap:10px;}
+  .mode-bar-what{font-size:11px;}
+  .mode-opt{padding:6px 13px;}
+}
 </style>
 </head>
-<body>
+<body class="{% if demo %}is-demo{% endif %}">
+<div class="mode-bar{% if demo %} mode-bar--demo{% endif %}">
+  <span class="mode-bar-what">
+    <span class="mode-bar-dot"></span>
+    {% if demo %}Demo data — nothing here is real and no action takes effect{% else %}Live — real customer data, and actions here move real money{% endif %}
+  </span>
+  <span class="mode-switch" role="group" aria-label="Portal data source">
+    <a class="mode-opt{% if not demo %} is-on{% endif %}" href="/portal/"{% if not demo %} aria-current="true"{% endif %}>Live</a>
+    <a class="mode-opt{% if demo %} is-on{% endif %}" href="/portal/?mode=demo"{% if demo %} aria-current="true"{% endif %}>Demo</a>
+  </span>
+</div>
 <div id="root"></div>
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+{% if demo %}
+{% comment %}
+Design-handoff bundle: renders from its own fixture data.js and ships no api.js,
+so nothing it draws can reach /api/ops/ and no button can move money. Its
+components share names with the live set, so the two bundles are mutually
+exclusive — the mode is a page load, not a client-side swap.
+{% endcomment %}
+<script src="/static/console/portal/data.js"></script>
+<script type="text/babel" src="/static/console/portal/ui.jsx"></script>
+<script type="text/babel" src="/static/console/portal/views-a.jsx"></script>
+<script type="text/babel" src="/static/console/portal/views-b.jsx"></script>
+<script type="text/babel" src="/static/console/portal/views-c.jsx"></script>
+<script type="text/babel" src="/static/console/portal/portal.jsx"></script>
+{% else %}
 <script src="/static/portal/admin/data.js"></script>
 <script src="/static/portal/admin/api.js"></script>
 <script type="text/babel" src="/static/portal/admin/ui.jsx"></script>
@@ -190,6 +257,7 @@
 <script type="text/babel" src="/static/portal/admin/views-b.jsx"></script>
 <script type="text/babel" src="/static/portal/admin/views-c.jsx"></script>
 <script type="text/babel" src="/static/portal/admin/portal.jsx"></script>
+{% endif %}
 <style id="__om-edit-overrides"></style>
 </body>
 </html>
