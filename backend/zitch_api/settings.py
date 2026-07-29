@@ -129,6 +129,13 @@ DATABASES = {
 
 AUTH_USER_MODEL = "accounts.User"
 
+# /admin/ is the only login surface that goes through authenticate(); the API
+# login views resolve the identifier themselves. Stock ModelBackend matches on
+# username alone, so an operator seeded with DJANGO_SUPERUSER_EMAIL could sign
+# into the operator portal with their email and still be refused by /admin/.
+# This backend accepts username, email or phone — see accounts/auth_backends.py.
+AUTHENTICATION_BACKENDS = ["accounts.auth_backends.UsernameOrEmailOrPhoneBackend"]
+
 # Server-side strength rules, enforced via validate_password() in the password
 # endpoints (the client's "letter + number" hints are advisory and bypassable by
 # a direct API call). Blocks too-short, top-20k-common, all-numeric, and

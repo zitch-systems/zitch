@@ -527,6 +527,41 @@ class SeedOpsCommandTests(TestCase):
         self.assertEqual(list(user.groups.values_list("name", flat=True)), ["support"])
         self.assertTrue(user.check_password("Second#pass2"))
 
+    def test_operator_gets_no_fabricated_phone(self):
+        """The operator's phone must stay NULL. It used to be derived from
+        hash(username), which invented a plausible 080… number — and `phone` is
+        unique, so colliding with a real customer raised IntegrityError inside
+        build.sh (set -o errexit), failing the deploy and leaving the previous
+        release live."""
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="zoe", role="super_admin", password="S3cret#pass")
+        self.assertIsNone(User.objects.get(username="zoe").phone)
+
+    def test_seeding_survives_a_customer_owning_every_plausible_number(self):
+        """Two operators seeded back to back must not collide with each other or
+        with an existing customer, however their usernames hash."""
+        from django.core.management import call_command
+
+        existing = User.objects.create(username="cust", phone="08012345678")
+        call_command("seed_ops", username="zoe", role="finance", password="S3cret#pass")
+        call_command("seed_ops", username="ken", role="support", password="S3cret#pass")
+        self.assertEqual(User.objects.filter(phone__isnull=True).count(), 2)
+        self.assertEqual(User.objects.get(pk=existing.pk).phone, "08012345678")
+
+    def test_seeded_super_admin_can_sign_into_django_admin(self):
+        """The whole point of the build-time bootstrap: /admin/ must accept the
+        seeded account by username AND by the email it was seeded with."""
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="admin", role="super_admin",
+                     password="S3cret#pass", email="owner@zitch.ng")
+        for identifier in ("admin", "owner@zitch.ng"):
+            res = Client().post("/admin/login/",
+                                {"username": identifier, "password": "S3cret#pass",
+                                 "next": "/admin/"})
+            self.assertEqual(res.status_code, 302, f"{identifier} should sign in")
+
 
 class TokenScopeTests(TestCase):
     """The app/admin token split: a mobile (app-scoped) token can never reach a
