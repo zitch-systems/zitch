@@ -71,9 +71,16 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Seeded {len(DEMO_OPERATORS)} demo operators."))
 
     def _upsert(self, username, role, password, email):
+        # phone stays NULL. It used to be fabricated from `hash(username)`, which
+        # was both non-deterministic (Python salts str hashes per process, so a
+        # re-deploy invented a different number) and a real hazard: the value
+        # looked like a Nigerian mobile and `phone` is unique, so colliding with
+        # a customer's number raised IntegrityError inside build.sh — which runs
+        # under `set -o errexit`, failing the whole deploy and leaving the
+        # previous release serving. Operators sign in by username or email, and
+        # the column is nullable (Postgres permits many NULLs under UNIQUE).
         user, created = User.objects.get_or_create(
-            username=username,
-            defaults={"email": email, "phone": f"080{abs(hash(username)) % 10 ** 8:08d}"},
+            username=username, defaults={"email": email, "phone": None},
         )
         user.is_staff = True
         user.is_active = True

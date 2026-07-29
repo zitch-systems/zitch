@@ -39,6 +39,21 @@ services:
         value: ".onrender.com,api.zitch.ng"
       - key: CSRF_TRUSTED_ORIGINS
         value: "https://api.zitch.ng"
+      # Bootstrap the back-office super admin. The free tier has no shell, so
+      # build.sh running seed_ops on each deploy is the ONLY way in — and it is
+      # gated on PASSWORD being non-empty, so leaving this blank means /admin/
+      # has no account at all and every login is refused. Declared here (rather
+      # than only in build.sh) so the fields are visible in the Render dashboard
+      # instead of being invisible unless you read the build script.
+      # Sign in with the USERNAME below, or with the EMAIL — both work.
+      # Re-deploying with a new PASSWORD resets it, which is the recovery path
+      # if it is ever lost.
+      - key: DJANGO_SUPERUSER_USERNAME
+        value: "admin"
+      - key: DJANGO_SUPERUSER_EMAIL
+        sync: false
+      - key: DJANGO_SUPERUSER_PASSWORD
+        sync: false
       - key: TOKEN_TTL_HOURS
         value: "24"
       # Origins allowed to call the API cross-origin (Expo web build /

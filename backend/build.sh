@@ -13,9 +13,21 @@ python manage.py seed_plans
 # account, so re-deploys never duplicate or reset an existing password unless
 # DJANGO_SUPERUSER_PASSWORD changed.
 if [ -n "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
+  ADMIN_USERNAME="${DJANGO_SUPERUSER_USERNAME:-admin}"
   python manage.py seed_ops \
-    --username "${DJANGO_SUPERUSER_USERNAME:-admin}" \
+    --username "$ADMIN_USERNAME" \
     --role super_admin \
     --password "$DJANGO_SUPERUSER_PASSWORD" \
     --email "${DJANGO_SUPERUSER_EMAIL:-admin@zitch.ng}"
+  echo "==> Admin bootstrap OK. Sign in at /admin/ as '$ADMIN_USERNAME' (or its email) with DJANGO_SUPERUSER_PASSWORD."
+else
+  # Loud on purpose. This used to skip in silence, which is indistinguishable in
+  # the deploy log from a successful bootstrap — so the first sign anything was
+  # wrong was being unable to log in, with nothing to point at.
+  echo "==> WARNING: DJANGO_SUPERUSER_PASSWORD is not set."
+  echo "==>          Skipping admin bootstrap: NO account is created, and /admin/"
+  echo "==>          will reject every login. Set DJANGO_SUPERUSER_PASSWORD (and"
+  echo "==>          optionally DJANGO_SUPERUSER_USERNAME, default 'admin') in the"
+  echo "==>          Render dashboard, then redeploy. Re-running is safe: the"
+  echo "==>          account is upserted, and the password is reset to match."
 fi
