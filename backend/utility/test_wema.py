@@ -717,3 +717,42 @@ class WemaConformanceFixTests(SimpleTestCase):
                          "Invalid OTP supplied")
         # message still wins when present
         self.assertEqual(wema._msg({"message": "Enter the OTP", "errors": ["x"]}), "Enter the OTP")
+
+    def test_msg_survives_dotnet_validation_error_object(self):
+        """ALAT is .NET: a 400 answers with ValidationProblemDetails, where `errors`
+        is an object keyed by field, not an array. Indexing [0] raised KeyError: 0
+        and 500'd the account callback in production on 2026-07-29."""
+        data = {"errors": {"accountNumber": ["The accountNumber field is required."]},
+                "title": "One or more validation errors occurred.", "status": 400}
+        self.assertEqual(wema._msg(data), "The accountNumber field is required.")
+
+    def test_msg_normalises_every_error_field_shape(self):
+        """Whatever the gateway types these as, _msg returns a string and never raises
+        — a message helper must not be able to take down a money path."""
+        for field in ("message", "errorMessage", "errorMessages", "errors"):
+            for value, expected in (
+                ("Insufficient funds", "Insufficient funds"),       # bare string
+                (["Insufficient funds"], "Insufficient funds"),     # array
+                ({"amount": ["Insufficient funds"]}, "Insufficient funds"),  # .NET object
+                ({"amount": "Insufficient funds"}, "Insufficient funds"),    # object of strings
+                ([], "Request failed"),                             # empty
+                ({}, "Request failed"),
+                (None, "Request failed"),
+            ):
+                with self.subTest(field=field, value=value):
+                    self.assertEqual(wema._msg({field: value}), expected)
+
+    def test_msg_rejects_a_non_dict_envelope(self):
+        """_ok already guards this; _msg did not, so a bare list or string body would
+        AttributeError instead of degrading to the neutral message."""
+        for body in ([], "", "boom", ["boom"], None, 0):
+            with self.subTest(body=body):
+                self.assertEqual(wema._msg(body), "Request failed")
+
+    def test_msg_still_strips_the_provider_brand_from_nested_shapes(self):
+        """White-labelling must survive normalisation: a branded string reached
+        through a dict or array is dropped exactly as a top-level one is."""
+        self.assertEqual(wema._msg({"errors": {"acct": ["Download the ALAT app"]}}),
+                         "Request failed")
+        self.assertEqual(wema._msg({"errorMessages": ["Wema could not process this"]}),
+                         "Request failed")

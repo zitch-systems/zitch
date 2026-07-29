@@ -210,8 +210,20 @@ def wema_account_callback(request):
         # Best-effort PND lift: ALAT places a Post-No-Debit hold on a new Tier-1
         # NUBAN, so it can receive but not send until lifted. A failure here still
         # leaves a usable funding account; the OTP flow and poller retry it.
-        pnd = wema_provider.lift_debit_restriction(nuban)
-        if not pnd.get("success"):
+        #
+        # "Best-effort" has to mean it too. lift_debit_restriction only catches
+        # RequestException, so anything else — a gateway body in an unexpected shape,
+        # a bug in this path — escaped and 500'd a callback whose real work (the
+        # wallet above) had ALREADY succeeded. The bank then sees a failed delivery
+        # for an account it created, and retries something that cannot get better.
+        # Swallow broadly and let the poller retry the lift: acknowledging the
+        # provisioning matters more than reporting a hold we can fix later.
+        try:
+            lifted = bool(wema_provider.lift_debit_restriction(nuban).get("success"))
+        except Exception:                        # noqa: BLE001 — see above
+            log.exception("wema_pnd_lift_error_cb user=%s account=%s", user.id, nuban)
+            lifted = False
+        if not lifted:
             log.warning("wema_pnd_lift_failed_cb user=%s account=%s", user.id, nuban)
 
     log.info("wema_account_cb user=%s nuban=%s outcome=%s bank_status=%s",

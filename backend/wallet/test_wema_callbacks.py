@@ -130,6 +130,17 @@ class WemaAccountCallbackTests(TestCase):
         self._post(self._payload(nuban="0155500011"))   # a second, different account
         self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0155500099")
 
+    @patch("utility.wema.lift_debit_restriction", side_effect=KeyError(0))
+    def test_pnd_lift_crash_still_acknowledges_the_provisioned_wallet(self, _pnd):
+        """Production 2026-07-29: a .NET validation body made _msg raise KeyError: 0
+        inside the lift, which escaped and 500'd the callback — AFTER the wallet was
+        already saved. The bank then sees a failed delivery for an account it created
+        and retries something that cannot succeed. The lift is documented best-effort,
+        so it must not be able to fail the acknowledgement."""
+        r = self._post(self._payload())
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(Wallet.objects.filter(account_number="0155500099").exists())
+
 
 @override_settings(WEMA=WEMA_CB)
 class WemaAuthenticateCallbackTests(TestCase):

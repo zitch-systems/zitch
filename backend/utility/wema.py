@@ -203,13 +203,43 @@ def _ok(data: dict) -> bool:
 _PROVIDER_BRAND = re.compile(r"\b(alat|wema)", re.I)
 
 
+def _first_text(v) -> str:
+    """First human-readable string out of an ALAT error field, whatever shape it took.
+
+    The gateway is not consistent about these fields. `errors` is an array of strings
+    on the account-creation ResponseModel, but ALAT is a .NET service and its
+    validation failures answer with the framework's ValidationProblemDetails shape,
+    where `errors` is an OBJECT keyed by field name:
+
+        {"errors": {"accountNumber": ["The field is required."]}, "status": 400}
+
+    Indexing that with [0] raised `KeyError: 0` and turned a routine 400 into a 500 —
+    observed in production 2026-07-29, which 500'd the account callback after the
+    wallet had already been provisioned. A bare string would have been just as wrong
+    the other way, silently yielding a single character. Normalising by shape instead
+    of assuming one keeps every caller safe from whichever the gateway sends.
+    """
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):                      # {"field": ["msg"]} -> "msg"
+        return _first_text(next(iter(v.values()), ""))
+    if isinstance(v, (list, tuple)):
+        return _first_text(v[0]) if v else ""
+    return ""
+
+
 def _msg(data: dict) -> str:
-    # `errors[]` is the error-detail array on the account-creation ResponseModel;
+    # `errors` is the error-detail collection on the account-creation ResponseModel;
     # `errorMessage`/`errorMessages` are the credit/debit envelope's. This helper is
-    # shared across both, so it reads all three (message wins when present).
-    text = (data.get("message") or data.get("errorMessage")
-            or (data.get("errorMessages") or [""])[0]
-            or (data.get("errors") or [""])[0] or "")
+    # shared across both, so it reads all three (message wins when present). Every
+    # field goes through _first_text because the gateway types them inconsistently —
+    # see that docstring. Guards a non-dict `data` for the same reason _ok does: a
+    # gateway that answers with a bare list or string must not take the process down.
+    if not isinstance(data, dict):
+        return "Request failed"
+    text = (_first_text(data.get("message")) or _first_text(data.get("errorMessage"))
+            or _first_text(data.get("errorMessages"))
+            or _first_text(data.get("errors")))
     if not text or _PROVIDER_BRAND.search(text):
         return "Request failed"
     return text
