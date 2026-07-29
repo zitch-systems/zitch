@@ -208,6 +208,12 @@
 .mode-bar--demo .mode-opt{color:#3A2A00;}
 .mode-bar--demo .mode-opt:hover{color:#000;}
 .mode-bar--demo .mode-opt.is-on{background:#3A2A00;color:#F5B32B;}
+/* The topbar's environment pill is teal in both bundles, and in the demo it
+   used to read "Production" — the one word the demo can never truthfully show.
+   It says "Demo data" now; this makes it look like the mode bar too, so the
+   two can't drift back apart. */
+body.is-demo .env-pill{background:#FDF0D2;color:#6B4E00;}
+body.is-demo .env-pill .dot{background:#B98900;}
 /* The bar scrolls away on a long table, so demo state is also carried by a
    frame pinned to the viewport — above the toast layer (120) and click-through
    so it never eats an operator's input. */
@@ -238,10 +244,19 @@ body.is-demo::after{content:'';position:fixed;inset:0;border:3px solid #F5B32B;
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 {% if demo %}
 {% comment %}
-Design-handoff bundle: renders from its own fixture data.js and ships no api.js,
-so nothing it draws can reach /api/ops/ and no button can move money. Its
-components share names with the live set, so the two bundles are mutually
-exclusive — the mode is a page load, not a client-side swap.
+Design-handoff bundle: renders entirely from its own fixture data.js, with no
+network client of any kind. Its components share names with the live set, so
+the two bundles are mutually exclusive — the mode is a page load, not a
+client-side swap.
+
+This note used to say the bundle "ships no api.js, so nothing it draws can
+reach /api/ops/ and no button can move money". Both halves were true and the
+conclusion was still wrong: data.js had a live client inlined in it, pointed at
+/api/admin — the OTHER staff mount, with the same write surface. The demo drew
+real customer rows and its buttons moved real money. Naming one mount is what
+made a false claim look checkable, so the guarantee is now about sockets, not
+URLs, and portal.tests.DemoBundleTests enforces it against every file listed
+below rather than against a filename.
 {% endcomment %}
 <script src="/static/console/portal/data.js"></script>
 <script type="text/babel" src="/static/console/portal/ui.jsx"></script>

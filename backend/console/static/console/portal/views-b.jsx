@@ -1,6 +1,7 @@
-// Zitch Admin — views B: WhatsApp inbox, Broadcasts, AI controls, Audit log, Settings
-// Conversation + broadcast actions POST to the audited /api/admin/wa/* endpoints
-// (server-side RBAC: wa / broadcast capabilities) before patching local state.
+// Zitch Admin (demo bundle) — views B: WhatsApp inbox, Broadcasts, AI controls,
+// Audit log, Settings. Conversation and broadcast actions resolve locally
+// through doAct and patch local state only — no message is sent, no broadcast
+// goes out. The live bundle under static/portal/admin/ is the one that does.
 const { useState } = React;
 const DB = window.ZADM;
 
@@ -31,17 +32,17 @@ function WaInbox({ toast }) {
     setBusy(true);
     const r = await doAct(toast, '/wa/handover', { msisdn: c.msisdn, mode: 'human' });
     setBusy(false);
-    if (r) { patch(selIdx, { status: 'human', aiEnabled: false, agent: 'You' }); toast('Bot paused — conversation handed to you (audit logged)'); }
+    if (r) { patch(selIdx, { status: 'human', aiEnabled: false, agent: 'You' }); toast('Bot paused — conversation handed to you (no audit entry — demo)'); }
   };
   const returnBot = async () => {
     setBusy(true);
     const r = await doAct(toast, '/wa/handover', { msisdn: c.msisdn, mode: 'bot' });
     setBusy(false);
-    if (r) { patch(selIdx, { status: 'bot', aiEnabled: true, agent: null }); toast('Returned to bot (audit logged)'); }
+    if (r) { patch(selIdx, { status: 'bot', aiEnabled: true, agent: null }); toast('Returned to bot (no audit entry — demo)'); }
   };
   const toggleAi = async (v) => {
     const r = await doAct(toast, '/wa/conv_ai', { msisdn: c.msisdn, enabled: v });
-    if (r) { patch(selIdx, { aiEnabled: v }); toast('Conversation AI ' + (v ? 'enabled' : 'disabled') + ' (audit logged)'); }
+    if (r) { patch(selIdx, { aiEnabled: v }); toast('Conversation AI ' + (v ? 'enabled' : 'disabled') + ' (no audit entry — demo)'); }
   };
   const sendReply = async () => {
     if (!reply.trim() || busy) return;
@@ -51,7 +52,7 @@ function WaInbox({ toast }) {
     setBusy(false);
     if (r) {
       patch(selIdx, { msgs: [...c.msgs, { dir: 'out', text: '[Agent · You] ' + text, t: new Date(), agent: true }] });
-      setReply(''); toast('Agent reply sent (audit logged)');
+      setReply(''); toast('Agent reply sent (no audit entry — demo)');
     }
   };
 
@@ -141,7 +142,7 @@ function Broadcasts({ toast }) {
     if (r && r.broadcast) {
       const next = [r.broadcast, ...rows];
       setRows(next); DB.BROADCASTS = next;
-      toast('Broadcast sent — ' + r.broadcast.queued + ' queued, ' + r.broadcast.sent + ' delivered to provider (audit logged)');
+      toast('Broadcast sent — ' + r.broadcast.queued + ' queued, ' + r.broadcast.sent + ' delivered to provider (no audit entry — demo)');
     }
   };
 
@@ -230,21 +231,16 @@ function AiControls({ toast }) {
   const { can } = useRole();
   const initial = (DB.SETTINGS.find((s) => s.key === 'ai_enabled_global') || {}).value;
   const [global, setGlobal] = useState(String(initial) !== 'false');
-  const [saving, setSaving] = useState(false);
   const intents = DB.CONVOS.flatMap((c) => c.msgs.filter((m) => m.intent).map((m) => ({ ...m, user: c.user, msisdn: c.msisdn })));
 
-  // Persist the kill switch to SystemSetting via the audited staff endpoint.
-  const setKill = async (v) => {
-    if (saving) return;
-    setSaving(true);
-    setGlobal(v); // optimistic
-    try {
-      await ZADM_API.act('/settings/update', { key: 'ai_enabled_global', value: v ? 'true' : 'false' });
-      toast('ai_enabled_global = ' + v + ' (audit logged)');
-    } catch (e) {
-      setGlobal(!v); // revert on failure
-      toast(e.message || 'Could not update setting');
-    } finally { setSaving(false); }
+  // The one control in this bundle that bypassed doAct and called the staff API
+  // directly — so the demo's AI kill switch flipped the real ai_enabled_global,
+  // for every live WhatsApp user, from a page captioned "no action takes
+  // effect". Local state only now; the live portal persists it to SystemSetting
+  // through the audited endpoint.
+  const setKill = (v) => {
+    setGlobal(v);
+    toast('Demo · ai_enabled_global = ' + v);
   };
   return (
     <div>
@@ -274,7 +270,7 @@ function AiControls({ toast }) {
                 <b>{global ? 'AI intent layer is ON' : 'AI intent layer is OFF'}</b>
                 <p className="dim sm" style={{ margin: '4px 0 0' }}>{global ? 'Free-form text is mapped to intents by Claude (temp 0, tool calling).' : 'Channel is fully menu-driven. Keywords and numbered menus still work.'}</p>
               </div>
-              <Toggle on={global} disabled={!can.ai || saving} label="global AI"
+              <Toggle on={global} disabled={!can.ai} label="global AI"
                 onChange={setKill} />
             </div>
             {!can.ai && <p className="rbac-note"><Icon name="lock" size={13} /> Super admin only.</p>}
@@ -308,7 +304,7 @@ function Audit({ toast }) {
     setSearching(false);
     if (r) {
       setServerRows((r.rows || []).map((a) => ({ ...a, t: new Date(a.t) })));
-      toast((r.rows || []).length + ' audit entries matched server-side');
+      toast((r.rows || []).length + ' audit entries matched in the demo fixture');
     }
   };
   return (
