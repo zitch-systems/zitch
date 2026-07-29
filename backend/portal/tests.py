@@ -264,6 +264,70 @@ class WebPagesTests(TestCase):
             self.assertEqual(res.status_code, 200, path)
             self.assertIn(marker, res.content)
 
+    # The demo class names also appear in the stylesheet, which ships in both
+    # modes — so these assert on the rendered elements, never the bare string.
+    LIVE_BODY, DEMO_BODY = b'<body class="">', b'<body class="is-demo">'
+    LIVE_BAR, DEMO_BAR = b'class="mode-bar"', b'class="mode-bar mode-bar--demo"'
+
+    def test_live_portal_loads_the_live_bundle_and_no_fixtures(self):
+        """The default must never be the mock. /portal/ with no query string is
+        what an operator reaches from a bookmark, so it has to be the live one."""
+        body = Client().get("/portal/").content
+        self.assertIn(b"/static/portal/admin/api.js", body)
+        self.assertIn(b"/static/portal/admin/portal.jsx", body)
+        self.assertNotIn(b"/static/console/portal/", body)
+        self.assertIn(self.LIVE_BODY, body)
+        self.assertIn(self.LIVE_BAR, body)
+
+    def test_demo_mode_loads_the_fixture_bundle_and_cannot_reach_the_api(self):
+        """The console bundle ships no api.js at all, so demo mode is incapable
+        of calling /api/ops/ — the isolation is the absence of the client, not a
+        flag some component could get wrong."""
+        body = Client().get("/portal/?mode=demo").content
+        self.assertIn(b"/static/console/portal/portal.jsx", body)
+        self.assertNotIn(b"/static/portal/admin/api.js", body)
+        self.assertNotIn(b"/static/portal/admin/portal.jsx", body)
+
+    def test_demo_mode_is_flagged_in_the_markup(self):
+        """Two portals that looked identical was the whole problem. Pin the
+        marks that make demo unmistakable so a restyle can't quietly drop them."""
+        body = Client().get("/portal/?mode=demo").content
+        self.assertIn(self.DEMO_BODY, body)           # viewport frame
+        self.assertIn(self.DEMO_BAR, body)            # striped bar
+        self.assertIn(b"nothing here is real", body)  # plain-language warning
+
+    def test_unknown_mode_falls_back_to_live(self):
+        """Fail safe: any value that isn't exactly "demo" — a typo, a stale
+        link, ?mode=live — serves the real portal rather than fixtures."""
+        for qs in ("?mode=", "?mode=live", "?mode=DEMO", "?mode=demo2", "?other=demo"):
+            body = Client().get("/portal/" + qs).content
+            self.assertIn(b"/static/portal/admin/api.js", body, qs)
+            self.assertIn(self.LIVE_BODY, body, qs)
+
+    def test_no_template_syntax_leaks_into_either_page(self):
+        """Django's {# #} comment is SINGLE-LINE only — a multi-line one is not a
+        comment at all and renders verbatim across the top of the portal. Caught
+        in review by screenshotting the page; the bundle-and-class assertions all
+        passed straight through it, so pin the rendered text too."""
+        # `}}` is deliberately not checked: minified CSS closes a nested @media
+        # block with it, so it is not evidence of anything.
+        for qs in ("", "?mode=demo"):
+            body = Client().get("/portal/" + qs).content
+            for leak in (b"{#", b"#}", b"{%", b"%}", b"{{"):
+                self.assertNotIn(leak, body, f"{leak!r} leaked at /portal/{qs}")
+
+    def test_old_console_portal_url_redirects_to_demo_mode(self):
+        res = Client().get("/console/portal/")
+        self.assertEqual(res.status_code, 302)
+        self.assertEqual(res["Location"], "/portal/?mode=demo")
+
+    def test_console_landing_and_app_are_untouched(self):
+        """Only the duplicate portal was consolidated; the other two console
+        surfaces are still served verbatim."""
+        c = Client()
+        for path in ("/console/", "/console/app/"):
+            self.assertEqual(c.get(path).status_code, 200, path)
+
     def test_health_moved_to_healthz(self):
         res = Client().get("/healthz")
         self.assertEqual(res.status_code, 200)

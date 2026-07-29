@@ -16,6 +16,16 @@ def prototype(request):
     return render(request, "portal/prototype.html")
 
 
+# The operator portal ships two data layers: the live one over /api/ops/, and the
+# design-handoff mock that renders entirely from a fixture file. They used to be
+# two separate URLs — /portal/ and /console/portal/ — with identical chrome and an
+# identical twelve-item nav, and nothing on screen said which you were looking at.
+# A fixture balance read exactly like a real one. One URL with an explicit mode
+# makes that mistake impossible and keeps the demo bookmarkable.
+DEMO_MODE = "demo"
+
+
 @require_GET
 def admin_portal(request):
-    return render(request, "portal/admin.html")
+    return render(request, "portal/admin.html",
+                  {"demo": request.GET.get("mode") == DEMO_MODE})
