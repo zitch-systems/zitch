@@ -86,3 +86,45 @@ class ProductionConfigurationTests(SimpleTestCase):
         with self.assertRaisesRegex(ImproperlyConfigured, "REDIS_URL"):
             self.validate(redis_url="")
         self.validate(redis_url="", require_shared_cache=False)
+
+
+class LoggingConfigurationTests(SimpleTestCase):
+    """Every logger the code writes to must be able to emit at INFO.
+
+    A name absent from LOGGING["loggers"] inherits root, which sits at WARNING —
+    so its log.info calls are dropped before any handler sees them, silently and
+    with nothing in the config pointing at the omission. "wallet" was missing for
+    the whole life of the Wema integration, which is why the NUBAN provisioning
+    trail (wema_account_provisioned, and the source= that says whether the account
+    came from the OTP flow or the bank's callback) never once reached Render.
+    """
+
+    def logger_names_used_in_code(self):
+        import re
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent
+        names = set()
+        for path in base.rglob("*.py"):
+            if "/migrations/" in str(path) or path.name.startswith("test"):
+                continue
+            for match in re.finditer(r'getLogger\(["\']([\w.]+)["\']\)', path.read_text(encoding="utf-8")):
+                names.add(match.group(1))
+        return names
+
+    def test_every_logger_used_in_code_can_emit_at_info(self):
+        import logging
+        missing = []
+        for name in sorted(self.logger_names_used_in_code()):
+            if not logging.getLogger(name).isEnabledFor(logging.INFO):
+                missing.append(name)
+        self.assertEqual(
+            missing, [],
+            f"these loggers drop log.info because LOGGING['loggers'] has no entry "
+            f"for them (or an ancestor): {missing}")
+
+    def test_the_scan_actually_finds_the_known_loggers(self):
+        """Guards the test above from passing because the scan found nothing."""
+        found = self.logger_names_used_in_code()
+        self.assertIn("wallet", found)
+        self.assertIn("zitch.security", found)   # dotted: inherits from "zitch"
+        self.assertGreaterEqual(len(found), 4)
