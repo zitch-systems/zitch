@@ -550,6 +550,17 @@ LOGGING = {
         # Application + security/money-audit stream.
         "zitch": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
         "whatsapp": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        # These two are top-level logger names rather than living under "zitch",
+        # so without an entry here they inherit root's WARNING and every log.info
+        # they make is dropped before it reaches a handler. That silently cost us
+        # the NUBAN provisioning trail in production — wema_account_provisioned
+        # (which records whether an account came from the OTP flow or the bank's
+        # callback), wema_bank_tier_synced, wema_credit_unsettled and
+        # reserved_funding_duplicate have never once appeared in Render's logs.
+        # ("zitch.security" needs no entry: a dotted name inherits its level from
+        # "zitch" and propagates into that logger's handler.)
+        "wallet": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
+        "banklink": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": False},
     },
 }
 

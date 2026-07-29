@@ -90,6 +90,68 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["success"])
 
+    # --- The identity gate on an account the bank's callback provisioned first ---
+    #
+    # ALAT has no standalone BVN/NIN lookup, so the name match during provisioning IS
+    # the identity check: the tier only lifts when the holder name the BANK returns
+    # matches the registered name. When the Account Creation callback lands before the
+    # customer finishes the OTP step — the common ordering — verify-otp used to
+    # name-match against wallet.account_name. But provision_wema_account stores the
+    # user's own registered name whenever the bank sent a blank nubanName, so that
+    # compared the value to itself and passed unconditionally. These pin the fix: the
+    # name is fetched from the bank by NUBAN, and a real mismatch holds the tier.
+
+    def _verify_after_callback(self, kyc_status):
+        """Run the real interleaving: the customer starts the OTP flow, the bank's
+        Account Creation callback provisions the NUBAN with a blank nubanName while
+        they are reading the SMS, and then they submit the code.
+
+        Order matters — /create/ short-circuits once an account exists, so the
+        tracking id has to be taken before the callback lands.
+        """
+        from wallet.services import provision_wema_account
+        tracking = self._post("/api/wallet/wema/create/",
+                              {"bvn": "22222222222"}).json()["tracking_id"]
+        wallet, outcome = provision_wema_account(
+            self.user, account_number="9911223344", account_name="",
+            bank_name="Wema Bank", source="callback")
+        self.assertEqual(outcome, "provisioned")
+        # The stored name is our own fallback, so it is worthless as evidence —
+        # matching it against the registered name can only ever pass.
+        self.assertEqual(wallet.account_name, self.user.get_full_name())
+        # wema_live gates the name match, so it has to be on — which also routes OTP
+        # validation down the live path, hence the stub.
+        with patch("utility.wema.wema_live", return_value=True), \
+             patch("utility.wema.validate_wallet_otp", return_value={"success": True}), \
+             patch("utility.wema.get_kyc_status", return_value=kyc_status):
+            return self._post("/api/wallet/wema/verify-otp/",
+                              {"otp": "123456", "tracking_id": tracking,
+                               "using_bvn": True, "bvn": "22222222222"})
+
+    def test_callback_provisioned_account_matches_the_name_the_bank_holds(self):
+        r = self._verify_after_callback({"success": True, "name": "EZE ADA CHIDINMA"})
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)   # bank's name matches -> tier lifts
+
+    def test_callback_provisioned_account_holds_tier_on_a_real_mismatch(self):
+        # Same request, but the NUBAN belongs to someone else at the bank. Before the
+        # fix this lifted the tier: the comparison never saw this name at all.
+        r = self._verify_after_callback({"success": True, "name": "JOHN DOE"})
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertEqual(self.user.tier, 1)       # unchanged, held for review
+
+    def test_unreadable_bank_name_does_not_block_a_legitimate_holder(self):
+        # A name we cannot read is not a mismatch — same posture as a fresh
+        # provisioning whose response omits it. Deliberate: this path is onboarding,
+        # and a gateway hiccup must not strand a real customer at tier 0.
+        r = self._verify_after_callback({"success": False})
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+
     def test_account_create_starts_otp_flow_on_wema(self):
         # The app's existing "Get my account" endpoint must drive the Wema OTP
         # round-trip (Wema is the sole funding rail).

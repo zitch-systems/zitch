@@ -220,8 +220,10 @@ def wema_wallet_verify_otp(request):
         return fail(val.get("message", "OTP verification failed"), status=502)
     if already:
         # Provisioned already (by an earlier verify, or by the bank's Account Creation
-        # callback). Skip the provisioning write and name-match against what we hold.
-        holder_name = wallet.account_name
+        # callback). Skip the provisioning write. The holder name is NOT read back from
+        # the wallet here — it is resolved from the bank in the name-match block below,
+        # for the reason spelled out there.
+        holder_name = None
     else:
         acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
         if not acct.get("success") or not acct.get("account_number"):
@@ -257,6 +259,33 @@ def wema_wallet_verify_otp(request):
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     name_ok = True
     if wema_provider.wema_live():
+        if holder_name is None:
+            # Ask the bank what name it holds against this NUBAN.
+            #
+            # wallet.account_name cannot answer that question, though it looks like it
+            # can. provision_wema_account substitutes the user's OWN registered name
+            # whenever the bank hands over a blank one — deliberately, because a
+            # funding account with no name can't be safely paid into — and the Account
+            # Creation callback's nubanName is routinely blank. Matching that stored
+            # value against the registered name compares it to itself and passes every
+            # single time. For every account the bank's callback provisioned before the
+            # customer reached this step (the common ordering, which is why the early
+            # return above was removed), the only identity check in the ALAT flow was a
+            # rubber stamp: submit anyone's BVN, get the tier.
+            #
+            # The account number is the discriminator; the name we happen to have
+            # stored is not. get_kyc_status is keyed by NUBAN and returns the bank's
+            # own accountName, which is real evidence.
+            status = wema_provider.get_kyc_status(wallet.account_number)
+            holder_name = str(status.get("name") or "") if status.get("success") else ""
+            if not holder_name:
+                # Unreadable or nameless: same posture as a fresh provisioning whose
+                # response omits the name (holder_name_mismatch treats a blank side as
+                # "can't tell", not as a mismatch, so a formatting gap never blocks a
+                # legitimate holder). Logged because a tier is about to lift with no
+                # name matched, and ops should be able to see that happen.
+                log.warning("wema_holder_name_unavailable user=%s account=%s",
+                            user.id, wallet.account_number)
         name_ok = not wema_provider.holder_name_mismatch(
             user.get_full_name() or "", holder_name)
     fields: list[str] = []
