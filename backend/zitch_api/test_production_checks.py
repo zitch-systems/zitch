@@ -10,6 +10,7 @@ class ProductionConfigurationTests(SimpleTestCase):
             "is_production": True,
             "test_otp_phone": "",
             "test_otp_code": "",
+            "allow_test_otp": False,
             "simulate_deposit_token": "",
             "wema_simulation": False,
             "mono_simulation": False,
@@ -42,6 +43,35 @@ class ProductionConfigurationTests(SimpleTestCase):
                 ImproperlyConfigured, "TEST_OTP_PHONE"
             ):
                 self.validate(**values)
+
+    def test_test_otp_requires_explicit_pre_launch_override(self):
+        """The override names itself in the error, so the fix is discoverable from
+        the crash alone — a boot failure is the worst place to have to go reading
+        source to find the escape hatch."""
+        with self.assertRaisesRegex(ImproperlyConfigured, "ALLOW_PRODUCTION_TEST_OTP"):
+            self.validate(test_otp_phone="08030000000", test_otp_code="123456")
+        self.validate(
+            test_otp_phone="08030000000", test_otp_code="123456", allow_test_otp=True
+        )
+
+    def test_test_otp_override_does_not_unlock_the_other_gates(self):
+        """Scoped strictly to the OTP bypass: an operator turning it on for
+        pre-launch testing must not silently also permit simulated money or a
+        single-process cache."""
+        with self.assertRaisesRegex(ImproperlyConfigured, "SIMULATE_DEPOSIT_TOKEN"):
+            self.validate(
+                test_otp_phone="08030000000",
+                test_otp_code="123456",
+                allow_test_otp=True,
+                simulate_deposit_token="test-token",
+            )
+        with self.assertRaisesRegex(ImproperlyConfigured, "ALLOW_PRODUCTION_SIMULATION"):
+            self.validate(
+                test_otp_phone="08030000000",
+                test_otp_code="123456",
+                allow_test_otp=True,
+                wema_simulation=True,
+            )
 
     def test_simulated_deposit_token_is_rejected(self):
         with self.assertRaisesRegex(ImproperlyConfigured, "SIMULATE_DEPOSIT_TOKEN"):
