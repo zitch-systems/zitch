@@ -6,10 +6,11 @@ the audit log, and the FX corridor pause actually stops quotes.
 """
 import json
 from decimal import Decimal
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.test import Client, TestCase
+from django.test import Client, SimpleTestCase, TestCase
 
 from accounts.models import AccessToken
 from wallet.forex import FxError, create_fx_quote
@@ -279,10 +280,16 @@ class WebPagesTests(TestCase):
         self.assertIn(self.LIVE_BODY, body)
         self.assertIn(self.LIVE_BAR, body)
 
-    def test_demo_mode_loads_the_fixture_bundle_and_cannot_reach_the_api(self):
-        """The console bundle ships no api.js at all, so demo mode is incapable
-        of calling /api/ops/ — the isolation is the absence of the client, not a
-        flag some component could get wrong."""
+    def test_demo_mode_loads_the_fixture_bundle_and_not_the_live_one(self):
+        """Demo mode serves the console bundle and none of the live one.
+
+        This assertion is about which files the PAGE pulls in, and that is all
+        it was ever evidence of. It used to be documented as proof that demo
+        mode "is incapable of calling the API" — it was not, and it passed
+        happily while demo mode read and wrote live production data through a
+        client inlined in the console bundle's own data.js. DemoBundleTests
+        below is what actually holds that line; this one holds the wiring.
+        """
         body = Client().get("/portal/?mode=demo").content
         self.assertIn(b"/static/console/portal/portal.jsx", body)
         self.assertNotIn(b"/static/portal/admin/api.js", body)
@@ -332,3 +339,66 @@ class WebPagesTests(TestCase):
         res = Client().get("/healthz")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.json()["status"])
+
+
+class DemoBundleTests(SimpleTestCase):
+    """The demo bundle must be incapable of reaching the network.
+
+    The page-level tests above check which script files each mode loads, and a
+    reviewer read that as isolation. It was not. The live client was never a
+    separate file to leave out — it was inlined in the demo bundle's own
+    data.js, pointed at the staff API rather than the portal API that the
+    comments and tests kept naming. So demo mode signed operators in for real,
+    rendered real customer rows, and fired real writes (wallet credits, KYC
+    decisions, the global AI kill switch) from behind a bar promising that
+    nothing there was real.
+
+    Filenames could not see that. These read the bytes.
+    """
+
+    DEMO = Path(__file__).resolve().parent.parent / "console" / "static" / "console" / "portal"
+    LIVE = Path(__file__).resolve().parent / "static" / "portal" / "admin"
+
+    # Ways to put a byte on the wire. Deliberately not a list of URLs or mounts:
+    # the original guarantee was written about one URL, which is exactly how a
+    # second one walked past it.
+    NETWORK = ("fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "new Image(")
+
+    def sources(self, folder):
+        return sorted(p for p in folder.iterdir() if p.suffix in (".js", ".jsx"))
+
+    def test_the_bundle_is_where_this_test_thinks_it_is(self):
+        """Without this, a rename makes every assertion below vacuously true."""
+        self.assertEqual(
+            [p.name for p in self.sources(self.DEMO)],
+            ["data.js", "portal.jsx", "ui.jsx", "views-a.jsx", "views-b.jsx", "views-c.jsx"],
+        )
+
+    def test_demo_bundle_has_no_network_primitive(self):
+        for path in self.sources(self.DEMO):
+            src = path.read_text(encoding="utf-8")
+            for token in self.NETWORK:
+                self.assertNotIn(token, src, f"{path.name} can reach the network via {token!r}")
+
+    def test_demo_bundle_neither_stores_nor_sends_a_credential(self):
+        """Signing into the old demo persisted a real staff bearer token. The
+        only reference left is the line that deletes the stale one."""
+        for path in self.sources(self.DEMO):
+            src = path.read_text(encoding="utf-8")
+            self.assertNotIn("localStorage.setItem", src, path.name)
+            self.assertNotIn("sessionStorage.setItem", src, path.name)
+            self.assertNotIn("Authorization", src, path.name)
+        data = (self.DEMO / "data.js").read_text(encoding="utf-8")
+        self.assertIn("removeItem('zadm_token')", data)
+
+    def test_demo_bundle_offers_no_password_field(self):
+        """A live-looking sign-in on a page stamped DEMO teaches operators to
+        type real credentials into a mock. There is nowhere to type them now."""
+        for path in self.sources(self.DEMO):
+            self.assertNotIn("type=\"password\"", path.read_text(encoding="utf-8"), path.name)
+
+    def test_the_live_bundle_still_has_its_client(self):
+        """Keeps the assertions above from passing for the wrong reason. What
+        they forbid has to exist next door, or they prove nothing about
+        isolation — an empty or renamed folder would satisfy them too."""
+        self.assertIn("fetch(", (self.LIVE / "api.js").read_text(encoding="utf-8"))

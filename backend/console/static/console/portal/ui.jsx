@@ -117,18 +117,111 @@ const CAN = {
   read_only: { wa: false, broadcast: false, money: false, users: false, ai: false, settings: false },
 };
 
-// ---- Action helper: POST to the staff API, toast a friendly error ----
-// Returns the response object on success, null on failure (so callers only
-// patch local state after the server accepted the mutation).
+// ---- Action helper: answered from the fixture, nothing leaves the page ----
+// Every action button in this bundle funnels through here. The live portal
+// POSTs to the staff API at this point; the demo must not, so it answers in
+// place and the mode bar's promise that no action takes effect stays literally
+// true. Nothing persists — writes land in React state, and a reload restores
+// the fixture.
+//
+// The one table below is the entire demo/live divergence. Call sites keep the
+// live bundle's paths, payloads and `if (r)` guards, so a future edit that
+// reintroduces a request shows up as a diff here rather than quietly at one of
+// thirty call sites. Callers also read server-computed fields straight off the
+// response (r.tier, r.rows, r.margin, r.paid_out), so a bare {ok: true} would
+// print "now tier undefined" at half of them; each entry returns the shape its
+// caller destructures.
+const Z = () => window.ZADM;
+
+// Search endpoints exist so an operator can reach past the bootstrap window.
+// There is no "past" here, so they filter the fixture — the caller's "matched
+// server-side" wording is corrected in the demo's copy of the views.
+function demoMatch(rows, q) {
+  const needle = String(q || '').toLowerCase().trim();
+  if (!needle) return rows;
+  return rows.filter((row) => JSON.stringify(row).toLowerCase().includes(needle));
+}
+
+const DEMO_ANSWER = {
+  // --- Users & KYC ---
+  '/users/search': (p) => ({ rows: demoMatch(Z().USERS, p.q) }),
+  '/users/detail': (p) => {
+    const u = Z().USERS.find((x) => x.uid === p.uid) || {};
+    return {
+      txns: Z().TXNS.filter((t) => t.user === u.name),
+      loans: Z().LOANS.filter((l) => l.user === u.name),
+      savings: Z().SAVINGS.filter((s) => s.user === u.name),
+      cards: Z().CARDS.filter((c) => c.user === u.name),
+      audit: Z().AUDIT.filter((a) => String(a.target || '').includes(u.name || ' ')),
+      pin_locked: false,
+      wa_msisdn: u.wa === 'active' ? u.phone : null,
+    };
+  },
+  '/users/status': () => ({ ok: true }),
+  '/users/pin_unlock': () => ({ ok: true }),
+  '/kyc/review': (p) => {
+    // Fixture tiers read "0 → 1"; the caller wants the tier landed on.
+    const row = Z().KYCQ.find((k) => k.uid === p.uid);
+    const to = String((row && row.tier) || '').split('→').pop().trim();
+    return { tier: p.decision === 'approve' ? (to || '1') : (String((row && row.tier) || '0 → 0').split('→')[0].trim()) };
+  },
+  '/wallet/credit': (p) => {
+    const u = Z().USERS.find((x) => x.uid === p.uid) || { wallets: {} };
+    return {
+      amount: p.amount,
+      reference: 'ZTC-DEMO-' + Math.random().toString(36).slice(2, 8).toUpperCase(),
+      balance: Number((u.wallets && u.wallets.NGN) || 0) + Number(p.amount || 0),
+    };
+  },
+
+  // --- Transactions ---
+  '/txn/search': (p) => ({ rows: demoMatch(Z().TXNS, p.q) }),
+  '/txn/requery': (p) => ({ status: (Z().TXNS.find((t) => t.id === p.ref) || {}).status || 'success' }),
+  '/txn/flag': (p) => ({ status: (Z().TXNS.find((t) => t.id === p.ref) || {}).status || 'success' }),
+
+  // --- FX & treasury ---
+  '/fx/margin': (p) => ({ margin: p.bps }),
+  '/fx/corridor': () => ({ ok: true }),
+
+  // --- WhatsApp ---
+  '/wa/handover': () => ({ ok: true }),
+  '/wa/conv_ai': () => ({ ok: true }),
+  '/wa/reply': () => ({ ok: true }),
+  '/wa/broadcast': (p) => ({
+    broadcast: {
+      id: 'bc_demo', template: p.template_name, category: p.category, status: 'done',
+      created: 'just now', by: 'demo@zitch.example',
+      queued: 1204, sent: 1204, delivered: 1160, read: 903, failed: 44,
+    },
+  }),
+  '/wa/broadcast_detail': (p) => {
+    const b = Z().BROADCASTS.find((x) => x.id === p.id) || null;
+    return {
+      broadcast: b,
+      recipients: Z().USERS.slice(0, 3).map((u) => ({
+        name: u.name, msisdn: u.phone, status: 'delivered', error: null,
+      })),
+    };
+  },
+
+  // --- Ops ---
+  '/loans/remind': () => ({ ok: true }),
+  '/cards/freeze': () => ({ ok: true }),
+  '/ops/maturities': () => ({ paid_out: Z().SAVINGS.filter((s) => s.status === 'matured').length }),
+  '/ops/recon': () => ({ checked: 12, settled: 2, mismatches: 0 }),
+  '/audit/search': (p) => ({ rows: demoMatch(Z().AUDIT, p.q) }),
+};
+
 async function doAct(toast, path, payload, okText) {
-  try {
-    const r = await ZADM_API.act(path, payload);
-    if (okText) toast(okText);
-    return r;
-  } catch (e) {
-    toast('⚠ ' + (e.message || 'Action failed'));
+  const answer = DEMO_ANSWER[path];
+  if (!answer) {
+    // A new action shipped without a fixture answer. Say so rather than
+    // returning a truthy blank that the caller renders as "undefined".
+    toast('⚠ Not available in demo mode');
     return null;
   }
+  if (okText) toast(okText);
+  return answer(payload || {});
 }
 
 // Compact naira for KPI headlines (₦1.02bn / ₦74m / ₦12k).
