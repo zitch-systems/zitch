@@ -139,6 +139,38 @@ def _request(method: str, path: str, *, json_body=None, params=None) -> dict:
     return resp.json()
 
 
+def provider_wallet_balance():
+    """Our own VTU.ng wallet balance as a Decimal, or None when it can't be read.
+
+    This is a SECOND asset rail alongside the bank: an airtime/data/bills purchase
+    debits the customer's Zitch wallet (our liability falls) but is paid out of this
+    provider wallet — the NUBAN the customer funded is untouched. Any settlement
+    statement that only compares the ledger against the bank therefore reads a
+    growing surplus that is really a sweep obligation to this balance. Read-only.
+
+    None (not 0) on failure or in mock mode, so a caller can tell "unknown" from
+    "empty" — treating an unreachable provider as a zero balance would report a
+    fictitious shortfall.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    if not _live():
+        return None
+    try:
+        body = _request("GET", f"{_V2}/balance")
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("vtu_balance_unreachable %s", exc)
+        return None
+    raw = (body.get("data") or {}).get("balance", body.get("balance"))
+    if raw is None:
+        return None
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        log.warning("vtu_balance_unparseable raw=%r", raw)
+        return None
+
+
 def vtu_probe() -> dict:
     """Live self-test against VTU.ng (returns NO secrets): proves the credentials
     authenticate and the wallet balance is readable — the two things every

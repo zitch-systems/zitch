@@ -73,10 +73,14 @@
                                      "expo-build-properties",
                                      {
                                          "android":  {
-                                                         "usesCleartextTraffic":  false
+                                                         "usesCleartextTraffic":  false,
+                                                         "compileSdkVersion":  36,
+                                                         "targetSdkVersion":  36,
+                                                         "buildToolsVersion":  "36.0.0"
                                                      }
                                      }
-                                 ]
+                                 ],
+                                 "./plugins/withAndroidReleaseSigning"
                              ],
                  "experiments":  {
                                      "typedRoutes":  true

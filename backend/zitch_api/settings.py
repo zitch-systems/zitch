@@ -296,6 +296,24 @@ WEMA = {
     # payout. Turn on once Wema supplies the value.
     "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
     "AUTH_REQUIRE_SECURITY_INFO": env_bool("WEMA_AUTH_REQUIRE_SECURITY_INFO", False),
+    # VAS status legends. ALAT's PartnerPayment status checks answer with a bare
+    # INTEGER `transactionStatus` — 1..11 for airtime/data, 1..9 for bills — and do
+    # not publish what the numbers mean. Without the legend a timed-out VAS purchase
+    # can never be auto-settled or auto-refunded: it stays PENDING forever, because
+    # guessing either way loses money (settle a failure and the customer is debited
+    # for nothing; refund a delivered top-up and we pay twice).
+    #
+    # These exist so that the moment Wema supplies the legend it is a Render env var,
+    # not a code change and a deploy. Format is `code=outcome` pairs, comma or space
+    # separated, where outcome is exactly one of success | pending | failed:
+    #
+    #   WEMA_VAS_STATUS_LEGEND="1=success,2=pending,3=failed,4=failed"
+    #
+    # Codes absent from the legend keep today's behaviour (PENDING, logged), and an
+    # unparseable entry is dropped with an error rather than defaulting — so a typo
+    # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
+    "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
+    "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
 }
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The

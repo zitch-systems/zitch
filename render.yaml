@@ -375,6 +375,53 @@ services:
       - key: SENTRY_DSN
         sync: false
 
+  # DAILY SETTLEMENT STATEMENT — the whole float position, not per-wallet drift.
+  # integrity_check and reconcile_balances both compare ONE wallet against ONE
+  # counterpart. Neither can see the two pots that hold customer money but belong
+  # to no user: the pool account (WEMA_SOURCE_ACCOUNT) and our VTU.ng provider
+  # wallet. A VAS purchase debits the customer's ledger and OUR VTU wallet while
+  # their NUBAN keeps the cash — per-wallet checks stay green while the VAS rail
+  # drains. This command sums everything owed against everything held on every
+  # rail and pages on a shortfall. Needs the VTU credentials as well as the WEMA
+  # balance-read keys, or it reports an unreadable rail (which is itself an alert,
+  # never a silent zero). Read-only. See docs/settlement-operating-model.md for
+  # the thresholds and who owns the response.
+  - type: cron
+    name: zitch-settlement-report
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "0 6 * * *"   # 06:00 UTC = 07:00 Lagos, before the business day
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py settlement_report --fail-on-breach"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      - key: WEMA_CHANNEL_ID
+        sync: false
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_BASE_URL
+        sync: false
+      - key: WEMA_SOURCE_ACCOUNT
+        sync: false
+      # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
+      # and the position is reported advisory rather than authoritative.
+      - key: VTUNG_API_KEY
+        sync: false
+      - key: VTUNG_USERNAME
+        sync: false
+      - key: VTUNG_PASSWORD
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
 databases:
   - name: zitch-db
     plan: free   # upgrade before go-live; free Postgres expires
