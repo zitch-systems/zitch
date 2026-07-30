@@ -353,3 +353,59 @@ class BroadcastRecipient(models.Model):
 
     def __str__(self):
         return f"{self.wa_msisdn} [{self.status}]"
+
+
+class ApprovalRequest(models.Model):
+    """A high-risk operator action held for a SECOND operator to approve.
+
+    Maker/checker, deferred in docs/hardening/GAP_ANALYSIS.md on the grounds that
+    multi-admin workflows matter once there is a real ops team. The reasoning holds for
+    most of the portal and fails for one endpoint: a manual wallet credit creates money
+    from nothing. A single compromised or dishonest operator account can mint a balance
+    and withdraw it, and every control downstream — tier caps, velocity, the ledger —
+    treats that balance as legitimate, because as far as the ledger is concerned it is.
+
+    So the request is stored INSTEAD of executing, and the same payload is executed
+    only after a different operator approves it. The action's own code is untouched:
+    it runs later through exactly the path it would have taken, which is what keeps
+    this from becoming a second, less-tested way to move money.
+
+    Rows are not immutable — a decision has to be recorded on them — but they are
+    append-then-decide-once: `decide()` refuses a request that is not pending.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (APPROVED, APPROVED), (REJECTED, REJECTED),
+                (EXECUTED, EXECUTED), (FAILED, FAILED)]
+
+    action = models.CharField(max_length=64)          # e.g. "wallet.credit"
+    payload = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=200, blank=True, default="")
+    status = models.CharField(max_length=12, choices=STATUSES, default=PENDING)
+
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                     related_name="approval_requests")
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                   null=True, blank=True, related_name="approval_decisions")
+    decision_note = models.CharField(max_length=200, blank=True, default="")
+    result = models.JSONField(default=dict, blank=True)
+
+    created = models.DateTimeField(auto_now_add=True)
+    decided = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created"]
+        indexes = [
+            models.Index(fields=["status", "-created"], name="approval_status_idx"),
+        ]
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == self.PENDING
+
+    def __str__(self):
+        return f"{self.action} {self.status} (by u_{self.requested_by_id})"

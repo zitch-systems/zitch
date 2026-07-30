@@ -324,6 +324,18 @@ WEMA = {
 # that stays under the existing face gate. Set to 0 to disable.
 RISK_NEW_DEVICE_FACE_THRESHOLD = Decimal(
     os.environ.get("RISK_NEW_DEVICE_FACE_THRESHOLD", "50000") or "0")
+# Operator second factor (TOTP). OFF by default: switching it on before operators have
+# enrolled locks every one of them out of the portal at once, including whoever would
+# have to fix it. With it on, only money-/settings-capable roles are required — see
+# admin_api.views._mfa_required_for. An operator who HAS enrolled is always challenged
+# regardless of this flag.
+OPS_REQUIRE_MFA = env_bool("OPS_REQUIRE_MFA", False)
+# Maker/checker on high-risk operator actions (currently: a manual wallet credit above
+# ADMIN_MAX_MANUAL_CREDIT, which today is simply refused). OFF by default because a
+# queue nobody can drain silently breaks a working workflow — the approval queue is
+# reachable via /api/{ops,admin}/approvals and Django admin, but the portal SPA has no
+# screen for it yet. See common.approvals and docs/operator-controls.md.
+OPS_REQUIRE_DUAL_APPROVAL = env_bool("OPS_REQUIRE_DUAL_APPROVAL", False)
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
 # Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY

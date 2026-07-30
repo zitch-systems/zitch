@@ -349,3 +349,36 @@ class KnownDevice(models.Model):
 
     def __str__(self):
         return f"u_{self.user_id} {self.device_id[:12]} {self.model}"
+
+
+class OperatorTotp(models.Model):
+    """A staff member's TOTP second factor.
+
+    Scoped to OPERATORS, not customers: an operator session can credit wallets, decide
+    KYC and change runtime settings, so a stolen operator password is worth far more
+    than a customer's. Customers are protected by the transaction PIN instead, which is
+    a second factor on the thing that matters (money) rather than on sign-in.
+
+    The secret is stored as base32, not encrypted. That matches django-otp and every
+    comparable implementation, and the honest reason is that encrypting it here would
+    be theatre: the key would have to live in the same environment as the database
+    credentials, so an attacker who can read this table can read the key too. It is
+    listed in `SENSITIVE_FIELDS` for the data-export path and never leaves the server
+    after enrolment.
+    """
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                related_name="operator_totp")
+    secret = models.CharField(max_length=64)
+    # Enrolment is two-step: a secret is issued, then proved with a live code. An
+    # unconfirmed row must NOT gate login, or a half-finished enrolment locks the
+    # operator out of the portal with no way back in.
+    confirmed = models.BooleanField(default=False)
+    # The last step consumed, so a code cannot be replayed inside its own window.
+    last_step = models.BigIntegerField(default=0)
+    created = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        state = "confirmed" if self.confirmed else "pending"
+        return f"{self.user_id} totp ({state})"

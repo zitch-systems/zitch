@@ -74,6 +74,14 @@ def login(request):
     if not (user.is_staff and user.is_active):
         record_audit("ops.login_denied", actor=user, target=mask_pii(ident))
         return fail("Staff access required", status=403)
+    # Second factor, shared with /api/admin/ so the two operator surfaces cannot
+    # diverge — an MFA gate on one login form and not the other is no gate at all.
+    from admin_api.views import _mfa_login_error
+    mfa_error = _mfa_login_error(user, request.data.get("code") or request.data.get("mfa_code") or "")
+    if mfa_error is not None:
+        note_login_failure("ops", ident)
+        record_audit("ops.login_mfa_failed", target=mask_pii(ident), actor_type="system")
+        return mfa_error
     clear_login_failures("ops", ident)
     # Admin-scoped, short-lived token so it never resolves on the mobile surface.
     token = AccessToken.issue(user, scope=AccessToken.ADMIN)
