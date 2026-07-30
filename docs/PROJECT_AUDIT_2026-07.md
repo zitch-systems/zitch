@@ -107,10 +107,27 @@ party were implemented. Recorded here so the audit is not read as current.
 
 **Still open, and why**
 
-* **P0 Wema items** — callback URL profiling, the live host and keys, the VAS status
-  legend, the `cardKey`, and the reversal history shape. All need the bank. The legend is
-  now an env var (`WEMA_VAS_STATUS_LEGEND`) so it lands without a deploy, and
-  `docs/wema-callback-profiling.md` is the send-to-the-bank packet.
+* **P0 Wema items** — the live host and keys, the VAS status legend, the `cardKey`, and the
+  reversal history shape. All need the bank. The legend is now an env var
+  (`WEMA_VAS_STATUS_LEGEND`) so it lands without a deploy.
+
+  **Callback profiling is further along than this audit records.** Reading the `#zitch`
+  Slack channel on 30 July: the four URLs were sent on 2026-07-28 and Wema confirmed
+  *"this has been profiled on dev"* the same day, with production profiling deferred to
+  cutover by mutual agreement. Wema also granted **Compliance Approval on 2026-07-24** and
+  asked their team to "push the Partner live" — an outcome nobody has reported back, so it
+  is a follow-up to chase rather than a fresh ask. Note dev is a simulator, so this proves
+  routing and authentication and nothing about payload shapes.
+  `docs/wema-callback-profiling.md` now carries the real state and the follow-up message.
+
+* **Two config changes on our side, unblocked and not yet made.** Wema supplied their
+  gateway egress IPs in writing on 2026-07-27 (`135.236.18.76`, `74.178.162.156` — exactly
+  the compiled-in defaults), and stated that allowlisting is the partner's job, so nothing
+  on the bank side holds our addresses. The documented precondition for
+  `WEMA_CALLBACK_ENFORCE_IPS=true` is therefore met and it is still off. Separately, the
+  callback token was posted into a Slack channel in Wema's own workspace, and the same
+  token covers dev and production — it should be rotated to a production-only value via
+  `WEMA_CALLBACK_TOKEN_PREV` before cutover.
 * **Termii sender ID / DND approval** — a carrier decision.
 * **P0 production simulation guards and provider credentials** — Render dashboard
   configuration, unchanged by this pass.

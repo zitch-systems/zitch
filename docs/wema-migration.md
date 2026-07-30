@@ -30,11 +30,14 @@ catalogue nesting, VAS status-requery codes, the real card-management endpoints,
 model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs.
 
 **⚠️ Still blocked on Wema before real money can move (VERIFY-BEFORE-LIVE):**
-1. **Webhook profiling (the actual blocker)** — ALAT's Getting Started guide requires the
-   bank to profile our callback URLs *before* the rails work: account creation is refused
-   without an Account Creation URL, and transactions fail authentication without an
-   Authentication URL. The endpoints now exist (see "Callbacks and reconciliation") — the
-   URLs must be sent to Wema for profiling in both dev and production.
+1. ~~**Webhook profiling**~~ — **DEV DONE, production scheduled, not a blocker.** ALAT's
+   Getting Started guide requires the bank to profile our callback URLs before the rails
+   work. The four URLs were sent on 2026-07-28 and Wema confirmed *"this has been profiled
+   on dev"* the same day; production profiling was explicitly deferred to cutover by mutual
+   agreement. Note that dev is a **simulator** ("purely simulated… a sample response of what
+   you should be expecting on production", Wema 2026-07-02), so this proves routing and
+   authentication and nothing about payload shapes. See `docs/wema-callback-profiling.md`
+   for the current state, the two config changes it implies, and the follow-up still owed.
 2. ~~**`securityInfo`**~~ — **RESOLVED, not a blocker.** Wema confirmed (2026-07-27) it is
    "a private key best known to you" which the bank simply echoes back to our Authentication
    Callback. We choose the value; nothing is issued and nothing is owed. See the
@@ -51,8 +54,11 @@ model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs
    supply. Reveal/last4 depend on that shape. Confirm before relying on Wema cards.
 5. **Live host** — set `WEMA_BASE_URL` to the live host (differs from sandbox).
 
-**To go live:** get from Wema (a) a working provisioning path / funded source account,
-(b) the VAS integer status legend + the `cardKey`, (c) the live host + keys — then set the `WEMA_*` env vars (already declared `sync:false` on the web service
+**To go live:** Wema confirmed Compliance Approval on 2026-07-24 and asked their team to
+"push the Partner live"; what that produced has not been reported back, so chase it as a
+follow-up rather than a fresh request. Then get from Wema (a) a working provisioning path /
+funded source account, (b) the VAS integer status legend + the `cardKey`, (c) the live host
++ keys — then set the `WEMA_*` env vars (already declared `sync:false` on the web service
 **and** the `zitch-reconcile-wema` cron in `render.yaml`, schedule `*/10 * * * *`), and run
 `manage.py seed_wema_plans` to map the data/cable catalogue. No `*_PROVIDER` flip is needed;
 wema is already the default.
@@ -459,7 +465,23 @@ and keep `WEMA_CALLBACK_IPS` env-overridable — Azure egress addresses rotate. 
 a second factor, never the only one: the path secret and the ledger-state checks above are
 what actually protect the money.
 
+**That condition is now checkable rather than a matter of waiting.** Dev was profiled on
+2026-07-28, so callbacks have arrived, and every inbound callback records its source in
+`whatsapp.WebhookEvent.remote_ip` — including the ones we refused. So the observed source IP
+can be read off the table before enforcement is switched on, instead of being guessed:
+
+```sql
+SELECT remote_ip, source, outcome, COUNT(*) FROM whatsapp_webhookevent
+WHERE source LIKE 'wema.%' GROUP BY 1, 2, 3 ORDER BY 4 DESC;
+```
+
+If those rows show only the two addresses above, enforcement can go on. If they show a third,
+add it to `WEMA_CALLBACK_IPS` **before** enabling — enforcement with an incomplete list
+refuses real callbacks, and on the account-creation route that means customers silently never
+get a NUBAN.
+
 Our own outbound addresses (`209.97.130.65`, `68.183.254.113`) were shared with Wema on
-2026-07-24. Wema has not confirmed whether calls **to** their API are IP-filtered on their
-side; auth appears to be `Ocp-Apim-Subscription-Key` + channel id rather than source IP.
-Worth confirming before go-live if outbound calls start failing from a new egress address.
+2026-07-24, and their answer was *"Whitelisting IPs will be done from your end"* — i.e. calls
+**to** their API are not source-IP filtered, and nothing on the bank side holds our
+addresses. Auth is `Ocp-Apim-Subscription-Key` + channel id, as the code assumes. Do not
+expect the shared addresses to have been allowlisted anywhere.
