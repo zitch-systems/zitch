@@ -125,6 +125,22 @@ class Command(BaseCommand):
                        "keyed" if settings.CARD_ISSUER["API_KEY"]
                        else "no issuer key — virtual cards disabled"))
 
+        # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
+        # the purchase PENDING), so this can never be a gate; but an unset legend means
+        # timed-out airtime/data/bill buys accumulate as PENDING rows that only a human
+        # can clear, which ops should know before launch rather than discover from a
+        # queue. Wema owes us these two maps — see docs/wema-migration.md.
+        from utility.wema import _vas_legend
+        for product, env_var in (("airtime", "WEMA_VAS_STATUS_LEGEND"),
+                                 ("bills", "WEMA_BILLS_STATUS_LEGEND")):
+            legend = _vas_legend(product)
+            checks.append((
+                False, f"VAS status legend ({product})",
+                PASS if legend else WARN,
+                f"{len(legend)} code(s) mapped" if legend
+                else f"{env_var} unset — a timed-out {product} purchase stays PENDING "
+                     "until an operator resolves it (no auto settle/refund)"))
+
         self.stdout.write("")
         self.stdout.write("Zitch go-live preflight")
         self.stdout.write("=======================")

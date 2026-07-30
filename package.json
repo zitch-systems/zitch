@@ -13,7 +13,8 @@
     "lint": "expo lint --max-warnings=0",
     "test:ci": "jest --runInBand",
     "typecheck": "tsc --noEmit",
-    "doctor": "expo-doctor"
+    "doctor": "expo-doctor",
+    "test:e2e": "bash scripts/maestro.sh"
   },
   "jest": {
     "preset": "jest-expo",
@@ -35,6 +36,7 @@
     "expo-camera": "~17.0.10",
     "expo-clipboard": "~8.0.8",
     "expo-constants": "~18.0.13",
+    "expo-device": "~8.0.10",
     "expo-font": "~14.0.12",
     "expo-haptics": "~15.0.8",
     "expo-image-picker": "~17.0.11",
@@ -76,4 +78,3 @@
   },
   "private": true
 }
-

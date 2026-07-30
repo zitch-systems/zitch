@@ -1,0 +1,30 @@
+# Reusable sign-in. Every flow that needs a session runs this first rather than
+# depending on state a previous flow left behind — Maestro flows must be independently
+# runnable, and a suite where flow 4 only passes after flow 3 is a suite nobody trusts.
+#
+# Requires ZITCH_TEST_PHONE and ZITCH_TEST_PASSWORD (scripts/maestro.sh checks).
+appId: com.zitch.app
+---
+- launchApp:
+    clearState: true
+
+# Onboarding shows on a cleared install; "Skip" jumps straight to sign-in.
+- extendedWaitUntil:
+    visible: "Skip"
+    timeout: 30000
+- tapOn: "Skip"
+
+- assertVisible: "Welcome back"
+- tapOn: "Email or phone number"
+- inputText: "${ZITCH_TEST_PHONE}"
+- tapOn: "Enter password"
+- inputText: "${ZITCH_TEST_PASSWORD}"
+- hideKeyboard
+- tapOn: "Sign in"
+
+# The bottom-nav "Home" tab only exists once signed in, so its presence is the
+# assertion that the session was actually established — not merely that the sign-in
+# screen went away, which also happens on a crash.
+- extendedWaitUntil:
+    visible: "Home"
+    timeout: 45000

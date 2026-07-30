@@ -948,7 +948,7 @@ def pay_bill(amount_naira, reference: str, *, package_id: str, identifier: str, 
                 "customerPhoneNumber": phone, "customerName": name,
                 "securityInfo": _security_info(op="bill", reference=reference, amount=amount_naira)}
         data = _post("bills", "/api/Shared/PayBill", body).json()
-        return _parse_vas(data, reference)
+        return _parse_vas(data, reference, product="bills")
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
@@ -977,31 +977,76 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
             data = _post("airtime", "/api/PartnerPayment/CheckTransactionStatus",
                          {"transactionReference": reference,
                           "transactionType": 2 if txn_type == "data" else 1}).json()
-        return _parse_vas(data, reference)
+        # The two status endpoints answer with DIFFERENT integer enums (1..11 vs 1..9),
+        # so the legend must be picked per product or a code would be decoded against
+        # the wrong ladder.
+        return _parse_vas(data, reference, product=product)
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
 
-def _parse_vas(data: dict, reference: str) -> dict:
+_VAS_OUTCOMES = ("success", "pending", "failed")
+
+
+def _vas_legend(product: str) -> dict[str, str]:
+    """The configured integer→outcome map for a VAS status check, or {} when unset.
+
+    ALAT's PartnerPayment status endpoints answer with a bare integer
+    ``transactionStatus`` (1..11 airtime/data, 1..9 bills) and publish no legend, so
+    the code cannot know what any value means. This reads the legend from
+    configuration instead of hardcoding a guess — the day Wema supplies it, it is a
+    Render env var rather than a deploy.
+
+    Parsing is strict on purpose. An entry that isn't ``<int>=success|pending|failed``
+    is DROPPED with an error, not defaulted, because the fallback for an unknown code
+    (leave the purchase PENDING) is the only money-safe outcome: a typo that silently
+    resolved to ``success`` would settle undelivered top-ups.
+    """
+    raw = str(settings.WEMA.get("BILLS_STATUS_LEGEND" if product == "bills"
+                                else "VAS_STATUS_LEGEND") or "").strip()
+    if not raw:
+        return {}
+    legend: dict[str, str] = {}
+    for entry in raw.replace(",", " ").split():
+        code, sep, outcome = entry.partition("=")
+        outcome = outcome.strip().lower()
+        code = code.strip()
+        if not sep or not code.isdigit() or outcome not in _VAS_OUTCOMES:
+            log.error("wema_vas_legend_bad_entry product=%s entry=%r (ignored — codes it "
+                      "would have covered stay PENDING)", product, entry)
+            continue
+        legend[code] = outcome
+    return legend
+
+
+def _parse_vas(data: dict, reference: str, product: str = "airtime") -> dict:
     """Normalise a VAS response to the {success, pending, status, reference} shape
     settle_or_refund expects.
 
     Two response shapes: a purchase carries a STRING ``result.status``
     (SUCCESS/PROCESSING/…), while the PartnerPayment status-check carries only an
     INTEGER ``result.transactionStatus`` (enum 1..11) whose meaning ALAT doesn't
-    document. On the integer-only shape we cannot safely decide settled vs failed,
-    so we report ``pending`` — never auto-settle (which would strand a failed
-    purchase debited) or auto-refund (which would double-spend a delivered one) on
-    an un-decodable code — and surface the raw code for review."""
+    document. On the integer-only shape the outcome is decided by the configured
+    legend (``WEMA_VAS_STATUS_LEGEND`` / ``WEMA_BILLS_STATUS_LEGEND``); with no
+    legend, or for a code the legend doesn't cover, we report ``pending`` — never
+    auto-settle (which would strand a failed purchase debited) or auto-refund (which
+    would double-spend a delivered one) on an un-decodable code — and surface the raw
+    code for review."""
     r = data.get("result", {}) or {}
     if not isinstance(r, dict):
         r = {}
     status = str(r.get("status") or data.get("status") or "").upper()
     if not status and "transactionStatus" in r:
         code = r.get("transactionStatus")
-        log.warning("wema_vas_status_code ref=%s transactionStatus=%r (legend undocumented — left pending)",
-                    reference, code)
-        return {"success": False, "pending": True, "status": f"CODE_{code}",
+        outcome = _vas_legend(product).get(str(code).strip())
+        if outcome is None:
+            log.warning("wema_vas_status_code ref=%s product=%s transactionStatus=%r "
+                        "(no legend entry — left pending)", reference, product, code)
+        else:
+            log.info("wema_vas_status_decoded ref=%s product=%s transactionStatus=%r -> %s",
+                     reference, product, code, outcome)
+        return {"success": outcome == "success", "pending": outcome in (None, "pending"),
+                "status": f"CODE_{code}",
                 "reference": r.get("transactionReference", reference),
                 "message": _msg(data), "raw": data}
     ok = _ok(data) or bool(data.get("successful"))

@@ -1,0 +1,39 @@
+# Registration funnel: details -> phone verification -> the PIN step.
+#
+# The step labels ("Step 1 of 4 · Your details") are asserted rather than just the
+# screen titles, because they are what tells a user how much is left. A funnel that
+# silently renumbers itself is how people abandon signup.
+#
+# Completing OTP needs the test-OTP bypass on the backend (TEST_OTP_PHONE /
+# TEST_OTP_CODE / ALLOW_PRODUCTION_TEST_OTP) — see docs/wema-go-live-runbook.md. When
+# ZITCH_TEST_OTP is not set the flow stops after asserting the OTP screen was reached,
+# which is still the useful half: it proves registration submitted and the funnel
+# advanced.
+appId: com.zitch.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "Send money instantly"
+    timeout: 30000
+- tapOn: "Next"
+- tapOn: "Next"
+- tapOn: "Get Started"
+
+- assertVisible: "Create your account"
+- assertVisible: "Step 1 of 4 · Your details"
+
+- tapOn: "e.g. Ada Okafor"
+- inputText: "Maestro Test"
+- tapOn: "0801 234 5678"
+- inputText: "${ZITCH_TEST_SIGNUP_PHONE}"
+- hideKeyboard
+
+# Submitting with a blank required field must be refused, not silently accepted — a
+# half-created account is worse than a rejected one.
+- tapOn: "Continue"
+
+- extendedWaitUntil:
+    visible: "Verify your number"
+    timeout: 45000
+- assertVisible: "Step 2 of 4 · Verify phone"

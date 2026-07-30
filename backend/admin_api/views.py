@@ -341,6 +341,14 @@ def login(request):
     if not (user.is_staff and user.is_active):
         record_audit("admin.login_denied", actor=user, target=mask_pii(ident))
         return fail("This account does not have operator access", status=403)
+    # Second factor. Checked AFTER the password and the staff gate, so a wrong
+    # password and a missing code are indistinguishable from outside — otherwise this
+    # endpoint would confirm which identifiers are real operator accounts.
+    mfa_error = _mfa_login_error(user, data.get("code") or data.get("mfa_code") or "")
+    if mfa_error is not None:
+        note_login_failure("admin", ident)
+        record_audit("admin.login_mfa_failed", target=mask_pii(ident), actor_type="system")
+        return mfa_error
     clear_login_failures("admin", ident)
     # Admin-scoped, short-lived token (ADMIN_TOKEN_TTL_HOURS): it resolves only on
     # staff endpoints and never on the mobile app surface.
@@ -1028,9 +1036,13 @@ def wallet_credit(request):
     Back-office goodwill/refund credits ride the SAME ledger service as funding
     (wallet.services.credit): atomic, row-locked, and idempotent under the
     client key, so an operator double-click can never credit twice. A reason is
-    mandatory and lands in both the ledger row's meta and the audit log."""
-    from common.http import idempotent_replay, parse_amount, spend_key
-    from wallet.services import DuplicateTransaction, credit, existing_for_key, get_or_create_wallet
+    mandatory and lands in both the ledger row's meta and the audit log.
+
+    Above the single-credit ceiling this now does what its own error message has
+    always promised — routes the credit to a SECOND OPERATOR rather than refusing
+    it — provided dual approval is enabled. See common.approvals.
+    """
+    from common.http import parse_amount
 
     u = _get_user(request.data.get("uid"))
     if u is None:
@@ -1045,29 +1057,80 @@ def wallet_credit(request):
     # ceiling and a per-operator rolling-24h cap (settings-driven), independent of
     # the idempotency guard (which only stops *accidental* double credits).
     from decimal import Decimal as _D
-    from datetime import timedelta as _td
 
     from django.conf import settings
-    from django.utils import timezone as _tz
-
-    from whatsapp.models import AuditLog as _AL
-
-    from django.db import transaction as _dbtx
-
-    from accounts.models import User as _User
 
     max_one = _D(str(getattr(settings, "ADMIN_MAX_MANUAL_CREDIT", "500000")))
     if amount > max_one:
-        return fail(f"Amount exceeds the single manual-credit limit of ₦{max_one:,.0f}. "
+        from common import approvals
+
+        if not approvals.required_for("wallet.credit"):
+            return fail(f"Amount exceeds the single manual-credit limit of ₦{max_one:,.0f}. "
+                        "A larger credit needs a second approver (set "
+                        "OPS_REQUIRE_DUAL_APPROVAL to enable that route).",
+                        status=403, code="credit_limit")
+        # Held, not performed. Nothing is credited until a DIFFERENT operator
+        # approves, and the approval executes this same function's money core.
+        req = approvals.submit(
+            "wallet.credit",
+            payload={"uid": u.id, "amount": str(amount), "reason": reason,
+                     "idempotency_key": (request.data.get("idempotency_key") or "")},
+            requested_by=request.staff, reason=reason)
+        audit(request, "wallet.manual_credit_requested", target=f"u_{u.id}",
+              after={"amount": str(amount), "reason": reason, "approval_id": req.pk})
+        return ok(pending_approval=True, approval_id=req.pk, uid=u.id, amount=str(amount),
+                  message=("Above your single-credit limit — sent to a second operator "
+                           "for approval. Nothing has been credited yet."),
+                  status=202)
+
+    return _perform_manual_credit(
+        user=u, amount=amount, reason=reason,
+        actor=request.staff, idempotency_key=request.data.get("idempotency_key"),
+        single_cap=max_one)
+
+
+def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
+                           single_cap=None):
+    """The money core of a manual credit, shared by the direct path and the
+    dual-approval executor.
+
+    Extracted rather than duplicated deliberately: this is the one operator action that
+    creates money from nothing, and a second implementation of it — even a careful one —
+    would be a second place for the caps, the idempotency key and the audit row to
+    drift out of agreement.
+
+    `single_cap=None` waives the per-credit ceiling, which is correct only on the
+    approved path: that ceiling's documented remedy IS a second approver, so enforcing
+    it after one has approved would make the approval route useless. The per-operator
+    rolling-24h cap is NOT waived — it bounds the maker either way, because two
+    colluding operators is a different threat from one, and an unbounded approved path
+    would become the weakest link.
+    """
+    from datetime import timedelta as _td
+    from decimal import Decimal as _D
+
+    from django.conf import settings
+    from django.db import transaction as _dbtx
+    from django.utils import timezone as _tz
+
+    from accounts.models import User as _User
+    from common.http import idempotent_replay, spend_key
+    from wallet.services import (DuplicateTransaction, credit, existing_for_key,
+                                 get_or_create_wallet)
+    from whatsapp.models import AuditLog as _AL
+
+    u = user
+    if single_cap is not None and amount > single_cap:
+        return fail(f"Amount exceeds the single manual-credit limit of ₦{single_cap:,.0f}. "
                     "A larger credit needs a second approver.", status=403, code="credit_limit")
-    op = request.staff.email or request.staff.username or str(request.staff.id)
+    op = actor.email or actor.username or str(actor.id)
     since = _tz.now() - _td(hours=24)
     day_cap = _D(str(getattr(settings, "ADMIN_MANUAL_CREDIT_DAILY_CAP", "2000000")))
     # Derive a server-side idempotency key when the client omits one: the ledger's
     # unique (user, idempotency_key) constraint is PARTIAL (excludes ""), so a blank
     # key would let a double-submit credit twice. spend_key falls back to a
     # deterministic per-(user, amount, reason) key within a short window.
-    key = spend_key(request.data.get("idempotency_key"), u, "manual_credit", amount, reason)
+    key = spend_key(idempotency_key, u, "manual_credit", amount, reason)
     replay = idempotent_replay(existing_for_key(u, key))
     if replay is not None:
         return replay
@@ -1077,7 +1140,7 @@ def wallet_credit(request):
         # the check, and mint past the cap (the control this bounds). Locking the
         # operator's own staff row is a cheap per-operator mutex; credit() then
         # locks the target wallet row, in a consistent order (no deadlock).
-        _User.objects.select_for_update().get(pk=request.staff.id)
+        _User.objects.select_for_update().get(pk=actor.id)
         spent_today = _D("0")
         for row in _AL.objects.filter(actor_id=op, action="wallet.manual_credit", created__gte=since):
             try:
@@ -1093,13 +1156,243 @@ def wallet_credit(request):
             txn = credit(
                 u, amount, "Manual credit — operations",
                 meta={"channel": "admin", "reason": reason,
-                      "actor": (request.staff.email or request.staff.username)},
+                      "actor": (actor.email or actor.username)},
                 idempotency_key=key,
             )
         except DuplicateTransaction:
             return idempotent_replay(existing_for_key(u, key))
-        audit(request, "wallet.manual_credit", target=f"u_{u.id}",
-              before={"balance": str(before)},
-              after={"balance": str(before + amount), "amount": str(amount), "reason": reason})
+        # Written with the ACTOR, not a request: on the approved path there is no
+        # request in scope, and attributing the credit to the approver rather than the
+        # maker is what makes the trail readable.
+        _AL.objects.create(
+            actor_type="admin", actor_id=op, action="wallet.manual_credit",
+            target=f"u_{u.id}", before={"balance": str(before)},
+            after={"balance": str(before + amount), "amount": str(amount),
+                   "reason": reason})
     return ok(success=True, uid=u.id, reference=txn.reference,
               amount=str(amount), balance=_num(before + amount))
+
+
+# --------------------------------------------------------------------------- #
+# Dual approval (maker/checker) — the queue for actions held for a second operator.
+# --------------------------------------------------------------------------- #
+from common import approvals as _approvals  # noqa: E402
+
+PAGE_APPROVALS = 100
+
+
+@_approvals.register("wallet.credit")
+def _execute_approved_credit(payload, approver):
+    """Run an approved manual credit through the SAME money core the direct path uses.
+
+    The single-credit ceiling is waived here and only here: that ceiling's documented
+    remedy is a second approver, so still enforcing it after one has approved would
+    make the whole route pointless. Every other control — the rolling-24h cap, the
+    idempotency key, the ledger's own guards — applies unchanged.
+    """
+    from decimal import Decimal
+
+    user = _get_user(payload.get("uid"))
+    if user is None:
+        raise ValueError(f"user {payload.get('uid')} no longer exists or is now staff")
+    res = _perform_manual_credit(
+        user=user, amount=Decimal(str(payload["amount"])), reason=payload.get("reason", ""),
+        actor=approver, idempotency_key=payload.get("idempotency_key") or None,
+        single_cap=None)
+    # _perform_manual_credit returns an HttpResponse either way; surface the body so a
+    # refusal (e.g. the daily cap) is recorded on the request rather than looking like
+    # a success.
+    import json as _json
+
+    body = _json.loads(res.content or b"{}")
+    if res.status_code != 200:
+        raise ValueError(body.get("message") or f"credit refused ({res.status_code})")
+    return body
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def approvals_list(request):
+    """POST {status?} — the approval queue. Defaults to pending."""
+    from whatsapp.models import ApprovalRequest
+
+    status = (request.data.get("status") or ApprovalRequest.PENDING).strip()
+    rows = ApprovalRequest.objects.filter(status=status)[:PAGE_APPROVALS]
+    return ok(rows=[{
+        "id": r.pk, "action": r.action, "payload": r.payload, "reason": r.reason,
+        "status": r.status,
+        "requested_by": (r.requested_by.email or r.requested_by.username),
+        "decided_by": (r.decided_by.email or r.decided_by.username) if r.decided_by else "",
+        "created": _ms(r.created), "decided": _ms(r.decided), "result": r.result,
+        # So the UI can grey out a request the viewer is not allowed to decide, instead
+        # of offering a button that always fails.
+        "is_own_request": r.requested_by_id == request.staff.id,
+    } for r in rows])
+
+
+@staff_endpoint(methods=("POST",), perm="money")
+def approvals_decide(request):
+    """POST {id, approve, note?} — approve or reject a held action.
+
+    Self-approval is refused in the service, not here, so no endpoint can forget it.
+    """
+    from common.approvals import ApprovalError, decide
+    from whatsapp.models import ApprovalRequest
+
+    try:
+        req = ApprovalRequest.objects.get(pk=int(request.data.get("id") or 0))
+    except (ApprovalRequest.DoesNotExist, TypeError, ValueError):
+        return fail("Approval request not found", status=404)
+    approve = bool(request.data.get("approve"))
+    try:
+        decided = decide(req, approver=request.staff, approve=approve,
+                         note=(request.data.get("note") or ""))
+    except ApprovalError as exc:
+        return fail(str(exc), status=409, code="approval_conflict")
+    return ok(success=True, id=decided.pk, status=decided.status, result=decided.result)
+
+
+# --------------------------------------------------------------------------- #
+# Operator MFA (TOTP)
+# --------------------------------------------------------------------------- #
+@staff_endpoint(methods=("POST",))
+def mfa_status(request):
+    """POST {} — whether this operator has a confirmed second factor."""
+    from accounts.models import OperatorTotp
+
+    row = OperatorTotp.objects.filter(user=request.staff).first()
+    return ok(enrolled=bool(row and row.confirmed),
+              pending=bool(row and not row.confirmed),
+              required=_mfa_required_for(request.staff))
+
+
+@staff_endpoint(methods=("POST",))
+def mfa_enroll(request):
+    """POST {} — issue a fresh secret and the otpauth:// URI to scan.
+
+    Re-enrolling replaces an UNCONFIRMED secret freely, but a CONFIRMED one requires a
+    current code (below): otherwise any authenticated operator session could silently
+    swap the second factor for one the attacker controls, which would make the whole
+    factor decorative.
+    """
+    from accounts.models import OperatorTotp
+    from accounts.totp import new_secret, provisioning_uri
+
+    row = OperatorTotp.objects.filter(user=request.staff).first()
+    if row and row.confirmed:
+        from accounts.totp import verify
+        code = (request.data.get("code") or "")
+        step = verify(row.secret, code, after_step=row.last_step)
+        if step is None:
+            return fail("Enter a current code from your existing authenticator to replace it.",
+                        status=403, code="mfa_code_required")
+        row.last_step = step
+        row.save(update_fields=["last_step"])
+
+    secret = new_secret()
+    account = request.staff.email or request.staff.username
+    OperatorTotp.objects.update_or_create(
+        user=request.staff,
+        defaults={"secret": secret, "confirmed": False, "last_step": 0,
+                  "confirmed_at": None})
+    audit(request, "ops.mfa_enroll_started", target=request.staff.username)
+    # The secret is returned ONCE. There is no endpoint that re-displays it: an
+    # authenticated session that could re-read it would be a permanent bypass.
+    return ok(secret=secret, otpauth_uri=provisioning_uri(secret, account=account),
+              message="Scan this in your authenticator, then confirm with a code.")
+
+
+@staff_endpoint(methods=("POST",))
+def mfa_confirm(request):
+    """POST {code} — prove the secret was stored, and turn the factor on."""
+    from django.utils import timezone as _tz
+
+    from accounts.models import OperatorTotp
+    from accounts.totp import verify
+
+    row = OperatorTotp.objects.filter(user=request.staff).first()
+    if row is None:
+        return fail("Start enrolment first", status=400, code="not_enrolled")
+    step = verify(row.secret, request.data.get("code") or "", after_step=row.last_step)
+    if step is None:
+        return fail("That code is not valid. Check your device clock and try the next code.",
+                    status=403, code="mfa_invalid")
+    row.confirmed = True
+    row.confirmed_at = _tz.now()
+    row.last_step = step
+    row.save(update_fields=["confirmed", "confirmed_at", "last_step"])
+    audit(request, "ops.mfa_enabled", target=request.staff.username)
+    return ok(success=True, message="Two-factor authentication is on for your account.")
+
+
+@staff_endpoint(methods=("POST",))
+def mfa_disable(request):
+    """POST {code} — turn the factor off, proving possession first.
+
+    A session alone is not enough. The realistic attack is a hijacked operator session
+    (a shared machine, a stolen token): if that session could remove the factor, the
+    factor only protects the login form and not the account.
+    """
+    from accounts.models import OperatorTotp
+    from accounts.totp import verify
+
+    row = OperatorTotp.objects.filter(user=request.staff, confirmed=True).first()
+    if row is None:
+        return ok(success=True, message="Two-factor authentication was not enabled.")
+    if verify(row.secret, request.data.get("code") or "", after_step=row.last_step) is None:
+        return fail("Enter a current code to turn two-factor off.", status=403,
+                    code="mfa_invalid")
+    row.delete()
+    audit(request, "ops.mfa_disabled", target=request.staff.username)
+    return ok(success=True, message="Two-factor authentication is off.")
+
+
+def _mfa_required_for(user) -> bool:
+    """Whether this operator MUST have a second factor.
+
+    `OPS_REQUIRE_MFA` is off by default on purpose: switching it on before operators
+    have enrolled would lock every one of them out of the portal at once, including
+    whoever would have to fix it. With it on, only money- or settings-capable roles are
+    required — a read-only account cannot move anything, and forcing enrolment on it
+    buys nothing while giving people a reason to resent the control.
+    """
+    from django.conf import settings
+
+    if not getattr(settings, "OPS_REQUIRE_MFA", False):
+        return False
+    from .auth import staff_role
+
+    return staff_role(user) in ("super_admin", "finance")
+
+
+def _mfa_login_error(user, code):
+    """None when the operator may sign in; a failure response otherwise.
+
+    Two distinct outcomes, and conflating them is how an MFA rollout locks people out:
+
+    * A CONFIRMED factor is always demanded. `mfa_required` tells the client to prompt
+      for a code rather than showing "wrong password" for a correct one.
+    * `OPS_REQUIRE_MFA` additionally refuses a money-capable operator who has NOT
+      enrolled — but with a message that says to enrol, not that the credentials were
+      wrong.
+    """
+    from accounts.models import OperatorTotp
+    from accounts.totp import verify
+
+    row = OperatorTotp.objects.filter(user=user, confirmed=True).first()
+    if row is None:
+        if _mfa_required_for(user):
+            return fail("Two-factor authentication is required for your role. Ask a super "
+                        "admin to reset your access so you can enrol.",
+                        status=403, code="mfa_enrolment_required")
+        return None
+    if not code:
+        return fail("Enter the code from your authenticator app.", status=401,
+                    code="mfa_required")
+    step = verify(row.secret, code, after_step=row.last_step)
+    if step is None:
+        return fail("That code is not valid or has already been used.", status=401,
+                    code="mfa_invalid")
+    # Burn the step so the same code cannot be replayed inside its own window.
+    row.last_step = step
+    row.save(update_fields=["last_step"])
+    return None

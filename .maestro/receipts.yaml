@@ -1,0 +1,35 @@
+# A receipt that will not open is a support call per transaction.
+#
+# It is also the customer's only evidence a payment happened, which matters most in
+# exactly the case where the app is least trusted: a transaction still PENDING at the
+# provider. The detail screen must show the reference — that is the string support and
+# the bank both work from.
+appId: com.zitch.app
+---
+- runFlow: subflows/signin.yaml
+
+- tapOn: "Wallet"
+- extendedWaitUntil:
+    visible: "Transaction History"
+    timeout: 30000
+- tapOn: "Transaction History"
+
+# An account with no history yet has nothing to open, and a flow that fails on a fresh
+# test account teaches people to ignore failures. Assert the screen loaded, then only
+# drill in if there is a row.
+- assertVisible: "Transaction History"
+
+- runFlow:
+    when:
+      visible: "Zitch Wallet"
+    commands:
+      - tapOn: "Zitch Wallet"
+      - extendedWaitUntil:
+          visible: "Transaction details"
+          timeout: 30000
+      # The reference is the load-bearing field: it is what a support ticket or a bank
+      # trace is opened against.
+      - assertVisible: "Reference"
+      - assertVisible: "Description"
+      - assertVisible: "Share receipt"
+      - tapOn: "Share receipt"

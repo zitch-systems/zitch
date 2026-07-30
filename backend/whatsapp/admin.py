@@ -26,7 +26,30 @@ class PendingActionAdmin(admin.ModelAdmin):
     raw_id_fields = ("user",)
 
 
-from .models import AuditLog, Broadcast, BroadcastRecipient, ConversationState  # noqa: E402
+from .models import (AuditLog, Broadcast, BroadcastRecipient,  # noqa: E402
+                     ConversationState, WebhookEvent)
+
+
+@admin.register(WebhookEvent)
+class WebhookEventAdmin(admin.ModelAdmin):
+    """Read-only, like AuditLog: the value of a forensic log is that nobody can edit
+    it after the fact — including a superuser reading it in the admin."""
+
+    list_display = ("created", "source", "outcome", "verified", "http_status",
+                    "remote_ip", "reference", "action")
+    list_filter = ("source", "outcome", "verified")
+    search_fields = ("reference", "remote_ip", "action")
+    readonly_fields = ("source", "outcome", "verified", "http_status", "remote_ip",
+                       "reference", "action", "payload", "created")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(ConversationState)
@@ -71,3 +94,33 @@ class BroadcastAdmin(admin.ModelAdmin):
     search_fields = ("template_name",)
     inlines = [BroadcastRecipientInline]
     raw_id_fields = ("created_by",)
+
+
+from .models import ApprovalRequest  # noqa: E402
+
+
+@admin.register(ApprovalRequest)
+class ApprovalRequestAdmin(admin.ModelAdmin):
+    """The approval queue, drainable from /admin/ today.
+
+    Deliberately NOT read-only like AuditLog and WebhookEvent: a held action has to be
+    decidable, and until the portal SPA grows a screen this is the only place that can
+    happen. Editing is limited to the decision fields — the action and payload are what
+    was requested and must not be rewritten before approval, or the checker would be
+    approving something other than what the maker submitted.
+    """
+
+    list_display = ("created", "action", "status", "requested_by", "decided_by", "reason")
+    list_filter = ("status", "action")
+    search_fields = ("action", "reason", "requested_by__username", "decided_by__username")
+    readonly_fields = ("action", "payload", "reason", "requested_by", "created",
+                       "decided", "result", "status")
+    fields = readonly_fields + ("decided_by", "decision_note")
+
+    def has_add_permission(self, request):
+        # Requests are created by the endpoint that would have performed the action.
+        # Hand-creating one here would skip the maker's identity and the audit row.
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

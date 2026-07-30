@@ -315,3 +315,70 @@ class OTP(models.Model):
 
     def __str__(self):
         return f"{self.phone} · {self.purpose}"
+
+
+class KnownDevice(models.Model):
+    """A device install this user has authenticated from before.
+
+    The point is the *negative*: "this account has never signed in from here" is the
+    signal that separates a stolen password from the real customer on a new handset.
+    A device being listed here proves nothing on its own — the id is a client-supplied
+    value and an attacker on a compromised phone inherits a legitimate one.
+
+    Rows are written by `common.risk.remember_device` on first sight and refreshed at
+    most hourly, so this does not become a write per API call.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="known_devices")
+    # The per-install id from lib/deviceIntegrity.ts (keychain-persisted, not a
+    # hardware identifier).
+    device_id = models.CharField(max_length=64)
+    os = models.CharField(max_length=16, blank=True, default="")
+    model = models.CharField(max_length=48, blank=True, default="")
+    brand = models.CharField(max_length=32, blank=True, default="")
+    last_ip = models.CharField(max_length=64, blank=True, default="")
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "device_id"], name="uniq_user_device"),
+        ]
+        indexes = [models.Index(fields=["user", "-last_seen"], name="device_user_seen_idx")]
+
+    def __str__(self):
+        return f"u_{self.user_id} {self.device_id[:12]} {self.model}"
+
+
+class OperatorTotp(models.Model):
+    """A staff member's TOTP second factor.
+
+    Scoped to OPERATORS, not customers: an operator session can credit wallets, decide
+    KYC and change runtime settings, so a stolen operator password is worth far more
+    than a customer's. Customers are protected by the transaction PIN instead, which is
+    a second factor on the thing that matters (money) rather than on sign-in.
+
+    The secret is stored as base32, not encrypted. That matches django-otp and every
+    comparable implementation, and the honest reason is that encrypting it here would
+    be theatre: the key would have to live in the same environment as the database
+    credentials, so an attacker who can read this table can read the key too. It is
+    listed in `SENSITIVE_FIELDS` for the data-export path and never leaves the server
+    after enrolment.
+    """
+
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                                related_name="operator_totp")
+    secret = models.CharField(max_length=64)
+    # Enrolment is two-step: a secret is issued, then proved with a live code. An
+    # unconfirmed row must NOT gate login, or a half-finished enrolment locks the
+    # operator out of the portal with no way back in.
+    confirmed = models.BooleanField(default=False)
+    # The last step consumed, so a code cannot be replayed inside its own window.
+    last_step = models.BigIntegerField(default=0)
+    created = models.DateTimeField(auto_now_add=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        state = "confirmed" if self.confirmed else "pending"
+        return f"{self.user_id} totp ({state})"

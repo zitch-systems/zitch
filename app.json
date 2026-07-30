@@ -2,7 +2,7 @@
     "expo":  {
                  "name":  "Zitch",
                  "slug":  "zitch",
-                 "description":  "Zitch is a Nigerian money app for instant transfers, airtime, data, bills, virtual dollar cards, savings and multi-currency wallets — plus banking on WhatsApp.",
+                 "description":  "Zitch is a Nigerian money app for instant bank transfers, airtime, data and bill payments — plus banking on WhatsApp.",
                  "version":  "1.0.11",
                  "orientation":  "portrait",
                  "icon":  "./assets/icon.png",
@@ -73,10 +73,14 @@
                                      "expo-build-properties",
                                      {
                                          "android":  {
-                                                         "usesCleartextTraffic":  false
+                                                         "usesCleartextTraffic":  false,
+                                                         "compileSdkVersion":  36,
+                                                         "targetSdkVersion":  36,
+                                                         "buildToolsVersion":  "36.0.0"
                                                      }
                                      }
-                                 ]
+                                 ],
+                                 "./plugins/withAndroidReleaseSigning"
                              ],
                  "experiments":  {
                                      "typedRoutes":  true

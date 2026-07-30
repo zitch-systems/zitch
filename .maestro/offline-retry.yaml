@@ -1,0 +1,51 @@
+# Losing the network mid-purchase is where double-debits come from.
+#
+# The dangerous case is not "no network" — it is a request that LEFT and whose reply
+# never came back, so the app cannot know whether the money moved. `apiJson` marks that
+# case `offline: true` and money screens KEEP their idempotency key, so a user retry
+# replays server-side instead of debiting twice.
+#
+# What is asserted here is the visible half of that contract: the honest message, and
+# that the screen recovers rather than stranding the user on a dead spinner. The
+# server-side replay itself is covered by the backend idempotency tests — it cannot be
+# observed from the UI, which is the point of it.
+#
+# Android only: setAirplaneMode has no iOS equivalent in Maestro.
+appId: com.zitch.app
+---
+- runFlow: subflows/signin.yaml
+
+- extendedWaitUntil:
+    visible: "Airtime"
+    timeout: 30000
+- tapOn: "Airtime"
+- extendedWaitUntil:
+    visible: "Select network"
+    timeout: 30000
+
+- setAirplaneMode: enabled
+
+- tapOn: "MTN"
+- tapOn: "Phone number"
+- inputText: "${ZITCH_TEST_PHONE}"
+- hideKeyboard
+- tapOn: "Or enter amount"
+- inputText: "100"
+- hideKeyboard
+- tapOn: "Continue"
+
+# The exact string from lib/api.ts's offline fallback. It has to be actionable: a raw
+# fetch error, or a spinner that never resolves, both leave the user unsure whether
+# they were charged — which is when they retry and get debited twice.
+- extendedWaitUntil:
+    visible: "Service temporarily unavailable. Please try again."
+    timeout: 45000
+
+- setAirplaneMode: disabled
+
+# The screen must still be usable after the failure — not wedged in a loading state.
+# Restored last so a failing run above cannot leave the device in airplane mode for
+# every subsequent flow.
+- extendedWaitUntil:
+    visible: "Select network"
+    timeout: 45000

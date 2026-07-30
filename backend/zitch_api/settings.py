@@ -6,6 +6,7 @@ variables. See .env.example for the full list.
 """
 import os
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import dj_database_url
@@ -77,6 +78,7 @@ INSTALLED_APPS = [
     "portal",
     "console",
     "admin_api",
+    "compliance",
 ]
 
 MIDDLEWARE = [
@@ -296,7 +298,52 @@ WEMA = {
     # payout. Turn on once Wema supplies the value.
     "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
     "AUTH_REQUIRE_SECURITY_INFO": env_bool("WEMA_AUTH_REQUIRE_SECURITY_INFO", False),
+    # VAS status legends. ALAT's PartnerPayment status checks answer with a bare
+    # INTEGER `transactionStatus` — 1..11 for airtime/data, 1..9 for bills — and do
+    # not publish what the numbers mean. Without the legend a timed-out VAS purchase
+    # can never be auto-settled or auto-refunded: it stays PENDING forever, because
+    # guessing either way loses money (settle a failure and the customer is debited
+    # for nothing; refund a delivered top-up and we pay twice).
+    #
+    # These exist so that the moment Wema supplies the legend it is a Render env var,
+    # not a code change and a deploy. Format is `code=outcome` pairs, comma or space
+    # separated, where outcome is exactly one of success | pending | failed:
+    #
+    #   WEMA_VAS_STATUS_LEGEND="1=success,2=pending,3=failed,4=failed"
+    #
+    # Codes absent from the legend keep today's behaviour (PENDING, logged), and an
+    # unparseable entry is dropped with an error rather than defaulting — so a typo
+    # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
+    "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
+    "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
 }
+# Fraud: a spend at or above this from a device the account has NEVER authenticated
+# from requires face verification first (see common.risk.new_device_step_up_error).
+# The shape of the fraud it addresses is a stolen password arriving on a new handset
+# and moving as much as the tier allows — which the tier cap alone cannot see.
+# Deliberately BELOW LARGE_TXN_THRESHOLD (₦100,000): the point is to catch a drain
+# that stays under the existing face gate. Set to 0 to disable.
+RISK_NEW_DEVICE_FACE_THRESHOLD = Decimal(
+    os.environ.get("RISK_NEW_DEVICE_FACE_THRESHOLD", "50000") or "0")
+# Operator second factor (TOTP). OFF by default: switching it on before operators have
+# enrolled locks every one of them out of the portal at once, including whoever would
+# have to fix it. With it on, only money-/settings-capable roles are required — see
+# admin_api.views._mfa_required_for. An operator who HAS enrolled is always challenged
+# regardless of this flag.
+OPS_REQUIRE_MFA = env_bool("OPS_REQUIRE_MFA", False)
+# Maker/checker on high-risk operator actions (currently: a manual wallet credit above
+# ADMIN_MAX_MANUAL_CREDIT, which today is simply refused). OFF by default because a
+# queue nobody can drain silently breaks a working workflow — the approval queue is
+# reachable via /api/{ops,admin}/approvals and Django admin, but the portal SPA has no
+# screen for it yet. See common.approvals and docs/operator-controls.md.
+OPS_REQUIRE_DUAL_APPROVAL = env_bool("OPS_REQUIRE_DUAL_APPROVAL", False)
+
+# AML transaction monitoring (compliance.services). The threshold is the one the
+# compliance QA response gives a regulator: "threshold breaches (₦5M+)". Raising a case
+# does NOT block the transaction — see docs/compliance-operations.md for why, and for the
+# one place the code and the policy wording differ.
+AML_THRESHOLD_NGN = Decimal(os.environ.get("AML_THRESHOLD_NGN", "5000000"))
+AML_VELOCITY_MIN_ROWS_24H = int(os.environ.get("AML_VELOCITY_MIN_ROWS_24H", "40"))
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
 # Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY

@@ -356,6 +356,7 @@ urlpatterns = [
     path("api/cards/", include("cards.urls")),
     path("api/banklink/", include("banklink.urls")),
     path("api/convert/", include("convert.urls")),
+    path("api/disputes/", include("compliance.urls")),
     # Parallel "console" build (kept alongside main's portal): landing "/console/",
     # app prototype "/console/app/", operator portal "/console/portal/" — distinct
     # paths so it never shadows the canonical surfaces above.
