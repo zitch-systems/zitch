@@ -133,6 +133,18 @@ KYC rail.
   (POST-only). A **404** means the route isn't deployed; a **502/503** means the
   service isn't up.
 
+### Step 5b — profile the callbacks for PRODUCTION
+- The dev/sandbox callbacks were profiled on 2026-07-28; production profiling was
+  deliberately deferred to this point by agreement with Wema. Send the four URLs from
+  `/wema-callbacks-diagnose` to the `#zitch` channel and wait for confirmation — the rails
+  do not work until the bank has them.
+- Before sending, rotate `WEMA_CALLBACK_TOKEN` to a value that has NOT been used for dev
+  (keep the old one in `WEMA_CALLBACK_TOKEN_PREV` for the overlap). The dev token was shared
+  in a Slack channel in Wema's workspace, so reusing it for production carries that exposure
+  across. See `docs/wema-callback-profiling.md` §2.
+- Once a production callback has arrived, read the observed source IP out of
+  `whatsapp.WebhookEvent` and then set `WEMA_CALLBACK_ENFORCE_IPS=true`.
+
 ### Step 6 — seed the catalogue
 - `python manage.py seed_wema_plans` — maps the live data/cable catalogue onto
   `wema_code` (cable scoped per biller). Re-runnable.
