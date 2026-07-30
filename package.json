@@ -13,7 +13,8 @@
     "lint": "expo lint --max-warnings=0",
     "test:ci": "jest --runInBand",
     "typecheck": "tsc --noEmit",
-    "doctor": "expo-doctor"
+    "doctor": "expo-doctor",
+    "test:e2e": "bash scripts/maestro.sh"
   },
   "jest": {
     "preset": "jest-expo",

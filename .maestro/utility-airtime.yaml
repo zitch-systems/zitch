@@ -1,0 +1,41 @@
+# Airtime is the highest-volume flow in the app, and the one most likely to be
+# regressed by a catalogue change — the network list and the amount presets come from
+# the backend, so a provider-side change can empty this screen without any code moving.
+#
+# Stops at the PIN sheet for the same reason transfer.yaml does: the challenge appearing
+# is the property worth asserting, and completing the purchase spends real money.
+appId: com.zitch.app
+---
+- runFlow: subflows/signin.yaml
+
+# "Airtime" is both a home quick action and a grid tile, so this is the shortest real
+# path a user takes.
+- extendedWaitUntil:
+    visible: "Airtime"
+    timeout: 30000
+- tapOn: "Airtime"
+
+- extendedWaitUntil:
+    visible: "Select network"
+    timeout: 30000
+
+# An empty network list is a silent, total outage of this flow — the screen renders
+# fine and nothing is buyable. Asserting a specific network catches it.
+- assertVisible: "MTN"
+- tapOn: "MTN"
+
+- tapOn: "Phone number"
+- inputText: "${ZITCH_TEST_PHONE}"
+- hideKeyboard
+
+- assertVisible: "Choose amount"
+- tapOn: "Or enter amount"
+- inputText: "100"
+- hideKeyboard
+- tapOn: "Continue"
+
+- extendedWaitUntil:
+    visible: "Enter your PIN"
+    timeout: 30000
+- assertVisible: "Enter your PIN"
+- back

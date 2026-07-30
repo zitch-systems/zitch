@@ -1,0 +1,36 @@
+# A lost phone with an unlocked Zitch session is the whole mobile threat model.
+#
+# lib/session.ts locks after LOCK_AFTER_BACKGROUND_MS (60s backgrounded) and after
+# IDLE_LIMIT_MS (5 minutes idle), and app/_layout.tsx sends a locked session to
+# /signin. This exercises the backgrounded path, which is the one that matters when a
+# handset is stolen mid-session — the thief backgrounds nothing, they just pick it up.
+#
+# 75s of real waiting, so it is the slowest flow here by design. Shortening the wait
+# would make it pass while proving nothing.
+appId: com.zitch.app
+---
+- runFlow: subflows/signin.yaml
+
+# Confirm we really are inside a session before testing that it gets taken away —
+# otherwise a sign-in failure would make this flow "pass".
+- assertVisible: "Home"
+
+- pressKey: Home
+- waitForAnimationToEnd
+
+# Past the 60s background lock window, with margin for the OS suspending timers.
+- extendedWaitUntil:
+    visible: "this string is never present — used purely as a 75s wait"
+    timeout: 75000
+    optional: true
+
+- launchApp   # NOT clearState: the point is that a RESUMED session is locked
+
+- extendedWaitUntil:
+    visible: "Welcome back"
+    timeout: 45000
+- assertVisible: "Enter password"
+
+# And the tab bar must be gone — landing on sign-in while the session is still live
+# underneath would be cosmetic, not a lock.
+- assertNotVisible: "Wallet"
