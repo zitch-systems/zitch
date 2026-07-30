@@ -422,6 +422,34 @@ services:
       - key: SENTRY_DSN
         sync: false
 
+  # AML TRANSACTION MONITORING. The compliance QA response tells a regulator we monitor
+  # for "threshold breaches (₦5M+), rapid velocity, structuring" and file SARs with NFIU
+  # "within 30 days of detection". This is the code behind that: it opens cases for those
+  # patterns and — the part that matters — goes RED when an open case passes its 30-day
+  # deadline, because an unfiled SAR past its deadline is a regulatory breach and is
+  # otherwise invisible. Read-only over the ledger; it never blocks a transaction (see
+  # docs/compliance-operations.md for why, and for where the code and the policy wording
+  # differ). Needs only the database and SENTRY_DSN.
+  - type: cron
+    name: zitch-aml-scan
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "0 5 * * *"   # 05:00 UTC = 06:00 Lagos, before the settlement report
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py aml_scan --fail-on-overdue"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      - key: SENTRY_DSN
+        sync: false
+
 databases:
   - name: zitch-db
     plan: free   # upgrade before go-live; free Postgres expires

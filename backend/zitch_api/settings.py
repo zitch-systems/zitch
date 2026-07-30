@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "portal",
     "console",
     "admin_api",
+    "compliance",
 ]
 
 MIDDLEWARE = [
@@ -336,6 +337,13 @@ OPS_REQUIRE_MFA = env_bool("OPS_REQUIRE_MFA", False)
 # reachable via /api/{ops,admin}/approvals and Django admin, but the portal SPA has no
 # screen for it yet. See common.approvals and docs/operator-controls.md.
 OPS_REQUIRE_DUAL_APPROVAL = env_bool("OPS_REQUIRE_DUAL_APPROVAL", False)
+
+# AML transaction monitoring (compliance.services). The threshold is the one the
+# compliance QA response gives a regulator: "threshold breaches (₦5M+)". Raising a case
+# does NOT block the transaction — see docs/compliance-operations.md for why, and for the
+# one place the code and the policy wording differ.
+AML_THRESHOLD_NGN = Decimal(os.environ.get("AML_THRESHOLD_NGN", "5000000"))
+AML_VELOCITY_MIN_ROWS_24H = int(os.environ.get("AML_VELOCITY_MIN_ROWS_24H", "40"))
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
 # Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY
