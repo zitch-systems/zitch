@@ -6,6 +6,7 @@ variables. See .env.example for the full list.
 """
 import os
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import dj_database_url
@@ -315,6 +316,14 @@ WEMA = {
     "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
     "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
 }
+# Fraud: a spend at or above this from a device the account has NEVER authenticated
+# from requires face verification first (see common.risk.new_device_step_up_error).
+# The shape of the fraud it addresses is a stolen password arriving on a new handset
+# and moving as much as the tier allows — which the tier cap alone cannot see.
+# Deliberately BELOW LARGE_TXN_THRESHOLD (₦100,000): the point is to catch a drain
+# that stays under the existing face gate. Set to 0 to disable.
+RISK_NEW_DEVICE_FACE_THRESHOLD = Decimal(
+    os.environ.get("RISK_NEW_DEVICE_FACE_THRESHOLD", "50000") or "0")
 # Open banking — Mono: link an external bank, read balance/transactions, and fund
 # the wallet from it via DirectPay (see utility.mono + the banklink app). The
 # Connect widget runs client-side with PUBLIC_KEY; server calls use SECRET_KEY

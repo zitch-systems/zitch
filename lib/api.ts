@@ -8,6 +8,7 @@ import { touchActivity } from '@/lib/session';
 // Render fallback host. USER_AGENT is reused here so an explicit apiPost
 // header and the guard agree.
 import { USER_AGENT, isEdgeBlockMessage } from '@/lib/netPatch';
+import { deviceHeaders } from '@/lib/deviceIntegrity';
 
 // On an authenticated 401 the session is dead (expired or revoked): clear it and
 // bounce to sign-in. Guarded so several in-flight requests failing together only
@@ -38,6 +39,11 @@ export async function apiPost(path: string, body: Record<string, any> = {}, time
     'Content-Type': 'application/json',
     Accept: 'application/json',
     'User-Agent': USER_AGENT,
+    // Device binding + integrity signals for backend risk scoring. Headers rather
+    // than body fields, so no existing request shape changes and no endpoint has to
+    // opt in. Advisory only — the backend never trusts them as a verdict, because a
+    // compromised device controls every value in them.
+    ...(await deviceHeaders()),
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   // Bound every request so a slow/hanging backend (e.g. a slow upstream provider
@@ -113,7 +119,14 @@ export async function publicPost(path: string, body: Record<string, any> = {}, t
   try {
     return await fetch(`${baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        // Sign-in and OTP are exactly where device binding earns its keep: "this
+        // account has never authenticated from this device" is the signal that
+        // distinguishes a stolen password from the real user.
+        ...(await deviceHeaders()),
+      },
       body: JSON.stringify(body),
       signal: ctrl.signal,
     });

@@ -120,6 +120,13 @@ def signin(request):
 
     clear_login_failures("user", ident)
     get_or_create_wallet(user)
+    # Score the device this sign-in came from and remember it. Deliberately does not
+    # gate the sign-in: the password was correct, and refusing on a heuristic would
+    # lock out customers who bought a new phone. What it buys is a durable trail from
+    # the first minute of a takeover instead of a reconstruction from rotated logs —
+    # and it is what makes the new-device step-up on a large spend meaningful.
+    from common.risk import evaluate_login
+    evaluate_login(request, user)
     token = AccessToken.issue(user)
     return ok(access_token=token.key, message="Signed in")
 

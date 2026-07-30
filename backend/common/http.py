@@ -44,6 +44,13 @@ def send_limit_error(user, amount) -> str | None:
     from accounts.models import User
     if amount >= User.LARGE_TXN_THRESHOLD and not user.face_verified:
         return "Face verification required for this amount."
+    # A large spend from a device this account has never used needs the customer, not
+    # just their credentials. Checked before the bank's cap because it is local and
+    # free, and because it catches a takeover rather than a limit.
+    from common.risk import new_device_step_up_error
+    step_up = new_device_step_up_error(user, amount)
+    if step_up:
+        return step_up
     # The partner bank enforces its OWN per-tier caps on the NUBAN, on a different
     # ladder from ours — so an amount our tier allows can still be refused at the
     # gateway. Refusing here turns that into a clear message instead of a failed
@@ -408,6 +415,12 @@ def require_user(view):
         if user is None:
             return fail("Invalid or expired session", status=401)
         request.user_obj = user
+        # Hang the calling device on the user so money code can see it without every
+        # signature growing a `request` parameter. This is the single place every
+        # authenticated request passes through with both objects in hand. Parsing only
+        # — no database write, because this runs on every API call.
+        from common.risk import attach_device
+        attach_device(request, user)
         return view(request, *args, **kwargs)
 
     return wrapper
