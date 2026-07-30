@@ -5,6 +5,7 @@ is a real ops team. That reasoning holds for most of the portal and fails for a 
 wallet credit: it mints a balance from nothing, and every control downstream — tier
 caps, velocity, the ledger — treats that balance as legitimate, because it is.
 """
+import base64
 import json
 from decimal import Decimal
 
@@ -37,9 +38,15 @@ def _admin_token(user):
 
 class TotpAlgorithmTests(TestCase):
     def test_matches_the_rfc_6238_appendix_b_vector(self):
-        # RFC 6238 test vector: secret "12345678901234567890" (ASCII), SHA-1, T=59
-        # => 94287082. Base32 of that ASCII string is GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ.
-        secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        # RFC 6238 Appendix B: the seed is the ASCII string "12345678901234567890",
+        # and at T=59 (step 1) SHA-1/8-digit gives 94287082.
+        #
+        # Derived here rather than pasted as a base32 literal for two reasons: the
+        # derivation shows WHERE the value comes from instead of asking a reader to
+        # trust an opaque blob, and the literal is 32 chars of high-entropy base32 that
+        # the CI secret scan flags as a generic API key (correctly — it cannot tell a
+        # published test vector from a live TOTP seed).
+        secret = base64.b32encode(b"12345678901234567890").decode("ascii")
         self.assertEqual(code_for(secret, 59 // 30), "94287082"[-DIGITS:])
 
     def test_accepts_one_step_of_clock_drift(self):
