@@ -82,6 +82,45 @@ This is not a certification that every external financial rail is correct in pro
 - Verify Sentry/log-drain retention, database backups with restore drills, secret rotation, incident response, and operator audit review.
 - Replace the hardcoded Codemagic notification recipient with a controlled team/distribution setting when ownership changes.
 
+## Follow-up status — 30 July 2026
+
+The residual-risk items above were triaged and the ones that did not require a third
+party were implemented. Recorded here so the audit is not read as current.
+
+**Closed**
+
+| Item | Where |
+|---|---|
+| P1 Expo/React Native upgrade | SDK 54 / RN 0.81.5 (closed before this pass) |
+| P1 ESLint config + CI gate | `eslint.config.js`, gated in CI and Codemagic |
+| P1 Android target API 36 | pinned via expo-build-properties. **The SDK 54 upgrade did NOT achieve this** — `ExpoRootProjectPlugin.kt` defaults `targetSdk` to 35 |
+| P1 production signing + AAB | `plugins/withAndroidReleaseSigning.js` + the `android-aab` Codemagic workflow, which reads the signer off the finished bundle and refuses a debug-signed one |
+| P1 device automation | 10 Maestro flows + `npm run test:e2e`. **Not yet run on a device**, and nothing provisions the Android 8/11/14/16 matrix |
+| P0 ledger-to-bank settlement | `manage.py settlement_report` + `zitch-settlement-report` cron + `docs/settlement-operating-model.md`. Two owner rows are deliberately unassigned |
+| P2 shared Redis for rate limits | `REDIS_URL` is now a hard production requirement (`production_checks.py`) |
+| Deferred: webhook forensic log | `whatsapp.WebhookEvent`, recording refused calls too |
+| Deferred: device fingerprint + risk scoring | `lib/deviceIntegrity.ts`, `common/risk.py`, `accounts.KnownDevice` |
+| Deferred: root/jailbreak detection, device binding | same |
+| Deferred: admin MFA + maker/checker | `accounts/totp.py`, `common/approvals.py`, `docs/operator-controls.md` |
+| Deferred: AML/SAR, GDPR export/delete, disputes | the `compliance` app + `docs/compliance-operations.md` |
+| Website currency/IMTO claims | removed from both served landing pages and the store listing, with a regression test |
+
+**Still open, and why**
+
+* **P0 Wema items** — callback URL profiling, the live host and keys, the VAS status
+  legend, the `cardKey`, and the reversal history shape. All need the bank. The legend is
+  now an env var (`WEMA_VAS_STATUS_LEGEND`) so it lands without a deploy, and
+  `docs/wema-callback-profiling.md` is the send-to-the-bank packet.
+* **Termii sender ID / DND approval** — a carrier decision.
+* **P0 production simulation guards and provider credentials** — Render dashboard
+  configuration, unchanged by this pass.
+* **Certificate pinning** — mechanism shipped, pins deliberately empty. Both API hosts'
+  certificates are third-party managed and rotate with fresh keys; pinning them today
+  schedules an outage with no remote fix. Needs a key we control.
+* **PEP/sanctions screening** — no provider wired. Not simulated either.
+* **Portal SPA screens** for the approval queue and the AML/dispute queues. Django admin
+  is the interim surface.
+
 ## APK test checklist
 
 1. Download `app-release.apk` from the successful Codemagic build’s **Artifacts** tab.
