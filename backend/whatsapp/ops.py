@@ -3,6 +3,8 @@
 The admin/agent surfaces ride on Django admin + a few staff-only endpoints;
 these are the shared services behind them.
 """
+import logging
+
 from .models import AuditLog, Broadcast, BroadcastRecipient, WhatsAppLink
 from .providers import send_template
 
@@ -14,6 +16,29 @@ def record_audit(action, actor=None, target="", before=None, after=None, actor_t
         actor_id=str(getattr(actor, "id", "") or ""),
         action=action, target=target, before=before or {}, after=after or {},
     )
+
+
+def record_webhook(source, *, outcome=None, verified=False, http_status=200,
+                   remote_ip="", reference="", action="", payload=None):
+    """Append a WebhookEvent row. Never raises.
+
+    Every call site is on a provider's retry path, so an exception here would turn a
+    forensic-logging bug into a failed callback the bank re-delivers — or, on the
+    authentication callback, into a payout that never authorises. The log going quiet
+    is always preferable to that, so this swallows everything and says so in the
+    application log.
+    """
+    from whatsapp.models import WebhookEvent
+
+    try:
+        WebhookEvent.objects.create(
+            source=source, outcome=outcome or WebhookEvent.ACCEPTED, verified=verified,
+            http_status=http_status, remote_ip=remote_ip or "",
+            reference=str(reference or "")[:120], action=str(action or "")[:80],
+            payload=WebhookEvent.redact(payload if isinstance(payload, (dict, list)) else {}),
+        )
+    except Exception:  # noqa: BLE001 — forensics must never break the callback
+        logging.getLogger("zitch").exception("record_webhook_failed source=%s", source)
 
 
 def _segment_links(broadcast: Broadcast):

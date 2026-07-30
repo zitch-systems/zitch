@@ -26,7 +26,30 @@ class PendingActionAdmin(admin.ModelAdmin):
     raw_id_fields = ("user",)
 
 
-from .models import AuditLog, Broadcast, BroadcastRecipient, ConversationState  # noqa: E402
+from .models import (AuditLog, Broadcast, BroadcastRecipient,  # noqa: E402
+                     ConversationState, WebhookEvent)
+
+
+@admin.register(WebhookEvent)
+class WebhookEventAdmin(admin.ModelAdmin):
+    """Read-only, like AuditLog: the value of a forensic log is that nobody can edit
+    it after the fact — including a superuser reading it in the admin."""
+
+    list_display = ("created", "source", "outcome", "verified", "http_status",
+                    "remote_ip", "reference", "action")
+    list_filter = ("source", "outcome", "verified")
+    search_fields = ("reference", "remote_ip", "action")
+    readonly_fields = ("source", "outcome", "verified", "http_status", "remote_ip",
+                       "reference", "action", "payload", "created")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(ConversationState)

@@ -42,17 +42,43 @@ def webhook(request):
     if request.method != "POST":
         return HttpResponse(status=405)
 
+    from common.ratelimit import client_ip
+
+    from .models import WebhookEvent
+    from .ops import record_webhook
+
     if not verify_signature(request.body, request.headers.get("X-Hub-Signature-256", "")):
+        # Body deliberately not recorded: an unauthenticated caller must not be able
+        # to write chosen content into a table operators read.
+        record_webhook("whatsapp", outcome=WebhookEvent.REJECTED_SIGNATURE,
+                       http_status=401, remote_ip=client_ip(request))
         return JsonResponse({"success": False, "message": "Invalid signature"}, status=401)
     try:
         event = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
+        record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
+                       http_status=400, remote_ip=client_ip(request))
         return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
 
     # Ack fast; process inline (no queue yet — handlers are quick).
-    for message in _iter_messages(event):
+    messages = list(_iter_messages(event))
+    statuses = list(_iter_statuses(event))
+    # A DESCRIPTOR, not the envelope. Unlike a bank callback, a WhatsApp body carries
+    # the customer's message text — and the router accepts a PIN reply in chat, so the
+    # raw body can contain a transaction PIN before we refuse it. Persisting that to a
+    # table operators read would create the exact exposure the production
+    # raw-PIN-in-chat block exists to prevent. Ids and types answer "did Meta deliver,
+    # and what"; the text is not needed and is not kept. `from` is omitted for the same
+    # reason — it is the customer's phone number.
+    record_webhook("whatsapp", verified=True, remote_ip=client_ip(request),
+                   payload={"messages": [{"id": m.get("id", ""), "type": m.get("type", "")}
+                                         for m in messages],
+                            "statuses": [{"id": s.get("id", ""), "status": s.get("status", "")}
+                                         for s in statuses]},
+                   action=f"messages:{len(messages)} statuses:{len(statuses)}")
+    for message in messages:
         _process(message)
-    for status in _iter_statuses(event):
+    for status in statuses:
         _apply_status(status)
     return JsonResponse({"status": True})
 

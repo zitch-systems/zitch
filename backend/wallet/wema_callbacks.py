@@ -135,29 +135,82 @@ def wema_callback(kind: str):
         @csrf_exempt
         @wraps(view)
         def inner(request, token="", *args, **kwargs):
+            from whatsapp.models import WebhookEvent
+            from whatsapp.ops import record_webhook
+
+            source = f"wema.{kind}"
+            # A refused call is recorded with NO body: the point of refusing before
+            # parsing is that nothing attacker-controlled gets written anywhere, and
+            # persisting it to a table operators read would undo that. The IP and the
+            # outcome are what an investigation needs, and they are not attacker-chosen.
             if request.method != "POST":
+                record_webhook(source, outcome=WebhookEvent.REJECTED_METHOD,
+                               http_status=405, remote_ip=client_ip(request))
                 return JsonResponse({"message": "Method not allowed"}, status=405)
             if not _token_ok(token):
                 log.warning("wema_cb_bad_token kind=%s ip=%s", kind, client_ip(request))
+                record_webhook(source, outcome=WebhookEvent.REJECTED_TOKEN,
+                               http_status=403, remote_ip=client_ip(request))
                 return JsonResponse({"message": "Forbidden"}, status=403)
             allowed, ip = _ip_ok(request)
             if not allowed:
                 log.warning("wema_cb_bad_ip kind=%s ip=%s", kind, ip)
                 alert("Wema callback from unexpected source IP", level="warning",
                       kind=kind, ip=ip)
+                record_webhook(source, outcome=WebhookEvent.REJECTED_IP,
+                               http_status=403, remote_ip=ip)
                 return JsonResponse({"message": "Forbidden"}, status=403)
             try:
                 body = json.loads(request.body or b"{}")
                 if not isinstance(body, dict):
                     body = {}
+                parsed = True
             except (ValueError, UnicodeDecodeError):
                 log.warning("wema_cb_bad_json kind=%s ip=%s", kind, ip)
                 body = {}
+                parsed = False
             request.wema_body = body
             request.wema_ip = ip
-            return view(request, *args, **kwargs)
+            request.wema_action = ""
+            # Written in `finally` so a handler that RAISES still leaves evidence the
+            # call arrived — the case where evidence matters most, and the one a
+            # record-on-success-only log loses. The row is immutable, so it is written
+            # once, at the end, when both the status the bank saw and whatever the
+            # handler decided are known.
+            status = 500
+            try:
+                response = view(request, *args, **kwargs)
+                status = getattr(response, "status_code", 200)
+                return response
+            except Exception:
+                request.wema_action = "handler_error"
+                raise
+            finally:
+                record_webhook(
+                    source,
+                    outcome=WebhookEvent.ACCEPTED if parsed else WebhookEvent.BAD_BODY,
+                    verified=True, http_status=status, remote_ip=ip, payload=body,
+                    reference=_callback_reference(body),
+                    action=getattr(request, "wema_action", ""))
         return inner
     return outer
+
+
+def _callback_reference(body: dict) -> str:
+    """The correlation key from a callback envelope, for looking events up later.
+
+    ALAT spells it differently per callback (and nests some under ``data``), so this
+    tries the known spellings in order rather than assuming one shape. Empty when
+    none is present — a missing reference is not worth failing a callback over.
+    """
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    for key in ("transactionReference", "transactionRef", "reference",
+                "customTransactionReference", "nuban", "accountNumber"):
+        for holder in (body, data):
+            value = holder.get(key)
+            if value:
+                return str(value)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +344,9 @@ def wema_authenticate_callback(request):
 
     log.info("wema_auth_cb ref=%s authorized=%s reason=%s si=%s ip=%s",
              ref, authorized, reason, _fingerprint(security_info), request.wema_ip)
+    # The single most forensically valuable fact on the rail: whether we let a payout
+    # proceed, and why not. Durable, unlike the log line above.
+    request.wema_action = f"authorized:{reason}" if authorized else f"denied:{reason}"
     # Alert on denials that mean something. A retry against an already-settled payout
     # is the bank behaving normally; paging on it trains operators to ignore the alert
     # that matters. Always logged above either way.
