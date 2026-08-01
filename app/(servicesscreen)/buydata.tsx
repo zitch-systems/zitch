@@ -44,10 +44,12 @@ const BuyData = () => {
   useEffect(() => {
     if (!net || !planType) return;
     let active = true;
-    setLoadingPlans(true);
-    setPlan('');
-    setPlans([]);
-    publicJson('/api/utility/get_data_plans/', { datanetwork: net, selectedPlanType: planType })
+    const timer = setTimeout(() => {
+      if (!active) return;
+      setLoadingPlans(true);
+      setPlan('');
+      setPlans([]);
+      publicJson('/api/utility/get_data_plans/', { datanetwork: net, selectedPlanType: planType })
       .then((res) => {
         if (active && res?.data_plans) {
           setPlans(res.data_plans.map((p: any) => ({
@@ -60,17 +62,21 @@ const BuyData = () => {
       })
       .catch(() => {})
       .finally(() => { if (active) setLoadingPlans(false); });
-    return () => { active = false; };
+    }, 0);
+    return () => { active = false; clearTimeout(timer); };
   }, [net, planType]);
 
   // Fetch authoritative price for the chosen plan.
   useEffect(() => {
-    if (!plan) { setPrice(''); return; }
     let active = true;
-    publicJson('/api/utility/get_data_plans_price/', { selectedDataPlan: plan })
+    const timer = setTimeout(() => {
+      if (!active) return;
+      if (!plan) { setPrice(''); return; }
+      publicJson('/api/utility/get_data_plans_price/', { selectedDataPlan: plan })
       .then((res) => { if (active && res?.price != null) setPrice(String(res.price)); })
       .catch(() => {});
-    return () => { active = false; };
+    }, 0);
+    return () => { active = false; clearTimeout(timer); };
   }, [plan]);
 
   const network = NETWORKS.find((n) => n.id === net)!;

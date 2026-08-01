@@ -59,10 +59,12 @@ const SetPin = () => {
   useEffect(() => {
     if (confirm === null && pin.length === PIN_LEN) {
       if (isTrivialPin(pin)) {
-        setErrMsg('Avoid an easy-to-guess PIN');
-        setErr(true);
+        const show = setTimeout(() => {
+          setErrMsg('Avoid an easy-to-guess PIN');
+          setErr(true);
+        }, 0);
         const t = setTimeout(() => { setErr(false); setPin(''); }, 900);
-        return () => clearTimeout(t);
+        return () => { clearTimeout(show); clearTimeout(t); };
       }
       const t = setTimeout(() => setConfirm(''), 180);
       return () => clearTimeout(t);
@@ -72,10 +74,12 @@ const SetPin = () => {
         const t = setTimeout(() => submit(pin), 220);
         return () => clearTimeout(t);
       }
-      setErrMsg("PINs don't match, try again");
-      setErr(true);
+      const show = setTimeout(() => {
+        setErrMsg("PINs don't match, try again");
+        setErr(true);
+      }, 0);
       const t = setTimeout(() => { setErr(false); setConfirm(''); }, 700);
-      return () => clearTimeout(t);
+      return () => { clearTimeout(show); clearTimeout(t); };
     }
   }, [pin, confirm]);
 
@@ -134,4 +138,3 @@ const SetPin = () => {
 };
 
 export default SetPin;
-

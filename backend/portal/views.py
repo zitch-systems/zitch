@@ -687,7 +687,7 @@ def broadcasts(request):
             "created": b.created.strftime("%b %d, %Y"),
             "by": (b.created_by.email or b.created_by.username) if b.created_by else "system",
             "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
-            "read": b.count_read, "failed": b.count_failed,
+            "read": b.count_read, "failed": b.count_failed, "unknown": b.count_unknown,
         }
         for b in Broadcast.objects.select_related("created_by").order_by("-created")[:PAGE]
     ]

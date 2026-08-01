@@ -31,7 +31,7 @@ Evidence inspected:
 - GitHub repository, branch protections/history, tests, migrations, deployment files,
   and draft PR.
 - Render workspace and logs for `https://zitch-api.onrender.com`, its web service,
-  cron topology, and managed PostgreSQL instance.
+  absence of declared cron/worker/cache resources, and managed PostgreSQL instance.
 - DigitalOcean account inventory.
 - Private Slack channel `#zitch` in the Wema Bank Team workspace, including messages
   from Temi and the Wema integration team.
@@ -56,11 +56,15 @@ No secret value is reproduced in this report.
 | Sensitive logging | Provider exceptions and nested payloads could expose phone, email, NUBAN, BVN/NIN, or credentials. | Added a global redacting formatter and provider-specific deep redaction/fingerprinting. Exceptions returned to clients are generic. |
 | WhatsApp mode/config | Missing live credentials could silently fall back to mock behavior; sandbox/chat signup could remain enabled in production. | Added explicit `disabled`, `sandbox`, and `live` modes. Production rejects sandbox; live requires all Meta identifiers/secrets; chat signup and PIN collection are disabled. |
 | WhatsApp webhook | Duplicate suppression could permanently discard a message after a worker crash, and metadata was not tightly bound to the configured number. | Added signature and phone-number-ID verification, 1 MiB body limit, durable processing leases, retry release, attempt/error timestamps, malformed event filtering, and monotonic delivery status handling. |
+| WhatsApp execution | Production webhooks still performed provider/AI work inline, creating timeout and acknowledged-but-incomplete crash windows. | Added an encrypted Postgres inbound queue, leases/backoff/dead-letter privacy cleanup, a fail-fast worker command, and a paid Render worker/shared-cache topology. The webhook now commits before acknowledging. |
+| WhatsApp broadcasts | A single operator could immediately fan out provider calls, with no durable outbox or safe treatment of ambiguous sends. | Added unconditional maker/checker approval, materialised recipients, row leases, 429 backoff, conservative `unknown` outcomes, monotonic Meta callbacks, and operator rollups. |
 | WhatsApp privacy/AI | AI routing had no per-link consent and could send long numeric identifiers/email addresses to the model or durable logs. | AI is opt-in per link and existing links migrate to disabled. Model input and stored intents are privacy-filtered; chat logs redact long identifiers and emails. |
 | WhatsApp client | Link codes/polling and provider failures were not bounded strongly enough. | Link codes now have 128-bit entropy, polling stops after ten minutes, rate limits are applied, and operator replies fail visibly when Meta delivery fails. |
 | Expo KYC/funding | UI mixed Zitch product tiers with Wema bank tiers, allowed oversized image payloads, and echoed raw identity continuation fields. | Separated bank/product limits, capped/compressed KYC images, removed raw identity echoes, added load/retry states, bounded WhatsApp polling, and prevented native screen capture while preserving explicit receipt sharing. |
+| Expo platform | Expo 54 retained a high-severity PostCSS build-chain advisory and lagged current React Native/platform support. | Upgraded sequentially through SDK 55/56/57, migrated removed navigation/config APIs, fixed React Compiler lint violations, and produced Android, iOS, and web production bundles. |
 | Business payment link | A client-generated unsigned query-string payment link could imply server authorization it did not have. | Removed/disabled the unsafe link until a signed server-issued flow exists. |
 | Render cron configuration | Cron processes inherited the web requirement for shared Redis and reconciliation jobs lacked explicit provider status settings. | Cron jobs explicitly disable the web-only shared-cache startup gate; reconciliation jobs declare the required Wema/VTU status configuration. |
+| Render topology | The live web service is free, none of the declared cron/worker/cache services exists, and Postgres is publicly reachable. | Blueprint declares paid web/worker/cache/cron resources, checked deploys, shared secret references and an empty Postgres public allow-list. These remain live operator actions and were not applied automatically. |
 
 ## Wema requirement conformance
 
@@ -103,15 +107,19 @@ The private Wema thread confirms:
 
 | Gate | Result |
 |---|---|
-| Django full regression | **881 tests passed** |
+| Django full regression | **885 tests passed** |
+| Latest WhatsApp focused regression | **92 tests passed** |
 | Django migration drift | **No changes detected** |
 | Django system check | **Passed** |
 | Django `check --deploy` with synthetic production settings | **Passed** |
 | Expo TypeScript | **Passed** |
 | Expo lint | **Passed, zero warnings** |
 | Expo Jest | **49/49 passed; 1 snapshot passed** |
-| Expo Doctor | **18/18 passed** |
-| Render YAML parse/semantic checks | **8 services; 7 cron jobs; passed** |
+| Expo Doctor | **20/20 passed** |
+| Expo production export | **Android, iOS and web bundles; 105 static routes** |
+| Render YAML parse/semantic checks | **10 resources/services; 7 cron jobs; passed** |
+| Python dependency audit | **No known vulnerabilities** |
+| npm production dependency audit | **No high findings; one transitive moderate advisory with no upstream fix** |
 | Secret-pattern scan of repository | **No credential-like material found** |
 | Diff whitespace check | **Passed** |
 | Wema production preflight with intentionally removed keys | **Correctly blocked real money: 4 hard gates** |
@@ -138,23 +146,20 @@ fail-closed.
 5. Restrict the Render PostgreSQL public allowlist. It is currently `0.0.0.0/0` and
    the basic database has no HA. Establish private/internal access, backups, restore
    validation, pooling/capacity, and an availability plan before production.
-6. Upgrade the free Render web service and validate concurrency, worker timeouts,
-   Redis durability/rate limits, alerting, and cron overlap under load.
+6. Apply the reviewed paid web/worker/cache and reconciliation/monitoring cron topology.
+   Until `zitch-reconcile-wema` exists, real deposits and pending payouts cannot settle
+   reliably. Then validate concurrency, leases/timeouts, Redis/rate limits, alerting,
+   and cron overlap under load.
 7. Profile the four production callback URLs and run a production-readiness call with
    Wema before enabling any live credential.
 
 ### P1 — controlled follow-up
 
-- WhatsApp broadcasts still send immediately. Add maker-checker approval, recipient
-  limits, and a durable outbox before permitting high-volume production broadcasts.
-- WhatsApp inbound processing is retry-safe but still inline. Move provider/AI work to
-  a real queue/outbox for predictable webhook acknowledgement at scale.
-- `npm audit --omit=dev` reports 33 dependency-path findings traced to two Expo 54
-  build-chain packages: PostCSS (high) and UUID/Xcode tooling (moderate). npm's complete
-  fix is a breaking Expo 57 upgrade. Plan and regression-test that SDK upgrade instead
-  of using `--force`. Relevant advisories:
-  [PostCSS](https://github.com/advisories/GHSA-r28c-9q8g-f849) and
-  [UUID](https://github.com/advisories/GHSA-w5hq-g745-h8pq).
+- Expo 57 removes the former high-severity PostCSS path. `npm audit --omit=dev` now
+  reports only the moderate UUID buffer-bounds advisory through
+  `expo-splash-screen -> @expo/config-plugins -> xcode -> uuid@7.0.3`; npm reports no
+  fix. Do not force an incompatible override. Track the upstream Expo/Xcode update and
+  reassess [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq).
 - Run Maestro/device E2E on signed Android and iOS builds. This environment verified
   application logic and Expo configuration but did not operate a physical device,
   receive a real SMS/WhatsApp message, or execute a bank transaction.
@@ -163,9 +168,10 @@ fail-closed.
 
 ## Infrastructure disposition
 
-- **Render:** current application host, online when inspected. The blueprint changes in
-  this branch are not deployed by this audit. Database exposure and service sizing are
-  production blockers.
+- **Render:** the merged audit commit is live. No error-level logs appeared after that
+  deploy in the inspected window. The paid worker/cache/crons/private-database Blueprint
+  follow-up is not deployed; reconciliation absence, database exposure and service
+  sizing remain blockers.
 - **DigitalOcean:** one active 512 MiB droplet was present but not in Zitch's request
   path. It was not modified. It could only serve as a fixed-egress component after an
   explicit network design, hardening, redundancy, monitoring, and capacity review; the

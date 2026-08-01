@@ -70,7 +70,10 @@ const LinkWhatsApp = () => {
     }
   }, [stopPoll]);
 
-  useEffect(() => { refreshStatus(); return () => stopPoll(); }, [refreshStatus, stopPoll]);
+  useEffect(() => {
+    const timer = setTimeout(() => void refreshStatus(), 0);
+    return () => { clearTimeout(timer); stopPoll(); };
+  }, [refreshStatus, stopPoll]);
 
   const generate = async () => {
     setBusy(true);

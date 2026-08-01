@@ -33,9 +33,12 @@ const Remita = () => {
 
   // Editing the RRR invalidates the previous lookup.
   useEffect(() => {
-    setValidated(false);
-    setPayerName('');
-    setFixedAmt('');
+    const timer = setTimeout(() => {
+      setValidated(false);
+      setPayerName('');
+      setFixedAmt('');
+    }, 0);
+    return () => clearTimeout(timer);
   }, [rrr]);
 
   // Any edit to the payment details is a new spend — drop the retained key so a

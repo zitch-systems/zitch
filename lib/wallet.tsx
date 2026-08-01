@@ -139,8 +139,11 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   }, []);
 
   useEffect(() => {
-    load();
-    reloadLinked();
+    const timer = setTimeout(() => {
+      void load();
+      void reloadLinked();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [load, reloadLinked]);
 
   // Memoize so the context value is stable between renders — otherwise every

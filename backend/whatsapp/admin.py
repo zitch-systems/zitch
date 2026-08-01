@@ -82,14 +82,16 @@ class AuditLogAdmin(admin.ModelAdmin):
 class BroadcastRecipientInline(admin.TabularInline):
     model = BroadcastRecipient
     extra = 0
-    readonly_fields = ("user", "wa_msisdn", "status", "wa_message_id", "error", "created")
+    readonly_fields = ("user", "wa_msisdn", "status", "wa_message_id", "error",
+                       "processing_attempts", "processed_at", "created")
     can_delete = False
 
 
 @admin.register(Broadcast)
 class BroadcastAdmin(admin.ModelAdmin):
     list_display = ("created", "template_name", "category", "status",
-                    "count_queued", "count_sent", "count_delivered", "count_read", "count_failed")
+                    "count_queued", "count_sent", "count_delivered", "count_read",
+                    "count_failed", "count_unknown")
     list_filter = ("category", "status")
     search_fields = ("template_name",)
     inlines = [BroadcastRecipientInline]

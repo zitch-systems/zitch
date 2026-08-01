@@ -332,11 +332,8 @@ RISK_NEW_DEVICE_FACE_THRESHOLD = Decimal(
 # admin_api.views._mfa_required_for. An operator who HAS enrolled is always challenged
 # regardless of this flag.
 OPS_REQUIRE_MFA = env_bool("OPS_REQUIRE_MFA", False)
-# Maker/checker on high-risk operator actions (currently: a manual wallet credit above
-# ADMIN_MAX_MANUAL_CREDIT, which today is simply refused). OFF by default because a
-# queue nobody can drain silently breaks a working workflow — the approval queue is
-# reachable via /api/{ops,admin}/approvals and Django admin, but the portal SPA has no
-# screen for it yet. See common.approvals and docs/operator-controls.md.
+# Maker/checker on registered high-risk operator actions. Broadcast campaigns opt in
+# unconditionally; this flag additionally enables the manual-credit workflow.
 OPS_REQUIRE_DUAL_APPROVAL = env_bool("OPS_REQUIRE_DUAL_APPROVAL", False)
 
 # AML transaction monitoring (compliance.services). The threshold is the one the
@@ -443,7 +440,7 @@ CARD_ISSUER = {
 # becoming an unsigned public webhook.
 WHATSAPP = {
     "MODE": os.environ.get("WHATSAPP_MODE", "").strip().lower(),
-    "BASE_URL": os.environ.get("WHATSAPP_BASE_URL", "https://graph.facebook.com/v21.0"),
+    "BASE_URL": os.environ.get("WHATSAPP_BASE_URL", "https://graph.facebook.com/v26.0"),
     "TOKEN": os.environ.get("WHATSAPP_TOKEN", ""),
     "PHONE_NUMBER_ID": os.environ.get("WHATSAPP_PHONE_NUMBER_ID", ""),
     "VERIFY_TOKEN": os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
@@ -537,6 +534,14 @@ WHATSAPP["MODE"] = _wa_mode
 WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool(
     "WHATSAPP_ALLOW_CHAT_SIGNUP", not _PROD and _wa_mode == "sandbox"
 )
+# Webhook commands are queued in production and run through the same worker path
+# inline only for local development/tests. The dedicated key encrypts queued command
+# text at rest and must be identical in the web and worker processes.
+WHATSAPP_PROCESS_INLINE = not _PROD
+WHATSAPP_QUEUE_KEY = os.environ.get("WHATSAPP_QUEUE_KEY", "").strip()
+WHATSAPP_QUEUE_KEY_PREV = os.environ.get("WHATSAPP_QUEUE_KEY_PREV", "").strip()
+if not WHATSAPP_QUEUE_KEY and not _PROD:
+    WHATSAPP_QUEUE_KEY = SECRET_KEY
 
 if _wa_mode == "live":
     from django.core.exceptions import ImproperlyConfigured
@@ -547,11 +552,18 @@ if _wa_mode == "live":
         "WHATSAPP_APP_SECRET": WHATSAPP["APP_SECRET"],
         "WHATSAPP_VERIFY_TOKEN": WHATSAPP["VERIFY_TOKEN"],
         "WHATSAPP_BUSINESS_NUMBER": WHATSAPP["BUSINESS_NUMBER"],
+        "WHATSAPP_QUEUE_KEY": WHATSAPP_QUEUE_KEY,
     }
     missing = [name for name, value in required.items() if not value]
     if missing:
         raise ImproperlyConfigured(
             "Live WhatsApp configuration is incomplete: " + ", ".join(missing)
+        )
+    if len(WHATSAPP_QUEUE_KEY.encode()) < 32:
+        raise ImproperlyConfigured("WHATSAPP_QUEUE_KEY must be at least 32 bytes in live mode")
+    if WHATSAPP_QUEUE_KEY_PREV and len(WHATSAPP_QUEUE_KEY_PREV.encode()) < 32:
+        raise ImproperlyConfigured(
+            "WHATSAPP_QUEUE_KEY_PREV must be at least 32 bytes when configured"
         )
 
 # --- Cache ------------------------------------------------------------------

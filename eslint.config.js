@@ -10,6 +10,7 @@ module.exports = defineConfig([
       'backend/**',
       'dist/**',
       'dist-audit/**',
+      'docs/design_handoff_zitch_revamp/**',
       'ios/**',
       'landing/**',
       'landing-legacy/**',

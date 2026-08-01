@@ -82,6 +82,31 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
     return hmac.compare_digest(expected, header.split("=", 1)[1])
 
 
+def _message_result(response) -> dict:
+    """Reduce a Graph response to the non-sensitive fields callers need."""
+    try:
+        data = response.json() if response.content else {}
+    except (TypeError, ValueError):
+        data = {}
+    data = data if isinstance(data, dict) else {}
+    error = data.get("error") if isinstance(data.get("error"), dict) else {}
+    status = int(getattr(response, "status_code", 0) or 0)
+    result = {
+        "success": bool(response.ok),
+        "message_id": (data.get("messages") or [{}])[0].get("id", ""),
+    }
+    if not result["success"]:
+        result.update({
+            "error_code": error.get("code") or status or "provider_error",
+            "message": "WhatsApp provider rejected the request",
+            # A 429 is an explicit refusal and is safe to retry. A 5xx may have
+            # accepted the message before failing, so automatic retry could duplicate it.
+            "retryable": status == 429,
+            "uncertain": status >= 500 or status == 0,
+        })
+    return result
+
+
 def send_text(msisdn: str, text: str) -> dict:
     """Send a plain-text WhatsApp message. Returns {success, message_id?, ...}."""
     if not wa_live():
@@ -96,12 +121,7 @@ def send_text(msisdn: str, text: str) -> dict:
     }
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=15)
-        data = r.json() if r.content else {}
-        return {
-            "success": r.ok,
-            "message_id": (data.get("messages") or [{}])[0].get("id", ""),
-            "raw": data,
-        }
+        return _message_result(r)
     except requests.RequestException as exc:
         log.warning("wa_send_failed recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)
@@ -118,9 +138,7 @@ def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
     try:
         r = requests.post(url, json={"messaging_product": "whatsapp", "to": msisdn, **payload},
                           headers=headers, timeout=15)
-        data = r.json() if r.content else {}
-        return {"success": r.ok, "message_id": (data.get("messages") or [{}])[0].get("id", ""),
-                "raw": data}
+        return _message_result(r)
     except requests.RequestException as exc:
         log.warning("wa_send_failed recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)
@@ -194,12 +212,7 @@ def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
     }
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=15)
-        data = r.json() if r.content else {}
-        return {
-            "success": r.ok,
-            "message_id": (data.get("messages") or [{}])[0].get("id", ""),
-            "raw": data,
-        }
+        return _message_result(r)
     except requests.RequestException as exc:
         log.warning("wa_image_send_failed recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)
@@ -226,7 +239,7 @@ def upload_media(data: bytes, mime: str, filename: str) -> str:
         )
         return (r.json() if r.content else {}).get("id", "") if r.ok else ""
     except requests.RequestException as exc:
-        log.warning("wa media upload failed: %s", exc)
+        log.warning("wa_media_upload_failed error_type=%s", type(exc).__name__)
         return ""
 
 
@@ -263,12 +276,9 @@ def send_template(msisdn: str, template_name: str, params: list | None = None, l
             headers={"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"},
             timeout=15,
         )
-        data = r.json() if r.content else {}
-        return {
-            "success": r.ok,
-            "message_id": (data.get("messages") or [{}])[0].get("id", ""),
-            "error_code": (data.get("error") or {}).get("code"),
-            "raw": data,
-        }
+        return _message_result(r)
     except requests.RequestException as exc:
-        return {"success": False, "message": str(exc)}
+        log.warning("wa_template_send_uncertain recipient=%s error_type=%s",
+                    mask_pii(msisdn), type(exc).__name__)
+        return {"success": False, "uncertain": True,
+                "message": "WhatsApp delivery status unknown"}

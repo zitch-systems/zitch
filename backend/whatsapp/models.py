@@ -117,6 +117,11 @@ class WaMessageLog(models.Model):
     processed_at = models.DateTimeField(null=True, blank=True)
     processing_attempts = models.PositiveSmallIntegerField(default=0)
     processing_error = models.CharField(max_length=64, blank=True, default="")
+    # Only the worker needs the original command text. It is authenticated-
+    # encrypted before insertion and erased after successful processing, so PINs,
+    # BVNs and free-form chat never appear in a readable database column.
+    processing_payload = models.BinaryField(blank=True, default=bytes, editable=False)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -323,9 +328,10 @@ class Broadcast(models.Model):
     """An outbound template campaign to opted-in users (§9)."""
 
     DRAFT = "draft"
+    QUEUED = "queued"
     SENDING = "sending"
     DONE = "done"
-    STATUSES = [(DRAFT, DRAFT), (SENDING, SENDING), (DONE, DONE)]
+    STATUSES = [(DRAFT, DRAFT), (QUEUED, QUEUED), (SENDING, SENDING), (DONE, DONE)]
 
     UTILITY = "utility"
     MARKETING = "marketing"
@@ -339,11 +345,16 @@ class Broadcast(models.Model):
     status = models.CharField(max_length=10, choices=STATUSES, default=DRAFT)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                    on_delete=models.SET_NULL, related_name="wa_broadcasts")
+    approval_request = models.OneToOneField(
+        "ApprovalRequest", null=True, blank=True, on_delete=models.PROTECT,
+        related_name="broadcast",
+    )
     count_queued = models.IntegerField(default=0)
     count_sent = models.IntegerField(default=0)
     count_delivered = models.IntegerField(default=0)
     count_read = models.IntegerField(default=0)
     count_failed = models.IntegerField(default=0)
+    count_unknown = models.IntegerField(default=0)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -356,14 +367,32 @@ class Broadcast(models.Model):
 class BroadcastRecipient(models.Model):
     """One row per recipient of a broadcast, tracked from queued -> read/failed."""
 
+    QUEUED = "queued"
+    SENT = "sent"
+    DELIVERED = "delivered"
+    READ = "read"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
     broadcast = models.ForeignKey(Broadcast, on_delete=models.CASCADE, related_name="recipients")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                              on_delete=models.SET_NULL, related_name="wa_broadcast_receipts")
     wa_msisdn = models.CharField(max_length=20, db_index=True)
-    status = models.CharField(max_length=12, default="queued")  # queued|sent|delivered|read|failed
+    status = models.CharField(max_length=12, default=QUEUED)
     wa_message_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
     error = models.CharField(max_length=200, blank=True, default="")
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["broadcast", "wa_msisdn"], name="uniq_broadcast_recipient",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.wa_msisdn} [{self.status}]"

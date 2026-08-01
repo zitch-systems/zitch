@@ -13,7 +13,6 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import IntegrityError, transaction as db_transaction
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -21,18 +20,13 @@ from django.views.decorators.csrf import csrf_exempt
 from common.http import api, fail, ok, require_user
 from common.ratelimit import ratelimit
 
-from .models import Broadcast, BroadcastRecipient, ConversationState, WaMessageLog, WhatsAppLink
-from .ops import record_audit, send_broadcast
+from .models import Broadcast, BroadcastRecipient, ConversationState, WhatsAppLink
+from .ops import record_audit, validate_broadcast_spec
 from .providers import verify_signature, wa_enabled, wa_live
-from .router import handle_inbound, is_awaiting_bvn, is_awaiting_pin, reply
+from .router import is_awaiting_bvn, is_awaiting_pin, reply
 
 LINK_CODE_TTL = timedelta(minutes=10)
-INBOUND_PROCESSING_LEASE = timedelta(minutes=5)
 WHATSAPP_WEBHOOK_BODY_MAX = 1024 * 1024
-
-
-class InboundMessageProcessing(Exception):
-    """The same Meta message is already being handled by another request."""
 
 
 @csrf_exempt
@@ -84,7 +78,9 @@ def webhook(request):
                        action="invalid_phone_number_id")
         return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
 
-    # Ack fast; process inline (no queue yet — handlers are quick).
+    # Persist commands before acknowledging. Production workers process the
+    # encrypted queue; local/test mode can run that same job inline for a tight
+    # development loop.
     messages = list(_iter_messages(event))
     statuses = list(_iter_statuses(event))
     # A DESCRIPTOR, not the envelope. Unlike a bank callback, a WhatsApp body carries
@@ -200,12 +196,12 @@ def _iter_statuses(event: dict):
 def _apply_status(st: dict) -> None:
     """Delivery callback -> update the broadcast recipient + roll up counts."""
     mid, status = st.get("id", ""), st.get("status", "")
-    if not mid or status not in ("delivered", "read", "failed"):
+    if not mid or status not in ("sent", "delivered", "read", "failed"):
         return
     rec = BroadcastRecipient.objects.filter(wa_message_id=mid).first()
     if rec is None:
         return
-    rank = {"queued": 0, "sent": 1, "delivered": 2, "read": 3}
+    rank = {"queued": 0, "unknown": 0, "sent": 1, "delivered": 2, "read": 3}
     current_rank = rank.get(rec.status, 0)
     if status == "failed":
         # A late/out-of-order failure cannot undo confirmed delivery/read.
@@ -214,13 +210,13 @@ def _apply_status(st: dict) -> None:
     elif rank.get(status, 0) <= current_rank:
         return
     rec.status = status
-    rec.error = (st.get("errors") or [{}])[0].get("code", "") if status == "failed" else rec.error
+    if status == "failed":
+        errors = st.get("errors") or []
+        first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+        rec.error = str(first_error.get("code") or "delivery_failed")[:200]
     rec.save(update_fields=["status", "error"])
-    b = rec.broadcast
-    b.count_delivered = b.recipients.filter(status="delivered").count()
-    b.count_read = b.recipients.filter(status="read").count()
-    b.count_failed = b.recipients.filter(status="failed").count()
-    b.save(update_fields=["count_delivered", "count_read", "count_failed"])
+    from .jobs import refresh_broadcast_counts
+    refresh_broadcast_counts(rec.broadcast_id)
 
 
 # A bare 4-6 digit message is almost certainly a transaction PIN — redact it
@@ -257,41 +253,6 @@ def _inbound_throttled(msisdn: str) -> bool:
         return False
 
 
-def _claim_inbound(mid: str, frm: str, logged: str):
-    """Claim a Meta message id, returning its log row or a terminal disposition.
-
-    ``done`` means a prior attempt completed. ``busy`` means another request holds
-    a fresh lease; returning an error makes Meta retry rather than acknowledging a
-    message whose first handler may still crash. A stale/failed claim is reclaimed.
-    """
-    now = timezone.now()
-    with db_transaction.atomic():
-        row = WaMessageLog.objects.select_for_update().filter(
-            wa_message_id=mid, direction=WaMessageLog.IN,
-        ).first()
-        if row is None:
-            # Contain a concurrent unique-index race in a savepoint so the outer
-            # transaction remains usable for the read/reclaim path.
-            try:
-                with db_transaction.atomic():
-                    row = WaMessageLog.objects.create(
-                        msisdn=frm, direction=WaMessageLog.IN, wa_message_id=mid,
-                        text=logged, processing_started_at=now, processing_attempts=1,
-                    )
-                return row, "claimed"
-            except IntegrityError:
-                row = WaMessageLog.objects.select_for_update().get(wa_message_id=mid)
-        if row.processed_at is not None:
-            return row, "done"
-        if (row.processing_started_at is not None
-                and row.processing_started_at > now - INBOUND_PROCESSING_LEASE):
-            return row, "busy"
-        row.processing_started_at = now
-        row.processing_attempts += 1
-        row.processing_error = ""
-        row.save(update_fields=["processing_started_at", "processing_attempts",
-                                "processing_error"])
-        return row, "claimed"
 def _process(msg: dict) -> None:
     mid = msg.get("id", "")
     frm = msg.get("from", "")
@@ -299,8 +260,6 @@ def _process(msg: dict) -> None:
     # so a forged/replayed payload (empty id slips past the partial-unique index)
     # would be processed repeatedly. Drop anything missing from/id.
     if not frm or not mid:
-        return
-    if _inbound_throttled(frm):
         return
     is_text = msg.get("type") == "text"
     body = (msg.get("text") or {}).get("body", "") if is_text else ""
@@ -332,30 +291,19 @@ def _process(msg: dict) -> None:
     else:
         logged = _redact_chat_log(body) if body else f"[{msg.get('type', 'non-text')}]"
 
-    row, disposition = _claim_inbound(mid, frm, logged)
-    if disposition == "done":
-        return
-    if disposition == "busy":
-        raise InboundMessageProcessing(mid)
+    from .jobs import discard_inbound, enqueue_inbound, process_inbound_message
 
-    try:
-        if is_flow_reply:
-            pass  # the data-exchange endpoint already handled it
-        elif not is_text:
-            reply(frm, "I can only read text messages for now. Reply \"menu\" for options.")
-        else:
-            handle_inbound(frm, body)
-    except Exception as exc:
-        # Keep the redacted forensic row but release the claim. Meta receives a 5xx
-        # and can retry the same id; it will be reclaimed instead of deduped away.
-        WaMessageLog.objects.filter(pk=row.pk, processed_at__isnull=True).update(
-            processing_started_at=None,
-            processing_error=type(exc).__name__[:64],
+    if _inbound_throttled(frm):
+        discard_inbound(
+            message_id=mid, msisdn=frm, logged_text=logged, reason="throttled",
         )
-        raise
-    WaMessageLog.objects.filter(pk=row.pk).update(
-        processed_at=timezone.now(), processing_started_at=None, processing_error="",
+        return
+    row, _created = enqueue_inbound(
+        message_id=mid, msisdn=frm, logged_text=logged,
+        payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply},
     )
+    if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
+        process_inbound_message(row.pk, raise_errors=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -469,15 +417,22 @@ def ops_reply(request):
 @require_cap("broadcast")
 def ops_broadcast(request):
     """POST /api/whatsapp/ops/broadcast/ {template_name, category?, segment?, body_params?}
-    -> creates + sends a broadcast, returns the delivery counts."""
-    d = request.data
-    if not d.get("template_name"):
-        return fail("template_name required")
-    b = Broadcast.objects.create(
-        template_name=d["template_name"], category=d.get("category", Broadcast.UTILITY),
-        body_params=d.get("body_params", []), segment=d.get("segment", {}),
-        created_by=request.user_obj,
+    -> holds the campaign for a different operator to approve."""
+    from common import approvals
+
+    if not wa_enabled():
+        return fail("WhatsApp banking is currently unavailable", status=503)
+    try:
+        spec = validate_broadcast_spec(request.data)
+        approval = approvals.submit(
+            "whatsapp.broadcast", payload=spec, requested_by=request.user_obj,
+            reason="WhatsApp template campaign",
+        )
+    except (ValueError, approvals.ApprovalError) as exc:
+        return fail(str(exc))
+    response = ok(
+        success=True, pending_approval=True, approval_id=approval.pk,
+        message="A second broadcast operator must approve this campaign.",
     )
-    send_broadcast(b, actor=request.user_obj)
-    return ok(success=True, broadcast_id=b.id, queued=b.count_queued,
-              sent=b.count_sent, failed=b.count_failed)
+    response.status_code = 202
+    return response

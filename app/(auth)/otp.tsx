@@ -67,7 +67,9 @@ const OTPVerification = () => {
 
   // Auto-submit once all digits are entered (guarded above against re-runs).
   useEffect(() => {
-    if (otp.length === OTP_LEN) handleCheckOtp();
+    if (otp.length !== OTP_LEN) return;
+    const timer = setTimeout(() => void handleCheckOtp(), 0);
+    return () => clearTimeout(timer);
   }, [otp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
@@ -168,4 +170,3 @@ const OTPVerification = () => {
 };
 
 export default OTPVerification;
-

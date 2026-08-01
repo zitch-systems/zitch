@@ -43,7 +43,10 @@ const BuyElectricity = () => {
   const [pinError, setPinError] = useState('');
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-  useEffect(() => { setCustomerName(''); }, [disco, meterType, meter]);
+  useEffect(() => {
+    const timer = setTimeout(() => setCustomerName(''), 0);
+    return () => clearTimeout(timer);
+  }, [disco, meterType, meter]);
 
   const provider = DISCOS.find((d) => d.id === disco)!;
   const amount = Number(amt || 0);

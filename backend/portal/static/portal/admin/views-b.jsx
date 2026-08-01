@@ -103,12 +103,22 @@ function Broadcasts({ toast, refresh }) {
   const [tpl, setTpl] = useStateB('');
   const [busy, setBusy] = useStateB(false);
   const { opted_in: optedIn, linked } = DB.BC_META;
+  const pending = (DB.APPROVALS || []).filter((r) => r.action === 'whatsapp.broadcast');
   const queue = async () => {
     setBusy(true);
     try {
       const r = await ZAPI.broadcast(tpl.trim(), cat);
-      toast('Broadcast sent to ' + r.queued + ' recipient(s) — ' + r.sent + ' delivered to provider (audit logged)');
+      toast('Broadcast approval request #' + r.approval_id + ' created — a different operator must approve it');
       setTpl(''); refresh();
+    } catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+  const decide = async (id, approve) => {
+    setBusy(true);
+    try {
+      await ZAPI.approvalDecide(id, approve, approve ? 'Campaign checked' : 'Campaign rejected');
+      toast(approve ? 'Campaign approved and queued for delivery' : 'Campaign rejected');
+      await refresh();
     } catch (e) { toast('⚠ ' + e.message); }
     setBusy(false);
   };
@@ -119,7 +129,7 @@ function Broadcasts({ toast, refresh }) {
         <Card title="Campaigns" pad={false}>
           {DB.BROADCASTS.length ? (
             <table className="tbl">
-              <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th></tr></thead>
+              <thead><tr><th>Template</th><th>Category</th><th>Status</th><th className="r">Queued</th><th className="r">Delivered</th><th className="r">Read</th><th className="r">Failed</th><th className="r">Unknown</th></tr></thead>
               <tbody>
                 {DB.BROADCASTS.map((b) => (
                   <tr key={b.id}>
@@ -130,6 +140,7 @@ function Broadcasts({ toast, refresh }) {
                     <td className="r num">{b.delivered.toLocaleString()}</td>
                     <td className="r num">{b.read.toLocaleString()}</td>
                     <td className="r num">{b.failed.toLocaleString()}</td>
+                    <td className="r num">{(b.unknown || 0).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -152,6 +163,27 @@ function Broadcasts({ toast, refresh }) {
             <Icon name="megaphone" size={15} /> {busy ? 'Sending…' : 'Queue broadcast'}
           </button>
           {!can.broadcast && <p className="rbac-note"><Icon name="lock" size={13} /> Support or super admin only.</p>}
+        </Card>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        <Card title="Pending approvals" sub="A campaign can only be approved by a different broadcast operator" pad={false}>
+          {pending.length ? (
+            <table className="tbl">
+              <thead><tr><th>Request</th><th>Template</th><th>Category</th><th>Requested by</th><th></th></tr></thead>
+              <tbody>{pending.map((r) => (
+                <tr key={r.id}>
+                  <td className="mono">#{r.id}</td>
+                  <td className="mono">{r.payload.template_name}</td>
+                  <td>{r.payload.category}</td>
+                  <td>{r.requested_by}{r.is_own_request ? ' (you)' : ''}</td>
+                  <td className="r">
+                    <button className="btn ghost sm-btn" disabled={busy || !r.can_decide} onClick={() => decide(r.id, false)}>Reject</button>{' '}
+                    <button className="btn primary sm-btn" disabled={busy || !r.can_decide} onClick={() => decide(r.id, true)}>Approve</button>
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          ) : <Empty text="No campaigns are waiting for your role." />}
         </Card>
       </div>
     </div>

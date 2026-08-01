@@ -49,7 +49,11 @@ window.ZAPI = (function () {
     users: async (q) => { const r = await call('users', { q }); D.USERS = r.rows; D.USERS_TOTAL = r.total; },
     txns: async (q, type) => { D.TXNS = (await call('transactions', { q, type })).rows; },
     inbox: async () => { D.CONVOS = (await call('inbox')).rows; },
-    broadcasts: async () => { const r = await call('broadcasts'); D.BROADCASTS = r.rows; D.BC_META = { opted_in: r.opted_in, linked: r.linked }; },
+    broadcasts: async () => {
+      const [r, a] = await Promise.all([call('broadcasts'), call('approvals/list', { status: 'pending' })]);
+      D.BROADCASTS = r.rows; D.BC_META = { opted_in: r.opted_in, linked: r.linked };
+      D.APPROVALS = a.rows;
+    },
     audit: async (q) => { D.AUDIT = (await call('audit', { q })).rows; },
     fx: async () => { D.FX = await call('fx'); },
     products: async () => {
@@ -94,6 +98,7 @@ window.ZAPI = (function () {
     returnBot: (msisdn) => opsCall('return-to-bot', { msisdn }),
     reply: (msisdn, text) => opsCall('reply', { msisdn, text }),
     broadcast: (template_name, category) => opsCall('broadcast', { template_name, category }),
+    approvalDecide: (id, approve, note) => call('approvals/decide', { id, approve, note: note || '' }),
   };
   async function opsCall(path, body) {
     const res = await fetch('/api/whatsapp/ops/' + path + '/', {

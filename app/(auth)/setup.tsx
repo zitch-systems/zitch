@@ -6,10 +6,9 @@ import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
-const Setup = () => {
+const SetupRow = ({ icon, title, sub, to }: { icon: string; title: string; sub: string; to: string }) => {
   const { c } = useTheme();
-
-  const Row = ({ icon, title, sub, to }: { icon: string; title: string; sub: string; to: string }) => (
+  return (
     <Pressable
       onPress={() => router.push(to as any)}
       style={{ flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 16, marginTop: 12 }}
@@ -24,6 +23,10 @@ const Setup = () => {
       <ZIcon name="right" size={20} color={c.ink3} />
     </Pressable>
   );
+};
+
+const Setup = () => {
+  const { c } = useTheme();
 
   return (
     <Screen>
@@ -38,9 +41,9 @@ const Setup = () => {
         Complete your password & PIN setup to secure your account
       </Text>
 
-      <Row icon="shield" title="Password" sub="Set your account password" to="/setpassword" />
-      <Row icon="lock" title="Transaction PIN" sub="Authorize payments securely" to="/setpin" />
-      <Row icon="fingerprint" title="Thumbprint" sub="Enable biometric sign-in" to="/setthumbprint" />
+      <SetupRow icon="shield" title="Password" sub="Set your account password" to="/setpassword" />
+      <SetupRow icon="lock" title="Transaction PIN" sub="Authorize payments securely" to="/setpin" />
+      <SetupRow icon="fingerprint" title="Thumbprint" sub="Enable biometric sign-in" to="/setthumbprint" />
     </Screen>
   );
 };
