@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - codex/wema-production-readiness
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
