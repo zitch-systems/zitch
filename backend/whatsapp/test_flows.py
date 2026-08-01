@@ -131,6 +131,13 @@ class FlowsHandlerTests(TestCase):
 
         self.assertEqual(handle_flow_request({"action": "ping"}), {"data": {"status": "active"}})
 
+    def test_malformed_decrypted_shapes_return_a_safe_screen(self):
+        from .flows import SUCCESS_SCREEN, handle_flow_request
+
+        self.assertEqual(handle_flow_request([])["screen"], SUCCESS_SCREEN)
+        response = handle_flow_request({"action": "data_exchange", "data": ["bad"]})
+        self.assertEqual(response["screen"], SUCCESS_SCREEN)
+
     def test_init_returns_pin_screen_with_summary(self):
         from .flows import PIN_SCREEN, handle_flow_request
 

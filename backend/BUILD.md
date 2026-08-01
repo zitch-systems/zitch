@@ -111,7 +111,8 @@ Naira Card once `WEMA_CARD_KEY` is set, else the generic `CARD_ISSUER`
 (VERIFY-BEFORE-LIVE — confirm the card endpoint shapes in `utility/wema.py`). Wema
 exposes **NO webhooks** —
 deposits and payout settlement are polled by `reconcile_wema`. Verify auth +
-connectivity at `/wema-diagnose?token=...`. Wema endpoint shapes are marked
+connectivity by POSTing JSON to `/wema-diagnose` with a diagnostic bearer token.
+Wema endpoint shapes are marked
 VERIFY-BEFORE-LIVE in `utility/wema.py` (esp. the `securityInfo` scheme, the live
 host, and the tx-status legend).
 
@@ -219,7 +220,7 @@ the `WHATSAPP_*` env vars (see `.env.example`).
   `WEMA_SECURITY_INFO` scheme. Confirm the account-creation (OTP), disburse,
   name-enquiry and identity (BVN·NIN·vNIN) field names, the `securityInfo`
   construction and the tx-status legend against Wema's integration guide. Verify auth
-  + connectivity at `/wema-diagnose?token=...`.
+  + connectivity by POSTing JSON to `/wema-diagnose` with a diagnostic bearer token.
 - Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID` (selfie/liveness +
   address + ID-document only), and (when a card issuer is chosen) `CARD_ISSUER_*` /
   `CARD_PROVIDER` — confirm the request/response mapping in `utility/providers.py` /

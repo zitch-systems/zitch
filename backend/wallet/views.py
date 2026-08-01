@@ -2,20 +2,24 @@ import hmac
 import json
 import logging
 import secrets
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction as db_transaction
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
+from accounts.models import hash_identifier
 from common.http import (
-    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
-    require_user, spend_key, verify_transaction_pin,
+    api, check_daily_limit, check_send_limits, fail, idempotent_replay, mask_pii, ok,
+    parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
 from utility.providers import funding_initialize, funding_verify, payment_provider
 from utility import wema as wema_provider
 
-from .models import FundingIntent, Wallet
+from .models import FundingIntent, Wallet, WemaProvisioningAttempt
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
@@ -32,6 +36,7 @@ from .services import (
 
 log = logging.getLogger("wallet")
 User = get_user_model()
+WEMA_ATTEMPT_TTL = timedelta(minutes=15)
 
 
 @api
@@ -51,6 +56,7 @@ def wallet_balance(request):
         account_name=wallet.account_name,
         bank_name=wallet.bank_name,
         bank_accounts=wallet.bank_accounts or [],
+        bank_tier=wallet.bank_tier,
         user_first_name=user.first_name or "",
         user_last_name=user.last_name or "",
         user_phone_number=user.phone or "",
@@ -79,6 +85,7 @@ def wallet_account(request):
         account_name=wallet.account_name,
         bank_name=wallet.bank_name,
         bank_accounts=wallet.bank_accounts or [],
+        bank_tier=wallet.bank_tier,
         # The customer's registered legal name, so the Add-money screen can always
         # show whose account this is — even before it's provisioned, or on the rare
         # provider response that omits the holder name (account_name is blank).
@@ -94,6 +101,7 @@ def _account_payload(wallet, **extra) -> dict:
         account_name=wallet.account_name,
         bank_name=wallet.bank_name,
         bank_accounts=wallet.bank_accounts or [],
+        bank_tier=wallet.bank_tier,
         **extra,
     )
 
@@ -134,8 +142,9 @@ def wallet_account_create(request):
     # not a one-step reserve — start it here so the existing "Get my account" call
     # drives the flow: the client shows the OTP step and finishes on
     # /api/wallet/wema/verify-otp/ (which persists the account + lifts KYC).
-    res = wema_provider.create_wallet_request(
-        user.phone or "", user.email or f"{user.phone}@zitch.app", bvn=bvn, nin=nin)
+    res, identity_error = _start_wema_attempt(user, bvn, nin)
+    if identity_error:
+        return fail(identity_error, status=409)
     if not res.get("success"):
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
@@ -152,6 +161,72 @@ def wallet_account_create(request):
 def _wema_funding_enabled() -> bool:
     return (payment_provider() == "wema"
             or wema_provider.wema_live() or wema_provider.wema_simulation())
+
+
+def _identity_for_attempt(bvn: str, nin: str) -> tuple[str, str]:
+    """Return the single identity type/value accepted for wallet onboarding."""
+    if len(bvn) == 11:
+        return WemaProvisioningAttempt.BVN, bvn
+    return WemaProvisioningAttempt.NIN, nin
+
+
+def _identity_owned_by_another_user(user, identity_type: str, raw: str) -> bool:
+    field = "bvn_hash" if identity_type == WemaProvisioningAttempt.BVN else "nin_hash"
+    return User.objects.exclude(pk=user.pk).filter(**{field: hash_identifier(raw)}).exists()
+
+
+def _record_wema_attempt(user, tracking_id: str, identity_type: str,
+                         raw_identity: str) -> WemaProvisioningAttempt:
+    """Persist the identity binding after Wema accepts initiation; no raw ID."""
+    now = timezone.now()
+    WemaProvisioningAttempt.objects.filter(
+        user=user, status=WemaProvisioningAttempt.PENDING,
+    ).exclude(tracking_id=tracking_id).update(status=WemaProvisioningAttempt.FAILED)
+    attempt, _ = WemaProvisioningAttempt.objects.update_or_create(
+        user=user, tracking_id=tracking_id,
+        defaults={
+            "identity_type": identity_type,
+            "identity_hash": hash_identifier(raw_identity),
+            "identity_last4": raw_identity[-4:],
+            "status": WemaProvisioningAttempt.PENDING,
+            "expires_at": now + WEMA_ATTEMPT_TTL,
+        },
+    )
+    return attempt
+
+
+def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
+    """Start and bind an OTP request, returning (provider_result, error)."""
+    identity_type, raw_identity = _identity_for_attempt(bvn, nin)
+    if _identity_owned_by_another_user(user, identity_type, raw_identity):
+        return None, "This identity is already linked to another account. Contact support if this is unexpected."
+    # Wema explicitly forbids reusing customer identity fields across creation
+    # requests. If this user restarts the screen while a valid attempt exists,
+    # return that opaque tracking reference and use the dedicated resend endpoint;
+    # do not submit the BVN/NIN to account creation a second time.
+    existing = WemaProvisioningAttempt.objects.filter(
+        user=user,
+        identity_type=identity_type,
+        identity_hash=hash_identifier(raw_identity),
+        status=WemaProvisioningAttempt.PENDING,
+        expires_at__gt=timezone.now(),
+    ).order_by("-created").first()
+    if existing is not None:
+        return {
+            "success": True,
+            "tracking_id": existing.tracking_id,
+            "otp_destination": user.phone or "",
+            "reused": True,
+        }, None
+    email = user.email or f"{user.phone}@zitch.app"
+    res = wema_provider.create_wallet_request(user.phone or "", email, bvn=bvn, nin=nin)
+    if not res.get("success"):
+        return res, None
+    tracking_id = str(res.get("tracking_id") or "").strip()
+    if not tracking_id:
+        return {"success": False, "message": "Couldn't start account creation"}, None
+    _record_wema_attempt(user, tracking_id, identity_type, raw_identity)
+    return res, None
 
 
 @api
@@ -177,8 +252,9 @@ def wema_wallet_create(request):
     if len(bvn) != 11 and len(nin) != 11:
         return fail("Enter your 11-digit BVN or NIN")
     using_bvn = len(bvn) == 11
-    email = user.email or f"{user.phone}@zitch.app"
-    res = wema_provider.create_wallet_request(user.phone or "", email, bvn=bvn, nin=nin)
+    res, identity_error = _start_wema_attempt(user, bvn, nin)
+    if identity_error:
+        return fail(identity_error, status=409)
     if not res.get("success"):
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, tracking_id=res.get("tracking_id", ""),
@@ -196,9 +272,9 @@ def wema_wallet_verify_otp(request):
     -> {success, account_number, account_name, bank_name, tier, bvn_verified, nin_verified}
 
     Step 2: validate the OTP, then fetch + persist the created NUBAN (marked with a
-    WEMA account_reference so the reconcile poller sweeps it for deposits). If the
-    identifier is echoed, the user is marked KYC-verified and their tier lifted —
-    mirroring the Wema account flow.
+    WEMA account_reference so the reconcile poller sweeps it for deposits). The
+    identity and its type come from the server-side initiation record, never from
+    client claims in this second request.
     """
     if not _wema_funding_enabled():
         return fail("Bank account creation is not available right now")
@@ -212,9 +288,21 @@ def wema_wallet_verify_otp(request):
     already = bool(wallet.account_number)
     otp = (request.data.get("otp") or "").strip()
     tracking_id = (request.data.get("tracking_id") or "").strip()
-    using_bvn = bool(request.data.get("using_bvn"))
     if not otp or not tracking_id:
         return fail("Enter the OTP sent to your phone")
+    attempt = WemaProvisioningAttempt.objects.filter(
+        user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
+    ).first()
+    if attempt is None or attempt.expired:
+        return fail("This verification request has expired. Start account setup again.", status=400)
+    using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
+    # Older clients echo the raw value. It is not required, but if present it must
+    # match the initiation record so tampering is rejected loudly rather than ignored.
+    echoed = "".join(ch for ch in (
+        request.data.get("bvn" if using_bvn else "nin") or ""
+    ) if ch.isdigit())
+    if echoed and not hmac.compare_digest(hash_identifier(echoed), attempt.identity_hash):
+        return fail("Identity details do not match this verification request.", status=400)
     val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
     if not val.get("success"):
         return fail(val.get("message", "OTP verification failed"), status=502)
@@ -248,15 +336,13 @@ def wema_wallet_verify_otp(request):
             log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
                         user.id, acct["account_number"], pnd.get("message", ""))
         holder_name = acct.get("account_name", "")
-    # Best-effort KYC / tier lift if the client echoed the identifier. ALAT has no
+    # Best-effort KYC / tier lift from the server-bound identifier. ALAT has no
     # standalone BVN/NIN lookup, so this account-creation round-trip IS the identity
     # check: the tier is only lifted when the holder name ALAT returned name-matches
     # the user's registered name (tolerant of order/middle names), so a BVN/NIN that
     # demonstrably belongs to someone else can't lift this user's tier. The match runs
     # only against a real gateway (wema_live); a clear mismatch still provisions the
     # NUBAN (funding works) but holds the tier for review.
-    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
-    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     name_ok = True
     if wema_provider.wema_live():
         if holder_name is None:
@@ -279,11 +365,8 @@ def wema_wallet_verify_otp(request):
             status = wema_provider.get_kyc_status(wallet.account_number)
             holder_name = str(status.get("name") or "") if status.get("success") else ""
             if not holder_name:
-                # Unreadable or nameless: same posture as a fresh provisioning whose
-                # response omits the name (holder_name_mismatch treats a blank side as
-                # "can't tell", not as a mismatch, so a formatting gap never blocks a
-                # legitimate holder). Logged because a tier is about to lift with no
-                # name matched, and ops should be able to see that happen.
+                # Unreadable bank data cannot prove identity. Provisioning may still
+                # complete, but the KYC tier stays held for review.
                 log.warning("wema_holder_name_unavailable user=%s account=%s",
                             user.id, wallet.account_number)
         name_ok = not wema_provider.holder_name_mismatch(
@@ -292,17 +375,28 @@ def wema_wallet_verify_otp(request):
     if not name_ok:
         log.warning("wema_provision_name_mismatch user=%s account=%s wema_name=%r",
                     user.id, wallet.account_number, holder_name)
-    elif using_bvn and len(bvn) == 11 and not user.bvn_verified:
-        user.set_bvn(bvn)
+    elif using_bvn and not user.bvn_verified:
+        user.bvn_hash = attempt.identity_hash
+        user.bvn_last4 = attempt.identity_last4
         user.bvn_verified = True
         fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
-    elif not using_bvn and len(nin) == 11 and not user.nin_verified:
-        user.set_nin(nin)
+    elif not using_bvn and not user.nin_verified:
+        user.nin_hash = attempt.identity_hash
+        user.nin_last4 = attempt.identity_last4
         user.nin_verified = True
         fields += ["nin_hash", "nin_last4", "nin_verified"]
     if fields:
         user.recompute_tier()
-        user.save(update_fields=fields + ["tier"])
+        try:
+            with db_transaction.atomic():
+                user.save(update_fields=fields + ["tier"])
+        except IntegrityError:
+            attempt.status = WemaProvisioningAttempt.FAILED
+            attempt.save(update_fields=["status", "updated"])
+            return fail("This identity is already linked to another account. Contact support.",
+                        status=409)
+    attempt.status = WemaProvisioningAttempt.VERIFIED
+    attempt.save(update_fields=["status", "updated"])
     # Read back the tier the BANK holds the NUBAN at. It runs its own ladder with its
     # own caps and enforces them regardless of ours, so knowing the real value lets us
     # refuse an over-limit transfer with a clear message instead of a failed payout.
@@ -327,9 +421,14 @@ def wema_wallet_resend_otp(request):
         return fail("Bank account creation is not available right now")
     user = request.user_obj
     tracking_id = (request.data.get("tracking_id") or "").strip()
-    using_bvn = bool(request.data.get("using_bvn"))
     if not tracking_id:
         return fail("Missing tracking reference")
+    attempt = WemaProvisioningAttempt.objects.filter(
+        user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
+    ).first()
+    if attempt is None or attempt.expired:
+        return fail("This verification request has expired. Start account setup again.")
+    using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     res = wema_provider.resend_wallet_otp(user.phone or "", tracking_id, bvn=using_bvn)
     if not res.get("success"):
         return fail(res.get("message", "Couldn't resend the OTP"), status=502)
@@ -471,7 +570,8 @@ def simulate_deposit(request):
     settle_reserved_funding(reference, amount, user)
     wallet = get_or_create_wallet(user)
     log.warning("simulate_deposit_used phone=%s amount=%s ref=%s — SIMULATE_DEPOSIT_TOKEN "
-                "is set (WEMA_SIMULATION on); REMOVE before go-live", phone, amount, reference)
+                "is set (WEMA_SIMULATION on); REMOVE before go-live",
+                mask_pii(phone), amount, reference)
     return ok(success=True, wallet=str(wallet.balance), reference=reference,
               message="Simulated deposit credited")
 

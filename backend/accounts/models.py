@@ -156,6 +156,18 @@ class User(AbstractUser):
             # target, so the scan is a DoS amplifier as the user table grows.
             models.Index(Lower("email"), name="user_email_lower_idx"),
         ]
+        constraints = [
+            # Wema rejects reused BVNs/NINs.  Enforce the same ownership boundary
+            # locally (scoped to non-empty hashes so unverified users coexist).
+            models.UniqueConstraint(
+                fields=["bvn_hash"], condition=~models.Q(bvn_hash=""),
+                name="uniq_user_bvn_hash",
+            ),
+            models.UniqueConstraint(
+                fields=["nin_hash"], condition=~models.Q(nin_hash=""),
+                name="uniq_user_nin_hash",
+            ),
+        ]
 
     def __str__(self):
         return self.phone or self.email or self.username
@@ -282,19 +294,20 @@ class OTP(models.Model):
     def verify_code(self, raw: str) -> bool:
         """Constant-time compare of a submitted code against the stored hash.
 
-        TEST-ONLY bypass: when BOTH settings.TEST_OTP["PHONE"] and ["CODE"] are set
-        (they are unset in production), that ONE phone accepts that fixed code in
-        every OTP flow — so the app can be walked end to end while a real SMS sender
-        ID awaits carrier approval. Every other number still needs a real delivered
-        code. Use is logged loudly and wema_preflight HARD-FAILS while it is set, so
-        it cannot slip into go-live. Remove TEST_OTP_PHONE/TEST_OTP_CODE before launch.
+        TEST-ONLY signup bypass: when BOTH settings.TEST_OTP["PHONE"] and ["CODE"]
+        are set, that one phone accepts the fixed code only for SIGNUP. Password
+        reset never accepts it; a leaked test pair therefore cannot take over an
+        established account. Use is logged pseudonymously and go-live preflight
+        hard-fails while configured.
         """
         test = settings.TEST_OTP
-        if (test["PHONE"] and test["CODE"] and self.phone == test["PHONE"]
+        if (self.purpose == self.SIGNUP and test["PHONE"] and test["CODE"]
+                and self.phone == test["PHONE"]
                 and hmac.compare_digest(raw or "", test["CODE"])):
-            log.warning("test_otp_bypass_used phone=%s purpose=%s — TEST_OTP is set; "
+            phone_fingerprint = hashlib.sha256(self.phone.encode()).hexdigest()[:12]
+            log.warning("test_otp_bypass_used phone_sha256=%s purpose=%s — TEST_OTP is set; "
                         "REMOVE TEST_OTP_PHONE/TEST_OTP_CODE before go-live",
-                        self.phone, self.purpose)
+                        phone_fingerprint, self.purpose)
             return True
         return hmac.compare_digest(self.code_hash, self.hash_code(raw))
 

@@ -4,10 +4,12 @@
 - Simulated LIVE: utility.wema.requests patched to build the real request and parse
   ALAT's two envelope shapes ({status,...} and {result,hasError,...}).
 """
+import json
 import os
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import requests
 from django.test import Client, SimpleTestCase, override_settings
 
 from utility import wema
@@ -130,6 +132,56 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(body["transactionReference"], "REF-1")
         self.assertEqual(body["destinationAccountNumber"], "02")
 
+    @patch("utility.wema.requests.post", side_effect=requests.Timeout("socket timed out"))
+    def test_transfer_timeout_is_ambiguous_and_never_refundable(self, _mock_post):
+        result = wema.transfer(
+            1000, "REF-TIMEOUT", "test", source_account="01",
+            destination_account="02", destination_bank_code="035",
+            destination_bank_name="Wema", destination_name="ADA",
+        )
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertNotIn("socket timed out", result["message"])
+
+    @patch("utility.wema.requests.post")
+    def test_transfer_envelope_success_does_not_override_failed_status(self, mock_post):
+        mock_post.return_value = _resp(
+            {"result": {"status": "DECLINED", "transactionReference": "REF-BAD"},
+             "hasError": False}
+        )
+        result = wema.transfer(
+            1000, "REF-BAD", "test", source_account="01",
+            destination_account="02", destination_bank_code="035",
+            destination_bank_name="Wema", destination_name="ADA",
+        )
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"])
+
+    @patch("utility.wema.requests.post")
+    def test_transfer_unknown_accepted_status_remains_pending(self, mock_post):
+        mock_post.return_value = _resp(
+            {"result": {"status": "QUEUED_AT_SWITCH", "transactionReference": "REF-WAIT"},
+             "hasError": False}
+        )
+        result = wema.transfer(
+            1000, "REF-WAIT", "test", source_account="01",
+            destination_account="02", destination_bank_code="035",
+            destination_bank_name="Wema", destination_name="ADA",
+        )
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+
+    @patch("utility.wema.requests.get")
+    def test_status_requery_pending_is_not_delivery_success(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"data": {"status": "PENDING",
+                                    "transactionReference": "REF-WAIT"}},
+             "hasError": False}
+        )
+        result = wema.confirm_transfer_status("REF-WAIT")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+
 
 class WemaKycTests(SimpleTestCase):
     """ALAT has NO standalone BVN/NIN/vNIN lookup — identity is verified by the
@@ -146,10 +198,12 @@ class WemaKycTests(SimpleTestCase):
         # No shared tokens -> a clear mismatch (blocks the provisioning tier lift).
         self.assertTrue(wema.holder_name_mismatch("Ada Eze", "JOHN DOE"))
 
-    def test_holder_name_missing_side_never_blocks(self):
-        # Fail-open when either name is empty (tolerant of missing gateway data).
-        self.assertFalse(wema.holder_name_mismatch("", "JOHN DOE"))
-        self.assertFalse(wema.holder_name_mismatch("Ada Eze", ""))
+    def test_holder_name_missing_side_fails_closed(self):
+        self.assertTrue(wema.holder_name_mismatch("", "JOHN DOE"))
+        self.assertTrue(wema.holder_name_mismatch("Ada Eze", ""))
+
+    def test_one_shared_token_is_not_enough_for_kyc(self):
+        self.assertTrue(wema.holder_name_mismatch("Ada Eze", "Ada Johnson"))
 
     def test_verify_format_checks(self):
         self.assertFalse(wema.verify_bvn("123")["success"])            # not 11 digits
@@ -194,10 +248,7 @@ class WemaProbeTests(SimpleTestCase):
 
 
 class WemaDiagnoseViewTests(SimpleTestCase):
-    """The /wema-diagnose view must parse EVERY wema_probe() parameter from the
-    querystring — including otp/tracking_id, which were added to wema_probe for the
-    two-step OTP flow after the view was first wired, and had to be threaded through
-    separately (a real gap: the probe supported the params but the view dropped them)."""
+    """Mutating diagnostics use authenticated POST; no secrets/PII in URLs."""
 
     def setUp(self):
         self.client = Client()
@@ -207,10 +258,9 @@ class WemaDiagnoseViewTests(SimpleTestCase):
 
     def test_forwards_otp_and_tracking_id_to_probe(self):
         with patch("utility.wema.wema_probe", return_value={}) as mock_probe:
-            self.client.get("/wema-diagnose", {
-                "token": "test-token", "phone": "08030000000", "otp": "123456",
-                "tracking_id": "WEMA-TRK-1",
-            })
+            self.client.post("/wema-diagnose", data=json.dumps({
+                "phone": "08030000000", "otp": "123456", "tracking_id": "WEMA-TRK-1",
+            }), content_type="application/json", HTTP_AUTHORIZATION="Bearer test-token")
         mock_probe.assert_called_once_with("", "", "08030000000", bvn="", nin="",
                                            otp="123456", tracking_id="WEMA-TRK-1")
 
@@ -221,16 +271,12 @@ class WemaDiagnoseViewTests(SimpleTestCase):
         # consume it and the operator would see a failure for a step that already
         # succeeded. Observed in production 2026-07-28.
         with patch("utility.wema.wema_probe", return_value={}) as mock_probe:
-            r = self.client.head("/wema-diagnose", {"token": "test-token",
-                                                    "phone": "08030000000", "otp": "123456",
-                                                    "tracking_id": "T-1"})
+            r = self.client.head("/wema-diagnose", HTTP_AUTHORIZATION="Bearer test-token")
         self.assertEqual(r.status_code, 405)
         mock_probe.assert_not_called()          # no live bank call was made
 
-    def test_get_still_works(self):
-        with patch("utility.wema.wema_probe", return_value={}):
-            self.assertEqual(
-                self.client.get("/wema-diagnose", {"token": "test-token"}).status_code, 200)
+    def test_get_is_refused_and_query_token_is_never_accepted(self):
+        self.assertEqual(self.client.get("/wema-diagnose", {"token": "test-token"}).status_code, 405)
 
     def test_diag_token_also_opens_it(self):
         # It used to read WEMA_DIAG_TOKEN alone, so a deploy that set only DIAG_TOKEN
@@ -238,16 +284,19 @@ class WemaDiagnoseViewTests(SimpleTestCase):
         # "the route isn't deployed", which is what these endpoints exist to answer.
         with patch.dict(os.environ, {"WEMA_DIAG_TOKEN": "", "DIAG_TOKEN": "shared"}), \
                 patch("utility.wema.wema_probe", return_value={}):
-            r = self.client.get("/wema-diagnose", {"token": "shared"})
+            r = self.client.post("/wema-diagnose", data=b"{}", content_type="application/json",
+                                 HTTP_AUTHORIZATION="Bearer shared")
         self.assertEqual(r.status_code, 200)
 
     def test_disabled_only_when_neither_token_is_set(self):
         with patch.dict(os.environ, {"WEMA_DIAG_TOKEN": "", "DIAG_TOKEN": ""}):
-            self.assertEqual(self.client.get("/wema-diagnose").status_code, 404)
+            self.assertEqual(self.client.post("/wema-diagnose", data=b"{}",
+                                              content_type="application/json").status_code, 404)
 
     def test_trailing_slash_also_resolves(self):
         with patch("utility.wema.wema_probe", return_value={}):
-            r = self.client.get("/wema-diagnose/", {"token": "test-token"})
+            r = self.client.post("/wema-diagnose/", data=b"{}", content_type="application/json",
+                                 HTTP_AUTHORIZATION="Bearer test-token")
         self.assertEqual(r.status_code, 200)
 
     def test_missing_bvn_or_phone_skips_wallet_create(self):
@@ -255,7 +304,8 @@ class WemaDiagnoseViewTests(SimpleTestCase):
         # not silently attempt wallet creation (wema_probe itself already guards
         # this — asserted here at the view boundary too).
         with patch("utility.wema.wema_probe", return_value={}) as mock_probe:
-            self.client.get("/wema-diagnose", {"token": "test-token"})
+            self.client.post("/wema-diagnose", data=b"{}", content_type="application/json",
+                             HTTP_AUTHORIZATION="Bearer test-token")
         mock_probe.assert_called_once_with("", "", "", bvn="", nin="", otp="", tracking_id="")
 
 

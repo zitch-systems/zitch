@@ -16,10 +16,10 @@ AUTH (Azure APIM) — TWO credentials per call:
 Per-product base path under one host: sandbox ``https://apiplayground.alat.ng``;
 the LIVE host differs (set WEMA_BASE_URL).
 
-securityInfo: every MONEY-MOVEMENT call (transfer / credit / VAS) requires an
-encrypted ``securityInfo`` whose construction is NOT in the OpenAPI. ``_security_info``
-is the single place to implement it once Wema supplies the scheme. Account
-creation / balance / name-enquiry do NOT need it, so funding is buildable now.
+securityInfo: every MONEY-MOVEMENT call (transfer / credit / VAS) carries an opaque
+private value chosen by Zitch. Wema echoes it with the transaction reference to our
+authentication callback; no encryption/signature algorithm is specified or needed.
+Account creation / balance / name-enquiry do not use it.
 
 Envelopes (two shapes, both handled by ``_ok``):
   * creation/acct-mgt: {message, status(bool), code, statusCode, errors[], data}
@@ -38,7 +38,7 @@ envelopes. The card + KYC rails were re-pointed to the real endpoints:
   * KYC rail — Wema has no standalone BVN/NIN lookup, so identity is verified by the
     name-matched account-creation flow (see the KYC section).
 Still open before go-live:
-  * securityInfo construction (algorithm/plaintext) — provisioned out-of-band by Wema.
+  * set and rotate Zitch's private securityInfo value in each environment.
   * tx-status legends — payout status strings, and the VAS/bills CheckTransactionStatus
     INTEGER enums, are undocumented in the specs; get the code→meaning map from Wema.
   * live host (WEMA_BASE_URL) + production keys.
@@ -282,8 +282,19 @@ def _post(product: str, path: str, body: dict, params: dict | None = None) -> re
                          headers=_headers(product), timeout=REQUEST_TIMEOUT)
 
 
-def _unreachable(exc: Exception) -> dict:
-    return {"success": False, "message": f"Bank gateway unreachable: {exc}"}
+def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
+    """Return a safe provider-unavailable result.
+
+    ``pending`` is required for non-idempotent money POSTs and their status
+    requeries: a timeout does not prove that the bank rejected the instruction.
+    Callers must hold the debit until a later authenticated requery establishes a
+    terminal outcome.  Do not echo the exception to clients; request exceptions can
+    contain provider URLs and customer identifiers.
+    """
+    log.warning("wema_gateway_unreachable operation_pending=%s error_type=%s",
+                pending, type(exc).__name__)
+    return {"success": False, "pending": pending,
+            "message": "Bank gateway is temporarily unavailable"}
 
 
 def _security_info(**kwargs) -> str:
@@ -301,11 +312,10 @@ def _security_info(**kwargs) -> str:
     so callers read naturally at the call site and a per-operation scheme could be
     introduced later without touching them.
 
-    Blank is legal and does not break payouts: the bank stores and returns whatever
-    we send, and our authentication callback authorises from OUR OWN LEDGER (a fresh
-    PENDING bank payout under that exact reference) — a strictly stronger check than
-    comparing an echoed constant. Setting one is still worth doing: it costs nothing
-    and lets WEMA_AUTH_REQUIRE_SECURITY_INFO add a second factor to that decision.
+    Blank is tolerated only for local/sandbox work. Production defaults to requiring
+    an exact callback match and the go-live preflight hard-fails while it is unset.
+    The ledger's fresh-PENDING-reference check remains the primary authorization gate;
+    this echoed constant is inexpensive defence in depth.
     """
     return settings.WEMA.get("SECURITY_INFO", "") or ""
 
@@ -675,12 +685,51 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
         return _unreachable(exc)
 
 
+TRANSFER_SETTLED_STATUSES = {
+    "SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "APPROVED",
+}
+TRANSFER_FAILED_STATUSES = {
+    "FAILED", "FAILURE", "REVERSED", "DECLINED", "CANCELLED", "CANCELED",
+    "REJECTED", "RETURNED", "NOT_PROCESSED",
+}
+
+
+def classify_transfer_status(status: str, *, envelope_ok: bool = True) -> str:
+    """Classify an ALAT transfer without treating APIM acceptance as settlement.
+
+    The public contract does not enumerate every in-flight spelling.  Therefore a
+    known success settles, a known terminal failure can be refunded, and every
+    other status (including blank/new spellings) is ambiguous and remains pending.
+    A negative APIM envelope is a definitive provider rejection because a response
+    was received; transport failures are handled separately as ambiguous.
+    """
+    if not envelope_ok:
+        return "failed"
+    normalized = str(status or "").strip().upper()
+    if normalized in TRANSFER_SETTLED_STATUSES:
+        return "success"
+    if normalized in TRANSFER_FAILED_STATUSES:
+        return "failed"
+    return "pending"
+
+
+def _transfer_result(data: dict, reference: str, result: dict) -> dict:
+    status = str(result.get("status") or "").strip().upper()
+    outcome = classify_transfer_status(status, envelope_ok=_ok(data))
+    return {
+        "success": outcome == "success",
+        "pending": outcome == "pending",
+        "status": status,
+        "reference": result.get("transactionReference", reference),
+        "platform_reference": result.get("platformTransactionReference", ""),
+        "message": result.get("message") or _msg(data),
+        "raw": data,
+    }
+
+
 def _parse_transfer(data: dict, reference: str) -> dict:
     r = data.get("result", {}) or {}
-    return {"success": _ok(data), "status": (r.get("status") or "").upper(),
-            "reference": r.get("transactionReference", reference),
-            "platform_reference": r.get("platformTransactionReference", ""),
-            "message": r.get("message") or _msg(data), "raw": data}
+    return _transfer_result(data, reference, r if isinstance(r, dict) else {})
 
 
 def transfer(amount_naira, reference: str, narration: str, *, source_account: str,
@@ -688,7 +737,7 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
              destination_name: str) -> dict:
     """ProcessClientTransfer — debit source wallet, credit destination (intra/inter bank).
 
-    Requires the encrypted ``securityInfo`` (see _security_info). ``reference`` is
+    Requires the opaque ``securityInfo`` value (see _security_info). ``reference`` is
     our idempotency key; poll confirm_transfer_status(reference) for terminal state.
     """
     if not wema_live():
@@ -714,8 +763,11 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
         if not out["success"]:
             log.warning("wema_transfer_failed ref=%s msg=%s", reference, out.get("message"))
         return out
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+    except (requests.RequestException, ValueError) as exc:
+        # The transfer POST is non-idempotent.  A timeout, broken connection, or
+        # non-JSON response may occur after Wema accepted the instruction, so the
+        # only safe outcome is PENDING until confirm_transfer_status resolves it.
+        return _unreachable(exc, pending=True)
 
 
 def confirm_transfer_status(reference: str) -> dict:
@@ -724,12 +776,13 @@ def confirm_transfer_status(reference: str) -> dict:
         return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
     try:
         data = _get("debit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}").json()
-        r = (data.get("result", {}) or {}).get("data", {}) or {}
-        return {"success": _ok(data), "status": (r.get("status") or "").upper(),
-                "reference": r.get("transactionReference", reference),
-                "platform_reference": r.get("platformTransactionReference", ""), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+        outer = data.get("result", {}) or {}
+        r = outer.get("data", {}) or {} if isinstance(outer, dict) else {}
+        return _transfer_result(data, reference, r if isinstance(r, dict) else {})
+    except (requests.RequestException, ValueError) as exc:
+        # A failed status lookup says nothing about the original transfer.  Keep
+        # the debit held for the next callback/reconciliation attempt.
+        return _unreachable(exc, pending=True)
 
 
 def credit_wallet(amount_naira, reference: str, narration: str, *, destination_account: str) -> dict:
@@ -968,7 +1021,13 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
         return {"success": False, "pending": True, "status": "REMITA_MANUAL", "reference": reference}
     product = "bills" if txn_type == "bill" else "airtime"
     if not _vas_live(product):
-        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
+        if _mock_blocked():
+            # This requeries an already-submitted, ambiguous purchase. Missing
+            # credentials on a cron cannot prove delivery failed, so never refund.
+            return {"success": False, "pending": True, "status": "UNCONFIGURED",
+                    "reference": reference,
+                    "message": "VAS status service is not configured"}
+        return {"success": True, "mock": True, "status": "SUCCESS", "reference": reference}
     try:
         if product == "bills":
             data = _post("bills", "/api/PartnerPayment/checktransactionstatus",
@@ -1405,15 +1464,18 @@ def _name_tokens(name: str) -> set:
 
 
 def holder_name_mismatch(supplied: str, resolved: str) -> bool:
-    """True only when BOTH names are non-empty and share NO tokens — a clear
-    mismatch. Tolerant of order / middle names so a legitimate holder is never
-    blocked by a formatting difference.
+    """Fail-closed legal-name comparison for identity-backed onboarding.
+
+    Names must be present on both sides and share at least two significant tokens
+    (normally first name + surname). Order and extra middle names are tolerated,
+    but one common name is not enough evidence to lift a financial KYC tier.
+    Missing/unreadable bank data is a mismatch and routes the customer to review.
 
     Used to name-match the holder record ALAT returns during NUBAN provisioning
     against the user's registered name before the KYC tier is lifted, so a BVN/NIN
     that demonstrably belongs to someone else can't lift the requester's tier."""
     a, b = _name_tokens(supplied), _name_tokens(resolved)
-    return bool(a and b and not (a & b))
+    return not (a and b and len(a & b) >= 2)
 
 
 def _identity_unavailable_standalone() -> dict:
@@ -1461,11 +1523,17 @@ def verify_vnin(vnin: str, name: str = "") -> dict:
 # Diagnostics — mirrors mono diagnostics
 # ---------------------------------------------------------------------------
 def _trim(raw, limit: int = 500):
-    """Short, printable form of a provider response for a diagnostic (no secrets —
-    Wema responses carry status/messages/holder names, never our keys)."""
+    """Short, printable, PII-minimised provider response for diagnostics."""
     if raw is None:
         return None
-    s = raw if isinstance(raw, str) else str(raw)
+    from whatsapp.models import WebhookEvent
+
+    safe = WebhookEvent.redact(raw) if isinstance(raw, (dict, list)) else str(raw)
+    s = safe if isinstance(safe, str) else json.dumps(safe, default=str)
+    # Defence in depth for provider fields whose names are not in the known model.
+    s = re.sub(r"(?<!\d)\d{10,16}(?!\d)", "[identifier redacted]", s)
+    s = re.sub(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b",
+               "[email redacted]", s)
     return s[:limit]
 
 
@@ -1532,8 +1600,8 @@ def wema_diagnostics() -> dict:
                        "live WEMA_BASE_URL. WEMA_SIMULATION=true tests the flow without live keys.")
         return out
     # securityInfo is OUR value, echoed back by the bank to the authentication callback
-    # (Wema, 2026-07-27) — never a bank-issued scheme, so its absence is not an error
-    # status. Reported as a boolean above; the hint stays about things that gate.
+    # (Wema, 2026-07-27), never a bank-issued scheme. Its boolean is reported above;
+    # wema_preflight enforces it as a go-live gate.
     out["status"] = "configured"
     out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
                    "integration guide before go-live.")

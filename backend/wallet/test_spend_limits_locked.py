@@ -114,7 +114,8 @@ class BankTierCapHoldsUnderTheLockTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08044440003", "bank@zitch.app", tier=2)
         Wallet.objects.filter(user=self.user).update(
-            balance=Decimal("5000000"), bank_tier=1)          # bank cap 30,000/day
+            balance=Decimal("5000000"), bank_tier=1,
+            account_number="0155500033")                      # bank cap 30,000/day
 
     @override_settings(VELOCITY_MAX_OUT_10MIN=0)
     def test_the_partner_banks_daily_cap_is_enforced_at_the_debit(self):

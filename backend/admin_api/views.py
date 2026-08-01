@@ -861,9 +861,11 @@ def wa_reply(request):
     text = (request.data.get("text") or "").strip()
     if not msisdn or not text:
         return fail("msisdn and text required")
-    wa_send(msisdn, text)
+    result = wa_send(msisdn, text)
+    if not result.get("success"):
+        return fail(result.get("message", "WhatsApp delivery failed"), status=502)
     audit(request, "conversation.agent_reply", target=msisdn, after={"chars": len(text)})
-    return ok(success=True, msisdn=msisdn)
+    return ok(success=True, msisdn=msisdn, message_id=result.get("message_id", ""))
 
 
 @staff_endpoint(methods=("POST",), perm="broadcast")

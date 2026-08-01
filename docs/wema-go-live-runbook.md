@@ -54,8 +54,8 @@ crons too (`render.yaml` already declares the slots on each).
 | Var | Why |
 |---|---|
 | `SENTRY_DSN` | So the reconcile crons can page on drift/outage (they call `utility.alerts.alert`). Set it on the **web service and every cron**. |
-| `WEMA_DIAG_TOKEN` | Enables the `/wema-diagnose?token=…` browser self-test. |
-| `DIAG_TOKEN` | Enables `/vtu-diagnose?token=…` and `/wema-callbacks-diagnose?token=…` (either token opens the latter). |
+| `WEMA_DIAG_TOKEN` | Enables the `/wema-diagnose` remote self-test using an `Authorization: Bearer …` header. |
+| `DIAG_TOKEN` | Enables `/vtu-diagnose`, `/sms-diagnose`, and `/wema-callbacks-diagnose` using bearer auth (either diagnostic token opens the callback probe). Never put either token in a URL. |
 | `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
 | `TERMII_API_KEY` | SMS / OTP-by-SMS (default rail once set). |
@@ -101,11 +101,10 @@ KYC rail.
 ### Step 2 — confirm keys load (still sandbox)
 - Run: `python manage.py wema_preflight`
   - Expect: `Wema live keys` → **PASS**, `Live host` → **FAIL** (still sandbox —
-    correct at this step). `securityInfo` is a soft check: WARN just means the
-    optional callback second factor is unused.
+    correct at this step). `securityInfo` and the callback token are hard gates;
+    configure strong development values before profiling or transaction testing.
 - Or hit `/healthz` and confirm `funding_wema: true`, `wema_sandbox: true`.
-  (`funding_wema_security_info` just reports whether the optional callback second
-  factor is set.)
+  (`funding_wema_security_info` reports whether the required callback value is set.)
 
 ### Step 3 — live host
 - Set `WEMA_BASE_URL` to the **live** ALAT host on the web service and all crons.
@@ -117,16 +116,18 @@ KYC rail.
 - `/healthz` should now show `wema_sandbox: false`.
 
 ### Step 5 — live connectivity probes (no money moved)
-- `GET /wema-diagnose?token=<WEMA_DIAG_TOKEN>&account=<10-digit>&bank=<code>` —
-  proves auth + a real name-enquiry against the live gateway.
-- `GET /vtu-diagnose?token=<DIAG_TOKEN>` — proves the VTU.ng wallet authenticates
+- `POST /wema-diagnose` with `Authorization: Bearer <WEMA_DIAG_TOKEN>` and JSON
+  `{"account":"<10-digit>","bank":"<code>"}` — proves auth plus a real
+  name-enquiry against the live gateway. BVN/NIN/OTP test inputs also belong in JSON,
+  never a URL.
+- `GET /vtu-diagnose` with `Authorization: Bearer <DIAG_TOKEN>` — proves the VTU.ng wallet authenticates
   and shows its balance (VAS buys fail on an empty provider wallet).
-- `GET /wema-callbacks-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>` — prints the
-  four callback URLs **exactly as the bank must be given them** and confirms each
+- `GET /wema-callbacks-diagnose` with a diagnostic bearer token — prints the
+  four callback URL **templates** and confirms each
   resolves and that a wrong secret is refused. Read
   `ready_to_send_to_the_bank: true` before handing anything to the bank; the
-  `blockers` list says what to fix otherwise. Note its output contains the
-  callback secret, since that secret *is* the URL.
+  `blockers` list says what to fix otherwise. The response never contains the
+  callback secret; substitute it from the deployment secret store when profiling.
 
   Cheapest possible check without any tooling: open a callback URL in a browser.
   The method check runs before the secret check, so a live route answers **405**
@@ -135,8 +136,9 @@ KYC rail.
 
 ### Step 5b — profile the callbacks for PRODUCTION
 - The dev/sandbox callbacks were profiled on 2026-07-28; production profiling was
-  deliberately deferred to this point by agreement with Wema. Send the four URLs from
-  `/wema-callbacks-diagnose` to the `#zitch` channel and wait for confirmation — the rails
+  deliberately deferred to this point by agreement with Wema. Combine the four templates
+  from `/wema-callbacks-diagnose` with the rotated secret in the deployment secret store,
+  send the resulting URLs to the bank through the agreed secure channel, and wait for confirmation — the rails
   do not work until the bank has them.
 - Before sending, rotate `WEMA_CALLBACK_TOKEN` to a value that has NOT been used for dev
   (keep the old one in `WEMA_CALLBACK_TOKEN_PREV` for the overlap). The dev token was shared

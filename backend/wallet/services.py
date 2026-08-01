@@ -729,9 +729,9 @@ def bank_spend_error(user, amount) -> str | None:
     """The partner bank's own DAILY ceiling on outbound spend, or None.
 
     Checked in ADDITION to our KYC-tier limit, never instead of it: the two ladders
-    are independent and the customer is bound by whichever is tighter. Silent (None)
-    while the account's bank tier is unknown, so this can only ever tighten behaviour
-    for accounts we have actually read back.
+    are independent and the customer is bound by whichever is tighter. A provisioned
+    account whose tier has not synced yet is treated as Tier 1 (the conservative bank
+    default), rather than silently allowing a transfer the bank is likely to reject.
 
     The cap is CUMULATIVE — ALAT publishes it as "Daily Max Spend", not a per-transfer
     limit. Comparing only the single amount would let N transfers each under the cap
@@ -739,10 +739,11 @@ def bank_spend_error(user, amount) -> str | None:
     reverse this check exists to prevent. So today's spend counts toward it.
     """
     from utility import wema as wema_provider
-    wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
-    if wallet is None or not wallet.bank_tier:
+    wallet = Wallet.objects.filter(user=user).only("bank_tier", "account_number").first()
+    if wallet is None or not wallet.account_number:
         return None
-    cap = wema_provider.bank_tier_limit(wallet.bank_tier, "daily_spend")
+    bank_tier = wallet.bank_tier or 1
+    cap = wema_provider.bank_tier_limit(bank_tier, "daily_spend")
     if cap is None:
         return None
     amount = Decimal(str(amount))

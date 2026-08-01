@@ -120,7 +120,6 @@ const Me = () => {
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
     { icon: 'card', title: 'Bank Card / Account', sub: 'Add a payment option', go: () => router.push('/accountdetails') },
-    { icon: 'bank', title: 'My BizPayment', sub: 'Receive payment for business', go: () => router.push('/bizpayment') },
     { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/junior') },
     { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Shop now, spread the cost', badge: 'Enjoy ₦0', go: () => router.push('/bnpl') },
   ];

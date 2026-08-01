@@ -11,6 +11,8 @@ import logging
 import requests
 from django.conf import settings
 
+from common.http import mask_pii
+
 log = logging.getLogger("whatsapp")
 
 
@@ -18,8 +20,31 @@ def _cfg() -> dict:
     return settings.WHATSAPP
 
 
+def wa_mode() -> str:
+    mode = str(_cfg().get("MODE") or "").strip().lower()
+    if mode in {"disabled", "sandbox", "live"}:
+        return mode
+    if _cfg().get("TOKEN") and _cfg().get("PHONE_NUMBER_ID"):
+        return "live"
+    return "sandbox" if (getattr(settings, "DEBUG", False)
+                          or getattr(settings, "TESTING", False)) else "disabled"
+
+
+def wa_enabled() -> bool:
+    return wa_mode() != "disabled"
+
+
 def wa_live() -> bool:
-    return bool(_cfg().get("TOKEN") and _cfg().get("PHONE_NUMBER_ID"))
+    return (wa_mode() == "live" and bool(_cfg().get("TOKEN"))
+            and bool(_cfg().get("PHONE_NUMBER_ID")))
+
+
+def _offline_result(kind: str, msisdn: str = "") -> dict:
+    if wa_mode() == "disabled":
+        return {"success": False, "disabled": True,
+                "message": "WhatsApp banking is currently unavailable"}
+    log.debug("wa_sandbox_send kind=%s recipient=%s", kind, mask_pii(msisdn))
+    return {"success": True, "mock": True, "message_id": ""}
 
 
 def flows_live() -> bool:
@@ -37,7 +62,11 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
     With no APP_SECRET configured (mock mode) we accept, matching how the money-provider mocks (which accept
     unsigned in mock mode) behave â€” so tests and local runs work unsigned.
     """
+    if wa_mode() == "disabled":
+        return False
     secret = _cfg().get("APP_SECRET", "")
+    if wa_mode() == "sandbox" and not secret:
+        return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
     if not secret:
         # Accept unsigned ONLY when the channel is in mock mode (no live creds) â€”
         # then Meta isn't actually wired and there's no real callback to forge.
@@ -46,7 +75,7 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
         # production WhatsApp channel can never silently accept a forged callback
         # that would impersonate a linked user's number. (Independent of DEBUG, so
         # the test runner â€” which forces DEBUG=False â€” still exercises mock mode.)
-        return not wa_live()
+        return False
     if not header or not header.startswith("sha256="):
         return False
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
@@ -56,8 +85,7 @@ def verify_signature(raw_body: bytes, header: str) -> bool:
 def send_text(msisdn: str, text: str) -> dict:
     """Send a plain-text WhatsApp message. Returns {success, message_id?, ...}."""
     if not wa_live():
-        log.info("[wa-mock] -> %s: %s", msisdn, text)
-        return {"success": True, "mock": True, "message_id": ""}
+        return _offline_result("text", msisdn)
     url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages"
     headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"}
     payload = {
@@ -75,16 +103,16 @@ def send_text(msisdn: str, text: str) -> dict:
             "raw": data,
         }
     except requests.RequestException as exc:
-        log.warning("wa send failed -> %s: %s", msisdn, exc)
-        return {"success": False, "message": str(exc)}
+        log.warning("wa_send_failed recipient=%s error_type=%s",
+                    mask_pii(msisdn), type(exc).__name__)
+        return {"success": False, "message": "WhatsApp delivery failed"}
 
 
 def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
     """POST an arbitrary message payload to the Cloud API (shared by the
     interactive senders). MOCK mode logs and returns success."""
     if not wa_live():
-        log.info("[wa-mock] -> %s: %s", msisdn, mock_note)
-        return {"success": True, "mock": True, "message_id": ""}
+        return _offline_result(str(payload.get("type") or "interactive"), msisdn)
     url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages"
     headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"}
     try:
@@ -94,8 +122,9 @@ def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
         return {"success": r.ok, "message_id": (data.get("messages") or [{}])[0].get("id", ""),
                 "raw": data}
     except requests.RequestException as exc:
-        log.warning("wa send failed -> %s: %s", msisdn, exc)
-        return {"success": False, "message": str(exc)}
+        log.warning("wa_send_failed recipient=%s error_type=%s",
+                    mask_pii(msisdn), type(exc).__name__)
+        return {"success": False, "message": "WhatsApp delivery failed"}
 
 
 def send_buttons(msisdn: str, body: str, buttons: list) -> dict:
@@ -154,8 +183,7 @@ def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
     optional caption. Meta fetches the image from `image_url`, so it must be a
     public URL. MOCK mode logs and returns success."""
     if not wa_live():
-        log.info("[wa-mock] image -> %s: %s (%s)", msisdn, image_url, caption)
-        return {"success": True, "mock": True, "message_id": ""}
+        return _offline_result("image", msisdn)
     url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages"
     headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"}
     payload = {
@@ -173,8 +201,9 @@ def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
             "raw": data,
         }
     except requests.RequestException as exc:
-        log.warning("wa image send failed -> %s: %s", msisdn, exc)
-        return {"success": False, "message": str(exc)}
+        log.warning("wa_image_send_failed recipient=%s error_type=%s",
+                    mask_pii(msisdn), type(exc).__name__)
+        return {"success": False, "message": "WhatsApp delivery failed"}
 
 
 def upload_media(data: bytes, mime: str, filename: str) -> str:
@@ -182,8 +211,10 @@ def upload_media(data: bytes, mime: str, filename: str) -> str:
     (empty string on failure / mock). The id is single-account, short-lived, and
     referenced by a subsequent message send."""
     if not wa_live():
-        log.info("[wa-mock] upload_media %s (%d bytes)", filename, len(data))
-        return "mock-media-id"
+        if wa_mode() == "sandbox":
+            log.debug("wa_sandbox_upload mime=%s bytes=%s", mime, len(data))
+            return "mock-media-id"
+        return ""
     url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/media"
     try:
         r = requests.post(
@@ -213,8 +244,10 @@ def send_template(msisdn: str, template_name: str, params: list | None = None, l
     """Send a pre-approved template message (used for broadcasts outside the
     24-hr window). MOCK mode logs and returns success."""
     if not wa_live():
-        log.info("[wa-mock] template %s -> %s %s", template_name, msisdn, params or [])
-        return {"success": True, "mock": True, "message_id": f"mockt-{msisdn}-{template_name}"}
+        result = _offline_result("template", msisdn)
+        if result.get("success"):
+            result["message_id"] = "mock-template"
+        return result
     components = (
         [{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}]
         if params else []

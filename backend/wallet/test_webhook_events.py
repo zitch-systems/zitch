@@ -100,7 +100,7 @@ class WemaCallbackForensicsTests(TestCase):
         self.assertEqual(payload["data"]["extra"]["NIN"], "[redacted]")
         # snake_case and camelCase spellings of the same field both match.
         self.assertEqual(payload["data"]["extra"]["transaction_pin"], "[redacted]")
-        self.assertEqual(payload["data"]["nuban"], "0123456789")   # not a secret
+        self.assertEqual(payload["data"]["nuban"], "[redacted]")
 
     def test_a_broken_forensic_log_does_not_break_the_callback(self):
         # A logging bug must never make the bank retry, or deny a payout.

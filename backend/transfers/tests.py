@@ -290,7 +290,7 @@ class BankTransferTests(TestCase):
         response pending — not as a failure. Misclassifying it refunded an
         in-flight transfer (double-spend) and showed the user "Error / success"."""
         with patch("transfers.services.payout_send",
-                   return_value={"success": True, "status": "pending", "reference": "X"}):
+                   return_value={"success": True, "status": "QUEUED_AT_SWITCH", "reference": "X"}):
             res, body = self.post("/api/transfers/send/", {
                 "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
                 "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
@@ -301,6 +301,17 @@ class BankTransferTests(TestCase):
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
         self.assertTrue(txn.meta.get("reconcile"))
         self.assertEqual(self.balance(), Decimal("40000"))  # held, not refunded
+
+    def test_explicit_failed_status_refunds_even_when_envelope_succeeded(self):
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "DECLINED",
+                                 "message": "Transaction declined"}):
+            res, _ = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(self.balance(), Decimal("50000"))
 
     def test_provider_success_echo_is_never_shown_as_the_error(self):
         """A definitive provider rejection whose message is the request-level

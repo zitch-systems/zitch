@@ -24,7 +24,7 @@ from wallet.services import credit, get_or_create_wallet
 
 from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
-    PendingAction, WaMessageLog, WhatsAppLink,
+    PendingAction, SystemSetting, WaMessageLog, WhatsAppLink,
 )
 
 User = get_user_model()
@@ -70,9 +70,12 @@ class WebhookTests(TestCase):
         self.assertEqual(bad.status_code, 403)
 
     @override_settings(WHATSAPP={"VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "shh",
-                                 "BASE_URL": "x", "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""})
+                                 "BASE_URL": "x", "PHONE_NUMBER_ID": "phone-1",
+                                 "BUSINESS_NUMBER": "2348000000000", "MODE": "live"})
     def test_signature_enforced_when_secret_set(self):
-        body = json.dumps({"entry": []}).encode()
+        event = {"entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "phone-1"}}}]}]}
+        body = json.dumps(event).encode()
         bad = self.client.post("/webhooks/whatsapp", data=body, content_type="application/json",
                                HTTP_X_HUB_SIGNATURE_256="sha256=deadbeef")
         self.assertEqual(bad.status_code, 401)
@@ -80,6 +83,28 @@ class WebhookTests(TestCase):
         good = self.client.post("/webhooks/whatsapp", data=body, content_type="application/json",
                                 HTTP_X_HUB_SIGNATURE_256=f"sha256={good_sig}")
         self.assertEqual(good.status_code, 200)
+
+    @override_settings(WHATSAPP={"MODE": "disabled", "VERIFY_TOKEN": "", "TOKEN": "",
+                                 "APP_SECRET": "", "BASE_URL": "x", "PHONE_NUMBER_ID": "",
+                                 "BUSINESS_NUMBER": ""})
+    def test_disabled_channel_exposes_no_webhook(self):
+        self.assertEqual(self.client.get("/webhooks/whatsapp").status_code, 404)
+        self.assertEqual(self.client.post("/webhooks/whatsapp", data=b"{}",
+                                          content_type="application/json").status_code, 404)
+
+    @override_settings(WHATSAPP={"MODE": "live", "VERIFY_TOKEN": "v", "TOKEN": "t",
+                                 "APP_SECRET": "shh", "BASE_URL": "x",
+                                 "PHONE_NUMBER_ID": "phone-1",
+                                 "BUSINESS_NUMBER": "2348000000000"})
+    def test_live_webhook_rejects_another_meta_phone_number_id(self):
+        event = {"entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "attacker-phone"}}}]}]}
+        body = json.dumps(event).encode()
+        sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+        response = self.client.post("/webhooks/whatsapp", data=body,
+                                    content_type="application/json",
+                                    HTTP_X_HUB_SIGNATURE_256=f"sha256={sig}")
+        self.assertEqual(response.status_code, 400)
 
 
 class ChannelTests(TestCase):
@@ -112,6 +137,16 @@ class ChannelTests(TestCase):
         self.inbound("2", "m2", msisdn="2349090000001")
         self.assertIn("Link WhatsApp", self.last_reply(msisdn="2349090000001"))
         self.assertFalse(WhatsAppLink.objects.filter(wa_msisdn="2349090000001", status=WhatsAppLink.ACTIVE).exists())
+
+    @override_settings(WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": False,
+                                 "VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "",
+                                 "BASE_URL": "x", "PHONE_NUMBER_ID": "",
+                                 "BUSINESS_NUMBER": ""})
+    def test_production_style_channel_never_collects_a_pin_in_chat(self):
+        m = "2349090000999"
+        self.inbound("1", "secure-o1", msisdn=m)
+        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertFalse(User.objects.filter(phone="09090000999").exists())
 
     # --- onboarding (create an account from WhatsApp) ---
     def test_onboarding_creates_tier0_account_and_links(self):
@@ -178,6 +213,7 @@ class ChannelTests(TestCase):
         res = self.client.post("/api/whatsapp/link/start/",
                                data=json.dumps({"access_token": self.token}), content_type="application/json")
         code = res.json()["code"]
+        self.assertGreaterEqual(len(code), 32)  # at least 128 bits, not a 24-bit brute-force code
         self.inbound(f"LINK {code}", "m1")
         link = WhatsAppLink.objects.get(wa_msisdn=MSISDN)
         self.assertEqual(link.status, WhatsAppLink.ACTIVE)
@@ -312,6 +348,25 @@ class ChannelTests(TestCase):
         self.inbound("1234", "t5")
         self.assertEqual(self.balance(), Decimal("45000"))
         self.assertEqual(Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 1)
+        self.assertIsNotNone(WaMessageLog.objects.get(wa_message_id="t5").processed_at)
+
+    def test_failed_handler_releases_claim_so_meta_retry_is_not_lost(self):
+        self.link()
+        with patch("whatsapp.views.handle_inbound", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.inbound("balance", "retry-1")
+        failed = WaMessageLog.objects.get(wa_message_id="retry-1")
+        self.assertIsNone(failed.processed_at)
+        self.assertIsNone(failed.processing_started_at)
+        self.assertEqual(failed.processing_error, "RuntimeError")
+
+        with patch("whatsapp.views.handle_inbound") as handler:
+            response = self.inbound("balance", "retry-1")
+        self.assertEqual(response.status_code, 200)
+        handler.assert_called_once_with(MSISDN, "balance")
+        retried = WaMessageLog.objects.get(wa_message_id="retry-1")
+        self.assertIsNotNone(retried.processed_at)
+        self.assertEqual(retried.processing_attempts, 2)
 
     def test_wrong_pin_cancels_after_retry(self):
         self.link()
@@ -487,7 +542,9 @@ class AiIntentTests(TestCase):
     def setUp(self):
         self.client = Client()
         self.user, self.token = make_user(balance="50000")
-        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
 
     def inbound(self, text, mid):
@@ -559,6 +616,14 @@ class AiIntentTests(TestCase):
             self.inbound("balance pls", "r1")
         row = WaMessageLog.objects.get(wa_message_id="r1", direction=WaMessageLog.IN)
         self.assertEqual(row.intent_json.get("name"), "check_balance")
+
+    def test_sensitive_identifiers_are_redacted_from_chat_and_intent_logs(self):
+        with self._stub({"name": "buy_airtime", "input": {
+                "amount": 200, "phone": "08099998888", "network": "MTN"}}):
+            self.inbound("load 200 for 08099998888", "pii-1")
+        row = WaMessageLog.objects.get(wa_message_id="pii-1", direction=WaMessageLog.IN)
+        self.assertNotIn("08099998888", row.text)
+        self.assertEqual(row.intent_json["input"]["phone"], "[redacted]")
 
     def test_per_user_ai_off_is_deterministic(self):
         WhatsAppLink.objects.filter(wa_msisdn=MSISDN).update(ai_enabled=False)

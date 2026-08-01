@@ -38,14 +38,17 @@ class BankTierLimitTests(TestCase):
 class BankSpendErrorTests(TestCase):
     def setUp(self):
         self.user, _ = make_user("08031110001", "bt@zitch.app", tier=2)
+        Wallet.objects.filter(user=self.user).update(account_number="0155500099")
 
     def _set_bank_tier(self, tier):
         Wallet.objects.filter(user=self.user).update(bank_tier=tier)
 
-    def test_silent_while_bank_tier_is_unknown(self):
-        # Behaviour is unchanged for every account we have not read back, so this can
-        # only ever tighten, never loosen or surprise.
-        self._set_bank_tier(0)
+    def test_unknown_tier_on_a_provisioned_account_assumes_tier1(self):
+        Wallet.objects.filter(user=self.user).update(bank_tier=0, account_number="0155500099")
+        self.assertIsNotNone(bank_spend_error(self.user, Decimal("30001")))
+
+    def test_unprovisioned_account_has_no_bank_tier_cap(self):
+        Wallet.objects.filter(user=self.user).update(bank_tier=0, account_number="")
         self.assertIsNone(bank_spend_error(self.user, Decimal("999999")))
 
     def test_blocks_above_the_bank_tier1_daily_cap(self):

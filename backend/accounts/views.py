@@ -5,7 +5,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -27,7 +27,7 @@ from utility.providers import (
 from wallet.models import Wallet
 from wallet.services import get_or_create_wallet, wema_account_reference
 
-from .models import OTP, AccessToken, User
+from .models import OTP, AccessToken, User, hash_identifier
 
 # Brand mark hosted on the marketing site (Cloudflare), so email clients can load it.
 _LOGO_URL = "https://zitch.ng/assets/brand/zitch-icon.png"
@@ -212,7 +212,8 @@ def verify_otp(request):
     # point (set-password runs AFTER verify), so an existing user that already has
     # a password is a pre-existing account — refuse rather than issue its session.
     if not created and user.has_usable_password():
-        log.warning("signup_otp_for_existing_account phone=%r ip=%s", phone, client_ip(request))
+        log.warning("signup_otp_for_existing_account phone=%r ip=%s",
+                    mask_pii(phone), client_ip(request))
         return fail("Invalid OTP", status=400)
     # Backfill the name onto a mid-signup account (created on a prior attempt, or
     # before name capture existed) that has no name yet — so re-verifying still
@@ -554,9 +555,52 @@ def _sync_wema_tier3(user, address: dict) -> None:
 
 
 _TIER_NAMES = {0: "Unverified", 1: "Verified", 2: "Enhanced", 3: "Premium"}
+MAX_KYC_IMAGE_BASE64 = 2_800_000  # ~2 MiB decoded; bounds memory/PII exposure
+_IDENTITY_CONFLICT_MESSAGE = (
+    "This identity is already linked to another account. Contact support if this is unexpected."
+)
+
+
+def _identity_owned_by_another_user(user, identity_type: str, raw: str) -> bool:
+    field = "bvn_hash" if identity_type == "bvn" else "nin_hash"
+    return User.objects.exclude(pk=user.pk).filter(
+        **{field: hash_identifier(raw)}
+    ).exists()
+
+
+def _save_verified_identity(user, identity_type: str, raw: str) -> bool:
+    """Atomically claim a verified BVN/NIN for exactly one Zitch user.
+
+    The pre-check gives a clean response in the common case; the database unique
+    constraint and inner savepoint close the concurrent-request race.
+    """
+    if _identity_owned_by_another_user(user, identity_type, raw):
+        return False
+    if identity_type == "bvn":
+        user.set_bvn(raw)
+        user.bvn_verified = True
+        fields = ["bvn_hash", "bvn_last4", "bvn_verified"]
+    else:
+        user.set_nin(raw)
+        user.nin_verified = True
+        fields = ["nin_hash", "nin_last4", "nin_verified"]
+    user.recompute_tier()
+    try:
+        with db_transaction.atomic():
+            user.save(update_fields=fields + ["tier"])
+    except IntegrityError:
+        return False
+    return True
 
 
 def _kyc_state(user) -> dict:
+    wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
+    bank_tier = wallet.bank_tier if wallet else 0
+    bank_limits = {
+        key: (str(value) if value is not None else None)
+        for key in ("single_inflow", "daily_spend", "max_balance")
+        for value in [wema.bank_tier_limit(bank_tier, key)]
+    }
     return {
         "tier": user.tier,
         "tier_name": _TIER_NAMES.get(user.tier, "Unverified"),
@@ -569,7 +613,19 @@ def _kyc_state(user) -> dict:
         "address_verified": user.address_verified,
         "id_document_verified": user.id_document_verified,
         "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
+        # Separate from Zitch's verification/spend ladder: these are enforced by
+        # Wema on the dedicated NUBAN itself.
+        "bank_tier": bank_tier,
+        "bank_tier_limits": bank_limits,
     }
+
+
+def _kyc_image_error(value) -> str | None:
+    if not isinstance(value, str) or not value:
+        return "Upload a clear image"
+    if len(value) > MAX_KYC_IMAGE_BASE64:
+        return "Image is too large. Choose a photo under 2 MB."
+    return None
 
 
 @api
@@ -645,10 +701,14 @@ def simulate_kyc(request):
         return fail("No user with that phone", status=404)
 
     # Set the flags recompute_tier() derives the tier from (see User.recompute_tier):
-    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Dummy BVN/NIN
-    # values just populate the hash/last4 the way a real verification would.
-    user.set_bvn("22222222222")
-    user.set_nin("11111111111")
+    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Deterministic,
+    # namespaced hashes populate audit/support fields without inventing real IDs.
+    # Namespace simulation hashes away from the real 11-digit identity domain, so
+    # a test customer can never collide with a legitimate BVN/NIN by chance.
+    user.bvn_hash = hash_identifier(f"simulation:bvn:{user.id}")
+    user.bvn_last4 = f"{user.id:04d}"[-4:]
+    user.nin_hash = hash_identifier(f"simulation:nin:{user.id}")
+    user.nin_last4 = f"{user.id:04d}"[-4:]
     user.bvn_verified = True
     user.nin_verified = True
     user.face_verified = tier >= 2
@@ -661,7 +721,8 @@ def simulate_kyc(request):
 
     account_number = _simulate_provision_account(user)
     log.warning("simulate_kyc_used phone=%s tier=%s account=%s — SIMULATE_DEPOSIT_TOKEN is "
-                "set (WEMA_SIMULATION on); REMOVE before go-live", phone, user.tier, account_number)
+                "set (WEMA_SIMULATION on); REMOVE before go-live",
+                mask_pii(phone), user.tier, mask_pii(account_number))
     return ok(success=True, account_number=account_number,
               message="Simulated KYC applied", **_kyc_state(user))
 
@@ -683,6 +744,8 @@ def kyc_bvn_start(request):
     """
     user = request.user_obj
     bvn = (request.data.get("bvn") or "").strip()
+    if _identity_owned_by_another_user(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
@@ -726,10 +789,8 @@ def kyc_bvn_confirm(request):
         left = _KYC_BVN_MAX_ATTEMPTS - attempts
         return fail(f"Incorrect code. {left} attempt(s) left.", status=400)
     cache.delete(cache_key)
-    user.set_bvn(pending["bvn"])
-    user.bvn_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
+    if not _save_verified_identity(user, "bvn", pending["bvn"]):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, bvn=pending["bvn"])
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
@@ -741,13 +802,13 @@ def kyc_bvn(request):
     """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
     user = request.user_obj
     bvn = (request.data.get("bvn") or "").strip()
+    if _identity_owned_by_another_user(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
-    user.set_bvn(bvn)
-    user.bvn_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified", "tier"])
+    if not _save_verified_identity(user, "bvn", bvn):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, bvn=bvn)
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
@@ -759,6 +820,8 @@ def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
     user = request.user_obj
     nin = (request.data.get("nin") or "").strip()
+    if _identity_owned_by_another_user(user, "nin", nin):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     # Pass the account name so a NIN that demonstrably belongs to someone else is
     # rejected (mirrors kyc_bvn) — otherwise any valid NIN would lift the tier.
     result = verify_nin(nin, name=user.get_full_name() or "")
@@ -767,13 +830,14 @@ def kyc_nin(request):
     # The redesigned flow also uploads the NIN slip/ID image; verify it when sent.
     image = request.data.get("nin_image") or ""
     if image:
+        image_error = _kyc_image_error(image)
+        if image_error:
+            return fail(image_error)
         doc = kyc_verify_nin_document(image)
         if not doc.get("success"):
             return fail(doc.get("message", "Couldn't verify your NIN document"), status=400)
-    user.set_nin(nin)
-    user.nin_verified = True
-    user.recompute_tier()
-    user.save(update_fields=["nin_hash", "nin_last4", "nin_verified", "tier"])
+    if not _save_verified_identity(user, "nin", nin):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, nin=nin)
     return ok(success=True, message="NIN verified", **_kyc_state(user))
 
@@ -789,6 +853,13 @@ def kyc_face(request):
     """
     user = request.user_obj
     selfie = request.data.get("selfie") or request.data.get("image") or ""
+    # Empty remains valid only insofar as the configured provider accepts it (the
+    # offline test provider does; production providers fail closed). When a client
+    # does send an image, bound it before decoding/forwarding it.
+    if selfie:
+        image_error = _kyc_image_error(selfie)
+        if image_error:
+            return fail(image_error)
     result = kyc_verify_face(selfie)
     if not result.get("success"):
         return fail(result.get("message", "Face verification failed"), status=400)
@@ -814,7 +885,12 @@ def kyc_address(request):
     city = (request.data.get("city") or "").strip()
     state = (request.data.get("state") or "").strip()
     full = ", ".join(p for p in [address, city, state] if p)
-    result = kyc_verify_address(full, document=request.data.get("document") or "")
+    document = request.data.get("document") or ""
+    if document:
+        image_error = _kyc_image_error(document)
+        if image_error:
+            return fail(image_error)
+    result = kyc_verify_address(full, document=document)
     if not result.get("success"):
         return fail(result.get("message", "Couldn't verify your address"), status=400)
     user.set_address(full)
@@ -838,8 +914,9 @@ def kyc_id_document(request):
     user = request.user_obj
     image = request.data.get("image") or request.data.get("document") or ""
     doc_type = (request.data.get("doc_type") or "").strip()[:32]
-    if not image:
-        return fail("Upload a clear photo of your government ID")
+    image_error = _kyc_image_error(image)
+    if image_error:
+        return fail(image_error)
     result = kyc_verify_id_document(image, doc_type=doc_type)
     if not result.get("success"):
         return fail(result.get("message", "Couldn't verify your ID document"), status=400)
@@ -848,4 +925,3 @@ def kyc_id_document(request):
     user.recompute_tier()
     user.save(update_fields=["id_document_type", "id_document_verified", "tier"])
     return ok(success=True, message="ID document verified", **_kyc_state(user))
-

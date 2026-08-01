@@ -17,6 +17,11 @@ _VTU_OK = {"config": {"live": True, "api_key_set": True},
            "auth": {"ok": True}, "balance": {"ok": True, "balance": "15000.00"}}
 _VTU_EMPTY = {"config": {"live": True, "api_key_set": True}, "auth": {"ok": True},
               "balance": {"ok": True, "balance": "0.00", "hint": "empty"}}
+_SAFE_CALLBACKS = {
+    "CALLBACK_TOKEN": "x" * 40, "CALLBACK_TOKEN_PREV": "",
+    "CALLBACK_ENFORCE_IPS": True, "CALLBACK_IPS": ["135.236.18.76"],
+    "AUTH_REQUIRE_SECURITY_INFO": True,
+}
 
 _PROBE = "utility.management.commands.wema_preflight.vtu_probe"
 _DIAG = "utility.wema.wema_diagnostics"
@@ -33,7 +38,8 @@ def _run(*args):
 
 
 @override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
-                   SENDCHAMP={"API_KEY": "sc_x"}, CARD_ISSUER={"API_KEY": "ci_x"})
+                   SENDCHAMP={"API_KEY": "sc_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
 class PreflightGoTests(TestCase):
     def test_all_pass_is_go(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
@@ -55,27 +61,21 @@ class PreflightGoTests(TestCase):
         self.assertEqual(code, 1)
 
 
+@override_settings(WEMA=_SAFE_CALLBACKS)
 class PreflightGateTests(TestCase):
-    def test_missing_security_info_warns_but_does_not_block(self):
-        # This test used to assert the opposite, on the reading that securityInfo was a
-        # signing scheme Wema had yet to issue. Wema corrected that on 2026-07-27: it is
-        # "a private key best known to you", which the bank only echoes back to our
-        # authentication callback. Blocking a launch on it would have held the platform
-        # for a value nobody was ever going to send us.
+    def test_missing_security_info_blocks_go_live(self):
         diag = dict(_LIVE_DIAG, security_info_set=False)
         with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()
-        self.assertIn("GO for money rails", out)
-        self.assertIn("securityInfo", out)        # still surfaced, as a WARN
-        self.assertEqual(code, 0)
+        self.assertIn("NOT READY", out)
+        self.assertIn("securityInfo", out)
+        self.assertEqual(code, 1)
 
-    def test_missing_security_info_still_fails_under_strict(self):
-        # Soft, not silent: --strict is the setting for an operator who wants every
-        # recommendation satisfied, and this remains one.
-        diag = dict(_LIVE_DIAG, security_info_set=False)
-        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
-            out, code = _run("--strict")
-        self.assertIn("NOT READY (strict)", out)
+    @override_settings(WEMA={**_SAFE_CALLBACKS, "CALLBACK_ENFORCE_IPS": False})
+    def test_callback_ip_allowlist_is_a_hard_gate(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("Callback source IP allowlist", out)
         self.assertEqual(code, 1)
 
     def test_sandbox_host_blocks(self):

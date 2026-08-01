@@ -19,13 +19,20 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import api, fail, ok, require_user
+from common.ratelimit import ratelimit
 
 from .models import Broadcast, BroadcastRecipient, ConversationState, WaMessageLog, WhatsAppLink
 from .ops import record_audit, send_broadcast
-from .providers import verify_signature
+from .providers import verify_signature, wa_enabled, wa_live
 from .router import handle_inbound, is_awaiting_bvn, is_awaiting_pin, reply
 
 LINK_CODE_TTL = timedelta(minutes=10)
+INBOUND_PROCESSING_LEASE = timedelta(minutes=5)
+WHATSAPP_WEBHOOK_BODY_MAX = 1024 * 1024
+
+
+class InboundMessageProcessing(Exception):
+    """The same Meta message is already being handled by another request."""
 
 
 @csrf_exempt
@@ -33,6 +40,8 @@ def webhook(request):
     """GET /webhooks/whatsapp  — verify handshake.
     POST /webhooks/whatsapp — inbound messages + status callbacks.
     """
+    if not wa_enabled():
+        return HttpResponse(status=404)
     if request.method == "GET":
         p = request.GET
         if p.get("hub.mode") == "subscribe" and p.get("hub.verify_token") == settings.WHATSAPP.get("VERIFY_TOKEN"):
@@ -47,17 +56,32 @@ def webhook(request):
     from .models import WebhookEvent
     from .ops import record_webhook
 
-    if not verify_signature(request.body, request.headers.get("X-Hub-Signature-256", "")):
+    try:
+        declared_size = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        declared_size = 0
+    if declared_size > WHATSAPP_WEBHOOK_BODY_MAX:
+        return JsonResponse({"success": False, "message": "Payload too large"}, status=413)
+    raw_body = request.body or b"{}"
+    if len(raw_body) > WHATSAPP_WEBHOOK_BODY_MAX:
+        return JsonResponse({"success": False, "message": "Payload too large"}, status=413)
+
+    if not verify_signature(raw_body, request.headers.get("X-Hub-Signature-256", "")):
         # Body deliberately not recorded: an unauthenticated caller must not be able
         # to write chosen content into a table operators read.
         record_webhook("whatsapp", outcome=WebhookEvent.REJECTED_SIGNATURE,
                        http_status=401, remote_ip=client_ip(request))
         return JsonResponse({"success": False, "message": "Invalid signature"}, status=401)
     try:
-        event = json.loads(request.body or b"{}")
+        event = json.loads(raw_body)
     except (ValueError, TypeError):
         record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
                        http_status=400, remote_ip=client_ip(request))
+        return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
+    if not isinstance(event, dict) or not _live_metadata_valid(event):
+        record_webhook("whatsapp", outcome=WebhookEvent.BAD_BODY, verified=True,
+                       http_status=400, remote_ip=client_ip(request),
+                       action="invalid_phone_number_id")
         return JsonResponse({"success": False, "message": "Invalid payload"}, status=400)
 
     # Ack fast; process inline (no queue yet — handlers are quick).
@@ -93,6 +117,8 @@ def flow_endpoint(request):
     same AES key and the inverted IV. On a decryption failure we return 421, Meta's
     signal to refetch our public key.
     """
+    if not wa_enabled():
+        return HttpResponse(status=404)
     if request.method != "POST":
         return HttpResponse(status=405)
 
@@ -129,16 +155,46 @@ def flow_endpoint(request):
 
 def _iter_messages(event: dict):
     for entry in event.get("entry", []) or []:
+        if not isinstance(entry, dict):
+            continue
         for change in entry.get("changes", []) or []:
-            for msg in (change.get("value", {}) or {}).get("messages", []) or []:
-                yield msg
+            value = change.get("value", {}) if isinstance(change, dict) else {}
+            if not isinstance(value, dict):
+                continue
+            for msg in value.get("messages", []) or []:
+                if isinstance(msg, dict):
+                    yield msg
+
+
+def _live_metadata_valid(event: dict) -> bool:
+    """In live mode, accept events only for our configured Meta phone-number id."""
+    if not wa_live():
+        return True
+    expected = str(settings.WHATSAPP.get("PHONE_NUMBER_ID") or "")
+    seen = False
+    for entry in event.get("entry", []) or []:
+        if not isinstance(entry, dict):
+            return False
+        for change in entry.get("changes", []) or []:
+            value = change.get("value", {}) if isinstance(change, dict) else {}
+            metadata = value.get("metadata", {}) if isinstance(value, dict) else {}
+            seen = True
+            if str(metadata.get("phone_number_id") or "") != expected:
+                return False
+    return seen
 
 
 def _iter_statuses(event: dict):
     for entry in event.get("entry", []) or []:
+        if not isinstance(entry, dict):
+            continue
         for change in entry.get("changes", []) or []:
-            for st in (change.get("value", {}) or {}).get("statuses", []) or []:
-                yield st
+            value = change.get("value", {}) if isinstance(change, dict) else {}
+            if not isinstance(value, dict):
+                continue
+            for st in value.get("statuses", []) or []:
+                if isinstance(st, dict):
+                    yield st
 
 
 def _apply_status(st: dict) -> None:
@@ -149,19 +205,38 @@ def _apply_status(st: dict) -> None:
     rec = BroadcastRecipient.objects.filter(wa_message_id=mid).first()
     if rec is None:
         return
+    rank = {"queued": 0, "sent": 1, "delivered": 2, "read": 3}
+    current_rank = rank.get(rec.status, 0)
+    if status == "failed":
+        # A late/out-of-order failure cannot undo confirmed delivery/read.
+        if current_rank >= rank["delivered"]:
+            return
+    elif rank.get(status, 0) <= current_rank:
+        return
     rec.status = status
     rec.error = (st.get("errors") or [{}])[0].get("code", "") if status == "failed" else rec.error
     rec.save(update_fields=["status", "error"])
     b = rec.broadcast
     b.count_delivered = b.recipients.filter(status="delivered").count()
     b.count_read = b.recipients.filter(status="read").count()
-    b.save(update_fields=["count_delivered", "count_read"])
+    b.count_failed = b.recipients.filter(status="failed").count()
+    b.save(update_fields=["count_delivered", "count_read", "count_failed"])
 
 
 # A bare 4-6 digit message is almost certainly a transaction PIN — redact it
 # from the log regardless of flow state (an out-of-band or mistimed PIN would
 # otherwise be persisted in clear and shown in the agent monitor).
 _PIN_RE = re.compile(r"^\s*\d{4,6}\s*$")
+_LOG_IDENTIFIER_RE = re.compile(r"(?<!\d)\d{7,}(?!\d)")
+_LOG_EMAIL_RE = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+
+
+def _redact_chat_log(text: str) -> str:
+    """Minimise long-lived support-log PII while preserving conversation shape."""
+    safe = _LOG_EMAIL_RE.sub("[email redacted]", str(text or ""))
+    return _LOG_IDENTIFIER_RE.sub(
+        lambda m: f"[identifier …{m.group(0)[-4:]}]", safe,
+    )
 
 
 def _inbound_throttled(msisdn: str) -> bool:
@@ -182,6 +257,41 @@ def _inbound_throttled(msisdn: str) -> bool:
         return False
 
 
+def _claim_inbound(mid: str, frm: str, logged: str):
+    """Claim a Meta message id, returning its log row or a terminal disposition.
+
+    ``done`` means a prior attempt completed. ``busy`` means another request holds
+    a fresh lease; returning an error makes Meta retry rather than acknowledging a
+    message whose first handler may still crash. A stale/failed claim is reclaimed.
+    """
+    now = timezone.now()
+    with db_transaction.atomic():
+        row = WaMessageLog.objects.select_for_update().filter(
+            wa_message_id=mid, direction=WaMessageLog.IN,
+        ).first()
+        if row is None:
+            # Contain a concurrent unique-index race in a savepoint so the outer
+            # transaction remains usable for the read/reclaim path.
+            try:
+                with db_transaction.atomic():
+                    row = WaMessageLog.objects.create(
+                        msisdn=frm, direction=WaMessageLog.IN, wa_message_id=mid,
+                        text=logged, processing_started_at=now, processing_attempts=1,
+                    )
+                return row, "claimed"
+            except IntegrityError:
+                row = WaMessageLog.objects.select_for_update().get(wa_message_id=mid)
+        if row.processed_at is not None:
+            return row, "done"
+        if (row.processing_started_at is not None
+                and row.processing_started_at > now - INBOUND_PROCESSING_LEASE):
+            return row, "busy"
+        row.processing_started_at = now
+        row.processing_attempts += 1
+        row.processing_error = ""
+        row.save(update_fields=["processing_started_at", "processing_attempts",
+                                "processing_error"])
+        return row, "claimed"
 def _process(msg: dict) -> None:
     mid = msg.get("id", "")
     frm = msg.get("from", "")
@@ -220,37 +330,49 @@ def _process(msg: dict) -> None:
     elif is_awaiting_bvn(frm):
         logged = "[BVN]"  # keep the BVN out of the message log, like the PIN
     else:
-        logged = body or f"[{msg.get('type', 'non-text')}]"
+        logged = _redact_chat_log(body) if body else f"[{msg.get('type', 'non-text')}]"
 
-    # Dedupe on Meta's message id: the unique row is the gate against a
-    # re-delivered webhook (Meta retries until it gets a 200).
+    row, disposition = _claim_inbound(mid, frm, logged)
+    if disposition == "done":
+        return
+    if disposition == "busy":
+        raise InboundMessageProcessing(mid)
+
     try:
-        with db_transaction.atomic():
-            WaMessageLog.objects.create(
-                msisdn=frm, direction=WaMessageLog.IN, wa_message_id=mid, text=logged,
-            )
-    except IntegrityError:
-        return  # already processed this message
-
-    if is_flow_reply:
-        return  # the data-exchange endpoint already handled it
-    if not is_text:
-        return reply(frm, "I can only read text messages for now. Reply \"menu\" for options.")
-    handle_inbound(frm, body)
+        if is_flow_reply:
+            pass  # the data-exchange endpoint already handled it
+        elif not is_text:
+            reply(frm, "I can only read text messages for now. Reply \"menu\" for options.")
+        else:
+            handle_inbound(frm, body)
+    except Exception as exc:
+        # Keep the redacted forensic row but release the claim. Meta receives a 5xx
+        # and can retry the same id; it will be reclaimed instead of deduped away.
+        WaMessageLog.objects.filter(pk=row.pk, processed_at__isnull=True).update(
+            processing_started_at=None,
+            processing_error=type(exc).__name__[:64],
+        )
+        raise
+    WaMessageLog.objects.filter(pk=row.pk).update(
+        processed_at=timezone.now(), processing_started_at=None, processing_error="",
+    )
 
 
 # --------------------------------------------------------------------------- #
 # linking (app side)
 # --------------------------------------------------------------------------- #
 @api
+@ratelimit("whatsapp_link_start", limit=5, window=300)
 @require_user
 def link_start(request):
     """POST /api/whatsapp/link/start/ {access_token}
     -> {success, code, wa_link, expires_in} — a code to send from WhatsApp.
     """
+    if not wa_enabled():
+        return fail("WhatsApp banking is currently unavailable", status=503)
     user = request.user_obj
     WhatsAppLink.objects.filter(user=user, status=WhatsAppLink.PENDING).delete()
-    code = secrets.token_hex(3).upper()  # 6 hex chars, easy to type
+    code = secrets.token_hex(16).upper()  # 128-bit, normally opened via prefilled wa.me link
     WhatsAppLink.objects.create(
         user=user, status=WhatsAppLink.PENDING, link_code=code,
         expires_at=timezone.now() + LINK_CODE_TTL,
@@ -261,9 +383,12 @@ def link_start(request):
 
 
 @api
+@ratelimit("whatsapp_link_status", limit=30, window=300)
 @require_user
 def link_status(request):
     """POST /api/whatsapp/link/status/ {access_token} -> {success, linked, masked_number?}"""
+    if not wa_enabled():
+        return fail("WhatsApp banking is currently unavailable", status=503)
     link = request.user_obj.whatsapp_links.filter(status=WhatsAppLink.ACTIVE).first()
     if link is None:
         return ok(success=True, linked=False)
@@ -333,9 +458,11 @@ def ops_reply(request):
     text = (request.data.get("text") or "").strip()
     if not msisdn or not text:
         return fail("msisdn and text required")
-    reply(msisdn, text)
+    result = reply(msisdn, text)
+    if not result.get("success"):
+        return fail(result.get("message", "WhatsApp delivery failed"), status=502)
     record_audit("conversation.agent_reply", actor=request.user_obj, target=f"wa:{msisdn}")
-    return ok(success=True)
+    return ok(success=True, message_id=result.get("message_id", ""))
 
 
 @api

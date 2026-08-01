@@ -13,9 +13,14 @@ import AuthGuard from '@/components/AuthGuard';
 
 type Status = {
   tier: number; tier_name?: string; transaction_limit: string;
+  daily_transfer_limit?: string; daily_bill_limit?: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
   address_verified?: boolean; id_document_verified?: boolean;
+  bank_tier?: number;
+  bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
 };
+
+const MAX_IMAGE_BASE64 = 2_800_000;
 
 const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: string; sub: string; done: boolean; children?: React.ReactNode }) => {
   const { c } = useTheme();
@@ -98,9 +103,13 @@ const Kyc = () => {
     beginExternalActivity(); // don't let the app-lock fire while the picker is up
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.25, allowsEditing: true,
       });
       if (res.canceled || !res.assets?.[0]?.base64) return;
+      if (res.assets[0].base64.length > MAX_IMAGE_BASE64) {
+        notify('Image too large', 'Choose or crop a photo under 2 MB.');
+        return;
+      }
       set(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
@@ -115,27 +124,59 @@ const Kyc = () => {
     let shot;
     try {
       shot = await ImagePicker.launchCameraAsync({
-        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
+        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.25, allowsEditing: false,
       });
     } finally { endExternalActivity(); }
     if (shot.canceled || !shot.assets?.[0]?.base64) return;
+    if (shot.assets[0].base64.length > MAX_IMAGE_BASE64) {
+      notify('Image too large', 'Retake the photo at a lower device resolution.');
+      return;
+    }
     submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Selfie');
   };
 
   return (
     <Screen>
-      <Header title="Account Limits & KYC" sub="Verify your identity to raise limits" onBack={() => router.back()} />
+      <Header title="Account Limits & KYC" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
 
       {status && (
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginBottom: 4 }}>
           <View>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Zitch verification level</Text>
             <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}{status.tier_name ? ` · ${status.tier_name}` : ''}</Text>
           </View>
           <View style={{ alignItems: 'flex-end' }}>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
             <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{money(Number(status.transaction_limit))}</Text>
           </View>
+        </View>
+      )}
+
+      {status && (
+        <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 16, padding: 16, marginTop: 10, marginBottom: 2 }}>
+          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 14.5 }}>
+            Partner bank account tier {status.bank_tier ? status.bank_tier : 'not yet synced'}
+          </Text>
+          {status.bank_tier === 1 && (
+            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
+              Single inflow ₦50,000 · daily spend ₦30,000 · maximum balance ₦300,000.
+            </Text>
+          )}
+          {status.bank_tier === 2 && (
+            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
+              Single inflow ₦100,000 · daily spend ₦100,000 · maximum balance ₦500,000.
+            </Text>
+          )}
+          {status.bank_tier === 3 && (
+            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
+              No bank tier inflow, daily-spend or balance cap.
+            </Text>
+          )}
+          {!status.bank_tier && (
+            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
+              Set up your funding account to read its bank tier. Until it syncs, assume Tier 1 limits.
+            </Text>
+          )}
         </View>
       )}
 
@@ -189,7 +230,7 @@ const Kyc = () => {
       </KycRow>
 
       <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
-        Tier 0: ₦20,000 · Tier 1 (BVN + NIN): ₦50,000 · Tier 2 (+ selfie + address): ₦200,000 · Tier 3 (+ government ID): ₦5,000,000 per transaction. Your BVN, NIN and ID images are never stored in full.
+        Zitch app limits: Unverified ₦20,000 · Verified (BVN + NIN) ₦50,000 · Enhanced (+ selfie + address) ₦200,000 · Premium (+ government ID) ₦5,000,000 per transaction. These are additional to the partner bank limits above. Raw BVN, NIN and ID images are not retained by Zitch.
       </NText>
     </Screen>
   );

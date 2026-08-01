@@ -286,18 +286,19 @@ WEMA = {
     # secret lives in the URL path the bank profiles; _PREV keeps a rotation overlap.
     "CALLBACK_TOKEN": os.environ.get("WEMA_CALLBACK_TOKEN", ""),
     "CALLBACK_TOKEN_PREV": os.environ.get("WEMA_CALLBACK_TOKEN_PREV", ""),
-    # Source-IP allowlist of the bank's gateway egress addresses. Enforcement is
-    # opt-in so the first profiling round can't be mistaken for "the bank never
-    # called"; turn it on once a real callback confirms the observed source IP.
-    "CALLBACK_ENFORCE_IPS": env_bool("WEMA_CALLBACK_ENFORCE_IPS", False),
+    # Source-IP allowlist of the bank's gateway egress addresses. Production is
+    # fail-closed by default; use the profiling environment to validate the trusted
+    # proxy hop and observed Wema source before enabling live money.
+    "CALLBACK_ENFORCE_IPS": env_bool(
+        "WEMA_CALLBACK_ENFORCE_IPS", not DEBUG and not TESTING),
     "CALLBACK_IPS": [ip for ip in os.environ.get(
         "WEMA_CALLBACK_IPS", "135.236.18.76,74.178.162.156").split(",") if ip.strip()],
     # Payout authorisation: only authorise a PENDING bank payout younger than this
-    # (seconds). Requiring a securityInfo match is off by default because
-    # WEMA_SECURITY_INFO is blank everywhere — enabling it with no value denies every
-    # payout. Turn on once Wema supplies the value.
+    # (seconds). In production a missing/mismatched value denies the payout: Wema
+    # confirmed this is a private value chosen by Zitch and echoed to the callback.
     "AUTH_MAX_AGE": int(os.environ.get("WEMA_AUTH_MAX_AGE", "900") or 900),
-    "AUTH_REQUIRE_SECURITY_INFO": env_bool("WEMA_AUTH_REQUIRE_SECURITY_INFO", False),
+    "AUTH_REQUIRE_SECURITY_INFO": env_bool(
+        "WEMA_AUTH_REQUIRE_SECURITY_INFO", not DEBUG and not TESTING),
     # VAS status legends. ALAT's PartnerPayment status checks answer with a bare
     # INTEGER `transactionStatus` — 1..11 for airtime/data, 1..9 for bills — and do
     # not publish what the numbers mean. Without the legend a timed-out VAS purchase
@@ -436,16 +437,19 @@ CARD_ISSUER = {
     "BRAND": os.environ.get("CARD_ISSUER_BRAND", "Verve"),
 }
 
-# WhatsApp Cloud API (Meta). Blank TOKEN => MOCK mode: outbound is logged and
-# inbound signatures are accepted, so the channel is fully testable without a
-# Meta app (same pattern as the other providers).
+# WhatsApp Cloud API (Meta). Runtime mode is explicit: disabled | sandbox | live.
+# Production defaults to disabled when credentials are absent; local/test defaults
+# to sandbox. This prevents an intentionally unconfigured production channel from
+# becoming an unsigned public webhook.
 WHATSAPP = {
+    "MODE": os.environ.get("WHATSAPP_MODE", "").strip().lower(),
     "BASE_URL": os.environ.get("WHATSAPP_BASE_URL", "https://graph.facebook.com/v21.0"),
     "TOKEN": os.environ.get("WHATSAPP_TOKEN", ""),
     "PHONE_NUMBER_ID": os.environ.get("WHATSAPP_PHONE_NUMBER_ID", ""),
     "VERIFY_TOKEN": os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
     "APP_SECRET": os.environ.get("WHATSAPP_APP_SECRET", ""),
     "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
+    "ALLOW_CHAT_SIGNUP": False,  # resolved after _PROD is known below
 }
 
 # WhatsApp Flows — the secure PIN pad. When a published Flow ID + our RSA private
@@ -514,18 +518,41 @@ if _PROD and SECRET_KEY == "dev-insecure-change-me":
 
     raise ImproperlyConfigured("DJANGO_SECRET_KEY must be set to a strong value when DJANGO_DEBUG is off.")
 
-# Fail fast: the public WhatsApp webhook verifies Meta's HMAC signature only when
-# APP_SECRET is set. In mock/dev (no secret) unsigned callbacks are accepted for
-# testability — that must NEVER happen in production, where a forged callback can
-# impersonate any linked user's number. Require the secret (and verify token)
-# whenever the channel is live or DEBUG is off.
-if _PROD and (WHATSAPP["TOKEN"] or WHATSAPP["PHONE_NUMBER_ID"]):
+# Resolve and validate the WhatsApp runtime state now that production is known.
+_wa_mode = WHATSAPP["MODE"]
+if not _wa_mode:
+    if WHATSAPP["TOKEN"] and WHATSAPP["PHONE_NUMBER_ID"]:
+        _wa_mode = "live"
+    else:
+        _wa_mode = "disabled" if _PROD else "sandbox"
+if _wa_mode not in {"disabled", "sandbox", "live"}:
     from django.core.exceptions import ImproperlyConfigured
 
-    if not WHATSAPP["APP_SECRET"]:
-        raise ImproperlyConfigured("WHATSAPP_APP_SECRET must be set when the WhatsApp channel is live (signature verification).")
-    if not WHATSAPP["VERIFY_TOKEN"]:
-        raise ImproperlyConfigured("WHATSAPP_VERIFY_TOKEN must be set when the WhatsApp channel is live (webhook handshake).")
+    raise ImproperlyConfigured("WHATSAPP_MODE must be disabled, sandbox, or live.")
+if _PROD and _wa_mode == "sandbox":
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured("WHATSAPP_MODE=sandbox is forbidden in production.")
+WHATSAPP["MODE"] = _wa_mode
+WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool(
+    "WHATSAPP_ALLOW_CHAT_SIGNUP", not _PROD and _wa_mode == "sandbox"
+)
+
+if _wa_mode == "live":
+    from django.core.exceptions import ImproperlyConfigured
+
+    required = {
+        "WHATSAPP_TOKEN": WHATSAPP["TOKEN"],
+        "WHATSAPP_PHONE_NUMBER_ID": WHATSAPP["PHONE_NUMBER_ID"],
+        "WHATSAPP_APP_SECRET": WHATSAPP["APP_SECRET"],
+        "WHATSAPP_VERIFY_TOKEN": WHATSAPP["VERIFY_TOKEN"],
+        "WHATSAPP_BUSINESS_NUMBER": WHATSAPP["BUSINESS_NUMBER"],
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise ImproperlyConfigured(
+            "Live WhatsApp configuration is incomplete: " + ", ".join(missing)
+        )
 
 # --- Cache ------------------------------------------------------------------
 # Rate limits, the idempotency-fallback bucket, and the WhatsApp throttle all sit
@@ -585,7 +612,10 @@ LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
-        "standard": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
+        "standard": {
+            "()": "common.logging.RedactingFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
     },
     "handlers": {
         "console": {"class": "logging.StreamHandler", "formatter": "standard"},
@@ -630,4 +660,3 @@ if SENTRY_DSN and not TESTING:
         )
     except Exception:  # noqa: BLE001 — observability must never break boot
         pass
-

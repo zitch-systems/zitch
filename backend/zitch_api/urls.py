@@ -1,9 +1,12 @@
 import ipaddress
+import json
 
 from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
 from django.urls import include, path
+from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from portal.pages import admin_portal, landing, prototype
@@ -81,25 +84,21 @@ def robots_txt(_request):
     return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
 
 
-# GET only — HEAD is REFUSED, and that matters here rather than being pedantry.
-# Django runs a function view for HEAD exactly as for GET, and this endpoint has real
-# side effects: it starts account creation, sends an OTP, and validates one. An OTP is
-# single-use, so an automatic HEAD consumes it and the operator sees a failure for a
-# step that already succeeded. Observed in production 2026-07-28 — Chrome issued HEAD
-# for a pasted diagnose URL and ran the live OTP validation against the bank. Link
-# unfurlers (Slack) do the same to any URL shared in a ticket or chat.
-@require_http_methods(["GET"])
+# POST only: this endpoint can send/consume an OTP. Credentials and identity data must
+# never appear in URLs, browser history, proxy access logs, or Slack link unfurls.
+@csrf_exempt
+@never_cache
+@require_http_methods(["POST"])
 def wema_diagnose(request):
-    """GET /wema-diagnose?token=<WEMA_DIAG_TOKEN|DIAG_TOKEN>[&account=&bank=&phone=&bvn=&nin=]
+    """POST /wema-diagnose with Authorization: Bearer <diagnostic token>.
 
     Browser-accessible Wema/ALAT connectivity self-test for hosts without shell
     access (e.g. Render). Runs the real calls a deploy needs against the configured
     (test or live) keys and shows exactly what auth/connectivity error the gateway
     returns — turning "nothing works" into a precise fix. Returns NO secrets.
 
-    Opt-in + protected: 404 unless WEMA_DIAG_TOKEN or DIAG_TOKEN is set, and it must
-    be supplied as ?token= (constant-time compared). Optional account+bank probe name
-    enquiry; optional phone+bvn/nin probe wallet creation (sends a real OTP).
+    Optional JSON fields drive name enquiry or wallet creation. Responses are marked
+    no-store and contain no configured secrets.
     """
     import hmac
     import os
@@ -121,7 +120,9 @@ def wema_diagnose(request):
                        "environment to enable this."},
             status=404,
         )
-    supplied = request.GET.get("token", "").strip()
+    authorization = request.headers.get("Authorization", "")
+    supplied = (authorization[7:] if authorization.lower().startswith("bearer ")
+                else "").strip()
     if not any(hmac.compare_digest(supplied, t) for t in diag_tokens):
         # Length-only hint (no token content) — pinpoints paste truncation/typos.
         return JsonResponse(
@@ -131,22 +132,39 @@ def wema_diagnose(request):
                      f"They must match exactly."},
             status=403,
         )
+    if int(request.META.get("CONTENT_LENGTH") or 0) > 64 * 1024:
+        return JsonResponse({"detail": "request too large"}, status=413)
+    raw_body = request.body
+    if len(raw_body) > 64 * 1024:
+        return JsonResponse({"detail": "request too large"}, status=413)
+    try:
+        payload = json.loads(raw_body or b"{}")
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"detail": "invalid JSON"}, status=400)
+    if not isinstance(payload, dict):
+        return JsonResponse({"detail": "invalid JSON"}, status=400)
     from utility.wema import wema_probe
 
-    account = "".join(c for c in request.GET.get("account", "") if c.isdigit())[:10]
-    bank = "".join(c for c in request.GET.get("bank", "") if c.isalnum())[:6]
-    phone = "".join(c for c in request.GET.get("phone", "") if c.isdigit())[:14]
-    bvn = "".join(c for c in request.GET.get("bvn", "") if c.isdigit())[:11]
-    nin = "".join(c for c in request.GET.get("nin", "") if c.isdigit())[:11]
-    otp = "".join(c for c in request.GET.get("otp", "") if c.isdigit())[:8]
-    tracking_id = request.GET.get("tracking_id", "").strip()[:80]
-    return JsonResponse({"wema": wema_probe(account, bank, phone, bvn=bvn, nin=nin,
-                                            otp=otp, tracking_id=tracking_id)})
+    account = "".join(c for c in str(payload.get("account") or "") if c.isdigit())[:10]
+    bank = "".join(c for c in str(payload.get("bank") or "") if c.isalnum())[:6]
+    phone = "".join(c for c in str(payload.get("phone") or "") if c.isdigit())[:14]
+    bvn = "".join(c for c in str(payload.get("bvn") or "") if c.isdigit())[:11]
+    nin = "".join(c for c in str(payload.get("nin") or "") if c.isdigit())[:11]
+    otp = "".join(c for c in str(payload.get("otp") or "") if c.isdigit())[:8]
+    tracking_id = str(payload.get("tracking_id") or "").strip()[:80]
+    response = JsonResponse({"wema": wema_probe(
+        account, bank, phone, bvn=bvn, nin=nin, otp=otp, tracking_id=tracking_id)})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 def _diag_denied(request, *env_names):
-    """Shared gate for the browser diagnose endpoints: authorized when ?token=
-    matches ANY of the given env vars (whitespace-stripped, constant-time).
+    """Shared gate for diagnostics using a bearer token.
+
+    Query-string credentials leak through browser history, proxy access logs and
+    link unfurls, so the legacy ``?token=`` transport is intentionally rejected.
+    Authorization succeeds when the bearer value matches any configured token
+    (whitespace-stripped, constant-time).
     Returns None when authorized, else the error response."""
     import hmac
     import os
@@ -157,14 +175,18 @@ def _diag_denied(request, *env_names):
         return JsonResponse(
             {"detail": f"Set {env_names[0]} (any secret value) in the environment to enable this."},
             status=404)
-    supplied = request.GET.get("token", "").strip()
+    authorization = request.headers.get("Authorization", "")
+    supplied = (authorization[7:] if authorization.lower().startswith("bearer ")
+                else "").strip()
     if not any(hmac.compare_digest(supplied, t) for t in tokens):
         return JsonResponse({"detail": "forbidden"}, status=403)
     return None
 
 
+@never_cache
+@require_http_methods(["GET"])
 def vtu_diagnose(request):
-    """GET /vtu-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
+    """GET /vtu-diagnose with an Authorization bearer token.
 
     Browser self-test for the VTU.ng rail: proves the credentials authenticate
     and shows the VTU.ng wallet balance (purchases fail on an empty provider
@@ -175,18 +197,22 @@ def vtu_diagnose(request):
         return denied
     from utility.vtung import vtu_probe
 
-    return JsonResponse({"vtu": vtu_probe()})
+    response = JsonResponse({"vtu": vtu_probe()})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
-# GET only, for the same reason as wema_diagnose: with &phone= this sends a REAL SMS,
-# so an automatic HEAD from a prefetch or a link unfurl would spend real credit and
-# text a real person.
-@require_http_methods(["GET"])
+# POST only: this can spend provider credit and text a real person. Keeping both the
+# bearer credential and phone number out of the URL prevents proxy/history leakage,
+# while refusing GET/HEAD prevents prefetchers and link unfurls from triggering it.
+@csrf_exempt
+@never_cache
+@require_http_methods(["POST"])
 def sms_diagnose(request):
-    """GET /sms-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>[&phone=<number>]
+    """POST /sms-diagnose with bearer auth and optional JSON ``phone``.
 
-    Browser self-test for the Sendchamp SMS rail: proves the key authenticates and
-    (with &phone=) sends ONE real OTP-style SMS, surfacing Sendchamp's response so a
+    Remote self-test for the Sendchamp SMS rail: proves the key authenticates and
+    (with a JSON phone) sends ONE real OTP-style SMS, surfacing Sendchamp's response so a
     non-delivery is diagnosable. Signup hides SMS failures (anti-enumeration), so
     this is the way to confirm the OTP actually drops. Returns NO secrets.
     """
@@ -195,14 +221,29 @@ def sms_diagnose(request):
         return denied
     from utility.providers import sms_probe
 
-    phone = "".join(c for c in request.GET.get("phone", "") if c.isdigit())[:15]
-    return JsonResponse({"sms": sms_probe(phone)})
+    if int(request.META.get("CONTENT_LENGTH") or 0) > 16 * 1024:
+        return JsonResponse({"detail": "request too large"}, status=413)
+    raw_body = request.body
+    if len(raw_body) > 16 * 1024:
+        return JsonResponse({"detail": "request too large"}, status=413)
+    try:
+        payload = json.loads(raw_body or b"{}")
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return JsonResponse({"detail": "invalid JSON"}, status=400)
+    if not isinstance(payload, dict):
+        return JsonResponse({"detail": "invalid JSON"}, status=400)
+    phone = "".join(c for c in str(payload.get("phone") or "") if c.isdigit())[:15]
+    response = JsonResponse({"sms": sms_probe(phone)})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
+@never_cache
+@require_http_methods(["GET"])
 def wema_callbacks_diagnose(request):
-    """GET /wema-callbacks-diagnose?token=<DIAG_TOKEN|WEMA_DIAG_TOKEN>
+    """GET /wema-callbacks-diagnose with an Authorization bearer token.
 
-    Browser self-test for the four bank-called callbacks, for hosts with no shell
+    Remote self-test for the four bank-called callbacks, for hosts with no shell
     access (e.g. Render). ALAT will not enable the rails until it has PROFILED
     these exact URLs, so this prints the strings to hand the bank and proves, in
     process, that each one resolves to its handler and that the endpoint actually
@@ -212,9 +253,9 @@ def wema_callbacks_diagnose(request):
     would have to escape and re-enter the platform's own routing, so a failure
     would say more about the network than about the configuration.
 
-    The output DOES embed the callback secret, because that secret is the URL —
-    handing the bank the URL is what it's for. That is why it sits behind the
-    diagnose token.
+    URL templates deliberately do not embed the callback secret. Operators combine
+    the template with the value held in the secret manager when profiling the bank;
+    diagnostic responses must remain safe even if captured by an access log.
     """
     denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
     if denied:
@@ -236,13 +277,14 @@ def wema_callbacks_diagnose(request):
                            ("Authentication Callback URL", "authorize"),
                            ("Transaction Callback URL", "transaction"),
                            ("Transaction Notification URL (production only)", "notification")):
-        fragment = f"/webhooks/wema/{segment}/{token or 'SET-WEMA_CALLBACK_TOKEN'}"
+        probe_fragment = f"/webhooks/wema/{segment}/{token or 'SET-WEMA_CALLBACK_TOKEN'}"
+        public_fragment = f"/webhooks/wema/{segment}/<WEMA_CALLBACK_TOKEN>"
         try:
-            handler = resolve(fragment).func.__name__
+            handler = resolve(probe_fragment).func.__name__
         except Resolver404:
             handler = ""
             blockers.append(f"{segment}: route does not resolve — is this deploy current?")
-        routes.append({"give_the_bank_as": label, "url": base + fragment,
+        routes.append({"give_the_bank_as": label, "url_template": base + public_fragment,
                        "resolves": bool(handler), "handler": handler})
 
     # The meaningful assertion is the negative one: that a WRONG secret is turned
@@ -283,7 +325,7 @@ def wema_callbacks_diagnose(request):
                if suggested else "Fix RATELIMIT_TRUSTED_PROXY_HOPS before enabling it.")
         )
 
-    return JsonResponse({"callbacks": {
+    response = JsonResponse({"callbacks": {
         "ready_to_send_to_the_bank": not blockers,
         "blockers": blockers,
         "routes": routes,
@@ -308,6 +350,8 @@ def wema_callbacks_diagnose(request):
         "authorization_max_age_seconds": int(conf.get("AUTH_MAX_AGE", 900) or 900),
         "require_security_info": bool(conf.get("AUTH_REQUIRE_SECURITY_INFO", False)),
     }})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 urlpatterns = [
@@ -320,11 +364,8 @@ urlpatterns = [
     path("portal/", admin_portal),
     path("healthz", health),
     path("readyz", readyz),
-    # Both spellings, for the same reason wema_urls.py registers both: these are
-    # pasted into an address bar by hand, and APPEND_SLASH only ever ADDS a
-    # slash — it cannot strip one. So a trailing slash on a slashless-only route
-    # falls through to a bare HTML 404 that reads as "not deployed" rather than
-    # "you typed one extra character".
+    # Both spellings, for the same reason wema_urls.py registers both: operational
+    # probes should not fail merely because a caller included a trailing slash.
     *[p for frag, view in (("wema-diagnose", wema_diagnose),
                            ("wema-callbacks-diagnose", wema_callbacks_diagnose),
                            ("vtu-diagnose", vtu_diagnose),

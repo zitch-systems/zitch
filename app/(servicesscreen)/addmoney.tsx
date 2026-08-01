@@ -10,7 +10,12 @@ import { Label } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 
-type DediAccount = { account_number: string; account_name: string; bank_name: string };
+type DediAccount = {
+  account_number: string;
+  account_name: string;
+  bank_name: string;
+  bank_tier?: number;
+};
 
 // Funding is by bank transfer to a dedicated Zitch (Wema/ALAT) NUBAN — minted via
 // Wema's reserved-account onboarding (enter BVN; Wema verifies it and issues the
@@ -21,6 +26,7 @@ const AddMoney = () => {
   const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   // The customer's registered legal name — shown as the account name whenever the
   // provider omits it, so the funding card never renders a nameless account (which
   // a payer can't confirm before transferring).
@@ -34,8 +40,10 @@ const AddMoney = () => {
   const [otp, setOtp] = useState('');
   const [verifying, setVerifying] = useState(false);
 
-  useEffect(() => {
+  const loadAccount = () => {
     let alive = true;
+    setLoading(true);
+    setLoadFailed(false);
     // Never let a slow/hanging backend leave the page stuck on the spinner: show
     // the screen within a few seconds no matter what. If the account lookup
     // resolves later, it still fills in (account state).
@@ -46,10 +54,12 @@ const AddMoney = () => {
         if (r.holder_name) setHolderName(r.holder_name);
         if (r.account_number) setAccount(r as DediAccount);
       })
-      .catch(() => {})
+      .catch(() => { if (alive) setLoadFailed(true); })
       .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
     return () => { alive = false; clearTimeout(guard); };
-  }, []);
+  };
+
+  useEffect(() => loadAccount(), []);
 
   const copyAccount = async () => {
     if (!account) return;
@@ -84,7 +94,10 @@ const AddMoney = () => {
     setVerifying(true);
     try {
       const r = await apiJson('/api/wallet/wema/verify-otp/', {
-        otp, tracking_id: otpFlow.trackingId, using_bvn: true, bvn,
+        // The server binds this opaque tracking ID to the identity used to start
+        // the flow.  Never resend the BVN (or let a client swap identity/type) at
+        // verification time.
+        otp, tracking_id: otpFlow.trackingId,
       });
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
@@ -104,7 +117,7 @@ const AddMoney = () => {
     if (!otpFlow) return;
     try {
       const r = await apiJson('/api/wallet/wema/resend-otp/', {
-        tracking_id: otpFlow.trackingId, using_bvn: true,
+        tracking_id: otpFlow.trackingId,
       });
       notify(r?.success ? 'OTP resent' : 'Error', r?.message || (r?.success ? 'Check your phone' : "Couldn't resend the OTP"));
     } catch {
@@ -124,6 +137,17 @@ const AddMoney = () => {
   return (
     <Screen>
       <Header title="Add money" onBack={() => router.back()} />
+
+      {loadFailed && !account && (
+        <View style={{ backgroundColor: c.surface, borderRadius: 14, borderWidth: 1, borderColor: c.line, padding: 14, marginBottom: 16 }}>
+          <Text style={{ fontFamily: font.regular, fontSize: 13, color: c.ink3, lineHeight: 19 }}>
+            We couldn’t check your funding account. Retry before creating a new one.
+          </Text>
+          <Pressable onPress={loadAccount} accessibilityRole="button" style={{ marginTop: 9 }}>
+            <Text style={{ fontFamily: font.bold, fontSize: 13, color: c.brand }}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
 
       {/* Fund by bank transfer to a dedicated Wema/ALAT NUBAN. Wema has no hosted
           checkout — deposits are credited automatically by the reconcile poller. */}
@@ -178,6 +202,11 @@ const AddMoney = () => {
             <ZIcon name="check" size={16} color={c.lime} stroke={2.6} />
             <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
               Save this account — it’s permanently yours. Transfers reflect automatically, no need to confirm anything here.
+            </Text>
+          </View>
+          <View style={{ marginTop: 12, paddingHorizontal: 4 }}>
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, lineHeight: 19 }}>
+              Partner-bank tier {account.bank_tier || 1}: single inflow up to {account.bank_tier === 2 ? '₦100,000' : account.bank_tier === 3 ? 'no stated limit' : '₦50,000'}; maximum balance {account.bank_tier === 2 ? '₦500,000' : account.bank_tier === 3 ? 'has no stated limit' : '₦300,000'}.
             </Text>
           </View>
         </>
@@ -266,4 +295,3 @@ const AddMoney = () => {
 };
 
 export default AddMoney;
-

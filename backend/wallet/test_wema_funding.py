@@ -13,7 +13,8 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
 
-from wallet.models import Transaction, Wallet
+from accounts.models import hash_identifier
+from wallet.models import Transaction, Wallet, WemaProvisioningAttempt
 from wallet.services import apply_wema_credit, wema_account_reference
 from wallet.tests import make_user
 
@@ -59,7 +60,7 @@ class WemaWalletProvisioningTests(TestCase):
         w = Wallet.objects.get(user=self.user)
         self.assertEqual(w.account_number, b2["account_number"])
         self.assertEqual(w.account_reference, wema_account_reference(self.user))
-        # Echoing the BVN lifts KYC / tier, mirroring the app account flow.
+        # The server-bound BVN lifts KYC; the echoed legacy field is not trusted.
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
 
@@ -86,9 +87,64 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertIn("OTP", r.json()["message"])
 
     def test_resend_otp_ok(self):
-        r = self._post("/api/wallet/wema/resend-otp/", {"tracking_id": "WEMA-SIM-abc", "using_bvn": True})
+        tracking = self._post("/api/wallet/wema/create/",
+                              {"bvn": "22222222222"}).json()["tracking_id"]
+        r = self._post("/api/wallet/wema/resend-otp/",
+                       {"tracking_id": tracking, "using_bvn": False})
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["success"])
+
+    def test_initiation_persists_only_a_keyed_identity_binding(self):
+        raw = "22222222222"
+        tracking = self._post("/api/wallet/wema/create/", {"bvn": raw}).json()["tracking_id"]
+        attempt = WemaProvisioningAttempt.objects.get(user=self.user, tracking_id=tracking)
+        self.assertEqual(attempt.identity_type, WemaProvisioningAttempt.BVN)
+        self.assertEqual(attempt.identity_hash, hash_identifier(raw))
+        self.assertEqual(attempt.identity_last4, "2222")
+        self.assertNotEqual(attempt.identity_hash, raw)
+
+    def test_restarting_active_flow_reuses_tracking_without_reusing_identity_at_wema(self):
+        first = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+        with patch("utility.wema.create_wallet_request") as start:
+            second = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["tracking_id"], first.json()["tracking_id"])
+        start.assert_not_called()
+
+    def test_otp_cannot_be_used_to_verify_a_different_identity(self):
+        tracking = self._post("/api/wallet/wema/create/",
+                              {"bvn": "22222222222"}).json()["tracking_id"]
+        response = self._post("/api/wallet/wema/verify-otp/", {
+            "otp": "123456", "tracking_id": tracking, "using_bvn": False,
+            "bvn": "33333333333",
+        })
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
+
+    def test_verify_uses_server_bound_type_and_needs_no_identity_echo(self):
+        tracking = self._post("/api/wallet/wema/create/",
+                              {"nin": "12345678901"}).json()["tracking_id"]
+        with patch("utility.wema.validate_wallet_otp", return_value={"success": True}) as validate:
+            response = self._post("/api/wallet/wema/verify-otp/", {
+                "otp": "123456", "tracking_id": tracking, "using_bvn": True,
+            })
+        self.assertEqual(response.status_code, 200)
+        validate.assert_called_once_with(self.user.phone, "123456", tracking, bvn=False)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)
+        self.assertEqual(self.user.nin_hash, hash_identifier("12345678901"))
+
+    def test_identity_already_owned_by_another_user_is_rejected_before_wema(self):
+        other, _ = make_user("08030000124", "other-wema@zitch.app")
+        other.set_bvn("22222222222")
+        other.bvn_verified = True
+        other.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified"])
+        with patch("utility.wema.create_wallet_request") as start:
+            response = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+        self.assertEqual(response.status_code, 409)
+        start.assert_not_called()
 
     # --- The identity gate on an account the bank's callback provisioned first ---
     #
@@ -143,14 +199,11 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.user.tier, 1)       # unchanged, held for review
 
-    def test_unreadable_bank_name_does_not_block_a_legitimate_holder(self):
-        # A name we cannot read is not a mismatch — same posture as a fresh
-        # provisioning whose response omits it. Deliberate: this path is onboarding,
-        # and a gateway hiccup must not strand a real customer at tier 0.
+    def test_unreadable_bank_name_holds_kyc_for_review(self):
         r = self._verify_after_callback({"success": False})
         self.assertEqual(r.status_code, 200)
         self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(self.user.bvn_verified)
 
     def test_account_create_starts_otp_flow_on_wema(self):
         # The app's existing "Get my account" endpoint must drive the Wema OTP
@@ -414,4 +467,3 @@ class WemaPayoutSettlementTests(TestCase):
         self._run("IN_PROGRESS")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
-

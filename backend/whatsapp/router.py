@@ -54,7 +54,18 @@ UNLINKED = (
     "👋 Welcome to *Zitch* — banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
 )
+UNLINKED_APP_ONLY = (
+    "👋 Welcome to *Zitch*. For your security, create your account and payment PIN "
+    "in the Zitch app, then open *Settings → Link WhatsApp* to connect it here."
+)
 ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
+
+
+def _chat_signup_allowed() -> bool:
+    cfg = getattr(settings, "WHATSAPP", {}) or {}
+    if "ALLOW_CHAT_SIGNUP" in cfg:
+        return bool(cfg.get("ALLOW_CHAT_SIGNUP"))
+    return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
 
 
 def _local_phone(msisdn: str) -> str:
@@ -95,10 +106,11 @@ def provider_logo(name: str) -> str | None:
 # --------------------------------------------------------------------------- #
 # messaging + small parsers
 # --------------------------------------------------------------------------- #
-def reply(msisdn: str, text: str) -> None:
+def reply(msisdn: str, text: str) -> dict:
     """Send a message and record it (the OUT audit row; never contains a PIN)."""
-    send_text(msisdn, text)
+    result = send_text(msisdn, text)
     WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text)
+    return result
 
 
 def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
@@ -466,7 +478,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         return reply(msisdn, "To connect an existing account, open the Zitch app → *Settings → Link WhatsApp*, get your code, and send it here.")
 
     # 4. Default welcome (with the create/link choices).
-    return reply(msisdn, UNLINKED)
+    return reply(msisdn, UNLINKED if _chat_signup_allowed() else UNLINKED_APP_ONLY)
 
 
 # --------------------------------------------------------------------------- #
@@ -475,6 +487,9 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
 # hashed, never in clear.
 # --------------------------------------------------------------------------- #
 def _start_onboarding(msisdn: str) -> None:
+    if not _chat_signup_allowed():
+        _clear_onboarding(msisdn)
+        return reply(msisdn, UNLINKED_APP_ONLY)
     if User.objects.filter(phone=_local_phone(msisdn)).exists():
         return reply(msisdn, "This number already has a Zitch account. Open the app → *Settings → Link WhatsApp* to connect it here.")
     WaOnboarding.objects.update_or_create(
@@ -491,6 +506,9 @@ def _onboard_to(ob: WaOnboarding, step: str) -> None:
 
 
 def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
+    if not _chat_signup_allowed():
+        _clear_onboarding(msisdn)
+        return reply(msisdn, UNLINKED_APP_ONLY)
     val = text.strip()
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
@@ -546,8 +564,9 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     reply(
         msisdn,
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
-        "You can *send money up to ₦1,000,000/day*, pay bills, buy airtime & data, "
-        "and check your balance — right here. Complete full KYC in the Zitch app to "
+        f"Your current transfer limit is *₦{user.daily_transfer_limit:,.0f}/day*. "
+        "You can pay bills, buy airtime & data, and check your balance here. "
+        "Complete identity verification in the Zitch app to "
         "raise your limits.\n\n" + MENU,
     )
 
@@ -1330,16 +1349,18 @@ def ai_active(link: WhatsAppLink, convo: ConversationState) -> bool:
     switch is on, this user's AI is enabled, and this conversation's AI is on
     (handover turns the conversation scope off)."""
     return (ai.llm_available()
-            and SystemSetting.get_bool("ai_enabled_global", True)
+            and SystemSetting.get_bool("ai_enabled_global", False)
             and link.ai_enabled
             and convo.ai_enabled)
 
 
 def _record_intent(msisdn: str, intent: dict) -> None:
     """Attach the parsed intent to the inbound row (for QA / the monitor)."""
+    from .models import WebhookEvent
+
     row = WaMessageLog.objects.filter(msisdn=msisdn, direction=WaMessageLog.IN).order_by("-created").first()
     if row is not None:
-        row.intent_json = intent
+        row.intent_json = WebhookEvent.redact(intent)
         row.save(update_fields=["intent_json"])
 
 
@@ -1511,4 +1532,3 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         _clear_actions(pa.msisdn)
         return "Sorry, this action can't be completed here. Please try again in the chat."
     return fn(pa, user, pa.msisdn) or "Done ✅"
-
