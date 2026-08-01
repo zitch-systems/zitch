@@ -59,7 +59,11 @@ const AddMoney = () => {
     return () => { alive = false; clearTimeout(guard); };
   };
 
-  useEffect(() => loadAccount(), []);
+  useEffect(() => {
+    let cleanup: undefined | (() => void);
+    const timer = setTimeout(() => { cleanup = loadAccount(); }, 0);
+    return () => { clearTimeout(timer); cleanup?.(); };
+  }, []);
 
   const copyAccount = async () => {
     if (!account) return;

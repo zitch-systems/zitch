@@ -533,8 +533,8 @@ export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiomet
   // hammering native biometric calls and destabilising the sheet).
   const onCompleteRef = React.useRef(onComplete);
   const busyRef = React.useRef(busy);
-  onCompleteRef.current = onComplete;
-  busyRef.current = busy;
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
+  useEffect(() => { busyRef.current = busy; }, [busy]);
   const handleBiometric = React.useCallback(async () => {
     try {
       if (busyRef.current) return;

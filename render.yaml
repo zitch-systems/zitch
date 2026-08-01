@@ -5,7 +5,10 @@ services:
     name: zitch-api
     runtime: python
     rootDir: backend
-    plan: free   # upgrade to "starter" before handling real money (no sleep)
+    # Money movement must not run on a sleeping/free instance. This takes effect
+    # only when an operator deliberately syncs the Blueprint.
+    plan: starter
+    autoDeployTrigger: checksPass
     buildCommand: "./build.sh"
     # Bind to 0.0.0.0:$PORT so Render's port scan can detect the service. Without
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
@@ -91,6 +94,8 @@ services:
       # Selfie/liveness + address + ID-document are on Prembly.
       - key: KYC_PROVIDER
         sync: false
+      - key: VAS_PROVIDER
+        sync: false
       # ---------------------------------------------------------------------
       # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Set WEMA_CHANNEL_ID
       # + WEMA_WALLET_KEY (and the per-product keys card/airtime/bills/kyc),
@@ -112,6 +117,16 @@ services:
         sync: false
       - key: WEMA_KYC_KEY
         sync: false
+      - key: WEMA_REMITA_KEY
+        sync: false
+      - key: WEMA_BNPL_KEY
+        sync: false
+      - key: WEMA_CARD_PRODUCT_KEY
+        sync: false
+      - key: WEMA_BNPL_MERCHANT_ID
+        sync: false
+      - key: WEMA_BNPL_AUTH_KEY
+        sync: false
       - key: WEMA_SOURCE_ACCOUNT
         sync: false
       - key: WEMA_SECURITY_INFO
@@ -119,6 +134,10 @@ services:
       - key: WEMA_BASE_URL
         sync: false
       - key: WEMA_SIMULATION
+        sync: false
+      # Explicit second switch required by production_checks for a deliberately
+      # isolated pre-launch environment. Remove/disable both before go-live.
+      - key: ALLOW_PRODUCTION_SIMULATION
         sync: false
       # Bank-called callbacks. Wema PROFILES these URLs and the rails do not work
       # until it has them (account creation is refused without the Account Creation
@@ -136,6 +155,10 @@ services:
       - key: WEMA_AUTH_MAX_AGE
         sync: false
       - key: WEMA_AUTH_REQUIRE_SECURITY_INFO
+        sync: false
+      - key: WEMA_VAS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_BILLS_STATUS_LEGEND
         sync: false
       # Keep deterministic identity/OTP hashes stable independently of ordinary
       # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
@@ -168,6 +191,16 @@ services:
       # it. Every other provider flag is sync: false for the same reason.
       - key: MONO_SIMULATION
         sync: false
+      # Optional pre-launch sign-in bypass. wema_preflight remains red until all
+      # three are removed, so these cannot accidentally qualify as launch-ready.
+      - key: TEST_OTP_PHONE
+        sync: false
+      - key: TEST_OTP_CODE
+        sync: false
+      - key: ALLOW_PRODUCTION_TEST_OTP
+        sync: false
+      - key: SIMULATE_DEPOSIT_TOKEN
+        sync: false
       # VTU / bills — VTU.ng (v2). JWT Bearer auth, no IP whitelisting. Set
       # VTUNG_API_KEY (a long-lived token) OR VTUNG_USERNAME + VTUNG_PASSWORD
       # (auto-refreshed JWT).
@@ -178,6 +211,16 @@ services:
       - key: VTUNG_PASSWORD
         sync: false
       # SMS / OTP — Sendchamp.
+      - key: SMS_PROVIDER
+        sync: false
+      - key: TERMII_BASE_URL
+        sync: false
+      - key: TERMII_API_KEY
+        sync: false
+      - key: TERMII_SENDER_ID
+        sync: false
+      - key: TERMII_CHANNEL
+        sync: false
       - key: SENDCHAMP_API_KEY
         sync: false
       # Email / OTP fallback — Resend. Sends the same OTP alongside SMS so an
@@ -185,7 +228,7 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: RESEND_FROM_EMAIL
-        value: "no-reply@zitch.ng"
+        value: "Zitch <no-reply@send.zitch.ng>"
       # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
       - key: PREMBLY_API_KEY
         sync: false
@@ -214,7 +257,9 @@ services:
       - key: WHATSAPP_TOKEN
         sync: false
       - key: WHATSAPP_MODE
-        value: disabled
+        sync: false
+      - key: WHATSAPP_BASE_URL
+        sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
         sync: false
       - key: WHATSAPP_VERIFY_TOKEN
@@ -223,8 +268,23 @@ services:
         sync: false
       - key: WHATSAPP_BUSINESS_NUMBER
         sync: false
+      # Same 32+ byte value must be configured on the API and WhatsApp worker.
+      # It encrypts queued inbound command text at rest.
+      - key: WHATSAPP_QUEUE_KEY
+        sync: false
+      - key: WHATSAPP_QUEUE_KEY_PREV
+        sync: false
       - key: WHATSAPP_ALLOW_CHAT_SIGNUP
         value: "false"
+      # Optional encrypted WhatsApp Flow used for transaction confirmation.
+      - key: WHATSAPP_FLOW_ID
+        sync: false
+      - key: WHATSAPP_FLOW_PRIVATE_KEY
+        sync: false
+      - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
+        sync: false
+      - key: WHATSAPP_FLOW_CTA
+        sync: false
       # WhatsApp AI intent layer (optional). Blank => the deterministic router
       # handles everything; the model only proposes intents, never moves money.
       - key: LLM_API_KEY
@@ -235,12 +295,180 @@ services:
       # Set the project DSN here to activate it (PII is never sent).
       - key: SENTRY_DSN
         sync: false
-      # Shared cache — REQUIRED for accurate rate limits / idempotency fallback
-      # once gunicorn runs more than one worker (it does, see startCommand).
-      # Point at a Render Key Value (or any Redis) instance; blank falls back to
-      # per-process LocMem, which a single worker tolerates but two do not.
+      # Shared cache — REQUIRED because the API and WhatsApp worker are separate
+      # processes and must see the same rate-limit/idempotency state.
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: keyvalue
+          name: zitch-cache
+          property: connectionString
+
+  # Shared ephemeral coordination for rate limits, short-lived verification state
+  # and idempotency fallbacks. The durable WhatsApp queue itself is in Postgres, so
+  # a cache eviction/restart cannot lose an inbound message or broadcast recipient.
+  - type: keyvalue
+    name: zitch-cache
+    plan: starter
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+    persistenceMode: off
+
+  # Durable WhatsApp queue consumer. A background worker has no free tier on
+  # Render; syncing this Blueprint therefore requires an explicit paid-plan review.
+  # Every secret is referenced from zitch-api, so key rotation stays atomic and a
+  # worker can never accidentally use a different Flow-signing or queue key.
+  - type: worker
+    name: zitch-whatsapp-worker
+    runtime: python
+    rootDir: backend
+    plan: starter
+    autoDeployTrigger: checksPass
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        fromService:
+          type: web
+          name: zitch-api
+          envVarKey: DJANGO_SECRET_KEY
+      - key: DJANGO_KYC_HASH_KEY
+        fromService:
+          type: web
+          name: zitch-api
+          envVarKey: DJANGO_KYC_HASH_KEY
+      - key: DJANGO_OTP_HASH_KEY
+        fromService:
+          type: web
+          name: zitch-api
+          envVarKey: DJANGO_OTP_HASH_KEY
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: zitch-cache
+          property: connectionString
+      - key: CARD_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: CARD_PROVIDER}
+      - key: PAYMENT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: PAYMENT_PROVIDER}
+      - key: PAYOUT_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: PAYOUT_PROVIDER}
+      - key: VAS_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: VAS_PROVIDER}
+      - key: KYC_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: KYC_PROVIDER}
+      - key: WEMA_CHANNEL_ID
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
+      - key: WEMA_WALLET_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+      - key: WEMA_CARD_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_KEY}
+      - key: WEMA_AIRTIME_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
+      - key: WEMA_BILLS_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+      - key: WEMA_KYC_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_KYC_KEY}
+      - key: WEMA_REMITA_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_KEY}
+      - key: WEMA_BNPL_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_KEY}
+      - key: WEMA_CARD_PRODUCT_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_PRODUCT_KEY}
+      - key: WEMA_BNPL_MERCHANT_ID
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_MERCHANT_ID}
+      - key: WEMA_BNPL_AUTH_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_AUTH_KEY}
+      - key: WEMA_SOURCE_ACCOUNT
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
+      - key: WEMA_SECURITY_INFO
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SECURITY_INFO}
+      - key: WEMA_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+      - key: WEMA_VAS_STATUS_LEGEND
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
+      - key: WEMA_BILLS_STATUS_LEGEND
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
+      - key: VTUNG_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: VTUNG_API_KEY}
+      - key: VTUNG_USERNAME
+        fromService: {type: web, name: zitch-api, envVarKey: VTUNG_USERNAME}
+      - key: VTUNG_PASSWORD
+        fromService: {type: web, name: zitch-api, envVarKey: VTUNG_PASSWORD}
+      - key: SMS_PROVIDER
+        fromService: {type: web, name: zitch-api, envVarKey: SMS_PROVIDER}
+      - key: TERMII_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+      - key: TERMII_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+      - key: TERMII_SENDER_ID
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+      - key: TERMII_CHANNEL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+      - key: SENDCHAMP_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: SENDCHAMP_API_KEY}
+      - key: RESEND_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+      - key: RESEND_FROM_EMAIL
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+      - key: PREMBLY_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_API_KEY}
+      - key: PREMBLY_APP_ID
+        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_APP_ID}
+      - key: CARD_ISSUER_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_API_KEY}
+      - key: CARD_ISSUER_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_BASE_URL}
+      - key: CARD_ISSUER_BRAND
+        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_BRAND}
+      - key: FINCRA_SECRET_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: FINCRA_SECRET_KEY}
+      - key: FINCRA_BUSINESS_ID
+        fromService: {type: web, name: zitch-api, envVarKey: FINCRA_BUSINESS_ID}
+      - key: WHATSAPP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
+      - key: WHATSAPP_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
+      - key: WHATSAPP_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+      - key: WHATSAPP_VERIFY_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+      - key: WHATSAPP_APP_SECRET
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
+      - key: WHATSAPP_BUSINESS_NUMBER
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+      - key: WHATSAPP_QUEUE_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
+      - key: WHATSAPP_QUEUE_KEY_PREV
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
+      - key: WHATSAPP_ALLOW_CHAT_SIGNUP
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_ALLOW_CHAT_SIGNUP}
+      - key: WHATSAPP_FLOW_ID
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_ID}
+      - key: WHATSAPP_FLOW_PRIVATE_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY}
+      - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE}
+      - key: WHATSAPP_FLOW_CTA
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_CTA}
+      - key: LLM_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: LLM_API_KEY}
+      - key: LLM_MODEL
+        fromService: {type: web, name: zitch-api, envVarKey: LLM_MODEL}
+      - key: SENTRY_DSN
+        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
 
   # Daily Fixed Save maturity sweep — pays out matured plans, including for
   # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service
@@ -502,4 +730,8 @@ services:
 
 databases:
   - name: zitch-db
-    plan: free   # upgrade before go-live; free Postgres expires
+    plan: basic-256mb
+    # Application services use the private connection string above. Refuse every
+    # public Postgres source; the current live database still needs this applied
+    # manually or by an explicitly reviewed Blueprint sync.
+    ipAllowList: []

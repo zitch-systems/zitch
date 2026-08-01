@@ -308,10 +308,17 @@ class AdminApiTests(TestCase):
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
         res, body = self.post("wa/broadcast", self.support_token,
                               {"template_name": "promo", "category": "marketing"})
-        self.assertEqual(res.status_code, 200)
-        row = body["broadcast"]
-        self.assertEqual(row["queued"], 1)  # only the opted-in user
-        self.assertEqual(row["template"], "promo")
+        self.assertEqual(res.status_code, 202)
+        decided, result = self.post(
+            "approvals/decide", self.admin_token,
+            {"id": body["approval_id"], "approve": True},
+        )
+        self.assertEqual(decided.status_code, 200)
+        from whatsapp.jobs import process_outbound_batch
+        process_outbound_batch()
+        row = Broadcast.objects.get(pk=result["result"]["broadcast_id"])
+        self.assertEqual(row.count_queued, 1)  # only the opted-in user
+        self.assertEqual(row.template_name, "promo")
         self.assertEqual(Broadcast.objects.count(), 1)
 
     def test_setting_update_super_admin_only(self):
@@ -334,6 +341,10 @@ class AdminApiFeatureTests(TestCase):
         self.finance_token = AccessToken.issue(self.finance, scope=AccessToken.ADMIN).key
         self.support = make_staff("funmi2", role="support")
         self.support_token = AccessToken.issue(self.support, scope=AccessToken.ADMIN).key
+        self.support_checker = make_staff("funmi3", role="support")
+        self.support_checker_token = AccessToken.issue(
+            self.support_checker, scope=AccessToken.ADMIN,
+        ).key
         self.readonly = make_staff("ro2")
         self.readonly_token = AccessToken.issue(self.readonly, scope=AccessToken.ADMIN).key
         self.customer = make_customer("zara", phone="08055556666", balance="1000")
@@ -403,9 +414,13 @@ class AdminApiFeatureTests(TestCase):
     def test_broadcast_detail(self):
         WhatsAppLink.objects.create(user=self.customer, wa_msisdn="2348055556666",
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=True)
-        _, sent = self.post("wa/broadcast", self.support_token,
-                            {"template_name": "detail_test", "category": "utility"})
-        bid = sent["broadcast"]["id"]  # bc_<pk> form on purpose
+        _, requested = self.post("wa/broadcast", self.support_token,
+                                 {"template_name": "detail_test", "category": "utility"})
+        _, decided = self.post("approvals/decide", self.support_checker_token,
+                               {"id": requested["approval_id"], "approve": True})
+        from whatsapp.jobs import process_outbound_batch
+        process_outbound_batch()
+        bid = f"bc_{decided['result']['broadcast_id']}"  # bc_<pk> form on purpose
         res, body = self.post("wa/broadcast_detail", self.readonly_token, {"id": bid})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["broadcast"]["template"], "detail_test")
@@ -720,4 +735,3 @@ class ManualCreditCapTests(TestCase):
             res = self.credit("400000", key="d2")
             self.assertEqual(res.status_code, 403)
             self.assertEqual(res.json().get("code"), "credit_daily_cap")
-

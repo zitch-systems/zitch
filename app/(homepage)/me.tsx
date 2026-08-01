@@ -30,6 +30,32 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
   );
 };
 
+const SettingsGroup = ({ items }: { items: any[] }) => {
+  const { c } = useTheme();
+  return (
+    <Card style={{ marginHorizontal: 16, marginTop: 14, paddingVertical: 2 }} pad={0}>
+      <View style={{ paddingHorizontal: 16 }}>
+        {items.map((r, i) => (
+          <ZItem
+            key={r.title}
+            icon={r.icon}
+            title={r.title}
+            sub={r.sub}
+            onPress={r.go}
+            last={i === items.length - 1}
+            right={
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {r.badge && <RowBadge label={r.badge} hot={r.hot} />}
+                <ZIcon name="right" size={18} color={c.ink3} />
+              </View>
+            }
+          />
+        ))}
+      </View>
+    </Card>
+  );
+};
+
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
   const { balance, firstName, avatar, showBal, setShowBal, reload: reloadWallet } = useWallet();
@@ -115,7 +141,6 @@ const Me = () => {
     router.replace('/signin');
   };
 
-  const chev = <ZIcon name="right" size={18} color={c.ink3} />;
   const grp1: any[] = [
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
@@ -130,29 +155,6 @@ const Me = () => {
     { icon: 'gift', title: 'Invitation', sub: 'Share Zitch — rewards coming soon', go: () => router.push('/invite') },
     { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/ussd') },
   ];
-
-  const Group = ({ items }: { items: any[] }) => (
-    <Card style={{ marginHorizontal: 16, marginTop: 14, paddingVertical: 2 }} pad={0}>
-      <View style={{ paddingHorizontal: 16 }}>
-        {items.map((r, i) => (
-          <ZItem
-            key={r.title}
-            icon={r.icon}
-            title={r.title}
-            sub={r.sub}
-            onPress={r.go}
-            last={i === items.length - 1}
-            right={
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                {r.badge && <RowBadge label={r.badge} hot={r.hot} />}
-                {chev}
-              </View>
-            }
-          />
-        ))}
-      </View>
-    </Card>
-  );
 
   return (
     <Screen pad={false} tab>
@@ -199,8 +201,8 @@ const Me = () => {
         </Hero>
       </Pressable>
 
-      <Group items={grp1} />
-      <Group items={grp2} />
+      <SettingsGroup items={grp1} />
+      <SettingsGroup items={grp2} />
 
       {/* biometrics — sign-in */}
       <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>

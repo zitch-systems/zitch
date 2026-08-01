@@ -431,7 +431,7 @@ def bootstrap(request):
         "id": f"bc_{b.id}", "template": b.template_name, "category": b.category, "status": b.status,
         "created": b.created.strftime("%b %d, %Y"), "by": (b.created_by.email if b.created_by else "system"),
         "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
-        "read": b.count_read, "failed": b.count_failed,
+        "read": b.count_read, "failed": b.count_failed, "unknown": b.count_unknown,
     } for b in Broadcast.objects.all()[:50]]
 
     audit_rows = [_audit_row(a) for a in AuditLog.objects.all()[:100]]
@@ -870,33 +870,27 @@ def wa_reply(request):
 
 @staff_endpoint(methods=("POST",), perm="broadcast")
 def wa_broadcast(request):
-    """POST {template_name, category?} — create + send a template broadcast.
+    """POST {template_name, category?} — request a checked template campaign."""
+    from common import approvals
+    from whatsapp.ops import validate_broadcast_spec
+    from whatsapp.providers import wa_enabled
 
-    Reuses whatsapp.ops.send_broadcast (segmenting, marketing opt-in rule,
-    per-recipient outcomes) and returns the row in the bootstrap shape so the
-    portal can prepend it without refetching."""
-    from whatsapp.models import Broadcast
-    from whatsapp.ops import send_broadcast
-
-    template = (request.data.get("template_name") or "").strip()
-    if not template:
-        return fail("template_name required")
-    category = request.data.get("category") or Broadcast.UTILITY
-    if category not in (Broadcast.UTILITY, Broadcast.MARKETING):
-        return fail("category must be utility or marketing")
-    b = Broadcast.objects.create(
-        template_name=template, category=category,
-        body_params=request.data.get("body_params", []),
-        segment=request.data.get("segment", {}), created_by=request.staff,
+    if not wa_enabled():
+        return fail("WhatsApp banking is currently unavailable", status=503)
+    try:
+        spec = validate_broadcast_spec(request.data)
+        approval = approvals.submit(
+            "whatsapp.broadcast", payload=spec, requested_by=request.staff,
+            reason="WhatsApp template campaign",
+        )
+    except (ValueError, approvals.ApprovalError) as exc:
+        return fail(str(exc))
+    response = ok(
+        success=True, pending_approval=True, approval_id=approval.pk,
+        message="A second broadcast operator must approve this campaign.",
     )
-    send_broadcast(b, actor=request.staff)
-    return ok(success=True, broadcast={
-        "id": f"bc_{b.id}", "template": b.template_name, "category": b.category,
-        "status": b.status, "created": b.created.strftime("%b %d, %Y"),
-        "by": (request.staff.email or request.staff.username),
-        "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
-        "read": b.count_read, "failed": b.count_failed,
-    })
+    response.status_code = 202
+    return response
 
 
 # --------------------------------------------------------------------------- #
@@ -1024,7 +1018,7 @@ def wa_broadcast_detail(request):
         "status": b.status, "created": b.created.strftime("%b %d, %Y"),
         "by": (b.created_by.email if b.created_by else "system"),
         "queued": b.count_queued, "sent": b.count_sent, "delivered": b.count_delivered,
-        "read": b.count_read, "failed": b.count_failed,
+        "read": b.count_read, "failed": b.count_failed, "unknown": b.count_unknown,
     }, recipients=recipients)
 
 
@@ -1183,8 +1177,8 @@ from common import approvals as _approvals  # noqa: E402
 PAGE_APPROVALS = 100
 
 
-@_approvals.register("wallet.credit")
-def _execute_approved_credit(payload, approver):
+@_approvals.register("wallet.credit", capability="money")
+def _execute_approved_credit(payload, approver, approval_request=None):
     """Run an approved manual credit through the SAME money core the direct path uses.
 
     The single-credit ceiling is waived here and only here: that ceiling's documented
@@ -1212,13 +1206,16 @@ def _execute_approved_credit(payload, approver):
     return body
 
 
-@staff_endpoint(methods=("POST",), perm="money")
+@staff_endpoint(methods=("POST",))
 def approvals_list(request):
     """POST {status?} — the approval queue. Defaults to pending."""
     from whatsapp.models import ApprovalRequest
 
     status = (request.data.get("status") or ApprovalRequest.PENDING).strip()
-    rows = ApprovalRequest.objects.filter(status=status)[:PAGE_APPROVALS]
+    rows = list(ApprovalRequest.objects.filter(status=status)[:PAGE_APPROVALS])
+    rows = [r for r in rows
+            if (_approvals.capability_for(r.action)
+                and _approvals.capability_for(r.action) in CAN.get(request.role, set()))]
     return ok(rows=[{
         "id": r.pk, "action": r.action, "payload": r.payload, "reason": r.reason,
         "status": r.status,
@@ -1228,10 +1225,11 @@ def approvals_list(request):
         # So the UI can grey out a request the viewer is not allowed to decide, instead
         # of offering a button that always fails.
         "is_own_request": r.requested_by_id == request.staff.id,
+        "can_decide": r.requested_by_id != request.staff.id,
     } for r in rows])
 
 
-@staff_endpoint(methods=("POST",), perm="money")
+@staff_endpoint(methods=("POST",))
 def approvals_decide(request):
     """POST {id, approve, note?} — approve or reject a held action.
 
@@ -1244,6 +1242,9 @@ def approvals_decide(request):
         req = ApprovalRequest.objects.get(pk=int(request.data.get("id") or 0))
     except (ApprovalRequest.DoesNotExist, TypeError, ValueError):
         return fail("Approval request not found", status=404)
+    capability = _approvals.capability_for(req.action)
+    if not capability or capability not in CAN.get(request.role, set()):
+        return fail("Insufficient privileges for this action", status=403, code="forbidden")
     approve = bool(request.data.get("approve"))
     try:
         decided = decide(req, approver=request.staff, approve=approve,

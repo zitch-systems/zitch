@@ -106,6 +106,16 @@ class WebhookTests(TestCase):
                                     HTTP_X_HUB_SIGNATURE_256=f"sha256={sig}")
         self.assertEqual(response.status_code, 400)
 
+    @override_settings(DEBUG=False, TESTING=False, WHATSAPP_QUEUE_KEY="queue-key")
+    def test_production_worker_refuses_to_consume_when_channel_is_not_live(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with patch("whatsapp.management.commands.whatsapp_worker.wa_live",
+                   return_value=False):
+            with self.assertRaisesMessage(CommandError, "WHATSAPP_MODE=live"):
+                call_command("whatsapp_worker", "--once")
+
 
 class ChannelTests(TestCase):
     def setUp(self):
@@ -128,6 +138,60 @@ class ChannelTests(TestCase):
 
     def balance(self):
         return get_or_create_wallet(self.user).balance
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_production_webhook_persists_before_worker_processing(self):
+        """The HTTP acknowledgement never owns execution in production."""
+        self.link()
+        response = self.inbound("balance", "async-1")
+        self.assertEqual(response.status_code, 200)
+        queued = WaMessageLog.objects.get(wa_message_id="async-1")
+        self.assertIsNone(queued.processed_at)
+        self.assertTrue(bytes(queued.processing_payload))
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT,
+        ).exists())
+
+        from .jobs import process_inbound_batch
+        self.assertEqual(process_inbound_batch(), 1)
+        queued.refresh_from_db()
+        self.assertIsNotNone(queued.processed_at)
+        self.assertEqual(bytes(queued.processing_payload), b"")
+        self.assertIn("balance", self.last_reply().lower())
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_dead_letter_erases_encrypted_customer_payload(self):
+        self.link()
+        self.inbound("balance", "dead-1")
+        queued = WaMessageLog.objects.get(wa_message_id="dead-1")
+        queued.processing_attempts = 4
+        queued.save(update_fields=["processing_attempts"])
+
+        from .jobs import process_inbound_message
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")):
+            self.assertEqual(process_inbound_message(queued.pk), "dead_letter")
+        queued.refresh_from_db()
+        self.assertIsNotNone(queued.processed_at)
+        self.assertEqual(bytes(queued.processing_payload), b"")
+        self.assertEqual(queued.processing_error, "dead_letter:RuntimeError")
+
+    @override_settings(
+        WHATSAPP_PROCESS_INLINE=False,
+        WHATSAPP_QUEUE_KEY="old-queue-key-0123456789-0123456789",
+    )
+    def test_worker_decrypts_jobs_during_queue_key_rotation_overlap(self):
+        self.link()
+        self.inbound("balance", "rotate-1")
+        queued = WaMessageLog.objects.get(wa_message_id="rotate-1")
+
+        from .jobs import process_inbound_message
+        with override_settings(
+            WHATSAPP_QUEUE_KEY="new-queue-key-0123456789-0123456789",
+            WHATSAPP_QUEUE_KEY_PREV="old-queue-key-0123456789-0123456789",
+        ):
+            with patch("whatsapp.jobs.handle_inbound") as handler:
+                self.assertEqual(process_inbound_message(queued.pk), "processed")
+        handler.assert_called_once_with(MSISDN, "balance")
 
     # --- linking ---
     def test_unlinked_number_gets_create_or_link_choice(self):
@@ -352,21 +416,25 @@ class ChannelTests(TestCase):
 
     def test_failed_handler_releases_claim_so_meta_retry_is_not_lost(self):
         self.link()
-        with patch("whatsapp.views.handle_inbound", side_effect=RuntimeError("crash")):
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")):
             with self.assertRaises(RuntimeError):
                 self.inbound("balance", "retry-1")
         failed = WaMessageLog.objects.get(wa_message_id="retry-1")
         self.assertIsNone(failed.processed_at)
         self.assertIsNone(failed.processing_started_at)
         self.assertEqual(failed.processing_error, "RuntimeError")
+        self.assertNotIn(b"balance", bytes(failed.processing_payload))
+        failed.next_attempt_at = timezone.now() - timedelta(seconds=1)
+        failed.save(update_fields=["next_attempt_at"])
 
-        with patch("whatsapp.views.handle_inbound") as handler:
+        with patch("whatsapp.jobs.handle_inbound") as handler:
             response = self.inbound("balance", "retry-1")
         self.assertEqual(response.status_code, 200)
         handler.assert_called_once_with(MSISDN, "balance")
         retried = WaMessageLog.objects.get(wa_message_id="retry-1")
         self.assertIsNotNone(retried.processed_at)
         self.assertEqual(retried.processing_attempts, 2)
+        self.assertEqual(bytes(retried.processing_payload), b"")
 
     def test_wrong_pin_cancels_after_retry(self):
         self.link()
@@ -757,6 +825,11 @@ class OperatorTests(TestCase):
         group, _ = Group.objects.get_or_create(name="support")
         self.staff.groups.add(group)
         self.staff_token = AccessToken.issue(self.staff, scope=AccessToken.ADMIN).key
+        self.checker = User.objects.create(
+            username="checker", phone="08099999998", email="checker@zitch.test", is_staff=True,
+        )
+        self.checker.groups.add(group)
+        self.checker_token = AccessToken.issue(self.checker, scope=AccessToken.ADMIN).key
 
     def inbound(self, text, mid):
         event = {"entry": [{"changes": [{"value": {"messages": [
@@ -771,6 +844,17 @@ class OperatorTests(TestCase):
         body = {"access_token": token, **payload}
         res = self.client.post(path, data=json.dumps(body), content_type="application/json")
         return res, res.json()
+
+    def approve_and_send(self, approval_id):
+        res, body = self.post_as(
+            "/api/admin/approvals/decide", self.checker_token,
+            {"id": approval_id, "approve": True},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["status"], "executed")
+        from .jobs import process_outbound_batch
+        process_outbound_batch()
+        return Broadcast.objects.get(pk=body["result"]["broadcast_id"])
 
     def test_stop_unsubscribes_marketing(self):
         link = WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
@@ -832,20 +916,70 @@ class OperatorTests(TestCase):
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=False)
         res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
                                  {"template_name": "promo", "category": "marketing"})
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(body["queued"], 1)        # only the opted-in user
-        self.assertEqual(body["sent"], 1)
+        self.assertEqual(res.status_code, 202)
+        broadcast = self.approve_and_send(body["approval_id"])
+        self.assertEqual(broadcast.count_queued, 1)  # only the opted-in user
+        self.assertEqual(broadcast.count_sent, 1)
         recips = BroadcastRecipient.objects.all()
         self.assertEqual(recips.count(), 1)
         self.assertEqual(recips.first().wa_msisdn, MSISDN)
-        self.assertTrue(AuditLog.objects.filter(action="broadcast.send").exists())
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.completed").exists())
 
     def test_utility_broadcast_ignores_opt_in(self):
         WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
                                     status=WhatsAppLink.ACTIVE, marketing_opt_in=False)
         res, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
                                  {"template_name": "txn_alert", "category": "utility"})
-        self.assertEqual(body["sent"], 1)          # utility reaches non-opted-in users
+        broadcast = self.approve_and_send(body["approval_id"])
+        self.assertEqual(broadcast.count_sent, 1)  # utility reaches non-opted-in users
+
+    def test_ambiguous_template_send_is_not_blindly_retried(self):
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+        _, body = self.post_as("/api/whatsapp/ops/broadcast/", self.staff_token,
+                               {"template_name": "txn_alert", "category": "utility"})
+        decision, decision_body = self.post_as(
+            "/api/admin/approvals/decide", self.checker_token,
+            {"id": body["approval_id"], "approve": True},
+        )
+        self.assertEqual(decision.status_code, 200)
+        broadcast = Broadcast.objects.get(pk=decision_body["result"]["broadcast_id"])
+
+        from .jobs import process_outbound_batch
+        with patch("whatsapp.jobs.send_template", return_value={
+            "success": False, "uncertain": True, "message": "unknown",
+        }) as sender:
+            self.assertEqual(process_outbound_batch(), 1)
+            self.assertEqual(process_outbound_batch(), 0)
+        sender.assert_called_once()
+        recipient = broadcast.recipients.get()
+        self.assertEqual(recipient.status, BroadcastRecipient.UNKNOWN)
+        self.assertIsNotNone(recipient.processed_at)
+        broadcast.refresh_from_db()
+        self.assertEqual(broadcast.count_unknown, 1)
+        self.assertEqual(broadcast.status, Broadcast.DONE)
+
+    def test_sent_delivery_callback_advances_recipient(self):
+        broadcast = Broadcast.objects.create(
+            template_name="txn_alert", category=Broadcast.UTILITY,
+            status=Broadcast.DONE, count_queued=1, count_unknown=1,
+        )
+        recipient = BroadcastRecipient.objects.create(
+            broadcast=broadcast, user=self.user, wa_msisdn=MSISDN,
+            status=BroadcastRecipient.UNKNOWN, wa_message_id="wamid.sent-1",
+            processed_at=timezone.now(),
+        )
+        event = {"entry": [{"changes": [{"value": {"statuses": [{
+            "id": "wamid.sent-1", "status": "sent",
+        }]}}]}]}
+        response = self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                    content_type="application/json")
+        self.assertEqual(response.status_code, 200)
+        recipient.refresh_from_db()
+        broadcast.refresh_from_db()
+        self.assertEqual(recipient.status, BroadcastRecipient.SENT)
+        self.assertEqual(broadcast.count_sent, 1)
+        self.assertEqual(broadcast.count_unknown, 0)
 
 
 class SmsCodeConfirmTests(TestCase):

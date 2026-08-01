@@ -27,7 +27,7 @@ window.ZADM = (function () {
     USERS: [], USERS_TOTAL: 0,
     TXNS: [],
     CONVOS: [],           // inbox rows (threads fetched per selection)
-    BROADCASTS: [], BC_META: { opted_in: 0, linked: 0 },
+    BROADCASTS: [], BC_META: { opted_in: 0, linked: 0 }, APPROVALS: [],
     AUDIT: [],
     FX: { margin: 0, rates: [], float: [] },
     LOANS: [], SAVINGS: [], CARDS: [], MATURED_DUE: 0,

@@ -38,11 +38,13 @@ const BuyCable = () => {
   useEffect(() => {
     if (!prov) return;
     let active = true;
-    setLoadingPlans(true);
-    setPlan('');
-    setPlans([]);
-    setValidatedName('');
-    publicJson('/api/utility/get_cable_plans/', { cablenetwork: prov })
+    const timer = setTimeout(() => {
+      if (!active) return;
+      setLoadingPlans(true);
+      setPlan('');
+      setPlans([]);
+      setValidatedName('');
+      publicJson('/api/utility/get_cable_plans/', { cablenetwork: prov })
       .then((res) => {
         if (active && res?.cable_plans) {
           setPlans(res.cable_plans.map((p: any) => ({
@@ -55,17 +57,21 @@ const BuyCable = () => {
       })
       .catch(() => {})
       .finally(() => { if (active) setLoadingPlans(false); });
-    return () => { active = false; };
+    }, 0);
+    return () => { active = false; clearTimeout(timer); };
   }, [prov]);
 
   // Authoritative price for the chosen bouquet.
   useEffect(() => {
-    if (!plan) { setPrice(''); return; }
     let active = true;
-    publicJson('/api/utility/get_cable_plans_price/', { cable_plan_code: plan })
+    const timer = setTimeout(() => {
+      if (!active) return;
+      if (!plan) { setPrice(''); return; }
+      publicJson('/api/utility/get_cable_plans_price/', { cable_plan_code: plan })
       .then((res) => { if (active && res?.cable_plans_price != null) setPrice(String(res.cable_plans_price)); })
       .catch(() => {});
-    return () => { active = false; };
+    }, 0);
+    return () => { active = false; clearTimeout(timer); };
   }, [plan]);
 
   const provider = PROVIDERS.find((p) => p.id === prov)!;

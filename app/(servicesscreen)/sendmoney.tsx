@@ -50,6 +50,7 @@ const SendMoney = () => {
   const [pending, setPending] = useState(false);  // queued by the rail, not yet confirmed
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
+  const idemKey = useRef('');  // stable across retries of one transfer attempt
 
   const loadBanks = () => {
     // Banks are a PUBLIC endpoint — load them regardless of session so the picker
@@ -71,8 +72,6 @@ const SendMoney = () => {
         .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
     });
   }, []);
-
-  useEffect(() => { setResolvedName(''); }, [identifier]);
 
   const amount = Number(amt || 0);
   // Bank mode: type a 10-digit account and we AUTO-DETECT the bank — the server
@@ -98,40 +97,48 @@ const SendMoney = () => {
   // row — no name-enquiry round-trip, no spinner. Makes "send again" feel instant.
   useEffect(() => {
     if (mode !== 'bank') return;
-    setBank(null); setBankName(''); setBankErr(''); setMatches([]);
-    if (acct.length !== 10) return;
-    const ben = beneficiaries.find((b) => b.bank_name !== 'Zitch' && b.account_number === acct);
-    const known = ben && banks.find((x) => x.name === ben.bank_name);
-    if (ben && known) {
-      setBank(known);
-      setBankName(ben.name);
-      return;
-    }
     let cancelled = false;
-    setResolvingBank(true);
-    const t = setTimeout(async () => {
-      try {
-        const res = await apiJson('/api/transfers/resolve/', { account_number: acct }); // no bank -> auto-detect
-        if (cancelled) return;
-        // `mock` => the server has no live name-enquiry rail, so the match is a
-        // placeholder, not a real detection. Don't auto-fill it as a verified
-        // bank/holder (that's what looked like "mis-detection") — ask the user to
-        // pick the bank instead (the picker is searchable).
-        if (res.success && res.mock) setBankErr("Couldn't auto-detect — tap “Bank” to choose it.");
-        else if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
-        else if (res.success && res.matches?.length) setMatches(res.matches);
-        else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
-      } catch {
-        if (!cancelled) setBankErr("Couldn't verify this account. Please try again.");
-      } finally {
-        if (!cancelled) setResolvingBank(false);
+    let detectTimer: ReturnType<typeof setTimeout> | undefined;
+    const setupTimer = setTimeout(() => {
+      setBank(null); setBankName(''); setBankErr(''); setMatches([]);
+      if (acct.length !== 10) return;
+      const ben = beneficiaries.find((b) => b.bank_name !== 'Zitch' && b.account_number === acct);
+      const known = ben && banks.find((x) => x.name === ben.bank_name);
+      if (ben && known) {
+        setBank(known);
+        setBankName(ben.name);
+        return;
       }
-    }, 500);
-    return () => { cancelled = true; clearTimeout(t); };
+      setResolvingBank(true);
+      detectTimer = setTimeout(async () => {
+        try {
+          const res = await apiJson('/api/transfers/resolve/', { account_number: acct }); // no bank -> auto-detect
+          if (cancelled) return;
+          // `mock` => the server has no live name-enquiry rail, so the match is a
+          // placeholder, not a real detection. Don't auto-fill it as a verified
+          // bank/holder (that's what looked like "mis-detection") — ask the user to
+          // pick the bank instead (the picker is searchable).
+          if (res.success && res.mock) setBankErr("Couldn't auto-detect — tap “Bank” to choose it.");
+          else if (res.success && res.matches?.length === 1) applyMatch(res.matches[0]);
+          else if (res.success && res.matches?.length) setMatches(res.matches);
+          else setBankErr(res.message || "Couldn't detect the bank — tap “Bank” to pick it.");
+        } catch {
+          if (!cancelled) setBankErr("Couldn't verify this account. Please try again.");
+        } finally {
+          if (!cancelled) setResolvingBank(false);
+        }
+      }, 500);
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(setupTimer);
+      if (detectTimer) clearTimeout(detectTimer);
+    };
   }, [acct, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Manual override: resolve at the specific bank the user picks from the sheet.
   const chooseBank = async (b: Bank) => {
+    idemKey.current = '';
     setBank(b); setBankSheet(false); setBankQuery(''); setMatches([]); setBankName(''); setBankErr('');
     if (acct.length !== 10) return;
     setResolvingBank(true);
@@ -177,16 +184,6 @@ const SendMoney = () => {
       identifier: id, amount: amt, transaction_pin: pin, note, idempotency_key: idemKey.current,
     });
   };
-
-  const idemKey = useRef('');  // stable across retries of one transfer attempt
-
-  // A change to ANY transfer detail is a new spend — drop the retained key so
-  // the next attempt mints a fresh one. We deliberately KEEP the key across a
-  // byte-identical retry (so a timed-out-but-delivered attempt replays
-  // server-side instead of double-debiting); but if the user edits the amount,
-  // account, bank, recipient, mode or note, reusing that key would replay the
-  // PRIOR transfer and render a false success for the edited one.
-  useEffect(() => { idemKey.current = ''; }, [amt, acct, bank?.code, mode, picked?.id, identifier, note]);
 
   // After a PIN-approved transfer, offer (once) to approve future payments with
   // Face ID / fingerprint instead of the PIN. The money PIN is cached only after
@@ -328,7 +325,7 @@ const SendMoney = () => {
       <Segmented
         options={[{ v: 'bank', label: 'To Bank' }, { v: 'zitch', label: 'To Zitch' }]}
         value={mode}
-        onChange={(v) => { setMode(v as any); setPicked(null); setAcct(''); setBank(null); setIdentifier(''); setResolvedName(''); }}
+        onChange={(v) => { idemKey.current = ''; setMode(v as any); setPicked(null); setAcct(''); setBank(null); setIdentifier(''); setResolvedName(''); }}
       />
 
       {picked ? (
@@ -338,16 +335,16 @@ const SendMoney = () => {
             <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{picked.name}</Text>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{picked.account_number} · {picked.bank_name}</Text>
           </View>
-          <Pressable onPress={() => setPicked(null)}><Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Change</Text></Pressable>
+          <Pressable onPress={() => { idemKey.current = ''; setPicked(null); }}><Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Change</Text></Pressable>
         </View>
       ) : mode === 'bank' ? (
         <>
-          <Field label="Account number" value={acct} onChangeText={(v) => setAcct(v.replace(/\D/g, '').slice(0, 10))} keyboardType="number-pad" placeholder="Enter 10-digit account number" prefix={<ZIcon name="bank" size={18} color={c.ink3} />} />
+          <Field label="Account number" value={acct} onChangeText={(v) => { idemKey.current = ''; setAcct(v.replace(/\D/g, '').slice(0, 10)); }} keyboardType="number-pad" placeholder="Enter 10-digit account number" prefix={<ZIcon name="bank" size={18} color={c.ink3} />} />
           {acctSuggestions.length > 0 && (
             <View style={{ marginTop: 8 }}>
               <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Sent before</Text>
               {acctSuggestions.map((b) => (
-                <Pressable key={b.id} onPress={() => setAcct(b.account_number)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
+                <Pressable key={b.id} onPress={() => { idemKey.current = ''; setAcct(b.account_number); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
                   <Monogram text={b.initials} color={b.color} size={32} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.name}</Text>
@@ -391,7 +388,7 @@ const SendMoney = () => {
         </>
       ) : (
         <>
-          <Field label="Zitch tag or phone" value={identifier} onChangeText={(v) => setIdentifier(v.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15))} placeholder="@username / 0801…" prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
+          <Field label="Zitch tag or phone" value={identifier} onChangeText={(v) => { idemKey.current = ''; setResolvedName(''); setIdentifier(v.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15)); }} placeholder="@username / 0801…" prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
           <View style={{ marginTop: 8, marginBottom: 8 }}>
             {resolvedName ? <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5 }}>✓ {resolvedName}</Text>
               : <Btn label="Confirm recipient" variant="outline" size="sm" full={false} onPress={resolveZitch} disabled={resolving} />}
@@ -402,12 +399,12 @@ const SendMoney = () => {
       {/* Amount: the field leads, with the quick presets as a slim pill row of
           suggestions underneath (was a dominant 2×3 grid above the field). */}
       <Label>Amount</Label>
-      <Field value={amt} onChangeText={(v) => setAmt(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
+      <Field value={amt} onChangeText={(v) => { idemKey.current = ''; setAmt(v.replace(/\D/g, '')); }} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
       <View style={{ height: 10 }} />
-      <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
+      <QuickAmounts amounts={AMOUNTS} value={amt} onPick={(v) => { idemKey.current = ''; setAmt(v); }} />
       <BalanceHint amount={amount} balance={balance} />
 
-      <Field label="Narration (optional)" value={note} onChangeText={setNote} placeholder="What's it for?" />
+      <Field label="Narration (optional)" value={note} onChangeText={(v) => { idemKey.current = ''; setNote(v); }} placeholder="What's it for?" />
       <View style={{ height: 20 }} />
 
       <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
@@ -424,7 +421,7 @@ const SendMoney = () => {
           ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 4 }}>
               {filteredBens.map((b) => (
-                <Pressable key={b.id} onPress={() => setPicked(b)} style={{ alignItems: 'center', gap: 7, width: 64 }}>
+                <Pressable key={b.id} onPress={() => { idemKey.current = ''; setPicked(b); }} style={{ alignItems: 'center', gap: 7, width: 64 }}>
                   <Monogram text={b.initials} color={b.color} size={52} />
                   <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{b.name.split(' ')[0]}</Text>
                 </Pressable>

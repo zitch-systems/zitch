@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { BottomTabBarProps } from '@react-navigation/bottom-tabs';
+import type { BottomTabBarProps } from 'expo-router/js-tabs';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark, ZWordmark, Avatar } from '@/components/design/Brand';
 import { useTheme, font } from '@/lib/theme';

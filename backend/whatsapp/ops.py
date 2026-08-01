@@ -4,9 +4,13 @@ The admin/agent surfaces ride on Django admin + a few staff-only endpoints;
 these are the shared services behind them.
 """
 import logging
+import re
+
+from django.db import transaction as db_transaction
 
 from .models import AuditLog, Broadcast, BroadcastRecipient, WhatsAppLink
-from .providers import send_template
+
+_TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9_]{1,120}$")
 
 
 def record_audit(action, actor=None, target="", before=None, after=None, actor_type="admin"):
@@ -52,34 +56,87 @@ def _segment_links(broadcast: Broadcast):
     return qs
 
 
-def send_broadcast(broadcast: Broadcast, actor=None) -> Broadcast:
-    """Send a template to every segment-matched recipient, tracking outcomes.
+def validate_broadcast_spec(data: dict) -> dict:
+    """Return the small, JSON-safe broadcast spec that a checker can approve."""
+    template = str((data or {}).get("template_name") or "").strip()
+    if not _TEMPLATE_NAME_RE.fullmatch(template):
+        raise ValueError("template_name must use lowercase letters, numbers and underscores")
 
-    A provider block (e.g. Meta's per-user marketing cap, code 131049) is
-    recorded on the recipient and never blindly retried (hard-rule #8 / §9).
-    """
-    broadcast.status = Broadcast.SENDING
-    broadcast.save(update_fields=["status"])
+    category = str((data or {}).get("category") or Broadcast.UTILITY).strip().lower()
+    if category not in (Broadcast.UTILITY, Broadcast.MARKETING):
+        raise ValueError("category must be utility or marketing")
 
-    links = list(_segment_links(broadcast))
-    sent = failed = 0
-    for link in links:
-        res = send_template(link.wa_msisdn, broadcast.template_name, broadcast.body_params)
-        ok = bool(res.get("success"))
-        BroadcastRecipient.objects.create(
-            broadcast=broadcast, user=link.user, wa_msisdn=link.wa_msisdn,
-            status="sent" if ok else "failed", wa_message_id=res.get("message_id", ""),
-            error="" if ok else str(res.get("error_code") or res.get("message") or "send failed"),
-        )
-        sent += int(ok)
-        failed += int(not ok)
+    params = (data or {}).get("body_params", [])
+    if not isinstance(params, list) or len(params) > 20:
+        raise ValueError("body_params must be a list with at most 20 values")
+    if any(isinstance(value, (dict, list)) for value in params):
+        raise ValueError("body_params values must be scalar")
+    params = [str(value)[:1024] for value in params]
 
-    broadcast.count_queued = len(links)
-    broadcast.count_sent = sent
-    broadcast.count_failed = failed
-    broadcast.status = Broadcast.DONE
-    broadcast.save(update_fields=["count_queued", "count_sent", "count_failed", "status"])
-    record_audit("broadcast.send", actor=actor, target=f"broadcast:{broadcast.id}",
-                 after={"template": broadcast.template_name, "queued": len(links),
-                        "sent": sent, "failed": failed})
-    return broadcast
+    segment = (data or {}).get("segment", {})
+    if not isinstance(segment, dict):
+        raise ValueError("segment must be an object")
+    unknown = set(segment) - {"tier", "marketing_opt_in"}
+    if unknown:
+        raise ValueError("unsupported segment field")
+    clean_segment = {}
+    if "tier" in segment:
+        try:
+            tier = int(segment["tier"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("segment tier must be 1, 2 or 3") from exc
+        if tier not in (1, 2, 3):
+            raise ValueError("segment tier must be 1, 2 or 3")
+        clean_segment["tier"] = tier
+    if segment.get("marketing_opt_in"):
+        clean_segment["marketing_opt_in"] = True
+
+    return {
+        "template_name": template,
+        "category": category,
+        "body_params": params,
+        "segment": clean_segment,
+    }
+
+
+def queue_broadcast(broadcast: Broadcast, actor=None) -> Broadcast:
+    """Materialise recipients before any provider call and hand them to the worker."""
+    with db_transaction.atomic():
+        locked = Broadcast.objects.select_for_update().get(pk=broadcast.pk)
+        if locked.status != Broadcast.DRAFT:
+            return locked
+        links = list(_segment_links(locked))
+        BroadcastRecipient.objects.bulk_create([
+            BroadcastRecipient(
+                broadcast=locked, user=link.user, wa_msisdn=link.wa_msisdn,
+            )
+            for link in links
+        ])
+        locked.count_queued = len(links)
+        # An empty audience is already complete; otherwise a worker owns delivery.
+        locked.status = Broadcast.QUEUED if links else Broadcast.DONE
+        locked.save(update_fields=["count_queued", "status"])
+
+    record_audit(
+        "broadcast.queued", actor=actor, target=f"broadcast:{locked.id}",
+        after={"template": locked.template_name, "category": locked.category,
+               "queued": locked.count_queued},
+    )
+    return locked
+
+
+def create_queued_broadcast(spec: dict, *, actor=None, approval_request=None) -> Broadcast:
+    """Idempotently create and queue the campaign approved by maker/checker."""
+    clean = validate_broadcast_spec(spec)
+    if approval_request is not None:
+        existing = Broadcast.objects.filter(approval_request=approval_request).first()
+        if existing is not None:
+            return existing
+    broadcast = Broadcast.objects.create(
+        **clean, created_by=actor, approval_request=approval_request,
+    )
+    return queue_broadcast(broadcast, actor=actor)
+
+
+# Compatibility for internal callers while preserving the new durable semantics.
+send_broadcast = queue_broadcast

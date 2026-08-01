@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, Animated, Easing, Image } from 'react-native';
 import { useTheme, font, palette } from '@/lib/theme';
 
@@ -49,7 +49,7 @@ const SPACING = 8.5;   // vertical gap between bands
  * it stays 60fps even as a full-screen loader.
  */
 const ZCoil = ({ scale = 1, color }: { scale?: number; color: string }) => {
-  const spin = useRef(new Animated.Value(0)).current;
+  const [spin] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     const s = Animated.loop(
@@ -155,7 +155,7 @@ export const Loading = ({ label, full = true }: { label?: string; full?: boolean
  */
 export const LoadingMark = ({ size = 20 }: { size?: number }) => {
   const { c } = useTheme();
-  const spin = useRef(new Animated.Value(0)).current;
+  const [spin] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     const s = Animated.loop(

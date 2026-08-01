@@ -161,10 +161,11 @@ from chat. Built deterministic-first so money never depends on the AI being up.
     message. While a conversation is `human`, the bot stays silent. The message
     log (with the parsed AI intent) is the inbox, browsable in Django admin.
   - **Broadcasts (§9):** `Broadcast` + `BroadcastRecipient`; `ops/broadcast/`
-    sends a template to a segment — **marketing only reaches opted-in users**,
-    utility reaches all linked. `STOP`/`UNSUBSCRIBE` inbound flips
-    `marketing_opt_in` off. Delivery callbacks update per-recipient status +
-    roll-up counts. A provider block (e.g. Meta 131049) is recorded, not retried.
+    creates a maker/checker request, and only a different broadcast operator can
+    approve the durable outbox. **Marketing only reaches opted-in users**; utility
+    reaches all linked. `STOP`/`UNSUBSCRIBE` flips `marketing_opt_in` off. Delivery
+    callbacks update per-recipient status + roll-up counts. Definite blocks are
+    recorded; provider-ambiguous calls become `unknown` and are never blindly retried.
   - **Audit (§hard-rule #10):** `AuditLog` records handovers, agent replies, and
     broadcasts (actor + before/after).
   - **RBAC (§11):** every `/api/ops/*` endpoint is staff-gated and role-checked
@@ -189,7 +190,8 @@ from chat. Built deterministic-first so money never depends on the AI being up.
   default on; CNY stays settlement-blocked in code regardless).
 
 Set the webhook URL + `WHATSAPP_VERIFY_TOKEN` in the Meta app dashboard and fill
-the `WHATSAPP_*` env vars (see `.env.example`).
+the `WHATSAPP_*` env vars (see `.env.example`). Start the durable worker only after
+following `../docs/whatsapp-production-operations.md`.
 
 ## Before go-live (TODO)
 - **HTTPS hardening is automatic.** With `DJANGO_DEBUG=false` (set in
@@ -198,10 +200,10 @@ the `WHATSAPP_*` env vars (see `.env.example`).
   --deploy` is clean. HSTS **preload** stays opt-in (`DJANGO_HSTS_PRELOAD=true`)
   because it's hard to reverse, and a deploy still running on the dev
   `SECRET_KEY` now fails fast instead of booting insecure.
-- **Upgrade off the free tier.** Flip the web service and Postgres in
-  `render.yaml` from `plan: free` to a paid plan before real money: free web
-  sleeps (webhooks need always-on) and free Postgres expires. The two crons
-  (`zitch-maturities`, `zitch-reconcile-vtu`) already require a paid plan.
+- **Apply the production Blueprint deliberately.** `render.yaml` declares a paid
+  always-on web service, WhatsApp worker, shared cache and paid Postgres. Review cost
+  and confirm it adopts the existing Render resources rather than creating duplicates;
+  then remove the live database's current public `0.0.0.0/0` allow-list entry.
 - VTU.ng (v2) is the fallback VTU provider, in `utility/vtung.py` (called via the
   `utility/providers.py` `vtu_*` wrappers). Confirm the tv/electricity/betting
   request field names, the customer-verify endpoint, the 9mobile `service_id`,
