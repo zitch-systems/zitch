@@ -9,6 +9,7 @@ falls back to the deterministic router. The SDK is imported lazily, so the app
 runs (and tests pass) without `anthropic` installed.
 """
 import logging
+import re
 
 from django.conf import settings
 
@@ -91,6 +92,20 @@ def llm_available() -> bool:
     return bool(settings.LLM.get("API_KEY"))
 
 
+_LONG_IDENTIFIER = re.compile(r"(?<!\d)\d{7,}(?!\d)")
+_EMAIL = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+
+
+def privacy_safe_text(text: str) -> str:
+    """Remove direct identifiers before optional third-party intent extraction.
+
+    The model only needs to choose a flow. Account, phone, meter and smartcard
+    numbers are collected/validated by deterministic code after routing.
+    """
+    safe = _EMAIL.sub("[email redacted]", str(text or ""))
+    return _LONG_IDENTIFIER.sub("[identifier redacted]", safe)
+
+
 def extract_intent(text: str) -> dict | None:
     """Map a message to one tool call -> {"name", "input"}, or None to fall back
     to the deterministic router (no key, or any error — money never blocks on AI)."""
@@ -115,12 +130,12 @@ def extract_intent(text: str) -> dict | None:
             system=SYSTEM_PROMPT,
             tools=TOOLS,
             tool_choice={"type": "any"},  # force exactly one tool call
-            messages=[{"role": "user", "content": text}],
+            messages=[{"role": "user", "content": privacy_safe_text(text)}],
         )
         for block in resp.content:
             if getattr(block, "type", None) == "tool_use":
                 return {"name": block.name, "input": dict(block.input or {})}
         return None
     except Exception as exc:  # noqa: BLE001 — never let the AI break the channel
-        log.warning("LLM intent extraction failed: %s", exc)
+        log.warning("llm_intent_failed error_type=%s", type(exc).__name__)
         return None

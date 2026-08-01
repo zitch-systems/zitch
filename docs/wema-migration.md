@@ -104,7 +104,7 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 | Capability | Status |
 |-----------|--------|
 | Recipient name enquiry | **live-capable** |
-| Bank payout (transfer out) | **wired**; `securityInfo` is optional (see below) |
+| Bank payout (transfer out) | **wired**; production requires `securityInfo` to match the callback (see below) |
 | Payout settlement (no webhook) | polled by `reconcile_wema` (Phase 2) |
 | Wallet funding account (NUBAN) | **wired** — BVN→OTP→NUBAN, app drives it in `addmoney.tsx` |
 | Inbound deposit crediting (no webhook) | polled by `reconcile_wema` (Phase 1); **only settled (Successfull) credit rows** |
@@ -458,12 +458,12 @@ above arrive **from**, are:
 | Egress IP 1 | `135.236.18.76` |
 | Egress IP 2 | `74.178.162.156` |
 
-These are now enforced in application code, but **off by default**
-(`WEMA_CALLBACK_ENFORCE_IPS=false`) so the first profiling round cannot be mistaken for "the
-bank never called". Turn enforcement on once a real callback confirms the observed source IP,
-and keep `WEMA_CALLBACK_IPS` env-overridable — Azure egress addresses rotate. The allowlist is
-a second factor, never the only one: the path secret and the ledger-state checks above are
-what actually protect the money.
+These are enforced in production by default; debug and automated-test environments default
+off so the trusted-proxy hop can be diagnosed safely. Keep `WEMA_CALLBACK_IPS`
+environment-overridable — Azure egress addresses can change — and validate the resolved
+source IP before enabling a development callback test. The allowlist is a second factor,
+never the only one: the path secret, `securityInfo`, and ledger-state checks above are what
+protect the money.
 
 **That condition is now checkable rather than a matter of waiting.** Dev was profiled on
 2026-07-28, so callbacks have arrived, and every inbound callback records its source in

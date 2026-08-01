@@ -42,6 +42,7 @@ const LinkWhatsApp = () => {
   const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollDeadlineRef = useRef(0);
 
   const stopPoll = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -50,15 +51,23 @@ const LinkWhatsApp = () => {
 
   // Check whether this account already has an active WhatsApp link.
   const refreshStatus = useCallback(async (silent = false): Promise<boolean> => {
-    const res = await apiJson<{ linked?: boolean; masked_number?: string }>('/api/whatsapp/link/status/');
-    if (res?.linked) {
-      setMasked(res.masked_number || '');
-      setStage('linked');
-      stopPoll();
-      return true;
+    try {
+      const res = await apiJson<{ linked?: boolean; masked_number?: string }>('/api/whatsapp/link/status/');
+      if (res?.linked) {
+        setMasked(res.masked_number || '');
+        setStage('linked');
+        stopPoll();
+        return true;
+      }
+      if (!silent) setStage((s) => (s === 'loading' ? 'unlinked' : s));
+      return false;
+    } catch {
+      if (!silent) {
+        setStage((s) => (s === 'loading' ? 'unlinked' : s));
+        notify('Connection error', 'Could not check your WhatsApp link. Please try again.');
+      }
+      return false;
     }
-    if (!silent) setStage((s) => (s === 'loading' ? 'unlinked' : s));
-    return false;
   }, [stopPoll]);
 
   useEffect(() => { refreshStatus(); return () => stopPoll(); }, [refreshStatus, stopPoll]);
@@ -74,7 +83,18 @@ const LinkWhatsApp = () => {
       // Auto-detect the moment the user sends the code from WhatsApp.
       stopPoll();
       setPolling(true);
-      pollRef.current = setInterval(() => { refreshStatus(true); }, 4000);
+      pollDeadlineRef.current = Date.now() + (10 * 60 * 1000);
+      pollRef.current = setInterval(() => {
+        if (Date.now() >= pollDeadlineRef.current) {
+          stopPoll();
+          notify('Code expired', 'Generate a new WhatsApp link code to continue.');
+          setStage('unlinked');
+          setCode('');
+          setWaLink('');
+          return;
+        }
+        void refreshStatus(true);
+      }, 4000);
     } else {
       notify('Error', res?.message || 'Could not generate a code. Please try again.');
     }
@@ -132,7 +152,7 @@ const LinkWhatsApp = () => {
         <>
           <Card style={{ alignItems: 'center' }}>
             <Text style={{ fontFamily: font.medium, fontSize: 12, color: c.ink3, textTransform: 'uppercase', letterSpacing: 1 }}>Your link code</Text>
-            <Text style={{ fontFamily: font.bold, fontSize: 34, color: c.ink1, letterSpacing: 6, marginTop: 8 }}>{code}</Text>
+            <Text selectable numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.55} style={{ fontFamily: font.bold, fontSize: 22, color: c.ink1, letterSpacing: 2, marginTop: 8, width: '100%', textAlign: 'center' }}>{code}</Text>
             <Pressable onPress={copyCode} style={{ marginTop: 10, paddingVertical: 7, paddingHorizontal: 15, borderRadius: 999, backgroundColor: c.surface3 }}>
               <Text style={{ fontFamily: font.semibold, fontSize: 12.5, color: c.brandDeep }}>Copy “LINK {code}”</Text>
             </Pressable>

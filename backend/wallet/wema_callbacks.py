@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from functools import wraps
 
 from django.db import transaction as db_transaction
@@ -49,6 +50,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 
+from common.http import mask_pii
 from common.ratelimit import client_ip
 from utility import wema as wema_provider
 from utility.alerts import alert
@@ -64,6 +66,7 @@ DEFAULT_CALLBACK_IPS = ("135.236.18.76", "74.178.162.156")
 
 _REF_MAX = 64          # Transaction.reference is max_length=64
 _SECURITY_INFO_MAX = 4096
+CALLBACK_BODY_MAX = 64 * 1024
 
 # Shortest gap between two BANK requeries for the same reference. Without it this
 # endpoint is a 1:1 amplifier into ALAT's own API — one inbound callback, one
@@ -161,7 +164,20 @@ def wema_callback(kind: str):
                                http_status=403, remote_ip=ip)
                 return JsonResponse({"message": "Forbidden"}, status=403)
             try:
-                body = json.loads(request.body or b"{}")
+                declared_size = int(request.META.get("CONTENT_LENGTH") or 0)
+            except (TypeError, ValueError):
+                declared_size = 0
+            if declared_size > CALLBACK_BODY_MAX:
+                record_webhook(source, outcome=WebhookEvent.BAD_BODY, verified=True,
+                               http_status=413, remote_ip=ip, action="body_too_large")
+                return JsonResponse({"message": "Payload too large"}, status=413)
+            try:
+                raw_body = request.body or b"{}"
+                if len(raw_body) > CALLBACK_BODY_MAX:
+                    record_webhook(source, outcome=WebhookEvent.BAD_BODY, verified=True,
+                                   http_status=413, remote_ip=ip, action="body_too_large")
+                    return JsonResponse({"message": "Payload too large"}, status=413)
+                body = json.loads(raw_body)
                 if not isinstance(body, dict):
                     body = {}
                 parsed = True
@@ -209,7 +225,8 @@ def _callback_reference(body: dict) -> str:
         for holder in (body, data):
             value = holder.get(key)
             if value:
-                return str(value)
+                return (_fingerprint(str(value)) if key in ("nuban", "accountNumber")
+                        else str(value))
     return ""
 
 
@@ -229,24 +246,42 @@ def wema_account_callback(request):
     retry an event we have already recorded.
     """
     body = request.wema_body
-    data = body.get("data") or {}
+    # Treat a malformed ``data`` value as an empty object.  The callback is an
+    # untrusted network boundary; calling ``.get`` on a list/string here would turn
+    # a bad bank payload into a 500 and retry storm instead of quarantining it.
+    raw_data = body.get("data")
+    data = raw_data if isinstance(raw_data, dict) else {}
     nuban = str(data.get("nuban") or "").strip()
     phone = str(data.get("phoneNumber") or "").strip()
     email = str(data.get("email") or "").strip()
     name = str(data.get("nubanName") or "").strip()
     status = str(data.get("nubanStatus") or "").strip()
 
-    if not nuban:
-        log.warning("wema_account_cb_no_nuban ip=%s keys=%s", request.wema_ip, sorted(body))
+    valid_schema = (
+        str(body.get("requestType") or "").strip() == "2"
+        and isinstance(raw_data, dict)
+        and re.fullmatch(r"\d{10}", nuban) is not None
+        and str(data.get("type") or "").strip() == "1"
+        and status.lower() == "active"
+        and bool(phone or email)
+    )
+    if not valid_schema:
+        request.wema_action = "quarantined:invalid_schema"
+        log.warning("wema_account_cb_invalid_schema ip=%s request_type=%r data_keys=%s",
+                    request.wema_ip, body.get("requestType"),
+                    sorted(data) if isinstance(data, dict) else [])
+        alert("Invalid Wema account callback quarantined", level="warning",
+              request_type=str(body.get("requestType") or ""), has_nuban=bool(nuban),
+              bank_status=status[:32])
         return JsonResponse({"status": True}, status=200)
 
     user = _resolve_user(phone=phone, email=email)
     if user is None:
         # Never guess. An unmatched NUBAN is a real operational event — the account
         # exists at the bank and money can land in it — so alert rather than drop.
-        log.warning("wema_account_cb_no_user nuban=%s ip=%s", nuban, request.wema_ip)
+        log.warning("wema_account_cb_no_user nuban=%s ip=%s", mask_pii(nuban), request.wema_ip)
         alert("Wema account callback for an unknown customer", level="warning",
-              nuban=nuban, has_phone=bool(phone), has_email=bool(email))
+              nuban_fingerprint=_fingerprint(nuban), has_phone=bool(phone), has_email=bool(email))
         return JsonResponse({"status": True}, status=200)
 
     wallet, outcome = provision_wema_account(
@@ -254,9 +289,10 @@ def wema_account_callback(request):
         source="callback")
     if outcome.startswith("conflict"):
         log.warning("wema_account_cb_conflict user=%s nuban=%s outcome=%s",
-                    user.id, nuban, outcome)
+                    user.id, mask_pii(nuban), outcome)
         alert("Wema account callback conflicted with an existing wallet",
-              level="error", user_id=user.id, nuban=nuban, outcome=outcome)
+              level="error", user_id=user.id, nuban_fingerprint=_fingerprint(nuban),
+              outcome=outcome)
         return JsonResponse({"status": True}, status=200)
 
     if outcome == "provisioned":
@@ -274,13 +310,15 @@ def wema_account_callback(request):
         try:
             lifted = bool(wema_provider.lift_debit_restriction(nuban).get("success"))
         except Exception:                        # noqa: BLE001 — see above
-            log.exception("wema_pnd_lift_error_cb user=%s account=%s", user.id, nuban)
+            log.exception("wema_pnd_lift_error_cb user=%s account=%s",
+                          user.id, mask_pii(nuban))
             lifted = False
         if not lifted:
-            log.warning("wema_pnd_lift_failed_cb user=%s account=%s", user.id, nuban)
+            log.warning("wema_pnd_lift_failed_cb user=%s account=%s",
+                        user.id, mask_pii(nuban))
 
     log.info("wema_account_cb user=%s nuban=%s outcome=%s bank_status=%s",
-             user.id, nuban, outcome, status)
+             user.id, mask_pii(nuban), outcome, status)
     return JsonResponse({"status": True}, status=200)
 
 

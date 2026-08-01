@@ -57,6 +57,56 @@ class Wallet(models.Model):
         return f"{self.user} · ₦{self.balance}"
 
 
+class WemaProvisioningAttempt(models.Model):
+    """Server-side binding for the two-step Wema identity/OTP flow.
+
+    Only the keyed identifier hash and last four digits are retained.  The raw
+    BVN/NIN is sent to Wema during initiation and then discarded.  OTP validation
+    derives the identity type from this row, so a client cannot initiate with one
+    identity and mark another one verified after receiving the code.
+    """
+
+    BVN = "bvn"
+    NIN = "nin"
+    IDENTITY_TYPES = [(BVN, "BVN"), (NIN, "NIN")]
+
+    PENDING = "pending"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (VERIFIED, VERIFIED), (FAILED, FAILED)]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="wema_provisioning_attempts",
+    )
+    tracking_id = models.CharField(max_length=160)
+    identity_type = models.CharField(max_length=3, choices=IDENTITY_TYPES)
+    identity_hash = models.CharField(max_length=64)
+    identity_last4 = models.CharField(max_length=4)
+    status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "tracking_id"],
+                name="uniq_user_wema_tracking_id",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "status", "expires_at"],
+                         name="wema_attempt_lookup_idx"),
+        ]
+
+    @property
+    def expired(self) -> bool:
+        from django.utils import timezone
+
+        return timezone.now() >= self.expires_at
+
+
 class Transaction(models.Model):
     """Append-only ledger row. One per money movement."""
 

@@ -29,9 +29,10 @@ https://api.zitch.ng/webhooks/wema/transaction/<WEMA_CALLBACK_TOKEN>
 https://api.zitch.ng/webhooks/wema/notification/<WEMA_CALLBACK_TOKEN>   (production only)
 ```
 
-Before handing these to the bank again for production, run
-`https://api.zitch.ng/wema-callbacks-diagnose?token=<WEMA_DIAG_TOKEN>` and read
-`ready_to_send_to_the_bank`. It checks in-process that each route resolves and — the
+Before handing these to the bank again for production, send `GET
+https://api.zitch.ng/wema-callbacks-diagnose` with `Authorization: Bearer
+<WEMA_DIAG_TOKEN>` and read `ready_to_send_to_the_bank`. It returns templates without
+the callback secret and checks in-process that each route resolves and — the
 assertion that matters — that a *deliberately wrong* secret is refused.
 
 ## 2. Two things to change on your side, now
@@ -49,19 +50,19 @@ misunderstanding, and nothing on the bank side has our IPs. And the two addresse
 gave are **exactly** the values already compiled in as the default `WEMA_CALLBACK_IPS`,
 now confirmed by the bank in writing.
 
-`WEMA_CALLBACK_ENFORCE_IPS` is off, and its documented reason is that enforcement before
-the first profiling round would make *"the bank never called"* and *"we rejected the
-bank"* look identical. **That precondition is met:** dev is profiled and the IPs are
-confirmed.
+Production now defaults `WEMA_CALLBACK_ENFORCE_IPS` on and refuses to start the money
+rail readiness gate unless the allowlist is configured. In development, first use the
+callback diagnostic to verify Render's trusted-proxy hop; otherwise an allowlist can
+compare Wema's addresses with an internal platform proxy and refuse every callback.
 
 ```
 WEMA_CALLBACK_ENFORCE_IPS=true
 WEMA_CALLBACK_IPS=135.236.18.76,74.178.162.156
 ```
 
-The default is deliberately left `false` in code rather than flipped here: if Wema ever
-adds a third egress address, enforcement refuses real callbacks, and that failure should
-follow from an operator's decision rather than from a default nobody chose.
+Keep the values environment-overridable and treat any bank IP change as a controlled
+configuration release. Failing closed is intentional; update the allowlist only after
+written confirmation from Wema.
 
 ### Rotate the callback token before production
 

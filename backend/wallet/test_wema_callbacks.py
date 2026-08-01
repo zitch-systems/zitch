@@ -106,6 +106,26 @@ class WemaAccountCallbackTests(TestCase):
         self.assertEqual(r.status_code, 200)          # never 4xx — the bank would retry
         self.assertFalse(Wallet.objects.filter(account_number="0999999999").exists())
 
+    def test_invalid_callback_schema_is_quarantined(self):
+        for mutate in (
+            lambda p: p.update(requestType=3),
+            lambda p: p["data"].update(nuban="123"),
+            lambda p: p["data"].update(type=2),
+            lambda p: p["data"].update(nubanStatus="Closed"),
+        ):
+            payload = self._payload()
+            mutate(payload)
+            response = self._post(payload)
+            self.assertEqual(response.status_code, 200)
+        self.assertFalse(Wallet.objects.filter(account_number="0155500099").exists())
+
+    def test_non_object_callback_data_is_quarantined_without_500(self):
+        payload = self._payload()
+        payload["data"] = ["not", "an", "object"]
+        response = self._post(payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Wallet.objects.filter(account_number="0155500099").exists())
+
     @patch("utility.wema.lift_debit_restriction", return_value={"success": True})
     def test_email_fallback_resolves_when_phone_is_unrecognised(self, _pnd):
         # The bank's phone spelling may not match ours; a UNIQUE email still identifies
@@ -290,7 +310,7 @@ class WemaTransactionCallbackTests(TestCase):
 
 @override_settings(WEMA=WEMA_CB)
 class WemaCallbacksDiagnoseTests(TestCase):
-    """/wema-callbacks-diagnose — the browser check for a host with no shell.
+    """/wema-callbacks-diagnose — the remote check for a host with no shell.
 
     The four URLs must be PROFILED with ALAT before any rail works, so the cost of
     handing over a wrong one is a silent dead end at the bank. This view is what
@@ -303,8 +323,12 @@ class WemaCallbacksDiagnoseTests(TestCase):
         self._env.start()
         self.addCleanup(self._env.stop)
 
-    def _get(self, token="diag-secret"):
-        return self.client.get("/wema-callbacks-diagnose", {"token": token})
+    def _get(self, token="diag-secret", **headers):
+        return self.client.get(
+            "/wema-callbacks-diagnose",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+            **headers,
+        )
 
     def _body(self, **kw):
         return json.loads(self._get(**kw).content)["callbacks"]
@@ -312,12 +336,16 @@ class WemaCallbacksDiagnoseTests(TestCase):
     def test_requires_the_diagnose_token(self):
         self.assertEqual(self._get(token="wrong").status_code, 403)
 
+    def test_query_string_token_is_rejected(self):
+        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"})
+        self.assertEqual(r.status_code, 403)
+
     def test_lists_all_four_urls_and_they_all_resolve(self):
         body = self._body()
         self.assertEqual(len(body["routes"]), 4)
         for route in body["routes"]:
             self.assertTrue(route["resolves"], route)
-            self.assertIn(TOKEN, route["url"])          # the string to give the bank
+            self.assertIn("<WEMA_CALLBACK_TOKEN>", route["url_template"])
         handlers = {r["handler"] for r in body["routes"]}
         self.assertEqual(handlers, {"wema_account_callback", "wema_authenticate_callback",
                                     "wema_transaction_callback", "wema_notification_callback"})
@@ -329,13 +357,9 @@ class WemaCallbacksDiagnoseTests(TestCase):
         self.assertTrue(body["wrong_secret_is_refused"])
 
     def test_never_returns_the_callback_secret_itself(self):
-        # The URLs necessarily contain it — nothing else may, and the fingerprint
-        # must not be reversible to it.
         body = self._body()
-        self.assertNotIn(TOKEN, body["secret_fingerprint"])
-        for key, value in body.items():
-            if key != "routes":
-                self.assertNotIn(TOKEN, str(value), key)
+        self.assertNotIn(TOKEN, str(body))
+        self.assertIn("no-store", self._get()["Cache-Control"])
 
     @override_settings(WEMA={**WEMA_CB, "CALLBACK_TOKEN": ""})
     def test_unset_secret_blocks_the_handover(self):
@@ -356,20 +380,21 @@ class WemaCallbacksDiagnoseTests(TestCase):
         # a slash, so a slashless-only route answers a bare HTML 404 for the slashed
         # spelling — which reads as "not deployed", the exact question this endpoint
         # exists to answer.
-        r = self.client.get("/wema-callbacks-diagnose/", {"token": "diag-secret"})
+        r = self.client.get("/wema-callbacks-diagnose/",
+                            HTTP_AUTHORIZATION="Bearer diag-secret")
         self.assertEqual(r.status_code, 200)
 
     @patch.dict(os.environ, {"DIAG_TOKEN": "", "WEMA_DIAG_TOKEN": "wema-only-secret"})
     def test_wema_diag_token_also_opens_it(self):
-        r = self.client.get("/wema-callbacks-diagnose", {"token": "wema-only-secret"})
+        r = self.client.get("/wema-callbacks-diagnose",
+                            HTTP_AUTHORIZATION="Bearer wema-only-secret")
         self.assertEqual(r.status_code, 200)
 
     def test_reports_the_proxy_hop_chain_for_ip_enforcement(self):
         # On a platform that fronts the app with its own proxies, client_ip() can
         # resolve to an INTERNAL hop. An allowlist compared against that refuses every
         # bank callback while looking correctly configured, so the raw chain is shown.
-        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"},
-                            HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
         det = json.loads(r.content)["callbacks"]["source_ip_detection"]
         self.assertEqual(det["x_forwarded_for"], ["41.58.1.9", "10.30.28.8"])
         self.assertEqual(det["suggested_trusted_proxy_hops"], 2)   # 41.58.1.9 is 2nd from right
@@ -379,8 +404,7 @@ class WemaCallbacksDiagnoseTests(TestCase):
     def test_enforcing_ips_on_a_private_hop_is_a_blocker(self):
         # hops=1 selects the right-most entry — a private platform address. Turning the
         # allowlist on here would 403 the bank on every call, so it must not read ready.
-        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"},
-                            HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
         body = json.loads(r.content)["callbacks"]
         self.assertFalse(body["ready_to_send_to_the_bank"])
         self.assertFalse(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
@@ -390,18 +414,40 @@ class WemaCallbacksDiagnoseTests(TestCase):
     @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
                        RATELIMIT_TRUSTED_PROXY_HOPS=2)
     def test_correct_hop_count_clears_the_blocker(self):
-        r = self.client.get("/wema-callbacks-diagnose", {"token": "diag-secret"},
-                            HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
+        r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
         body = json.loads(r.content)["callbacks"]
         self.assertEqual(body["this_request_came_from"], "41.58.1.9")
         self.assertTrue(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
         self.assertTrue(body["ready_to_send_to_the_bank"])
 
     def test_head_is_refused_on_the_sms_probe(self):
-        # With &phone= that endpoint sends a REAL SMS; a prefetch must not spend credit.
+        # A prefetch must not spend provider credit or text a real person.
         with patch.dict(os.environ, {"DIAG_TOKEN": "diag-secret"}):
-            r = self.client.head("/sms-diagnose", {"token": "diag-secret", "phone": "08030000000"})
+            r = self.client.head("/sms-diagnose",
+                                 HTTP_AUTHORIZATION="Bearer diag-secret")
         self.assertEqual(r.status_code, 405)
+
+    @patch("utility.providers.sms_probe", return_value={"success": True})
+    def test_sms_probe_uses_post_json_and_bearer_auth(self, probe):
+        r = self.client.post(
+            "/sms-diagnose",
+            data=json.dumps({"phone": "+234 803 000 0000"}),
+            content_type="application/json",
+            HTTP_AUTHORIZATION="Bearer diag-secret",
+        )
+        self.assertEqual(r.status_code, 200)
+        probe.assert_called_once_with("2348030000000")
+        self.assertIn("no-store", r["Cache-Control"])
+
+    @patch("utility.vtung.vtu_probe", return_value={"success": True})
+    def test_vtu_probe_uses_bearer_auth_not_query_auth(self, probe):
+        denied = self.client.get("/vtu-diagnose", {"token": "diag-secret"})
+        self.assertEqual(denied.status_code, 403)
+        r = self.client.get("/vtu-diagnose",
+                            HTTP_AUTHORIZATION="Bearer diag-secret")
+        self.assertEqual(r.status_code, 200)
+        probe.assert_called_once_with()
+        self.assertIn("no-store", r["Cache-Control"])
 
 
 @override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")

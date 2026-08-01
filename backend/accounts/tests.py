@@ -344,6 +344,33 @@ class KycTierTests(TestCase):
         self.assertNotIn("12345678901", u.bvn_hash)   # the plaintext isn't in the hash
         self.assertFalse(hasattr(u, "bvn"))            # the raw column no longer exists
 
+    def test_direct_kyc_rejects_identity_already_owned_by_another_user(self):
+        other, _ = make_user("08020000002", "other@zitch.test")
+        other.set_bvn("12345678901")
+        other.set_nin("10987654321")
+        other.bvn_verified = other.nin_verified = True
+        other.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
+                                  "bvn_verified", "nin_verified"])
+
+        bvn_response, _ = self.post(
+            "/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        nin_response, _ = self.post(
+            "/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        self.assertEqual(bvn_response.status_code, 409)
+        self.assertEqual(nin_response.status_code, 409)
+        current = User.objects.get(pk=self.user.pk)
+        self.assertFalse(current.bvn_verified)
+        self.assertFalse(current.nin_verified)
+
+    def test_bvn_otp_start_rejects_identity_owned_by_another_user(self):
+        other, _ = make_user("08020000003", "otp-other@zitch.test")
+        other.set_bvn("12345678901")
+        other.bvn_verified = True
+        other.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified"])
+        response, _ = self.post(
+            "/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        self.assertEqual(response.status_code, 409)
+
     def test_bvn_otp_flow(self):
         # Redesigned flow: enter BVN -> code sent -> confirm code -> verified.
         from django.core.cache import cache
@@ -747,4 +774,3 @@ class PasswordRecoveryTests(TestCase):
     def _auth(self, token):
         return self.client.post("/api/wallet_balance/", data=json.dumps({"access_token": token}),
                                 content_type="application/json").status_code
-

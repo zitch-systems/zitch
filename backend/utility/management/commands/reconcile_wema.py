@@ -30,14 +30,6 @@ from wallet.services import (
     settle_payout, wema_provisioned_wallets,
 )
 
-# Terminal statuses from confirm_transfer_status. The transfer-status string legend
-# isn't enumerated in the OpenAPI, so match defensively â€” anything else leaves the
-# row PENDING for the next run. "SUCCESSFULL" is ALAT's own spelling (see the
-# transhistoryV2 status enum), included so a settled payout isn't missed.
-_SETTLED = {"SUCCESS", "SUCCESSFUL", "SUCCESSFULL", "COMPLETED", "PAID", "APPROVED"}
-_REVERSED = {"FAILED", "REVERSED", "DECLINED", "CANCELLED", "REJECTED", "RETURNED"}
-
-
 class Command(BaseCommand):
     help = "Poll Wema for inbound deposits (credit) and PENDING payout settlement (no webhooks)."
 
@@ -97,17 +89,17 @@ class Command(BaseCommand):
             for txn in pending_bank_payouts(cutoff):
                 payouts_seen += 1
                 st = wema.confirm_transfer_status(txn.reference)
-                if not st.get("success"):
-                    status_failures += 1
-                    continue  # query unreachable / unknown â€” leave PENDING for next run
                 status = (st.get("status") or "").upper()
-                if status in _SETTLED:
+                outcome = wema.classify_transfer_status(status, envelope_ok=True)
+                if st.get("success") and outcome == "success":
                     if settle_payout(txn.reference) is not None:
                         settled += 1
-                elif status in _REVERSED:
+                elif not st.get("pending") and outcome == "failed" and status:
                     if reverse_transfer(txn.reference) is not None:
                         reversed_ += 1
-                # anything else: still in flight â€” leave PENDING
+                elif not st.get("pending") and not status:
+                    status_failures += 1
+                # Unknown/in-flight/unreachable: leave PENDING for the next run.
 
         from whatsapp.ops import record_audit
         record_audit("recon.wema_run", actor_type="system",

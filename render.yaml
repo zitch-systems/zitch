@@ -70,8 +70,10 @@ services:
       # NUBANs via BVN/NIN + OTP), payouts + name enquiry + balance, and BVN/NIN/vNIN
       # identity (Full KYC). Selfie/liveness + address + ID-document stay on Prembly;
       # cards on CARD_ISSUER (Wema card issuing not wired yet).
-      # Optional: DIAG_TOKEN + WEMA_DIAG_TOKEN enable the /wema-diagnose?token=... and
-      # /vtu-diagnose browser self-tests.
+      # Optional diagnostics. WEMA_DIAG_TOKEN enables POST /wema-diagnose with a
+      # Bearer token and JSON test input (never put BVN/NIN/OTP in a URL).
+      # DIAG_TOKEN protects the VTU, SMS and callback diagnostics. All use bearer
+      # headers; SMS and Wema identity inputs are POST JSON, never URL parameters.
       - key: DIAG_TOKEN
         sync: false
       - key: WEMA_DIAG_TOKEN
@@ -135,6 +137,13 @@ services:
         sync: false
       - key: WEMA_AUTH_REQUIRE_SECURITY_INFO
         sync: false
+      # Keep deterministic identity/OTP hashes stable independently of ordinary
+      # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
+      # stored identity hashes are deliberately migrated at the same time.
+      - key: DJANGO_KYC_HASH_KEY
+        generateValue: true
+      - key: DJANGO_OTP_HASH_KEY
+        generateValue: true
       # Open banking — Mono (link bank, balance/transactions, DirectPay funding).
       # Blank SECRET_KEY => mock. Webhook: /api/banklink/webhook/. BASE_URL
       # defaults to https://api.withmono.com in code.
@@ -199,11 +208,13 @@ services:
         sync: false
       - key: FINCRA_BUSINESS_ID
         sync: false
-      # WhatsApp channel — Meta Cloud API. Blank TOKEN => channel stays mocked.
-      # Set the same VERIFY_TOKEN in the Meta app dashboard; APP_SECRET enables
-      # inbound webhook HMAC verification.
+      # WhatsApp channel — Meta Cloud API. Explicitly disabled until every live
+      # credential is configured; production never falls back to an unsigned mock.
+      # Set the same VERIFY_TOKEN in Meta and keep APP_SECRET enabled for HMAC.
       - key: WHATSAPP_TOKEN
         sync: false
+      - key: WHATSAPP_MODE
+        value: disabled
       - key: WHATSAPP_PHONE_NUMBER_ID
         sync: false
       - key: WHATSAPP_VERIFY_TOKEN
@@ -212,6 +223,8 @@ services:
         sync: false
       - key: WHATSAPP_BUSINESS_NUMBER
         sync: false
+      - key: WHATSAPP_ALLOW_CHAT_SIGNUP
+        value: "false"
       # WhatsApp AI intent layer (optional). Blank => the deterministic router
       # handles everything; the model only proposes intents, never moves money.
       - key: LLM_API_KEY
@@ -247,6 +260,8 @@ services:
         generateValue: true
       - key: DJANGO_DEBUG
         value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"   # single-process management command; no rate-limit state
       - key: DATABASE_URL
         fromDatabase:
           name: zitch-db
@@ -269,10 +284,35 @@ services:
         generateValue: true
       - key: DJANGO_DEBUG
         value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: zitch-db
           property: connectionString
+      # Both possible fulfillment rails are needed to requery the same provider
+      # stamped on each PENDING row. Missing status credentials must never cause a
+      # refund; code also fails safe to PENDING.
+      - key: VTUNG_API_KEY
+        sync: false
+      - key: VTUNG_USERNAME
+        sync: false
+      - key: VTUNG_PASSWORD
+        sync: false
+      - key: WEMA_CHANNEL_ID
+        sync: false
+      - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_AIRTIME_KEY
+        sync: false
+      - key: WEMA_BILLS_KEY
+        sync: false
+      - key: WEMA_BASE_URL
+        sync: false
+      - key: WEMA_VAS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_BILLS_STATUS_LEGEND
+        sync: false
 
   # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:
   # (1) FUNDING: sweep each Wema NUBAN's transaction history and credit inbound
@@ -293,6 +333,8 @@ services:
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:
@@ -331,6 +373,8 @@ services:
         generateValue: true
       - key: DJANGO_DEBUG
         value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"
       - key: DATABASE_URL
         fromDatabase:
           name: zitch-db
@@ -361,6 +405,8 @@ services:
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:
@@ -398,6 +444,8 @@ services:
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:
@@ -442,6 +490,8 @@ services:
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "false"
       - key: DATABASE_URL
         fromDatabase:

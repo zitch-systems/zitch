@@ -8,6 +8,7 @@ hand a resolved account name to `execute_payout`.
 from decimal import Decimal
 
 from utility.providers import payout_send
+from utility.wema import classify_transfer_status
 from wallet.models import Transaction
 from wallet.services import (
     DuplicateTransaction,
@@ -126,16 +127,24 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
                          bank.bank_code, account_number, name, bank_name=bank.name,
                          source_account=sender_source)
 
-    delivered = (result.get("success")
-                 and (result.get("status") or "").upper() not in ("PENDING", "PROCESSING"))
-    if delivered:
+    if result.get("pending"):
+        outcome = "pending"
+    elif result.get("success"):
+        # APIM accepting a request is not proof the recipient was paid.  Unknown
+        # provider status strings are held for reconciliation; only the explicit
+        # terminal-success legend can settle the ledger.
+        outcome = classify_transfer_status(result.get("status"), envelope_ok=True)
+    else:
+        outcome = "failed"
+
+    if outcome == "success":
         # Confirmed sent — settle now and clear the reconcile flag.
         meta = dict(txn.meta or {})
         meta.pop("reconcile", None)
         txn.meta = meta
         txn.transaction_status = Transaction.SUCCESS
         txn.save(update_fields=["transaction_status", "meta"])
-    elif result.get("success") or result.get("pending"):
+    elif outcome == "pending":
         # Accepted-but-queued (PENDING/PROCESSING), OR an AMBIGUOUS outcome — a send
         # timeout / lost response on the non-idempotent transfer POST, where Wema may
         # already have paid the recipient. HOLD the debit: never refund a

@@ -9,9 +9,9 @@ configuration, it is parsed strictly, and every gap in it fails to PENDING.
 from unittest import mock
 
 from django.conf import settings
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from utility.wema import _parse_vas, _vas_legend
+from utility.wema import _parse_vas, _vas_legend, vas_status
 
 
 def _int_shape(code):
@@ -52,6 +52,13 @@ class VasLegendParsingTests(TestCase):
 
 
 class VasStatusDecodeTests(TestCase):
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={"CHANNEL_ID": "", "KEYS": {}, "SIMULATION": False})
+    def test_unconfigured_production_requery_never_refunds_ambiguous_purchase(self):
+        result = vas_status("REF1", "airtime")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+
     def test_no_legend_leaves_the_purchase_pending(self):
         # Today's behaviour, and the behaviour that must survive every change here.
         with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": ""}):

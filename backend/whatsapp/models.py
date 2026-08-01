@@ -24,8 +24,10 @@ class WhatsAppLink(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="whatsapp_links")
     wa_msisdn = models.CharField(max_length=20, blank=True, default="", db_index=True)
     status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
-    link_code = models.CharField(max_length=12, blank=True, default="", db_index=True)
-    ai_enabled = models.BooleanField(default=True)            # per-user AI scope (§8)
+    link_code = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # Explicit opt-in: configuring an LLM key must not silently export every
+    # customer's free-form chat to a third party.
+    ai_enabled = models.BooleanField(default=False)           # per-user AI scope (§8)
     marketing_opt_in = models.BooleanField(default=False)     # broadcasts (§9)
     expires_at = models.DateTimeField(null=True, blank=True)  # link_code TTL
     linked_at = models.DateTimeField(null=True, blank=True)
@@ -108,6 +110,13 @@ class WaMessageLog(models.Model):
     text = models.TextField(blank=True, default="")
     intent_json = models.JSONField(default=dict, blank=True)  # parsed AI intent (later slices)
     flagged = models.BooleanField(default=False)
+    # Durable inbound processing state. A row is no longer synonymous with
+    # "processed": if the worker/request dies after claiming it, Meta's retry may
+    # reclaim the message after the short lease instead of silently dropping it.
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    processing_attempts = models.PositiveSmallIntegerField(default=0)
+    processing_error = models.CharField(max_length=64, blank=True, default="")
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -170,6 +179,9 @@ class ConversationState(models.Model):
     status = models.CharField(max_length=8, choices=STATUSES, default=BOT)
     assigned_agent = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
                                        on_delete=models.SET_NULL, related_name="wa_conversations")
+    # Conversation-level operations switch. Per-user consent remains on
+    # WhatsAppLink.ai_enabled; a new bot conversation may run AI only when that
+    # explicit consent and the global kill switch are also on.
     ai_enabled = models.BooleanField(default=True)
     updated = models.DateTimeField(auto_now=True)
 
@@ -255,7 +267,9 @@ class WebhookEvent(models.Model):
     REDACT_KEYS = frozenset({
         "bvn", "nin", "vnin", "pin", "transactionpin", "otp", "password",
         "securityinfo", "pan", "cardnumber", "cvv", "cvv2", "expirydate",
-        "accesstoken", "token", "authorization",
+        "accesstoken", "token", "authorization", "nuban", "accountnumber",
+        "email", "phone", "phonenumber", "msisdn", "from", "nubanname", "accountname",
+        "customerid", "billerscode", "meter", "meternumber", "smartcard", "iuc",
     })
 
     source = models.CharField(max_length=40)          # wema.account | whatsapp | mono …

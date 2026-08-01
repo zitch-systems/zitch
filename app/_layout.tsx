@@ -62,13 +62,16 @@ const RootLayout = () => {
     }
   }, [fontsLoaded, error]);
 
-  // Screenshots are ALLOWED (product decision): the app-wide capture block
-  // (FLAG_SECURE) frustrated users sharing receipts/balances, so it's off.
-  // Explicitly allow in case a previous build's flag persists on the activity.
+  // Financial screens contain balances, identity documents and account numbers.
+  // Block screenshots/screen recording and obscure the Android recent-app preview;
+  // receipts can still be shared through the app's explicit receipt/share actions.
   useEffect(() => {
-    ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+    if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     // Drop any money PIN left cached by older builds when biometric pay is off.
     reconcileCachedPin().catch(() => {});
+    return () => {
+      if (Platform.OS !== 'web') ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+    };
   }, []);
 
   // Inactivity timeout: lock a session idle past the limit and bounce to the

@@ -10,15 +10,15 @@ HARD gates block real money and cause a nonzero exit:
   * Wema live keys present (channel id + wallet + per-product keys)
   * pointed at the LIVE host, not apiplayground (the sandbox)
   * simulation off, test-OTP bypass off, simulated-deposit token unset
+  * callback secret + bank IP allowlist + securityInfo authorization enabled
 
-SOFT checks are features that degrade without putting money at risk (securityInfo,
+SOFT checks are features that degrade without putting money at risk:
 VTU wallet balance, email, SMS, card issuer). They print WARN and only fail the run
 under --strict.
 
-securityInfo used to be a hard gate on the belief that it was a signing scheme the
-bank had yet to issue. Wema corrected that on 2026-07-27 — it is a value WE choose
-that the bank echoes back to our authentication callback — so it no longer blocks a
-launch. See utility.wema._security_info.
+Wema clarified on 2026-07-27 that securityInfo is a private value Zitch chooses and
+the bank echoes to the authentication callback. It is therefore a hard, inexpensive
+defence-in-depth gate. See utility.wema._security_info.
 """
 from django.conf import settings
 from django.core.management.base import BaseCommand
@@ -47,19 +47,39 @@ class Command(BaseCommand):
             PASS if d["wema_live"] else FAIL,
             "channel + wallet + product keys present" if d["wema_live"]
             else f"status={d['status']} — {d['hint']}"))
-        # SOFT, not a gate. Wema confirmed (2026-07-27) that securityInfo is "a private
-        # key best known to you" which the bank merely echoes back to our authentication
-        # callback — it is not issued by the bank and nothing indicates the bank
-        # validates it. Blocking go-live on it was based on the earlier, wrong reading
-        # that it was a signing scheme the bank had yet to supply. Still recommended:
-        # it costs nothing and enables WEMA_AUTH_REQUIRE_SECURITY_INFO.
+        # HARD: Wema confirmed securityInfo is a private value chosen by Zitch and
+        # echoed to the authorization callback. It is inexpensive defence in depth;
+        # requiring it prevents a leaked callback URL alone from authorising a payout.
         checks.append((
-            False, "securityInfo",
-            PASS if d["security_info_set"] else WARN,
+            True, "securityInfo",
+            PASS if d["security_info_set"] else FAIL,
             "set (echoed back to the authentication callback)" if d["security_info_set"]
-            else "WEMA_SECURITY_INFO unset — payouts still work (the callback authorises "
-                 "from our ledger), but set any strong random value to enable "
-                 "WEMA_AUTH_REQUIRE_SECURITY_INFO"))
+            else "WEMA_SECURITY_INFO unset — set a strong random value"))
+        callback = settings.WEMA or {}
+        callback_token = str(callback.get("CALLBACK_TOKEN") or "").strip()
+        checks.append((
+            True, "Callback URL secret",
+            PASS if len(callback_token) >= 32 else FAIL,
+            "strong token configured" if len(callback_token) >= 32
+            else "WEMA_CALLBACK_TOKEN must be a rotated random value of at least 32 characters"))
+        enforce_ips = bool(callback.get("CALLBACK_ENFORCE_IPS"))
+        callback_ips = [ip for ip in (callback.get("CALLBACK_IPS") or []) if ip]
+        checks.append((
+            True, "Callback source IP allowlist",
+            PASS if enforce_ips and callback_ips else FAIL,
+            f"enforced for {len(callback_ips)} bank IP(s)" if enforce_ips and callback_ips
+            else "set WEMA_CALLBACK_ENFORCE_IPS=true and configure WEMA_CALLBACK_IPS"))
+        require_security = bool(callback.get("AUTH_REQUIRE_SECURITY_INFO"))
+        checks.append((
+            True, "Payout callback securityInfo match",
+            PASS if require_security else FAIL,
+            "required" if require_security else "set WEMA_AUTH_REQUIRE_SECURITY_INFO=true"))
+        previous_token = str(callback.get("CALLBACK_TOKEN_PREV") or "").strip()
+        checks.append((
+            True, "Callback token rotation cleanup",
+            FAIL if previous_token else PASS,
+            "previous token cleared" if not previous_token
+            else "WEMA_CALLBACK_TOKEN_PREV is still accepted; clear it after profiling cutover"))
         on_sandbox = "apiplayground" in (d["base_url"] or "").lower()
         checks.append((
             True, "Live host",

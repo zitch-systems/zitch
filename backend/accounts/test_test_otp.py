@@ -1,7 +1,7 @@
 """Tests for the TEST-ONLY OTP bypass (settings.TEST_OTP).
 
 When TEST_OTP_PHONE + TEST_OTP_CODE are set, that one number accepts that fixed
-code in every OTP flow; every other number is unaffected. wema_preflight
+code for signup only; password recovery and every other number are unaffected. wema_preflight
 HARD-FAILS while it is set, so the bypass can never reach go-live.
 """
 import json
@@ -33,6 +33,12 @@ class VerifyCodeBypassTests(TestCase):
     def test_other_phone_not_bypassed(self):
         otp = OTP.issue(phone="08160000002", code="999999")
         self.assertFalse(otp.verify_code("246813"))  # fixed code only for the whitelisted number
+        self.assertTrue(otp.verify_code("999999"))
+
+    @override_settings(TEST_OTP=_TEST)
+    def test_fixed_code_never_bypasses_password_reset(self):
+        otp = OTP.issue(phone="08160000001", code="999999", purpose=OTP.RESET)
+        self.assertFalse(otp.verify_code("246813"))
         self.assertTrue(otp.verify_code("999999"))
 
     @override_settings(TEST_OTP=_OFF)

@@ -76,18 +76,22 @@ def handle_flow_request(payload: dict) -> dict:
     """Route a decrypted Flows request to its response. Never raises — any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
-    action = (payload or {}).get("action", "")
+    if not isinstance(payload, dict):
+        return _success_screen("Invalid request. Please start again in the chat.")
+    action = payload.get("action", "")
 
     # Health check Meta fires against the endpoint.
     if action == "ping":
         return {"data": {"status": "active"}}
 
-    data = (payload or {}).get("data", {}) or {}
+    data = payload.get("data", {}) or {}
+    if not isinstance(data, dict):
+        data = {}
     # Client-side error report (Meta convention) — just acknowledge.
     if data.get("error_message"):
         return {"data": {"acknowledged": True}}
 
-    token = (payload or {}).get("flow_token", "")
+    token = payload.get("flow_token", "")
 
     if action == "INIT":
         pa = resolve_flow_token(token)
