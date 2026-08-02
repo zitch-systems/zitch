@@ -73,6 +73,9 @@ class ProductionConfigurationTests(SimpleTestCase):
                 wema_simulation=True,
             )
 
+    def test_simulate_deposit_token_allowed_with_simulation_override(self):
+        self.validate(simulate_deposit_token="test-token", allow_simulation=True)
+
     def test_simulated_deposit_token_is_rejected(self):
         with self.assertRaisesRegex(ImproperlyConfigured, "SIMULATE_DEPOSIT_TOKEN"):
             self.validate(simulate_deposit_token="test-token")
