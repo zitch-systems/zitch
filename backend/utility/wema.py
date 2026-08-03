@@ -705,8 +705,18 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
         data = _get("debit", f"/api/Shared/AccountNameEnquiry/{bank_code}/{account_number}").json()
         r = data.get("result", {}) or {}
         name = r.get("accountName", "")
-        return {"success": _ok(data) and bool(name), "name": name,
-                "bank_code": r.get("bankCode", bank_code), "raw": data}
+        out = {"success": _ok(data) and bool(name), "name": name,
+               "bank_code": r.get("bankCode", bank_code), "raw": data}
+        if not out["success"]:
+            # Carry the gateway's own reason (brand-stripped by _msg) rather than
+            # letting the caller fall back to a bare "could not verify". The rail
+            # blames the account number for BOTH an unknown account and a bank code
+            # it doesn't recognise, and that reason is the only clue which side is
+            # wrong — our bank_codes are a NIBSS/Paystack mirror, not the rail's own
+            # list (see wema_banks_sync).
+            out["message"] = _msg(data)
+            log.warning("wema_name_enquiry_failed bank_code=%s msg=%s", bank_code, out["message"])
+        return out
     except requests.RequestException as exc:
         return _unreachable(exc)
 

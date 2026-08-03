@@ -120,6 +120,13 @@ KYC rail.
   `{"account":"<10-digit>","bank":"<code>"}` — proves auth plus a real
   name-enquiry against the live gateway. BVN/NIN/OTP test inputs also belong in JSON,
   never a URL.
+- `python manage.py wema_banks_sync` — compares our payout `bank_code`s against the
+  rail's own `GetAllBanks` list. Ours were seeded from a NIBSS/Paystack mirror, and
+  the rail resolves recipients in ITS code space: a bank whose code differs fails
+  name enquiry, and the gateway reports that as *"account enquiry failed, confirm
+  that the account number is valid"* — it never says the bank code is wrong. Exits 1
+  while anything differs; `--apply` takes the rail's codes (ambiguous name matches
+  are reported for a human, never auto-applied).
 - `GET /vtu-diagnose` with `Authorization: Bearer <DIAG_TOKEN>` — proves the VTU.ng wallet authenticates
   and shows its balance (VAS buys fail on an empty provider wallet).
 - `GET /wema-callbacks-diagnose` with a diagnostic bearer token — prints the

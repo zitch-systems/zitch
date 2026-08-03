@@ -119,6 +119,24 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(n["reference"], "R1")
         self.assertEqual(n["amount_naira"], Decimal("1200.00"))
 
+    @patch("utility.wema.requests.get")
+    def test_failed_name_enquiry_carries_the_gateway_reason(self, mock_get):
+        # Without this the caller falls back to a bare "Could not verify this account
+        # number", which hides whether the account or our bank_code is the problem.
+        mock_get.return_value = _resp(
+            {"result": {}, "hasError": True,
+             "errorMessage": "Account enquiry failed, confirm that the account number is valid"})
+        r = wema.resolve_account("0123456789", "058")
+        self.assertFalse(r["success"])
+        self.assertEqual(r["message"],
+                         "Account enquiry failed, confirm that the account number is valid")
+
+    @patch("utility.wema.requests.get")
+    def test_a_provider_branded_enquiry_reason_is_not_leaked(self, mock_get):
+        mock_get.return_value = _resp({"result": {}, "hasError": True,
+                                       "errorMessage": "Kindly download ALAT to continue"})
+        self.assertEqual(wema.resolve_account("0123456789", "058")["message"], "Request failed")
+
     @patch("utility.wema.requests.post")
     def test_transfer_live_sends_securityinfo(self, mock_post):
         mock_post.return_value = _resp({"result": {"status": "SUCCESS", "transactionReference": "REF-1",
