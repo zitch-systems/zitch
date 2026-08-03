@@ -269,6 +269,22 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     insufficient funds, or a provider failure (wallet auto-refunded). Returns the
     settled (Successful) ledger transaction.
     """
+    # A NUBAN minted while the rail was mocked exists nowhere at the bank, but it is
+    # still on the wallet once live keys are set — and it is what we send as the
+    # payout's sourceAccountNumber. The rail's enquiry then fails and blames "the
+    # account number", which reads as the RECIPIENT's. Refuse before the debit:
+    # otherwise every attempt debits, fails at the rail and refunds, leaving a trail
+    # of reversals and a user watching money leave and come back.
+    from utility.providers import payout_live
+    from wallet.services import is_demo_account
+
+    wallet = getattr(user, "wallet", None)
+    if payout_live() and wallet is not None and is_demo_account(wallet):
+        raise PayoutError(
+            "source_unusable",
+            "Your Zitch account number was issued in test mode and can't send money. "
+            "Contact support to have it reissued — your balance is safe.")
+
     try:
         txn = debit(
             user, amount, f"Transfer to {name}",

@@ -360,3 +360,91 @@ class BankTransferTests(TestCase):
         txn = Transaction.objects.get(reference=body["reference"])
         self.assertEqual(txn.transaction_status, Transaction.SUCCESS)
         self.assertNotIn("reconcile", txn.meta or {})
+
+
+class DemoSourceAccountTests(TestCase):
+    """A NUBAN minted while the payout rail was MOCKED exists nowhere at the bank,
+    but stays on the wallet once live keys are set — and it is what we send as the
+    payout's sourceAccountNumber. The rail rejects it and blames "the account
+    number", which reads as the recipient's."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000009", "demo@zitch.test", balance="50000")
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0112345678"
+        wallet.bank_name = "Wema Bank (demo)"      # the mock rail's stamp
+        wallet.save(update_fields=["account_number", "bank_name"])
+
+    def send(self):
+        res = self.client.post("/api/transfers/send/", data=json.dumps({
+            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+        }), content_type="application/json")
+        return res, res.json()
+
+    @patch("transfers.services.payout_live", create=True, return_value=True)
+    @patch("utility.providers.payout_live", return_value=True)
+    def test_a_live_payout_is_refused_before_any_debit(self, *_):
+        before = get_or_create_wallet(self.user).balance
+        with patch("transfers.services.payout_send") as send:
+            res, body = self.send()
+        self.assertFalse(body.get("success"))
+        send.assert_not_called()                                   # never reached the rail
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
+        # No outbound row at all — not even a debit-then-refund pair, which is what
+        # the user would otherwise watch happen on every attempt.
+        self.assertEqual(
+            Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 0)
+        self.assertIn("test mode", body["message"])
+
+    @patch("utility.providers.payout_live", return_value=False)
+    def test_mock_mode_still_works_for_local_and_test_use(self, _live):
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            _, body = self.send()
+        self.assertTrue(body.get("success"))
+
+
+class ClearDemoAccountAdminTests(TestCase):
+    """provision_wema_account refuses to replace an existing NUBAN, so a wallet
+    stamped with a test-mode one can never be issued a real one without this."""
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from wallet.admin import WalletAdmin
+        from wallet.models import Wallet
+
+        self.admin = WalletAdmin(Wallet, AdminSite())
+        self.messages = []
+        self.admin.message_user = lambda req, msg, level=None: self.messages.append(msg)
+
+    def _wallet(self, phone, bank_name):
+        user, _ = make_user(phone, f"{phone}@zitch.test", balance="100")
+        wallet = get_or_create_wallet(user)
+        wallet.account_number = f"01{phone[-8:]}"
+        wallet.bank_name = bank_name
+        wallet.account_reference = f"ref-{phone}"
+        wallet.save(update_fields=["account_number", "bank_name", "account_reference"])
+        return wallet
+
+    def test_clears_a_demo_account_but_keeps_the_balance(self):
+        from wallet.models import Wallet
+
+        wallet = self._wallet("08010000021", "Wema Bank (demo)")
+        self.admin.clear_demo_account(None, Wallet.objects.filter(pk=wallet.pk))
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.account_number, "")
+        self.assertEqual(wallet.account_reference, "")
+        self.assertEqual(wallet.balance, Decimal("100.00"))
+
+    def test_never_clears_a_real_account(self):
+        from wallet.models import Wallet
+
+        wallet = self._wallet("08010000022", "Wema Bank")
+        self.admin.clear_demo_account(None, Wallet.objects.filter(pk=wallet.pk))
+        wallet.refresh_from_db()
+        self.assertEqual(wallet.account_number, "0110000022")
+        self.assertIn("issued by the real bank", " ".join(self.messages))
