@@ -12,7 +12,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from transfers.models import Bank
-from utility.management.commands.wema_banks_sync import normalize
+from transfers.services import normalize_bank_name as normalize
 
 _GET_BANKS = "utility.wema.get_banks"
 
@@ -110,3 +110,72 @@ class BanksSyncTests(TestCase):
                 code = exc.code
         self.assertEqual(code, 1)
         self.assertEqual(Bank.objects.get(code="gtb").bank_code, "058")
+
+
+class BankCodesInProbeTests(TestCase):
+    """The same comparison, read-only, for a deploy whose operator has no shell."""
+
+    def setUp(self):
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
+
+    def _probe(self, banks):
+        # Only the bank-list call matters here; the rest of the probe is stubbed so
+        # the test doesn't depend on every other rail endpoint.
+        with mock.patch(_GET_BANKS, return_value=banks), \
+             mock.patch("utility.wema.wema_live", return_value=True), \
+             mock.patch("utility.wema.get_data_plans", return_value={"success": True}):
+            from utility.wema import wema_probe
+
+            return wema_probe()
+
+    def test_a_differing_code_is_reported_with_a_fix_hint(self):
+        out = self._probe({"success": True, "banks": [{"bank_name": "GTBank", "bank_code": "000013"}]})
+        self.assertFalse(out["bank_codes"]["ok"])
+        self.assertEqual(out["bank_codes"]["differ"][0]["rail"], "000013")
+        self.assertIn("account enquiry failed", out["bank_codes"]["hint"])
+
+    def test_matching_codes_report_ok(self):
+        out = self._probe({"success": True, "banks": [{"bank_name": "GTBank Plc", "bank_code": "058"}]})
+        self.assertTrue(out["bank_codes"]["ok"])
+        self.assertEqual(out["bank_codes"]["agree"], 1)
+
+    def test_mock_mode_reports_no_comparison_at_all(self):
+        out = self._probe({"success": True, "mock": True,
+                           "banks": [{"bank_name": "Wema Bank", "bank_code": "035"}]})
+        self.assertNotIn("bank_codes", out)
+
+
+class BankAdminSyncTests(TestCase):
+    """The browser path — same comparison, applied from the Bank changelist."""
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from transfers.admin import BankAdmin
+
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
+        self.admin = BankAdmin(Bank, AdminSite())
+        self.messages = []
+        self.admin.message_user = lambda request, msg, level=None: self.messages.append(msg)
+
+    def _run(self, banks):
+        with mock.patch(_GET_BANKS, return_value=banks):
+            self.admin.sync_bank_codes(None, Bank.objects.none())
+
+    def test_applies_the_rails_code_ignoring_the_selection(self):
+        # An empty selection still syncs: a partial sync would leave the picker half
+        # in one code space and half in the other.
+        self._run({"success": True, "banks": [{"bank_name": "GTBank", "bank_code": "000013"}]})
+        self.assertEqual(Bank.objects.get(code="gtb").bank_code, "000013")
+        self.assertIn("Updated 1 bank code(s)", " ".join(self.messages))
+
+    def test_a_mock_rail_changes_nothing(self):
+        self._run({"success": True, "mock": True,
+                   "banks": [{"bank_name": "Wema Bank", "bank_code": "035"}]})
+        self.assertEqual(Bank.objects.get(code="gtb").bank_code, "058")
+        self.assertIn("MOCK mode", " ".join(self.messages))
+
+    def test_an_unreachable_rail_changes_nothing(self):
+        self._run({"success": False, "message": "gateway down"})
+        self.assertEqual(Bank.objects.get(code="gtb").bank_code, "058")
+        self.assertIn("Could not reach the payout rail", " ".join(self.messages))

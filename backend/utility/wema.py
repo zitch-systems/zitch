@@ -1595,6 +1595,27 @@ def wema_probe(account_number: str = "", bank_code: str = "", phone: str = "",
     out["banks"] = {"ok": banks.get("success"), "count": len(banks.get("banks", []) or []),
                     "message": banks.get("message", ""), "raw": _trim(banks.get("raw"))}
 
+    # 1b) …and whether OUR payout codes match the rail's. This is the read-only half
+    # of `manage.py wema_banks_sync`, exposed here because a wrong bank code surfaces
+    # to the user as "account enquiry failed, confirm that the account number is
+    # valid" — indistinguishable from a bad account number without this comparison,
+    # and not everyone operating the deploy has a shell. Bank names/codes are public
+    # reference data, so nothing here is redacted. Skipped in mock mode, whose stub
+    # list would report every bank as missing.
+    if banks.get("success") and not banks.get("mock"):
+        from transfers.services import compare_bank_codes
+
+        cmp = compare_bank_codes(banks.get("banks") or [])
+        out["bank_codes"] = {
+            "ok": cmp["ok"], "agree": len(cmp["agree"]), "rail_count": cmp["remote_count"],
+            # Only the actionable rows travel — the agreeing ones are just a count.
+            "differ": cmp["differ"], "ambiguous": cmp["ambiguous"], "unmatched": cmp["unmatched"],
+            "hint": ("Codes match the rail." if cmp["ok"] else
+                     "Recipient resolution uses these codes; a wrong one reads to the user as "
+                     "'account enquiry failed'. Fix from Django admin (Banks -> Sync bank codes "
+                     "from the payout rail) or `manage.py wema_banks_sync --apply`."),
+        }
+
     # 2) Name enquiry — the read used before every transfer.
     if account_number and bank_code:
         enq = resolve_account(account_number, bank_code)
