@@ -84,6 +84,22 @@ class BanksSyncTests(TestCase):
         self.assertIn("MISS", out)
         self.assertIn("Kuda", out)
 
+    def test_a_mock_rail_refuses_to_compare(self):
+        # The mock rail answers with one stub bank; comparing against it would report
+        # every other bank as missing and could --apply the stub's code.
+        out = StringIO()
+        code = 0
+        stub = {"success": True, "mock": True, "banks": [{"bank_name": "Wema Bank", "bank_code": "035"}]}
+        with mock.patch(_GET_BANKS, return_value=stub):
+            try:
+                call_command("wema_banks_sync", "--apply", stdout=out, stderr=out)
+            except SystemExit as exc:
+                code = exc.code
+        self.assertEqual(code, 1)
+        self.assertIn("MOCK mode", out.getvalue())
+        self.assertNotIn("MISS", out.getvalue())
+        self.assertEqual(Bank.objects.get(code="gtb").bank_code, "058")
+
     def test_an_unreachable_rail_fails_rather_than_wiping_codes(self):
         out = StringIO()
         code = 0

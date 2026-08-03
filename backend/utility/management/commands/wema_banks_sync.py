@@ -58,9 +58,15 @@ class Command(BaseCommand):
             self.stderr.write(self.style.ERROR("The rail returned an empty bank list."))
             return self._exit(1)
         if res.get("mock"):
-            self.stdout.write(self.style.WARNING(
-                "Rail is in MOCK mode — this list is a stub, not the real code space. "
-                "Set the live keys before trusting this comparison."))
+            # The mock rail answers with a single stub bank, so every other bank we
+            # carry would be reported "not on the rail" — 40-odd findings that are
+            # artefacts of the stub. Refuse rather than print a comparison nobody
+            # should act on (and never --apply off it).
+            self.stderr.write(self.style.ERROR(
+                "Rail is in MOCK mode — its bank list is a stub, not the real code space, "
+                f"so there is nothing to compare ({len(remote)} stub row(s)). Set the live "
+                "keys (WEMA_CHANNEL_ID + WEMA_WALLET_KEY) and run this where they are set."))
+            return self._exit(1)
 
         by_name: dict[str, list] = {}
         for row in remote:
