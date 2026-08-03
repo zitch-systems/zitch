@@ -598,7 +598,12 @@
         <p>Zitch is a Nigerian app for bank transfers, airtime, data and bill payments — in the app or on WhatsApp.</p>
       </div>
       <div><h5>Product</h5><ul><li><a href="#whatsapp">WhatsApp banking</a></li><li><a href="#services">The app</a></li><li><a href="/prototype/">Open the web app</a></li></ul></div>
-      <div><h5>Company</h5><ul><li><a href="#">About us</a></li><li><a href="#">Careers</a></li><li><a href="#">Support</a></li><li><a href="/portal/">Admin portal</a></li></ul></div>
+      {# The operator portal is deliberately NOT linked here: it is the money-control
+         surface, staff-only, and a public page must not advertise or route to it.
+         Staff reach it directly. Pinned by portal.tests
+         WebPagesTests.test_public_pages_never_link_to_the_operator_portal — this is a
+         Django comment, so it never reaches the browser. #}
+      <div><h5>Company</h5><ul><li><a href="#">About us</a></li><li><a href="#">Careers</a></li><li><a href="#">Support</a></li></ul></div>
       <div><h5>Legal</h5><ul><li><a href="#">Privacy policy</a></li><li><a href="#">Terms of use</a></li><li><a href="#">Cookie policy</a></li></ul></div>
     </div>
     <div class="foot-base">

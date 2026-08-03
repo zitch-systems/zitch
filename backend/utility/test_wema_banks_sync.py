@@ -112,6 +112,115 @@ class BanksSyncTests(TestCase):
         self.assertEqual(Bank.objects.get(code="gtb").bank_code, "058")
 
 
+class TradeNameMatchingTests(TestCase):
+    """The first live run left GTBank, First Bank, UBA and Citibank unmatched — the
+    rail lists them under legal names that share few or no words with the trade
+    names in our picker, so their (wrong) codes were left in place."""
+
+    def _sync(self, ours, rail_name, rail_code):
+        Bank.objects.all().delete()
+        Bank.objects.create(code="x", name=ours, bank_code="OLD")
+        _run([{"bank_name": rail_name, "bank_code": rail_code}], "--apply")
+        return Bank.objects.get(code="x").bank_code
+
+    def test_legal_name_variants_match(self):
+        self.assertEqual(self._sync("First Bank", "First Bank of Nigeria", "011x"), "011x")
+        self.assertEqual(self._sync("GTBank", "Guaranty Trust Bank", "058x"), "058x")
+        self.assertEqual(self._sync("UBA", "United Bank for Africa", "033x"), "033x")
+        self.assertEqual(self._sync("FCMB", "First City Monument Bank", "214x"), "214x")
+        self.assertEqual(self._sync("V Bank (VFD MFB)", "VFD Microfinance Bank", "566x"), "566x")
+        self.assertEqual(self._sync("9PSB", "9 Payment Service Bank", "120x"), "120x")
+
+    def test_one_word_vs_two_word_spellings_match(self):
+        self.assertEqual(self._sync("PremiumTrust Bank", "Premium Trust Bank", "105x"), "105x")
+        self.assertEqual(self._sync("Citibank Nigeria", "Citi Bank", "023x"), "023x")
+        # Our picker name carries the parent brand the rail's legal name omits.
+        self.assertEqual(
+            self._sync("SmartCash PSB (Airtel)", "SmartCash Payment Service Bank", "120x"), "120x")
+        self.assertEqual(
+            self._sync("MoMo PSB (MTN)", "MoMo Payment Service Bank", "120y"), "120y")
+
+    def test_an_unforeseen_spelling_is_left_for_a_human_not_guessed(self):
+        # No subset rule: {first} is a subset of {first, city, monument}, so one
+        # would route First Bank's payouts to FCMB. An unmatched pair surfaces in
+        # rail_unmatched instead, to be mapped by hand or added to _ALIAS_GROUPS.
+        self.assertEqual(self._sync("First Bank", "First City Monument Bank", "214x"), "OLD")
+
+    def test_every_bank_the_first_live_run_missed_now_matches(self):
+        """Pins the actual regression: these are the banks the live sync left
+        unmatched, against the legal names a Nigerian bank list carries for them.
+        Each one that stays unmatched keeps a wrong code and fails every transfer
+        to that bank."""
+        for ours, rail in (
+            ("9PSB", "9 Payment Service Bank"),
+            ("Citibank Nigeria", "Citibank Nigeria Limited"),
+            ("First Bank", "First Bank of Nigeria"),
+            ("GTBank", "Guaranty Trust Bank"),
+            ("Mint MFB", "Mint Microfinance Bank"),
+            ("MoMo PSB (MTN)", "MoMo Payment Service Bank"),
+            ("Nova Bank", "Nova Merchant Bank"),
+            ("PremiumTrust Bank", "Premium Trust Bank"),
+            ("SmartCash PSB (Airtel)", "SmartCash Payment Service Bank"),
+            ("UBA", "United Bank for Africa"),
+            ("V Bank (VFD MFB)", "VFD Microfinance Bank"),
+        ):
+            with self.subTest(bank=ours):
+                self.assertEqual(self._sync(ours, rail, "NEW"), "NEW")
+
+    def test_distinct_banks_still_do_not_match(self):
+        # The looser rules must not start matching banks that merely look alike.
+        self.assertEqual(self._sync("Unity Bank", "Union Bank of Nigeria", "032x"), "OLD")
+        self.assertEqual(self._sync("First Bank", "Fidelity Bank", "070x"), "OLD")
+        self.assertEqual(self._sync("Sterling Bank", "Stanbic IBTC Bank", "221x"), "OLD")
+
+    def test_an_exact_match_wins_over_a_looser_one(self):
+        Bank.objects.all().delete()
+        Bank.objects.create(code="citi", name="Citibank Nigeria", bank_code="OLD")
+        _run([{"bank_name": "Citi Bank", "bank_code": "WRONG"},
+              {"bank_name": "Citibank Nigeria", "bank_code": "RIGHT"}], "--apply")
+        self.assertEqual(Bank.objects.get(code="citi").bank_code, "RIGHT")
+
+    def test_the_rails_leftovers_are_reported_for_hand_mapping(self):
+        Bank.objects.all().delete()
+        Bank.objects.create(code="mint", name="Mint MFB", bank_code="50304")
+        out, code = _run([{"bank_name": "Mintyn Digital Bank", "bank_code": "50515"}])
+        self.assertEqual(code, 1)
+        self.assertIn("MISS", out)
+        self.assertIn("Mintyn Digital Bank", out)   # the other half of the miss
+        self.assertIn("50515", out)
+
+
+class ReseedDoesNotUndoReconciliationTests(TestCase):
+    """build.sh runs seed_plans on EVERY deploy. It used to rewrite bank_code from
+    its hardcoded NIBSS/Paystack table, so the next deploy would silently undo a
+    sync against the rail and bring "account enquiry failed" back."""
+
+    def test_a_reconciled_code_survives_a_reseed(self):
+        call_command("seed_plans", stdout=StringIO())
+        gtb = Bank.objects.get(code="gtb")
+        seeded = gtb.bank_code
+        gtb.bank_code = "000013"      # what a sync against the rail wrote
+        gtb.save(update_fields=["bank_code"])
+
+        call_command("seed_plans", stdout=StringIO())
+        self.assertEqual(Bank.objects.get(code="gtb").bank_code, "000013",
+                         f"the redeploy reset the reconciled code back to {seeded}")
+
+    def test_a_blank_code_is_still_filled_in(self):
+        call_command("seed_plans", stdout=StringIO())
+        Bank.objects.filter(code="gtb").update(bank_code="")
+        call_command("seed_plans", stdout=StringIO())
+        self.assertTrue(Bank.objects.get(code="gtb").bank_code)
+
+    def test_presentation_fields_stay_seed_authoritative(self):
+        call_command("seed_plans", stdout=StringIO())
+        Bank.objects.filter(code="gtb").update(name="Wrong", color="#000000", active=False)
+        call_command("seed_plans", stdout=StringIO())
+        gtb = Bank.objects.get(code="gtb")
+        self.assertEqual(gtb.name, "GTBank")
+        self.assertTrue(gtb.active)
+
+
 class BankCodesInProbeTests(TestCase):
     """The same comparison, read-only, for a deploy whose operator has no shell."""
 
