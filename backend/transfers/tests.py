@@ -448,3 +448,41 @@ class ClearDemoAccountAdminTests(TestCase):
         wallet.refresh_from_db()
         self.assertEqual(wallet.account_number, "0110000022")
         self.assertIn("issued by the real bank", " ".join(self.messages))
+
+
+class PayoutFailureIsRecordedTests(TestCase):
+    """A rejected payout used to leave nothing behind but a Failed row: the rail's
+    reason went to the user and the log and was then lost. On a deploy with no
+    shell and no log access, every failed transfer looked identical."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000031", "why@zitch.test", balance="50000")
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
+
+    def test_the_rails_reason_is_kept_on_the_ledger_row(self):
+        reason = "Debit account is restricted"
+        with patch("transfers.services.payout_send",
+                   return_value={"success": False, "status": "FAILED", "message": reason}):
+            res = self.client.post("/api/transfers/send/", data=json.dumps({
+                "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+                "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+            }), content_type="application/json")
+        self.assertFalse(res.json().get("success"))
+        txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
+        self.assertEqual(txn.transaction_status, Transaction.FAILED)
+        self.assertEqual(txn.meta.get("failure"), reason)
+        self.assertEqual(txn.meta.get("failure_status"), "FAILED")
+        # …and the money came back.
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000.00"))
+
+    def test_the_admin_column_reads_it_back(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from wallet.admin import TransactionAdmin
+        from wallet.models import Transaction as Txn
+
+        row = Txn(meta={"failure": "Debit account is restricted"})
+        self.assertEqual(TransactionAdmin(Txn, AdminSite()).failure_reason(row),
+                         "Debit account is restricted")
+        self.assertEqual(TransactionAdmin(Txn, AdminSite()).failure_reason(Txn(meta={})), "—")
