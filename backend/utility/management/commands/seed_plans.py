@@ -96,8 +96,11 @@ class Command(BaseCommand):
         # Payout banks — the full NIP list users expect in the picker (commercial
         # banks + the fintechs/PSBs Nigerians actually send to). `bank_code` is
         # the Paystack/NIBSS transfer code, verified against two independent
-        # mirrors of Paystack's GET /bank (they agreed on every code); re-check
-        # against the live payout provider's own bank list before go-live.
+        # mirrors of Paystack's GET /bank (they agreed on every code). The rail
+        # resolves recipients in ITS OWN code space, so reconcile these against
+        # its live bank list before go-live: `manage.py wema_banks_sync` prints
+        # ours vs theirs and `--apply` takes theirs. A stale code here surfaces to
+        # the user as "account enquiry failed", never as a bank problem.
         # Heritage Bank is deliberately absent (licence revoked June 2024).
         # Logos are served from the ichtrojan/nigerian-banks repo (the backing
         # store of nigerianbanks.xyz); every referenced file was verified to
