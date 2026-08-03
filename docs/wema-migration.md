@@ -192,8 +192,11 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
   needs; distinct from the subscription key above. Supplied by Wema; blank until then.
 - `WEMA_SOURCE_ACCOUNT` — our pool NUBAN that funds outbound transfers (see money-flow note).
 - `WEMA_SECURITY_INFO` — a value **we** choose, echoed back by the bank to our Authentication
-  Callback. Not issued by Wema and not required for a payout to settle; set any long random
-  value to enable `WEMA_AUTH_REQUIRE_SECURITY_INFO`.
+  Callback. Not issued by Wema; set any long random value. When it is unset the code derives a
+  stable value from `SECRET_KEY` rather than sending an empty string (ALAT rejects a
+  money-movement call with a blank `securityInfo` — "Security Info must not be empty"), so
+  transfers still work; pin an explicit value in production, because rotating `SECRET_KEY`
+  would rotate the derived one under any payout still awaiting its callback.
 - `WEMA_BASE_URL` — `https://apiplayground.alat.ng` (sandbox). Set the live host for go-live.
 - `WEMA_SIMULATION=true` — serve the mock flow in a real build without live keys (no money moves).
 - `PAYOUT_PROVIDER` / `PAYMENT_PROVIDER` / `VAS_PROVIDER` / `KYC_PROVIDER` / `CARD_PROVIDER` —
@@ -201,8 +204,9 @@ Set these in the host (never in source). Boolean-only status is visible at `/hea
   VAS/card). You don't need to set them.
 
 To test payout in sandbox: set `WEMA_CHANNEL_ID` + `WEMA_WALLET_KEY` + `WEMA_SOURCE_ACCOUNT`
-(leave `WEMA_SECURITY_INFO` blank), redeploy, run a name-enquiry + a small transfer. `/healthz`
-should show `payout_provider: "wema"`.
+(`WEMA_SECURITY_INFO` may be left blank — the call then carries the `SECRET_KEY`-derived value,
+never an empty one), redeploy, run a name-enquiry + a small transfer. `/healthz` should show
+`payout_provider: "wema"`.
 
 ## Spec reconciliation — against the full ALAT OpenAPI set (2026-07)
 
@@ -258,6 +262,13 @@ so nobody re-opens it.
   that live money calls are rejected and auto-refunded, which is what the field used to claim.
 - `_security_info()` is no longer a fail-loud stub and no longer logs a warning telling
   operators to go and find a scheme.
+
+**Never sent blank.** ALAT rejects a money-movement call whose `securityInfo` is empty
+("Security Info must not be empty" — the pool VAS variants declare it `minLength 1`), which
+failed every transfer on an environment that had live keys but no `WEMA_SECURITY_INFO`. With
+the var unset, `utility.wema.security_info_value()` now derives a stable value from
+`SECRET_KEY`; the authentication callback resolves `expected` through the same function, so
+the echoed value still matches.
 
 **Still worth setting.** Generate any long random value and put it in `WEMA_SECURITY_INFO`.
 It costs nothing and it is what lets `WEMA_AUTH_REQUIRE_SECURITY_INFO=true` add a second

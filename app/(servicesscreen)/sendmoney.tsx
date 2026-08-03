@@ -5,8 +5,8 @@ import { getToken, hasTransactionPin, saveTransactionPin, hasOfferedBiometricPay
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { isBiometricAvailable, authenticate, biometricLabel, setBiometricEnabled } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram, BankLogo } from '@/components/design/flowkit';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram, BankLogo, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -399,7 +399,7 @@ const SendMoney = () => {
       {/* Amount: the field leads, with the quick presets as a slim pill row of
           suggestions underneath (was a dominant 2×3 grid above the field). */}
       <Label>Amount</Label>
-      <Field value={amt} onChangeText={(v) => { idemKey.current = ''; setAmt(v.replace(/\D/g, '')); }} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
+      <AmountField value={amt} onChangeText={(v) => { idemKey.current = ''; setAmt(v); }} />
       <View style={{ height: 10 }} />
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={(v) => { idemKey.current = ''; setAmt(v); }} />
       <BalanceHint amount={amount} balance={balance} />

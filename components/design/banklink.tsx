@@ -2,9 +2,9 @@ import React, { useRef, useState } from 'react';
 import { View, Text, Pressable, ScrollView, Alert } from 'react-native';
 import { router } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
-import { Card, Sheet, PinSheet, Field, Naira, money, NText } from '@/components/design/ui';
+import { Card, Sheet, PinSheet, money, NText } from '@/components/design/ui';
 import { SectionLabel } from '@/components/design/widgets';
-import { Monogram } from '@/components/design/flowkit';
+import { Monogram, AmountField } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
@@ -233,7 +233,7 @@ export const ConnectedAccounts = () => {
             ? `Move money from your Zitch wallet to ${target?.bank_name || 'your bank'}. You’ll confirm with your PIN.`
             : `We’ll open ${target?.bank_name || 'your bank'} to authorize the debit. Your wallet is credited once it’s confirmed.`}
         </Text>
-        <Field value={amount} onChangeText={(v) => setAmount(v.replace(/\D/g, ''))} keyboardType="number-pad" placeholder="Enter amount" prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />} />
+        <AmountField value={amount} onChangeText={setAmount} />
         <View style={{ height: 16 }} />
         {mode === 'out' ? (
           <Pressable onPress={() => { if (Number(amount) >= 100) { setPinErr(''); setPinOpen(true); } else notify('Error', 'Minimum amount is ₦100'); }}

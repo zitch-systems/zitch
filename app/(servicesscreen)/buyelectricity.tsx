@@ -3,8 +3,8 @@ import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -165,13 +165,7 @@ const BuyElectricity = () => {
 
       <Label>Amount</Label>
       <QuickAmounts amounts={ELEC_AMOUNTS} value={amt} onPick={setAmt} />
-      <Field
-        value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
-        placeholder="Enter amount (min 500)"
-        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-      />
+      <AmountField value={amt} onChangeText={setAmt} placeholder="Enter amount (min 500)" />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 

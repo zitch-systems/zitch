@@ -402,10 +402,12 @@ def _authorize_payout(ref: str, security_info: str, ip: str) -> tuple:
         return False, "no_reference"
 
     if _conf("AUTH_REQUIRE_SECURITY_INFO", False):
-        expected = (_conf("SECURITY_INFO", "") or "").strip()
-        # Enforcement is opt-in precisely because a blank expected value would
-        # otherwise deny every payout. Blank + required is a misconfiguration, and
-        # denying is the safe reading of it.
+        # Resolved through the provider so this is the SAME value we put on the
+        # outbound transfer — including the SECRET_KEY-derived fallback used when
+        # WEMA_SECURITY_INFO is unset (sending a blank one gets the transfer
+        # rejected outright by ALAT). Still denies when neither is available:
+        # blank + required is a misconfiguration, and denying is the safe reading.
+        expected = (wema_provider.security_info_value() or "").strip()
         if not expected or not hmac.compare_digest(security_info.strip(), expected):
             return False, "security_info_mismatch"
 

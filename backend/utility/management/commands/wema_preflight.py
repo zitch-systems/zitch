@@ -54,7 +54,9 @@ class Command(BaseCommand):
             True, "securityInfo",
             PASS if d["security_info_set"] else FAIL,
             "set (echoed back to the authentication callback)" if d["security_info_set"]
-            else "WEMA_SECURITY_INFO unset — set a strong random value"))
+            else ("WEMA_SECURITY_INFO unset — money calls fall back to a SECRET_KEY-derived "
+                  "value (never blank, which ALAT rejects), but pin a strong random value "
+                  "here so rotating SECRET_KEY can't invalidate in-flight payout callbacks")))
         callback = settings.WEMA or {}
         callback_token = str(callback.get("CALLBACK_TOKEN") or "").strip()
         checks.append((

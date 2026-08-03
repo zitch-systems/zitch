@@ -101,7 +101,10 @@ suite green: 432 passing;** `check` clean; migrations complete; no schema/flow r
   PIN lockout). **Recommend:** raise entropy + add a per-code guess cap; verify Meta's signature on the
   Flow endpoint too.
 - **`[OPEN]` — Wema money-movement `securityInfo` scheme + `WEMA_SIMULATION` prod foot-gun.** Live payouts
-  send `securityInfo` from `WEMA_SECURITY_INFO`; unset, they fail at the gateway (outage, not a leak).
+  send `securityInfo` from `WEMA_SECURITY_INFO`; unset, the call now carries a stable
+  `SECRET_KEY`-derived value instead of the empty string the gateway rejects outright
+  ("Security Info must not be empty"), and the authentication callback compares against the same
+  value — so an unset var is no longer a payout outage. Still pin it explicitly for prod.
   `WEMA_SIMULATION=true` serves mock money movement even in prod by design — ensure it is **off** for a
   live deploy (KYC never mock-passes even under simulation — verified).
 - Carried over (unchanged this pass): queue the WhatsApp webhook + broadcasts (still synchronous in-request);

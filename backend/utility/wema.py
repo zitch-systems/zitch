@@ -44,6 +44,7 @@ Still open before go-live:
   * live host (WEMA_BASE_URL) + production keys.
 """
 import hashlib
+import hmac
 import json
 import logging
 import re
@@ -297,8 +298,8 @@ def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
             "message": "Bank gateway is temporarily unavailable"}
 
 
-def _security_info(**kwargs) -> str:
-    """The ``securityInfo`` sent on money-movement calls.
+def security_info_value() -> str:
+    """The ``securityInfo`` this deployment uses on money-movement calls.
 
     There is no algorithm to implement and nothing to obtain from the bank. Wema
     confirmed the semantics directly (2026-07-27): "the security info is a private
@@ -308,16 +309,41 @@ def _security_info(**kwargs) -> str:
     either true or false".
 
     So it is a value WE choose, which the bank echoes back to our authentication
-    callback. It is not a signature over the payload — the kwargs are accepted only
-    so callers read naturally at the call site and a per-operation scheme could be
-    introduced later without touching them.
+    callback.
 
-    Blank is tolerated only for local/sandbox work. Production defaults to requiring
-    an exact callback match and the go-live preflight hard-fails while it is unset.
+    WEMA_SECURITY_INFO is the value when set. When it is NOT set we derive a stable
+    per-deployment one from SECRET_KEY instead of sending an empty string: ALAT
+    REJECTS a money-movement call carrying a blank securityInfo ("Security Info must
+    not be empty"), which made every transfer fail on an environment that had keys
+    but no explicit securityInfo. The derived value is secret (SECRET_KEY is), stable
+    across processes, and — because the authentication callback resolves `expected`
+    through this same function — still matches what the bank echoes back.
+
+    Rotating SECRET_KEY therefore rotates this fallback: callbacks for payouts still
+    in flight at that moment would fail the match (and be denied). Set an explicit
+    WEMA_SECURITY_INFO for production — the go-live preflight hard-fails while it is
+    unset for exactly that reason.
+
     The ledger's fresh-PENDING-reference check remains the primary authorization gate;
     this echoed constant is inexpensive defence in depth.
     """
-    return settings.WEMA.get("SECURITY_INFO", "") or ""
+    configured = (settings.WEMA.get("SECURITY_INFO", "") or "").strip()
+    if configured:
+        return configured
+    secret = (getattr(settings, "SECRET_KEY", "") or "").encode()
+    if not secret:
+        return ""
+    return hmac.new(secret, b"zitch:wema:security-info", hashlib.sha256).hexdigest()
+
+
+def _security_info(**kwargs) -> str:
+    """Call-site wrapper for :func:`security_info_value`.
+
+    It is not a signature over the payload — the kwargs are accepted only so callers
+    read naturally at the call site and a per-operation scheme could be introduced
+    later without touching them.
+    """
+    return security_info_value()
 
 
 # ---------------------------------------------------------------------------
@@ -1593,6 +1619,10 @@ def wema_diagnostics() -> dict:
     keys = m.get("KEYS") or {}
     out = {"base_url": m["BASE_URL"], "channel_id_set": bool(m.get("CHANNEL_ID")),
            "wallet_key_set": bool(keys.get("wallet")), "security_info_set": bool(m.get("SECURITY_INFO")),
+           # False above only means WEMA_SECURITY_INFO is unset — money calls still
+           # carry the SECRET_KEY-derived fallback rather than a blank value ALAT
+           # would reject. This says whether SOMETHING will be sent.
+           "security_info_effective": bool(security_info_value()),
            "wema_live": wema_live(), "simulation": wema_simulation()}
     if not wema_live():
         out["status"] = "simulation" if wema_simulation() else "keys_incomplete"

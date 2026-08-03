@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { View, Text, Pressable, Image, ScrollView } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
-import { Sheet, Btn, Money, money } from '@/components/design/ui';
+import { Sheet, Btn, Money, money, Field } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
+import { formatAmountInput, sanitizeAmount } from '@/lib/format';
 import { useTheme, font } from '@/lib/theme';
 import { router } from 'expo-router';
 
@@ -95,6 +96,40 @@ export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; va
         );
       })}
     </ScrollView>
+  );
+};
+
+// The one money-amount input used by every transaction flow (transfer, airtime,
+// data, electricity, betting, card funding, savings, Remita, bank link…).
+// Thousands are grouped with commas as the user types and kobo can be entered
+// with a decimal point ("12,500.75"). The caller's state keeps the RAW numeric
+// string ("12500.75"), so `Number(amt)` and the API payload are unchanged.
+export const AmountField = ({
+  label,
+  value,
+  onChangeText,
+  placeholder = 'Enter amount',
+  editable = true,
+}: {
+  label?: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+  editable?: boolean;
+}) => {
+  const { c } = useTheme();
+  return (
+    <Field
+      label={label}
+      value={formatAmountInput(value)}
+      onChangeText={(v) => onChangeText(sanitizeAmount(v))}
+      // decimal-pad, not number-pad: number-pad has no "." key on iOS, so kobo
+      // would be untypeable there.
+      keyboardType="decimal-pad"
+      placeholder={placeholder}
+      editable={editable}
+      prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
+    />
   );
 };
 

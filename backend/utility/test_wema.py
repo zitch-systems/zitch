@@ -132,6 +132,25 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(body["transactionReference"], "REF-1")
         self.assertEqual(body["destinationAccountNumber"], "02")
 
+    @override_settings(WEMA={**WEMA_LIVE, "SECURITY_INFO": ""})
+    @patch("utility.wema.requests.post")
+    def test_transfer_never_sends_a_blank_securityinfo(self, mock_post):
+        # ALAT rejects a money-movement call carrying an empty securityInfo
+        # ("Security Info must not be empty"), so an environment with keys but no
+        # WEMA_SECURITY_INFO falls back to a stable SECRET_KEY-derived value.
+        mock_post.return_value = _resp({"result": {"status": "SUCCESS", "transactionReference": "REF-2"},
+                                        "hasError": False})
+        wema.transfer(1000, "REF-2", "test", source_account="01", destination_account="02",
+                      destination_bank_code="035", destination_bank_name="Wema", destination_name="ADA")
+        sent = mock_post.call_args[1]["json"]["securityInfo"]
+        self.assertTrue(sent)
+        # Stable across calls, and the same value the auth callback compares against.
+        self.assertEqual(sent, wema.security_info_value())
+
+    @override_settings(WEMA={**WEMA_LIVE, "SECURITY_INFO": "  sec  "})
+    def test_configured_security_info_wins_and_is_trimmed(self):
+        self.assertEqual(wema.security_info_value(), "sec")
+
     @patch("utility.wema.requests.post", side_effect=requests.Timeout("socket timed out"))
     def test_transfer_timeout_is_ambiguous_and_never_refundable(self, _mock_post):
         result = wema.transfer(

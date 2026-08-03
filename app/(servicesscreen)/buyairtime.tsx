@@ -3,8 +3,8 @@ import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -117,14 +117,7 @@ const BuyAirtime = () => {
 
       <Label>Choose amount</Label>
       <QuickAmounts amounts={QUICK_AMOUNTS} value={amt} onPick={setAmt} />
-      <Field
-        label="Or enter amount"
-        value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
-        placeholder="0.00"
-        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-      />
+      <AmountField label="Or enter amount" value={amt} onChangeText={setAmt} placeholder="0.00" />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 

@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, NText } from '@/components/design/ui';
-import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Screen, Header, Btn, Sheet, PinPad, money, NText } from '@/components/design/ui';
+import { Label, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
 import { Hero } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
@@ -143,13 +143,7 @@ const FixedSave = () => {
 
       <Label>How much to lock?</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
-      <Field
-        value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
-        placeholder={`Enter amount (min ${money(minAmt)})`}
-        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-      />
+      <AmountField value={amt} onChangeText={setAmt} placeholder={`Enter amount (min ${money(minAmt)})`} />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 

@@ -3,8 +3,8 @@ import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -143,13 +143,11 @@ const Remita = () => {
 
       <View style={{ height: 14 }} />
       <Label>Amount</Label>
-      <Field
+      <AmountField
         value={fixedAmt ? String(fixedAmt) : amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
+        onChangeText={setAmt}
         editable={!fixedAmt}
-        keyboardType="number-pad"
         placeholder={validated ? 'Enter amount' : 'Verify the RRR first'}
-        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
       />
       {fixedAmt ? (
         <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginTop: 6 }}>
