@@ -52,10 +52,21 @@ class WalletAdmin(admin.ModelAdmin):
 
 @admin.register(Transaction)
 class TransactionAdmin(admin.ModelAdmin):
-    list_display = ("reference", "user", "service", "direction", "amount", "transaction_status", "created")
+    list_display = ("reference", "user", "service", "direction", "amount",
+                    "transaction_status", "failure_reason", "created")
     list_filter = ("direction", "transaction_status", "created")
     search_fields = ("reference", "user__phone", "user__email", "service")
     readonly_fields = ("reference", "created")
+
+    @admin.display(description="Why it failed")
+    def failure_reason(self, obj):
+        """The provider's own reason for a failed debit, from meta["failure"].
+
+        On the list page because that is where someone looks when transfers start
+        failing, and on a deploy without shell or log access it is otherwise
+        unreachable — every failed row looks alike.
+        """
+        return (obj.meta or {}).get("failure") or "—"
 
 
 @admin.register(FundingIntent)

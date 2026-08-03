@@ -342,6 +342,19 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     else:
         # Definitive rejection (validation error / OTP-required misconfig): the
         # transfer was NOT executed, so refunding the sender is safe.
+        #
+        # Record WHY on the row first, the way settle_or_refund does for VAS. The
+        # reason was previously raised to the user and logged, and nowhere else —
+        # so after the fact, with no shell and no log access, a failed payout was
+        # indistinguishable from any other failed payout. It is the single most
+        # useful field when a rail starts rejecting transfers.
+        meta = dict(txn.meta or {})
+        meta.pop("reconcile", None)
+        meta["failure"] = result.get("message", "") or "Transfer failed"
+        if result.get("status"):
+            meta["failure_status"] = result["status"]
+        txn.meta = meta
+        txn.save(update_fields=["meta"])
         refund(txn)
         raise PayoutError("provider", result.get("message", "Transfer failed"))
 
