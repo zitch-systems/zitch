@@ -1,12 +1,53 @@
-from django.contrib import admin
+from django.contrib import admin, messages
 
 from .models import FundingIntent, Transaction, Wallet
+from .services import is_demo_account
 
 
 @admin.register(Wallet)
 class WalletAdmin(admin.ModelAdmin):
-    list_display = ("user", "balance", "account_number", "updated")
+    list_display = ("user", "balance", "account_number", "bank_name", "updated")
     search_fields = ("user__phone", "user__email", "account_number")
+    actions = ["clear_demo_account"]
+
+    @admin.action(description="Clear a test-mode funding account so a real one can be issued")
+    def clear_demo_account(self, request, queryset):
+        """Blank a NUBAN the MOCK rail invented, so the user can be re-provisioned.
+
+        provision_wema_account refuses to replace an existing NUBAN — rightly, since
+        overwriting a real one strands money already sent to it. But that also traps
+        a wallet stamped with a test-mode number: it can never receive a live NUBAN,
+        and every payout it attempts is rejected by the rail. Clearing is safe for
+        exactly these, and only these: the number never existed at the bank, so no
+        deposit can be in flight to it.
+
+        The balance is untouched — it is our ledger, not the bank's.
+        """
+        cleared = skipped = 0
+        for wallet in queryset:
+            if not is_demo_account(wallet):
+                skipped += 1
+                continue
+            wallet.account_number = ""
+            wallet.account_name = ""
+            wallet.bank_name = ""
+            wallet.account_reference = ""
+            wallet.bank_accounts = []
+            wallet.save(update_fields=["account_number", "account_name", "bank_name",
+                                       "account_reference", "bank_accounts", "updated"])
+            cleared += 1
+        if cleared:
+            self.message_user(
+                request,
+                f"Cleared {cleared} test-mode funding account(s). Those users can now be "
+                f"issued a real NUBAN by redoing account setup; balances are unchanged.",
+                messages.SUCCESS)
+        if skipped:
+            self.message_user(
+                request,
+                f"Left {skipped} wallet(s) alone — their account number was issued by the "
+                f"real bank, and clearing it would strand deposits sent to it.",
+                messages.WARNING)
 
 
 @admin.register(Transaction)

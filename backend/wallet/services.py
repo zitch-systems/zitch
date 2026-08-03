@@ -293,6 +293,24 @@ def run_provider_purchase(user, amount, service: str, meta: dict, provider_call,
     return status, txn, result
 
 
+# The mock rail stamps the NUBANs it invents with this (utility.wema._mock_account),
+# which is the only durable trace that an account number was never minted at the bank.
+DEMO_ACCOUNT_MARKER = "(demo)"
+
+
+def is_demo_account(wallet) -> bool:
+    """True when this wallet's NUBAN was invented by the MOCK rail.
+
+    Such a number exists nowhere at the bank. It is harmless while the rail is
+    mocked, but once live keys are set it is still sitting on the wallet and gets
+    sent as the `sourceAccountNumber` of every payout — where the rail's own
+    enquiry rejects it, reporting (as ever) that an account number is invalid.
+    Nothing about the destination is wrong in that case, which makes it a
+    thoroughly misleading failure to debug.
+    """
+    return DEMO_ACCOUNT_MARKER in (getattr(wallet, "bank_name", "") or "").lower()
+
+
 def is_bank_payout(txn) -> bool:
     """True for a bank-transfer (Wema payout) payout, as opposed to a VTU.ng
     purchase.
