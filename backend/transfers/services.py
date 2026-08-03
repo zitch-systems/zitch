@@ -20,6 +20,72 @@ from wallet.services import (
 
 from .models import Bank, Beneficiary
 
+# Generic words that carry no identity: dropping them lets "Moniepoint MFB" match
+# "Moniepoint Microfinance Bank" while keeping "First Bank" != "Fidelity Bank".
+_NAME_NOISE = {"bank", "banks", "plc", "ltd", "limited", "nigeria", "nigerian", "ng",
+               "mfb", "microfinance", "finance", "psb", "payment", "service", "services",
+               "digital", "company", "co"}
+
+
+def normalize_bank_name(name: str) -> str:
+    """Identity-bearing tokens of a bank name, sorted and joined."""
+    import re
+
+    words = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower()).split()
+    kept = [w for w in words if w not in _NAME_NOISE]
+    return " ".join(sorted(kept or words))
+
+
+def compare_bank_codes(remote: list[dict]) -> dict:
+    """Classify our payout bank codes against the rail's own bank list.
+
+    `remote` is `utility.wema.get_banks()["banks"]` — `[{bank_name, bank_code}]`.
+    Returns `{agree, differ, ambiguous, unmatched, remote_count, ok}`, where the
+    three problem lists carry `{name, ours, rail}` rows.
+
+    We resolve recipients by `(account_number, bank_code)` in the RAIL's code
+    space, but ours were seeded from a NIBSS/Paystack mirror (see seed_plans), so
+    a code that differs there fails name enquiry for every account number a user
+    types — and the gateway reports that as an invalid account number, never as a
+    bank problem.
+
+    A name matching more than one remote row is `ambiguous`, never resolved by
+    guessing: writing the wrong code here misroutes real money.
+    """
+    by_name: dict[str, list] = {}
+    for row in remote or []:
+        if row.get("bank_code"):
+            by_name.setdefault(normalize_bank_name(row.get("bank_name", "")), []).append(row)
+
+    out = {"agree": [], "differ": [], "ambiguous": [], "unmatched": [],
+           "remote_count": sum(len(v) for v in by_name.values())}
+    for bank in Bank.objects.filter(active=True).order_by("name"):
+        hits = by_name.get(normalize_bank_name(bank.name)) or []
+        row = {"name": bank.name, "ours": bank.bank_code, "code": bank.code}
+        if not hits:
+            out["unmatched"].append(row)
+        elif len({h["bank_code"] for h in hits}) > 1:
+            out["ambiguous"].append({**row, "rail": sorted({h["bank_code"] for h in hits})})
+        elif hits[0]["bank_code"] == bank.bank_code:
+            out["agree"].append(row)
+        else:
+            out["differ"].append({**row, "rail": hits[0]["bank_code"],
+                                  "rail_name": hits[0].get("bank_name", "")})
+    out["ok"] = not (out["differ"] or out["ambiguous"] or out["unmatched"])
+    return out
+
+
+def apply_bank_codes(differ: list[dict]) -> int:
+    """Write the rail's code onto the `differ` rows from compare_bank_codes()."""
+    updated = 0
+    for row in differ or []:
+        bank = Bank.objects.filter(code=row["code"]).first()
+        if bank and row.get("rail"):
+            bank.bank_code = row["rail"]
+            bank.save(update_fields=["bank_code"])
+            updated += 1
+    return updated
+
 
 def detect_account_banks(account_number: str) -> list[dict]:
     """Auto-detect which bank(s) a 10-digit NUBAN belongs to.

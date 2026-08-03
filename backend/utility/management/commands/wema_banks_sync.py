@@ -11,30 +11,15 @@ spot from the app.
 Read-only by default: it prints ours vs theirs and exits 1 when anything differs,
 so it can gate a deploy. `--apply` writes the rail's code onto the matching rows.
 
-Matching is by normalized bank name (case, punctuation and the generic words
-"bank/plc/nigeria/limited/microfinance…" removed). An ambiguous name — one that
-matches more than one remote row — is NEVER auto-applied; it is reported for a
-human, because writing the wrong code here misroutes real money.
+The same comparison is available without a shell: read-only in the `bank_codes`
+block of `POST /wema-diagnose`, and appliable from the Bank list in Django admin
+("Sync bank codes from the payout rail"). The comparison itself lives in
+transfers.services.compare_bank_codes so all three agree.
 """
-import re
-
 from django.core.management.base import BaseCommand
 
-from transfers.models import Bank
+from transfers.services import apply_bank_codes, compare_bank_codes
 from utility import wema
-
-# Generic words that carry no identity: dropping them lets "Moniepoint MFB" match
-# "Moniepoint Microfinance Bank" while keeping "First Bank" != "Fidelity Bank".
-_NOISE = {"bank", "banks", "plc", "ltd", "limited", "nigeria", "nigerian", "ng",
-          "mfb", "microfinance", "finance", "psb", "payment", "service", "services",
-          "digital", "company", "co"}
-
-
-def normalize(name: str) -> str:
-    """Identity-bearing tokens of a bank name, sorted and joined."""
-    words = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower()).split()
-    kept = [w for w in words if w not in _NOISE]
-    return " ".join(sorted(kept or words))
 
 
 class Command(BaseCommand):
@@ -68,55 +53,38 @@ class Command(BaseCommand):
                 "keys (WEMA_CHANNEL_ID + WEMA_WALLET_KEY) and run this where they are set."))
             return self._exit(1)
 
-        by_name: dict[str, list] = {}
-        for row in remote:
-            by_name.setdefault(normalize(row["bank_name"]), []).append(row)
+        cmp = compare_bank_codes(remote)
 
-        agree, differ, ambiguous, unmatched = [], [], [], []
-        for bank in Bank.objects.filter(active=True).order_by("name"):
-            hits = by_name.get(normalize(bank.name)) or []
-            if not hits:
-                unmatched.append(bank)
-            elif len({h["bank_code"] for h in hits}) > 1:
-                ambiguous.append((bank, hits))
-            elif hits[0]["bank_code"] == bank.bank_code:
-                agree.append(bank)
-            else:
-                differ.append((bank, hits[0]))
-
-        if options["all"] and agree:
-            self.stdout.write(self.style.SUCCESS(f"{len(agree)} bank code(s) already agree:"))
-            for bank in agree:
-                self.stdout.write(f"  ok    {bank.name:<28} {bank.bank_code}")
-
-        for bank, hit in differ:
+        if options["all"] and cmp["agree"]:
+            self.stdout.write(self.style.SUCCESS(f"{len(cmp['agree'])} bank code(s) already agree:"))
+            for row in cmp["agree"]:
+                self.stdout.write(f"  ok    {row['name']:<28} {row['ours']}")
+        for row in cmp["differ"]:
             self.stdout.write(self.style.WARNING(
-                f"  DIFF  {bank.name:<28} ours={bank.bank_code or '(blank)'} "
-                f"rail={hit['bank_code']}  ({hit['bank_name']})"))
-        for bank, hits in ambiguous:
-            codes = ", ".join(sorted({f"{h['bank_code']} ({h['bank_name']})" for h in hits}))
+                f"  DIFF  {row['name']:<28} ours={row['ours'] or '(blank)'} "
+                f"rail={row['rail']}  ({row['rail_name']})"))
+        for row in cmp["ambiguous"]:
             self.stdout.write(self.style.WARNING(
-                f"  AMBIG {bank.name:<28} ours={bank.bank_code or '(blank)'} "
-                f"rail matches several: {codes} — fix by hand"))
-        for bank in unmatched:
+                f"  AMBIG {row['name']:<28} ours={row['ours'] or '(blank)'} "
+                f"rail matches several: {', '.join(row['rail'])} — fix by hand"))
+        for row in cmp["unmatched"]:
             self.stdout.write(self.style.WARNING(
-                f"  MISS  {bank.name:<28} ours={bank.bank_code or '(blank)'} "
+                f"  MISS  {row['name']:<28} ours={row['ours'] or '(blank)'} "
                 f"— no bank of that name on the rail; transfers to it will fail"))
 
-        if options["apply"] and differ:
-            for bank, hit in differ:
-                bank.bank_code = hit["bank_code"]
-                bank.save(update_fields=["bank_code"])
-            self.stdout.write(self.style.SUCCESS(f"Updated {len(differ)} bank code(s)."))
-            differ = []
+        differing = len(cmp["differ"])
+        if options["apply"] and differing:
+            self.stdout.write(self.style.SUCCESS(
+                f"Updated {apply_bank_codes(cmp['differ'])} bank code(s)."))
+            differing = 0
 
-        extra = len(remote) - len(agree) - len(differ)
+        extra = cmp["remote_count"] - len(cmp["agree"]) - differing
         self.stdout.write(
-            f"\n{Bank.objects.filter(active=True).count()} active bank(s) here, "
-            f"{len(remote)} on the rail — {len(agree)} agree, {len(differ)} differ, "
-            f"{len(ambiguous)} ambiguous, {len(unmatched)} unmatched"
+            f"\n{len(cmp['agree']) + differing + len(cmp['ambiguous']) + len(cmp['unmatched'])} "
+            f"active bank(s) here, {cmp['remote_count']} on the rail — {len(cmp['agree'])} agree, "
+            f"{differing} differ, {len(cmp['ambiguous'])} ambiguous, {len(cmp['unmatched'])} unmatched"
             + (f", {extra} rail bank(s) not in our picker" if extra > 0 else ""))
-        problems = len(differ) + len(ambiguous) + len(unmatched)
+        problems = differing + len(cmp["ambiguous"]) + len(cmp["unmatched"])
         if problems:
             self.stdout.write(self.style.WARNING(
                 "Recipient resolution uses these codes, so a wrong one reads to the user as "

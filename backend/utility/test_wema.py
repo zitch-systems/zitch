@@ -10,7 +10,7 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import requests
-from django.test import Client, SimpleTestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from utility import wema
 
@@ -264,7 +264,9 @@ class WemaKycTests(SimpleTestCase):
         self.assertFalse(wema.verify_vnin("1234567890123456")["success"])
 
 
-class WemaProbeTests(SimpleTestCase):
+# TestCase, not SimpleTestCase: the probe reads our Bank rows to compare payout
+# codes against the rail's list, so it needs the DB.
+class WemaProbeTests(TestCase):
     def test_probe_without_keys_makes_no_live_call(self):
         # No keys configured -> config + hint only, never raises.
         r = wema.wema_probe()
