@@ -60,11 +60,22 @@ class BankAdmin(admin.ModelAdmin):
                 request,
                 f"{row['name']}: the rail lists that name under several codes "
                 f"({', '.join(row['rail'])}) — set it by hand.", messages.WARNING)
-        for row in cmp["unmatched"]:
+        if cmp["unmatched"]:
+            names = ", ".join(f"{r['name']} (ours: {r['ours'] or 'blank'})"
+                              for r in cmp["unmatched"])
             self.message_user(
                 request,
-                f"{row['name']}: the rail lists no bank of that name, so transfers to it "
-                f"will fail (ours: {row['ours'] or 'blank'}).", messages.WARNING)
+                f"{len(cmp['unmatched'])} bank(s) matched nothing on the rail, so their codes "
+                f"are unchanged and transfers to them will keep failing: {names}.",
+                messages.WARNING)
+            # Without the rail's leftovers this is a dead end — you cannot tell
+            # whether the rail calls the bank something else or does not carry it.
+            leftovers = ", ".join(f"{r['name']} = {r['code']}" for r in cmp["rail_unmatched"])
+            if leftovers:
+                self.message_user(
+                    request,
+                    f"Unmatched on the rail's side, for mapping by hand: {leftovers}",
+                    messages.INFO)
 
 
 @admin.register(Beneficiary)

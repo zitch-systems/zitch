@@ -1610,6 +1610,10 @@ def wema_probe(account_number: str = "", bank_code: str = "", phone: str = "",
             "ok": cmp["ok"], "agree": len(cmp["agree"]), "rail_count": cmp["remote_count"],
             # Only the actionable rows travel — the agreeing ones are just a count.
             "differ": cmp["differ"], "ambiguous": cmp["ambiguous"], "unmatched": cmp["unmatched"],
+            # The rail's own leftovers: the other half of an `unmatched`, and the
+            # only way to tell "the rail calls it something else" from "the rail
+            # doesn't carry it".
+            "rail_unmatched": cmp["rail_unmatched"],
             "hint": ("Codes match the rail." if cmp["ok"] else
                      "Recipient resolution uses these codes; a wrong one reads to the user as "
                      "'account enquiry failed'. Fix from Django admin (Banks -> Sync bank codes "

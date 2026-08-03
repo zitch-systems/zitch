@@ -22,9 +22,35 @@ from .models import Bank, Beneficiary
 
 # Generic words that carry no identity: dropping them lets "Moniepoint MFB" match
 # "Moniepoint Microfinance Bank" while keeping "First Bank" != "Fidelity Bank".
+# The joiners matter as much as the nouns: without them "First Bank" never meets
+# "First Bank of Nigeria".
+# "merchant" belongs with "microfinance": a licence class, not an identity — the
+# rail may still carry Nova Bank under its former "Nova Merchant Bank" name. Words
+# that DO distinguish real banks stay (e.g. "trust": Titan Trust != PremiumTrust).
 _NAME_NOISE = {"bank", "banks", "plc", "ltd", "limited", "nigeria", "nigerian", "ng",
-               "mfb", "microfinance", "finance", "psb", "payment", "service", "services",
-               "digital", "company", "co"}
+               "mfb", "microfinance", "merchant", "finance", "psb", "payment", "service",
+               "services", "digital", "company", "co", "of", "for", "and", "the"}
+
+# Banks whose legal name on the rail is nothing like the trade name we show in the
+# picker — no amount of token normalization gets "GTBank" to "Guaranty Trust". Each
+# group maps every spelling we have seen to one id; a bank is matched when both
+# sides land on the same id. Keys are already normalized (tokens sorted), so
+# "United Bank for Africa" appears here as "africa united".
+#
+# Deliberately explicit rather than fuzzy: these decide which bank a payout is
+# routed to, and a plausible-but-wrong guess sends real money to the wrong bank.
+_ALIAS_GROUPS = (
+    ("gtb", ("gtbank", "gt", "guaranty trust", "guaranty")),
+    ("uba", ("uba", "africa united")),
+    ("fcmb", ("fcmb", "city first monument")),
+    ("scb", ("scb", "chartered standard")),
+    ("vfd", ("v vfd", "vfd", "v")),
+    ("9psb", ("9psb", "9")),
+    ("momo", ("momo mtn", "momo")),
+    ("smartcash", ("airtel smartcash", "smartcash")),
+    ("citi", ("citi", "citibank")),
+)
+_ALIASES = {key: canon for canon, keys in _ALIAS_GROUPS for key in keys}
 
 
 def normalize_bank_name(name: str) -> str:
@@ -34,6 +60,20 @@ def normalize_bank_name(name: str) -> str:
     words = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower()).split()
     kept = [w for w in words if w not in _NAME_NOISE]
     return " ".join(sorted(kept or words))
+
+
+def bank_name_keys(name: str) -> tuple:
+    """The keys `name` can be matched on, most-precise first.
+
+    1. the normalized token key            ("premium trust")
+    2. the same with spaces squashed       ("premiumtrust") — one side writes the
+       trade name as one word, the other as two
+    3. an explicit alias id, for trade names that share no words at all
+    """
+    key = normalize_bank_name(name)
+    squashed = key.replace(" ", "")
+    alias = _ALIASES.get(key) or _ALIASES.get(squashed)
+    return (key, squashed, f"alias:{alias}" if alias else None)
 
 
 def compare_bank_codes(remote: list[dict]) -> dict:
@@ -50,27 +90,52 @@ def compare_bank_codes(remote: list[dict]) -> dict:
     bank problem.
 
     A name matching more than one remote row is `ambiguous`, never resolved by
-    guessing: writing the wrong code here misroutes real money.
-    """
-    by_name: dict[str, list] = {}
-    for row in remote or []:
-        if row.get("bank_code"):
-            by_name.setdefault(normalize_bank_name(row.get("bank_name", "")), []).append(row)
+    guessing: writing the wrong code here misroutes real money. `rail_unmatched`
+    lists the rail's own leftover names, which is what a human needs to close a
+    gap by hand (or to extend _ALIAS_GROUPS).
 
+    Matching runs key by key (see bank_name_keys) and stops at the first key that
+    hits, so an exact name match is never overridden by a looser one. Each matched
+    row records `via` — exact / squashed / alias — so every rewrite is auditable.
+    """
+    rows = [r for r in (remote or []) if r.get("bank_code")]
+    indexes: list[dict] = [{}, {}, {}]
+    for row in rows:
+        for i, key in enumerate(bank_name_keys(row.get("bank_name", ""))):
+            if key:
+                indexes[i].setdefault(key, []).append(row)
+
+    labels = ("exact", "squashed", "alias")
     out = {"agree": [], "differ": [], "ambiguous": [], "unmatched": [],
-           "remote_count": sum(len(v) for v in by_name.values())}
+           "rail_unmatched": [], "remote_count": len(rows)}
+    claimed = set()
     for bank in Bank.objects.filter(active=True).order_by("name"):
-        hits = by_name.get(normalize_bank_name(bank.name)) or []
         row = {"name": bank.name, "ours": bank.bank_code, "code": bank.code}
+        hits, via = [], ""
+        for i, key in enumerate(bank_name_keys(bank.name)):
+            if key and indexes[i].get(key):
+                hits, via = indexes[i][key], labels[i]
+                break
         if not hits:
             out["unmatched"].append(row)
-        elif len({h["bank_code"] for h in hits}) > 1:
-            out["ambiguous"].append({**row, "rail": sorted({h["bank_code"] for h in hits})})
+            continue
+        claimed.update(id(h) for h in hits)
+        codes = {h["bank_code"] for h in hits}
+        if len(codes) > 1:
+            out["ambiguous"].append({**row, "rail": sorted(codes), "via": via})
         elif hits[0]["bank_code"] == bank.bank_code:
             out["agree"].append(row)
         else:
             out["differ"].append({**row, "rail": hits[0]["bank_code"],
-                                  "rail_name": hits[0].get("bank_name", "")})
+                                  "rail_name": hits[0].get("bank_name", ""), "via": via})
+
+    # What the rail carries that we never matched. Without this a leftover on our
+    # side is a dead end: you cannot tell whether the rail calls the bank something
+    # else or genuinely does not support it.
+    out["rail_unmatched"] = sorted(
+        ({"name": r.get("bank_name", ""), "code": r["bank_code"]}
+         for r in rows if id(r) not in claimed),
+        key=lambda r: r["name"])
     out["ok"] = not (out["differ"] or out["ambiguous"] or out["unmatched"])
     return out
 
