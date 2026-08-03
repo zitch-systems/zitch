@@ -265,6 +265,21 @@ class WebPagesTests(TestCase):
             self.assertEqual(res.status_code, 200, path)
             self.assertIn(marker, res.content)
 
+    def test_public_pages_never_link_to_the_operator_portal(self):
+        """The money-control surface is staff-only and must not be advertised to
+        the public. A footer link to it used to sit on both landing pages; this
+        pins it out of every page a visitor can reach without credentials."""
+        c = Client()
+        for path in ("/", "/console/", "/prototype/"):
+            res = c.get(path)
+            if res.status_code != 200:
+                continue
+            body = res.content.lower()
+            self.assertNotIn(b"admin portal", body, path)
+            self.assertNotIn(b'href="/portal/', body, path)
+            self.assertNotIn(b'href="/console/portal/', body, path)
+            self.assertNotIn(b'href="/admin/', body, path)
+
     # The demo class names also appear in the stylesheet, which ships in both
     # modes — so these assert on the rendered elements, never the bare string.
     LIVE_BODY, DEMO_BODY = b'<body class="">', b'<body class="is-demo">'
