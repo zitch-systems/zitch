@@ -50,6 +50,10 @@ _ALIAS_GROUPS = (
     ("momo", ("momo mtn", "momo")),
     ("smartcash", ("airtel smartcash", "smartcash")),
     ("citi", ("citi", "citibank")),
+    # Our picker says "Mint MFB"; the rail lists the licensed entity behind it,
+    # "MINT-FINEX MFB" (090281). Confirmed against the rail's own leftover list —
+    # it carries no other Mint.
+    ("mint", ("mint", "finex mint", "mintfinex", "mintyn")),
 )
 _ALIASES = {key: canon for canon, keys in _ALIAS_GROUPS for key in keys}
 
