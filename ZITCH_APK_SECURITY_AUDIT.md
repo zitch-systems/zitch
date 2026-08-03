@@ -62,8 +62,12 @@ The following fixes were applied in the same PR as this report:
   `sendmoney.tsx`).
 - **✅ A5** — trivial/sequential/repeated PINs are rejected at setup (`lib/format.ts isTrivialPin`,
   wired into `setpin.tsx` / `resetpin.tsx`, with unit tests).
-- **✅ B1** — app‑wide `FLAG_SECURE` via `expo-screen-capture.preventScreenCaptureAsync()` in the
-  root layout — screenshots, screen‑recording and the recents thumbnail are now blocked.
+- **⚠️ B1** — app‑wide `FLAG_SECURE` was applied via `expo-screen-capture.preventScreenCaptureAsync()`
+  in the root layout, and has since been **reverted by product decision**: screenshots and screen
+  recording are allowed app‑wide so users can capture receipts, account details and support
+  screens (`app/_layout.tsx` now calls `allowScreenCaptureAsync()`, which also releases the block
+  on devices that ran an earlier build). The B1 exposure below therefore stands as written; B2
+  (revealed PAN/CVV auto‑hide + clear on background) remains the compensating control.
 - **✅ B2** — revealed card PAN/CVV are cleared when the app backgrounds and auto‑hide after 60 s
   (`app/(homepage)/cards.tsx`).
 - **✅ D5** — the access token is no longer mirrored into request bodies (header‑only, `lib/api.ts`).

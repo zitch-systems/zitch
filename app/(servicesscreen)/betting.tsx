@@ -4,8 +4,8 @@ import { router } from 'expo-router';
 import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
-import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -119,13 +119,7 @@ const Betting = () => {
 
       <Label>Amount</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
-      <Field
-        value={amt}
-        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
-        keyboardType="number-pad"
-        placeholder="Enter amount"
-        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-      />
+      <AmountField value={amt} onChangeText={setAmt} />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 

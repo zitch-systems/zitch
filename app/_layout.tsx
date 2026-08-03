@@ -62,16 +62,15 @@ const RootLayout = () => {
     }
   }, [fontsLoaded, error]);
 
-  // Financial screens contain balances, identity documents and account numbers.
-  // Block screenshots/screen recording and obscure the Android recent-app preview;
-  // receipts can still be shared through the app's explicit receipt/share actions.
+  // Screenshots and screen recording are ALLOWED app-wide (product decision):
+  // users need to capture receipts, account details and support screens to share
+  // them. Older builds called preventScreenCaptureAsync() here; the explicit
+  // allow below undoes any capture block a previous session left set on the
+  // window, so an app update takes effect without a device restart.
   useEffect(() => {
-    if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    if (Platform.OS !== 'web') ScreenCapture.allowScreenCaptureAsync().catch(() => {});
     // Drop any money PIN left cached by older builds when biometric pay is off.
     reconcileCachedPin().catch(() => {});
-    return () => {
-      if (Platform.OS !== 'web') ScreenCapture.allowScreenCaptureAsync().catch(() => {});
-    };
   }, []);
 
   // Inactivity timeout: lock a session idle past the limit and bounce to the
