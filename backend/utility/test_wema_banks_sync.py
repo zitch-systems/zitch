@@ -180,14 +180,41 @@ class TradeNameMatchingTests(TestCase):
               {"bank_name": "Citibank Nigeria", "bank_code": "RIGHT"}], "--apply")
         self.assertEqual(Bank.objects.get(code="citi").bank_code, "RIGHT")
 
-    def test_the_rails_leftovers_are_reported_for_hand_mapping(self):
+    def test_the_rail_writes_9psb_as_one_word(self):
+        self.assertEqual(self._sync("9PSB", "9PAYMENT SERVICE BANK", "120001"), "120001")
+
+    def test_mint_maps_to_the_licensed_entity_the_rail_lists(self):
+        # The last unmatched bank of the live run: our picker says "Mint MFB", the
+        # rail lists "MINT-FINEX MFB" (090281).
+        self.assertEqual(self._sync("Mint MFB", "MINT-FINEX MFB", "090281"), "090281")
+
+    def test_an_unmatched_bank_gets_a_shortlist_not_the_whole_rail(self):
+        """The live rail returns ~1000 rows, nearly all microfinance banks we do not
+        carry. Dumping them buried the one name that mattered, so each MISS now
+        carries only the rail names that plausibly are it."""
         Bank.objects.all().delete()
-        Bank.objects.create(code="mint", name="Mint MFB", bank_code="50304")
-        out, code = _run([{"bank_name": "Mintyn Digital Bank", "bank_code": "50515"}])
+        Bank.objects.create(code="sparkle", name="Sparkle MFB", bank_code="51310")
+        noise = [{"bank_name": f"{n} MICROFINANCE BANK", "bank_code": f"0904{i:02d}"}
+                 for i, n in enumerate(("ABBEY", "BOJI BOJI", "CANAAN", "DAYLIGHT", "EYOWO"))]
+        out, code = _run(noise + [{"bank_name": "SPARKLEX MICROFINANCE BANK",
+                                   "bank_code": "090999"}])
         self.assertEqual(code, 1)
         self.assertIn("MISS", out)
-        self.assertIn("Mintyn Digital Bank", out)   # the other half of the miss
-        self.assertIn("50515", out)
+        # The plausible one is named…
+        self.assertIn("SPARKLEX MICROFINANCE BANK", out)
+        self.assertIn("090999", out)
+        # …and the unrelated leftovers are counted, not listed. The count is 6, not
+        # 5: the suggested row is itself unclaimed until a human maps it.
+        self.assertNotIn("BOJI BOJI", out)
+        self.assertIn("6 bank(s) on the rail matched nothing", out)
+
+    def test_a_suggestion_is_never_applied_on_its_own(self):
+        # "Plausibly the same bank" is not good enough to route money on: a
+        # suggestion needs a human, unlike an alias someone has confirmed.
+        Bank.objects.all().delete()
+        Bank.objects.create(code="sparkle", name="Sparkle MFB", bank_code="51310")
+        _run([{"bank_name": "SPARKLEX MICROFINANCE BANK", "bank_code": "090999"}], "--apply")
+        self.assertEqual(Bank.objects.get(code="sparkle").bank_code, "51310")
 
 
 class ReseedDoesNotUndoReconciliationTests(TestCase):

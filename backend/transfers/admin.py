@@ -68,14 +68,17 @@ class BankAdmin(admin.ModelAdmin):
                 f"{len(cmp['unmatched'])} bank(s) matched nothing on the rail, so their codes "
                 f"are unchanged and transfers to them will keep failing: {names}.",
                 messages.WARNING)
-            # Without the rail's leftovers this is a dead end — you cannot tell
-            # whether the rail calls the bank something else or does not carry it.
-            leftovers = ", ".join(f"{r['name']} = {r['code']}" for r in cmp["rail_unmatched"])
-            if leftovers:
+            # One shortlist per unmatched bank, not the rail's whole leftover list:
+            # that is ~1000 rows on the live rail, and it buried the two names that
+            # actually mattered. Set the code by hand on the Bank row if one fits.
+            for row in cmp["unmatched"]:
+                if not row.get("suggestions"):
+                    continue
+                near = ", ".join(f"{s['name']} = {s['code']}" for s in row["suggestions"])
                 self.message_user(
                     request,
-                    f"Unmatched on the rail's side, for mapping by hand: {leftovers}",
-                    messages.INFO)
+                    f"{row['name']}: closest names on the rail — {near}. If one is the same "
+                    f"bank, set its code on the {row['name']} row by hand.", messages.INFO)
 
 
 @admin.register(Beneficiary)

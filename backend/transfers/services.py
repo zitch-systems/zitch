@@ -45,10 +45,15 @@ _ALIAS_GROUPS = (
     ("fcmb", ("fcmb", "city first monument")),
     ("scb", ("scb", "chartered standard")),
     ("vfd", ("v vfd", "vfd", "v")),
-    ("9psb", ("9psb", "9")),
+    # The rail writes this one as a single token, "9PAYMENT SERVICE BANK".
+    ("9psb", ("9psb", "9", "9payment")),
     ("momo", ("momo mtn", "momo")),
     ("smartcash", ("airtel smartcash", "smartcash")),
     ("citi", ("citi", "citibank")),
+    # Our picker says "Mint MFB"; the rail lists the licensed entity behind it,
+    # "MINT-FINEX MFB" (090281). Confirmed against the rail's own leftover list —
+    # it carries no other Mint.
+    ("mint", ("mint", "finex mint", "mintfinex", "mintyn")),
 )
 _ALIASES = {key: canon for canon, keys in _ALIAS_GROUPS for key in keys}
 
@@ -74,6 +79,32 @@ def bank_name_keys(name: str) -> tuple:
     squashed = key.replace(" ", "")
     alias = _ALIASES.get(key) or _ALIASES.get(squashed)
     return (key, squashed, f"alias:{alias}" if alias else None)
+
+
+def _suggest(name: str, leftovers: list[dict], limit: int = 5) -> list:
+    """Rail rows that plausibly ARE `name`, for a human to confirm.
+
+    Shares a distinctive word with our name, or contains it as a prefix of one
+    ("Mint" -> "MINT-FINEX"). Purely advisory — nothing is applied off a
+    suggestion, because "plausibly the same bank" is not good enough to route
+    money on.
+    """
+    ours = set(normalize_bank_name(name).split())
+    if not ours:
+        return []
+    scored = []
+    for row in leftovers:
+        theirs = set(normalize_bank_name(row["name"]).split())
+        shared = ours & theirs
+        if not shared:
+            # A word of ours that starts one of theirs (or vice versa) still counts,
+            # so a hyphenated or run-together legal name is not missed.
+            shared = {a for a in ours for b in theirs
+                      if len(a) > 2 and (b.startswith(a) or a.startswith(b))}
+        if shared:
+            scored.append((len(shared), -len(theirs), row))
+    scored.sort(key=lambda s: (-s[0], s[1], s[2]["name"]))
+    return [r for _, _, r in scored[:limit]]
 
 
 def compare_bank_codes(remote: list[dict]) -> dict:
@@ -129,13 +160,20 @@ def compare_bank_codes(remote: list[dict]) -> dict:
             out["differ"].append({**row, "rail": hits[0]["bank_code"],
                                   "rail_name": hits[0].get("bank_name", ""), "via": via})
 
-    # What the rail carries that we never matched. Without this a leftover on our
-    # side is a dead end: you cannot tell whether the rail calls the bank something
-    # else or genuinely does not support it.
-    out["rail_unmatched"] = sorted(
+    # What the rail carries that we never matched. Reporting ALL of it was useless
+    # in practice: the live rail returns ~1000 rows, nearly all microfinance banks
+    # we do not list, so the answer for the two banks that mattered was buried in a
+    # wall of names. Each unmatched bank instead carries its own shortlist — the
+    # rail rows sharing one of its distinctive words — which is what a human needs
+    # to close the gap (e.g. "Mint MFB" -> "MINT-FINEX MFB = 090281").
+    leftovers = sorted(
         ({"name": r.get("bank_name", ""), "code": r["bank_code"]}
          for r in rows if id(r) not in claimed),
         key=lambda r: r["name"])
+    for row in out["unmatched"]:
+        row["suggestions"] = _suggest(row["name"], leftovers)
+    out["rail_unmatched_count"] = len(leftovers)
+    out["rail_unmatched"] = leftovers
     out["ok"] = not (out["differ"] or out["ambiguous"] or out["unmatched"])
     return out
 

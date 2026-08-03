@@ -71,13 +71,15 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f"  MISS  {row['name']:<28} ours={row['ours'] or '(blank)'} "
                 f"— no bank of that name on the rail; transfers to it will fail"))
-        if cmp["unmatched"] and cmp["rail_unmatched"]:
-            # The other half of a MISS: what the rail calls the banks we didn't
-            # match. Either the name maps (extend _ALIAS_GROUPS) or the rail really
-            # doesn't carry it.
-            self.stdout.write("\n  Unmatched on the rail's side, for mapping by hand:")
-            for row in cmp["rail_unmatched"]:
-                self.stdout.write(f"    {row['code']:<10} {row['name']}")
+            # A shortlist beats the rail's full leftover list: that is ~1000 rows
+            # live, almost all microfinance banks we don't carry.
+            for s in row.get("suggestions") or []:
+                self.stdout.write(f"          maybe: {s['code']:<10} {s['name']}")
+        if cmp["unmatched"]:
+            self.stdout.write(
+                f"\n  {cmp['rail_unmatched_count']} bank(s) on the rail matched nothing of "
+                f"ours. Map a MISS by hand (Django admin -> Banks) or add the spelling to "
+                f"transfers.services._ALIAS_GROUPS.")
 
         differing = len(cmp["differ"])
         if options["apply"] and differing:
