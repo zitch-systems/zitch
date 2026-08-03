@@ -190,6 +190,37 @@ class TradeNameMatchingTests(TestCase):
         self.assertIn("50515", out)
 
 
+class ReseedDoesNotUndoReconciliationTests(TestCase):
+    """build.sh runs seed_plans on EVERY deploy. It used to rewrite bank_code from
+    its hardcoded NIBSS/Paystack table, so the next deploy would silently undo a
+    sync against the rail and bring "account enquiry failed" back."""
+
+    def test_a_reconciled_code_survives_a_reseed(self):
+        call_command("seed_plans", stdout=StringIO())
+        gtb = Bank.objects.get(code="gtb")
+        seeded = gtb.bank_code
+        gtb.bank_code = "000013"      # what a sync against the rail wrote
+        gtb.save(update_fields=["bank_code"])
+
+        call_command("seed_plans", stdout=StringIO())
+        self.assertEqual(Bank.objects.get(code="gtb").bank_code, "000013",
+                         f"the redeploy reset the reconciled code back to {seeded}")
+
+    def test_a_blank_code_is_still_filled_in(self):
+        call_command("seed_plans", stdout=StringIO())
+        Bank.objects.filter(code="gtb").update(bank_code="")
+        call_command("seed_plans", stdout=StringIO())
+        self.assertTrue(Bank.objects.get(code="gtb").bank_code)
+
+    def test_presentation_fields_stay_seed_authoritative(self):
+        call_command("seed_plans", stdout=StringIO())
+        Bank.objects.filter(code="gtb").update(name="Wrong", color="#000000", active=False)
+        call_command("seed_plans", stdout=StringIO())
+        gtb = Bank.objects.get(code="gtb")
+        self.assertEqual(gtb.name, "GTBank")
+        self.assertTrue(gtb.active)
+
+
 class BankCodesInProbeTests(TestCase):
     """The same comparison, read-only, for a deploy whose operator has no shell."""
 

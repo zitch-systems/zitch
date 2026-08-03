@@ -159,14 +159,32 @@ class Command(BaseCommand):
             ("titan", "Titan Trust Bank", "#002855", "102", "", False),
             ("vbank", "V Bank (VFD MFB)", "#F42F4B", "566", "", False),
         ]
-        bk = 0
+        # NOTE the split defaults. This command runs on EVERY deploy (build.sh), so
+        # anything in `defaults` is rewritten every time. `bank_code` must NOT be:
+        # the codes above are a NIBSS/Paystack mirror, while payouts resolve in the
+        # rail's own code space, and `wema_banks_sync` (or the Django-admin action)
+        # reconciles them against the rail's live list. Re-seeding those away on the
+        # next deploy would silently reintroduce "account enquiry failed" for every
+        # bank the rail codes differently — a self-healing bug that reappears at the
+        # worst possible moment. So the seed value is a STARTING point, applied when
+        # the row is new or its code is blank, and presentation fields (name, colour,
+        # logo, popularity) stay authoritative here.
+        bk = restored = 0
         for code, name, color, bank_code, logo, popular in BANKS:
-            Bank.objects.update_or_create(
+            bank, created = Bank.objects.update_or_create(
                 code=code,
-                defaults={"name": name, "color": color, "bank_code": bank_code,
+                defaults={"name": name, "color": color,
                           "logo": logo, "popular": popular, "active": True},
             )
+            if (created or not bank.bank_code) and bank.bank_code != bank_code:
+                bank.bank_code = bank_code
+                bank.save(update_fields=["bank_code"])
+                restored += 1
             bk += 1
+        if restored:
+            self.stdout.write(self.style.WARNING(
+                f"Set a starting bank_code on {restored} bank(s) with none. Reconcile "
+                f"against the payout rail before going live: manage.py wema_banks_sync"))
 
         self.stdout.write(self.style.SUCCESS(
             f"Seeded {d} data plans, {c} cable plans, {e} exam products, "
