@@ -311,6 +311,56 @@ def is_demo_account(wallet) -> bool:
     return DEMO_ACCOUNT_MARKER in (getattr(wallet, "bank_name", "") or "").lower()
 
 
+def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tuple:
+    """Attach the NUBAN the rail ALREADY holds for `user`. Returns (wallet, detail).
+
+    `wallet` is None when nothing could be attached; `detail` always explains why,
+    for an operator or an API caller to relay.
+
+    The rail refuses to create a customer it already has, so an account that exists
+    on their side but not on ours can only be recovered by reading it back. Looked
+    up by the user's OWN phone number — the same key creation would have used — so
+    it can only ever adopt that customer's account.
+
+    `using_bvn` picks the wallet product to ask; None tries BVN and falls back to
+    NIN, since either could have created the account and the operator running this
+    has no way to know which.
+
+    Deliberately does NOT touch the KYC tier or mark the identity verified: the OTP
+    round-trip is what attests identity, and this path has no OTP.
+    """
+    from utility import wema as wema_provider
+
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return wallet, "This wallet already has an account number."
+    products = (True, False) if using_bvn is None else (using_bvn,)
+    acct, product = {}, True
+    for product in products:
+        acct = wema_provider.get_account_details(user.phone or "", bvn=product)
+        if acct.get("success") and str(acct.get("account_number") or "").strip():
+            break
+    number = str(acct.get("account_number") or "").strip()
+    if not number:
+        return None, (acct.get("message") or "").strip() or "The rail holds no account for this phone number."
+
+    wallet, outcome = provision_wema_account(
+        user, account_number=number, account_name=acct.get("account_name", ""),
+        bank_name=acct.get("bank_name", ""), source="adopt-existing")
+    if outcome.startswith("conflict"):
+        log.warning("wema_adopt_conflict user=%s outcome=%s", user.id, outcome)
+        return None, f"Could not attach it ({outcome})."
+    # A partnership NUBAN is created under a Post-No-Debit hold, and a payout debits
+    # this very account, so an adopted one has to have the hold lifted too.
+    # Best-effort, exactly as the OTP path treats it.
+    pnd = wema_provider.lift_debit_restriction(number, bvn=product)
+    if not pnd.get("success"):
+        log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
+                    user.id, number, pnd.get("message", ""))
+    log.info("wema_adopted_existing_account user=%s outcome=%s", user.id, outcome)
+    return wallet, "Reconnected the account the bank already held."
+
+
 def is_bank_payout(txn) -> bool:
     """True for a bank-transfer (Wema payout) payout, as opposed to a VTU.ng
     purchase.

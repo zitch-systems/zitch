@@ -536,3 +536,72 @@ class AdoptExistingWemaAccountTests(TestCase):
             res = self._create(bvn="22222222222")
         self.assertEqual(res.status_code, 502)
         self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")
+
+
+@override_settings(PAYMENT_PROVIDER="wema")
+class ReconnectBankAccountAdminTests(TestCase):
+    """The in-app recovery needs the customer to get through the setup screen. An
+    operator needs the same recovery for a wallet left with no account number —
+    every payout from it is refused for having no source to debit."""
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from wallet.admin import WalletAdmin
+
+        self.user, _ = make_user("08030000777", "reconnect@zitch.app")
+        self.admin = WalletAdmin(Wallet, AdminSite())
+        self.messages = []
+        self.admin.message_user = lambda req, msg, level=None: self.messages.append(msg)
+
+    def _run(self):
+        wallet = Wallet.objects.get(user=self.user)
+        self.admin.reconnect_bank_account(None, Wallet.objects.filter(pk=wallet.pk))
+        wallet.refresh_from_db()
+        return wallet
+
+    def test_attaches_the_account_the_rail_holds(self):
+        found = {"success": True, "account_number": "0123456789",
+                 "account_name": "ADA EZE", "bank_name": "Wema Bank"}
+        with patch("utility.wema.get_account_details", return_value=found), \
+             patch("utility.wema.lift_debit_restriction",
+                   return_value={"success": True}) as pnd:
+            wallet = self._run()
+        self.assertEqual(wallet.account_number, "0123456789")
+        self.assertTrue(wallet.account_reference)   # else reconcile can't sweep it
+        pnd.assert_called_once()                    # payouts debit this account
+
+    def test_falls_back_to_the_nin_product_when_bvn_holds_nothing(self):
+        # Either product could have created the account and an operator cannot know
+        # which, so both are tried.
+        calls = []
+
+        def by_product(phone, *, bvn=False):
+            calls.append(bvn)
+            if bvn:
+                return {"success": False, "message": "not found"}
+            return {"success": True, "account_number": "0123456789",
+                    "account_name": "ADA EZE", "bank_name": "Wema Bank"}
+
+        with patch("utility.wema.get_account_details", side_effect=by_product), \
+             patch("utility.wema.lift_debit_restriction", return_value={"success": True}):
+            wallet = self._run()
+        self.assertEqual(calls, [True, False])
+        self.assertEqual(wallet.account_number, "0123456789")
+
+    def test_never_replaces_an_account_it_already_has(self):
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.account_number = "0999999999"
+        wallet.save(update_fields=["account_number"])
+        with patch("utility.wema.get_account_details") as fetch:
+            wallet = self._run()
+        fetch.assert_not_called()
+        self.assertEqual(wallet.account_number, "0999999999")
+        self.assertIn("already has an account number", " ".join(self.messages))
+
+    def test_reports_when_the_rail_holds_nothing(self):
+        with patch("utility.wema.get_account_details",
+                   return_value={"success": False, "message": "no record"}):
+            wallet = self._run()
+        self.assertEqual(wallet.account_number, "")
+        self.assertIn("no record", " ".join(self.messages))
