@@ -486,3 +486,45 @@ class PayoutFailureIsRecordedTests(TestCase):
         self.assertEqual(TransactionAdmin(Txn, AdminSite()).failure_reason(row),
                          "Debit account is restricted")
         self.assertEqual(TransactionAdmin(Txn, AdminSite()).failure_reason(Txn(meta={})), "—")
+
+
+class NoSourceAccountTests(TestCase):
+    """With no NUBAN of their own and no shared pool, there is no account to debit.
+    payout_send does refuse — but only after the debit, and with "Payouts are
+    temporarily unavailable, please try again shortly", which reads as a passing
+    outage and invites the one thing that cannot work: waiting."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000041", "nosrc@zitch.test", balance="50000")
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
+        # Wallet exists (make_user credits it) but was never provisioned a NUBAN.
+
+    def send(self):
+        res = self.client.post("/api/transfers/send/", data=json.dumps({
+            "access_token": self.token, "account_number": "0123456789", "bank": "gtb",
+            "name": "John Doe", "amount": "10000", "transaction_pin": "1234",
+        }), content_type="application/json")
+        return res, res.json()
+
+    @override_settings(WEMA={"SOURCE_ACCOUNT": "", "KEYS": {}, "CHANNEL_ID": ""})
+    @patch("utility.providers.payout_live", return_value=True)
+    def test_says_the_account_is_not_set_up_and_never_debits(self, _live):
+        before = get_or_create_wallet(self.user).balance
+        with patch("transfers.services.payout_send") as send:
+            _, body = self.send()
+        self.assertFalse(body.get("success"))
+        self.assertIn("isn't set up yet", body["message"])
+        send.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
+        self.assertEqual(
+            Transaction.objects.filter(user=self.user, direction=Transaction.OUT).count(), 0)
+
+    @override_settings(WEMA={"SOURCE_ACCOUNT": "0100000001", "KEYS": {}, "CHANNEL_ID": ""})
+    @patch("utility.providers.payout_live", return_value=True)
+    def test_a_configured_pool_still_lets_the_transfer_through(self, _live):
+        # The pool is the documented fallback for a sender with no NUBAN yet.
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            _, body = self.send()
+        self.assertTrue(body.get("success"))
