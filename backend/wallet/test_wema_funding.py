@@ -467,3 +467,72 @@ class WemaPayoutSettlementTests(TestCase):
         self._run("IN_PROGRESS")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
+
+
+@override_settings(PAYMENT_PROVIDER="wema")
+class AdoptExistingWemaAccountTests(TestCase):
+    """The bank refuses to create a customer it already holds ("customer records
+    already exist"). Retrying asks for the same creation and is refused the same
+    way, so without a fetch-and-adopt path a user in that state can never finish
+    setup — which is exactly where a cleared test-mode NUBAN leaves them."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08030000555", "adopt@zitch.app")
+
+    def _create(self, **payload):
+        return self.client.post(
+            "/api/wallet/wema/create/",
+            data=json.dumps({**payload, "access_token": self.token}),
+            content_type="application/json")
+
+    def test_an_already_onboarded_customer_gets_the_existing_account(self):
+        refusal = {"success": False, "message": "Customer records already exist"}
+        existing = {"success": True, "account_number": "0123456789",
+                    "account_name": "ADA EZE", "bank_name": "Wema Bank"}
+        with patch("utility.wema.create_wallet_request", return_value=refusal), \
+             patch("utility.wema.get_account_details", return_value=existing) as fetch, \
+             patch("utility.wema.lift_debit_restriction",
+                   return_value={"success": True}) as pnd:
+            res = self._create(bvn="22222222222")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["account_number"], "0123456789")
+        # Looked up by the user's OWN phone — this adopts that customer's account.
+        self.assertEqual(fetch.call_args[0][0], self.user.phone)
+        # An adopted NUBAN may still carry the Post-No-Debit hold, and payouts debit it.
+        pnd.assert_called_once()
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0123456789")
+
+    def test_adopting_does_not_lift_the_kyc_tier(self):
+        # No OTP was answered here, so nothing attests the identity. The user gets a
+        # funding account; the tier still needs the normal flow.
+        refusal = {"success": False, "message": "Customer records already exist"}
+        existing = {"success": True, "account_number": "0123456789",
+                    "account_name": "ADA EZE", "bank_name": "Wema Bank"}
+        with patch("utility.wema.create_wallet_request", return_value=refusal), \
+             patch("utility.wema.get_account_details", return_value=existing), \
+             patch("utility.wema.lift_debit_restriction", return_value={"success": True}):
+            self._create(bvn="22222222222")
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+
+    def test_other_failures_are_still_reported(self):
+        # Only "already exists" means there is something to adopt.
+        with patch("utility.wema.create_wallet_request",
+                   return_value={"success": False, "message": "Service unavailable"}), \
+             patch("utility.wema.get_account_details") as fetch:
+            res = self._create(bvn="22222222222")
+        self.assertEqual(res.status_code, 502)
+        self.assertIn("Service unavailable", res.json()["message"])
+        fetch.assert_not_called()
+
+    def test_an_already_onboarded_customer_with_no_readable_account_reports_the_refusal(self):
+        with patch("utility.wema.create_wallet_request",
+                   return_value={"success": False, "message": "Customer records already exist"}), \
+             patch("utility.wema.get_account_details",
+                   return_value={"success": False, "message": "not found"}):
+            res = self._create(bvn="22222222222")
+        self.assertEqual(res.status_code, 502)
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")

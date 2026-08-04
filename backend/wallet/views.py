@@ -1,6 +1,7 @@
 import hmac
 import json
 import logging
+import re
 import secrets
 from datetime import timedelta
 
@@ -195,6 +196,49 @@ def _record_wema_attempt(user, tracking_id: str, identity_type: str,
     return attempt
 
 
+# The gateway's way of saying "this customer is already onboarded". Matched on the
+# durable part of the wording rather than the whole string, which varies by product
+# and is brand-stripped by _msg before it reaches us.
+_ALREADY_ONBOARDED = re.compile(r"already\s+exist", re.I)
+
+
+def _adopt_existing_wema_account(user, *, using_bvn: bool, reason: str) -> dict | None:
+    """Attach the NUBAN the bank ALREADY holds for this customer. None if there isn't one.
+
+    Creation is refused once the bank has a customer record, so a user in that state
+    can never finish setup by retrying — the account must be read back instead. It is
+    looked up by the user's OWN phone number (the same key creation would have used),
+    so this adopts that customer's account and no one else's.
+
+    Deliberately does NOT touch the KYC tier or mark the BVN/NIN verified: the OTP
+    round-trip is what attests the identity, and this path has no OTP. The user gets
+    a working funding account; lifting the tier still requires the normal flow.
+    """
+    if not _ALREADY_ONBOARDED.search(reason or ""):
+        return None
+    acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
+    number = str(acct.get("account_number") or "").strip()
+    if not acct.get("success") or not number:
+        return None
+    wallet, outcome = provision_wema_account(
+        user, account_number=number, account_name=acct.get("account_name", ""),
+        bank_name=acct.get("bank_name", ""), source="adopt-existing")
+    if outcome.startswith("conflict"):
+        log.warning("wema_adopt_conflict user=%s outcome=%s", user.id, outcome)
+        return None
+    # A partnership NUBAN is created under a Post-No-Debit hold, so an adopted one
+    # may still be carrying it — and the payout debits this very account. Best-effort,
+    # exactly as the OTP path treats it.
+    pnd = wema_provider.lift_debit_restriction(number, bvn=using_bvn)
+    if not pnd.get("success"):
+        log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
+                    user.id, number, pnd.get("message", ""))
+    log.info("wema_adopted_existing_account user=%s outcome=%s", user.id, outcome)
+    return _account_payload(
+        wallet, already=True,
+        message="Your bank account was already set up — we've reconnected it.")
+
+
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
@@ -256,6 +300,17 @@ def wema_wallet_create(request):
     if identity_error:
         return fail(identity_error, status=409)
     if not res.get("success"):
+        # "Customer records already exist": the bank already holds an account for
+        # this customer, so there is nothing to create — it has to be FETCHED. Without
+        # this the flow dead-ends for good, since every retry asks to create the same
+        # customer again and is refused for the same reason. Reachable whenever the
+        # NUBAN is missing on our side but present on theirs: a wallet whose
+        # test-mode account number was cleared, a half-finished earlier setup, or a
+        # provisioning callback we never received.
+        recovered = _adopt_existing_wema_account(user, using_bvn=using_bvn,
+                                                 reason=res.get("message", ""))
+        if recovered is not None:
+            return ok(**recovered)
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, tracking_id=res.get("tracking_id", ""),
               otp_destination=res.get("otp_destination", user.phone or ""),
