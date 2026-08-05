@@ -22,7 +22,7 @@ def health(_request):
     page can own "/". (The platform health check points at /healthz.)
     """
     from utility.providers import (_prembly_live, kyc_provider, payment_provider,
-                                    payout_live, payout_provider, sms_live, sms_provider,
+                                    payout_live, payout_provider, sms_live,
                                     vas_provider, vtu_live)
     from utility import wema
 
@@ -41,11 +41,11 @@ def health(_request):
         "payout_live": payout_live(),             # payout rail has live keys
         "vas_provider": vas_provider(),           # airtime/data/bills rail (vtung default)
         "vtu_vtung": vtu_live(),
-        # Which rail actually sends, plus whether it is keyed. sms_sendchamp is kept
-        # so existing dashboards/alerts that read it don't break.
-        "sms_provider": sms_provider(),
+        # Termii is the only SMS rail, so the name is a constant and sms_live is the
+        # whole story: keyed or in mock mode. The old per-rail sms_sendchamp boolean
+        # went with the rail — anything alerting on it should watch sms_live instead.
+        "sms_provider": "termii",
         "sms_live": sms_live(),
-        "sms_sendchamp": bool(settings.SENDCHAMP["API_KEY"]),
         "email_resend": bool(settings.RESEND["API_KEY"]),
         "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)
         "kyc_wema": wema.wema_live(),
@@ -211,8 +211,8 @@ def vtu_diagnose(request):
 def sms_diagnose(request):
     """POST /sms-diagnose with bearer auth and optional JSON ``phone``.
 
-    Remote self-test for the Sendchamp SMS rail: proves the key authenticates and
-    (with a JSON phone) sends ONE real OTP-style SMS, surfacing Sendchamp's response so a
+    Remote self-test for the Termii SMS rail: proves the key authenticates and
+    (with a JSON phone) sends ONE real OTP-style SMS, surfacing Termii's response so a
     non-delivery is diagnosable. Signup hides SMS failures (anti-enumeration), so
     this is the way to confirm the OTP actually drops. Returns NO secrets.
     """

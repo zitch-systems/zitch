@@ -210,9 +210,9 @@ services:
         sync: false
       - key: VTUNG_PASSWORD
         sync: false
-      # SMS / OTP — Sendchamp.
-      - key: SMS_PROVIDER
-        sync: false
+      # SMS / OTP — Termii, the only SMS rail. Blank TERMII_API_KEY => mock mode:
+      # nothing is sent. Sending is one call, but DELIVERY also needs the sender ID
+      # approved and DND-whitelisted — a carrier decision, not something a deploy fixes.
       - key: TERMII_BASE_URL
         sync: false
       - key: TERMII_API_KEY
@@ -220,8 +220,6 @@ services:
       - key: TERMII_SENDER_ID
         sync: false
       - key: TERMII_CHANNEL
-        sync: false
-      - key: SENDCHAMP_API_KEY
         sync: false
       # Email / OTP fallback — Resend. Sends the same OTP alongside SMS so an
       # SMS routing issue (DND / sender ID block) never strands signup.
@@ -405,8 +403,6 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: VTUNG_USERNAME}
       - key: VTUNG_PASSWORD
         fromService: {type: web, name: zitch-api, envVarKey: VTUNG_PASSWORD}
-      - key: SMS_PROVIDER
-        fromService: {type: web, name: zitch-api, envVarKey: SMS_PROVIDER}
       - key: TERMII_BASE_URL
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
       - key: TERMII_API_KEY
@@ -415,8 +411,6 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
       - key: TERMII_CHANNEL
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
-      - key: SENDCHAMP_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: SENDCHAMP_API_KEY}
       - key: RESEND_API_KEY
         fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL

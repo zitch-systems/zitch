@@ -3,7 +3,7 @@
 Providers: Wema / ALAT (money movement — funding via OTP-provisioned NUBANs,
 payouts + name enquiry + balance, and BVN/NIN identity via the name-matched
 account-creation flow; client in utility/wema.py),
-VTU.ng (airtime/data/cable/electricity/betting), Sendchamp (SMS/OTP), Resend
+VTU.ng (airtime/data/cable/electricity/betting), Termii (SMS/OTP), Resend
 (email/OTP), Prembly/IdentityPass (selfie / liveness + address + ID-document KYC —
 the image/biometric checks the account-creation flow doesn't cover), Fincra (FX). Each
 function returns {"success": bool, ...}. When the relevant key is blank it runs in
@@ -191,12 +191,12 @@ def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "")
 
 
 # ---------------------------------------------------------------------------
-# SMS / OTP — Sendchamp
+# SMS / OTP — Termii
 # ---------------------------------------------------------------------------
 def _ng_msisdn(phone: str) -> str:
-    """Nigerian phone in Sendchamp's expected international format (234XXXXXXXXXX).
+    """Nigerian phone in Termii's expected international format (234XXXXXXXXXX).
 
-    The app stores/handles numbers in local '080…' format, but Sendchamp's DND
+    The app stores/handles numbers in local '080…' format, but Termii's DND
     route (needed to reach the DND-registered numbers most Nigerian lines are) does
     not reliably deliver to a local-format number — so normalise before send: strip
     non-digits, drop a single leading 0, and ensure the 234 country code.
@@ -211,33 +211,19 @@ def _ng_msisdn(phone: str) -> str:
     return digits  # already international, or non-NG — pass through unchanged
 
 
-def sms_provider() -> str:
-    """Which SMS rail sends: "termii" | "sendchamp".
-
-    Explicit SMS_PROVIDER wins; blank means AUTO — Termii when its key is present,
-    else Sendchamp. So adding TERMII_API_KEY is enough to cut over, and clearing it
-    (or setting SMS_PROVIDER=sendchamp) is enough to cut back.
-    """
-    choice = getattr(settings, "SMS_PROVIDER", "") or ""
-    if choice in ("termii", "sendchamp"):
-        return choice
-    return "termii" if settings.TERMII["API_KEY"] else "sendchamp"
-
-
 def sms_live() -> bool:
-    """Whether the ACTIVE SMS rail has a key (i.e. a real send will be attempted)."""
-    if sms_provider() == "termii":
-        return bool(settings.TERMII["API_KEY"])
-    return bool(settings.SENDCHAMP["API_KEY"])
+    """Whether the SMS rail has a key (i.e. a real send will be attempted)."""
+    return bool(settings.TERMII["API_KEY"])
 
 
 def _send_sms_termii(phone: str, message: str) -> dict:
     """Termii `POST /api/sms/send`.
 
-    Two shape differences from Sendchamp that are easy to get wrong and fail silently:
-    the api_key travels in the BODY (not an Authorization header), and `to` is a bare
-    string, not a list. A malformed request here is accepted-looking but never
-    delivers, which the signup flow hides by design — hence sms_probe.
+    Two details of this request shape are easy to get wrong and fail silently: the
+    api_key travels in the BODY (there is no Authorization header — a bearer token
+    here authenticates as nobody), and `to` is a bare string, not a list. A malformed
+    request is accepted-looking but never delivers, which the signup flow hides by
+    design — hence sms_probe.
     """
     cfg = settings.TERMII
     try:
@@ -268,46 +254,20 @@ def _send_sms_termii(phone: str, message: str) -> dict:
         return {"success": False, "message": f"SMS provider returned non-JSON: {exc}"}
 
 
-def _send_sms_sendchamp(phone: str, message: str) -> dict:
-    cfg = settings.SENDCHAMP
-    try:
-        resp = requests.post(
-            f"{cfg['BASE_URL']}/sms/send",
-            json={
-                "to": [_ng_msisdn(phone)],
-                "message": message,
-                "sender_name": cfg["SENDER_NAME"],
-                "route": "dnd",
-            },
-            headers={
-                "Authorization": f"Bearer {cfg['API_KEY']}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-        return {"success": resp.ok and str(data.get("status", "")).lower() == "success", "raw": data}
-    except requests.RequestException as exc:
-        return {"success": False, "message": f"SMS provider unreachable: {exc}"}
-
-
 def send_sms(phone: str, message: str) -> dict:
-    """Send one SMS over the active rail. Blank key => mock success, unchanged: the
-    OTP flow deliberately ignores the result (anti-enumeration), so branching on
-    configuration here would change nothing for the caller."""
+    """Send one SMS. Blank key => mock success, unchanged: the OTP flow deliberately
+    ignores the result (anti-enumeration), so branching on configuration here would
+    change nothing for the caller."""
     if not sms_live():
         return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
-    if sms_provider() == "termii":
-        return _send_sms_termii(phone, message)
-    return _send_sms_sendchamp(phone, message)
+    return _send_sms_termii(phone, message)
 
 
 def send_email(to: str, subject: str, message: str, html: str | None = None) -> dict:
     """Send a transactional email via Resend. Mirrors send_sms's mock-mode
     contract: blank API_KEY or empty `to` returns a silent-success dict so
     callers can fire-and-forget without branching on configuration. Used as a
-    parallel OTP channel alongside Sendchamp so SMS routing issues never strand
+    parallel OTP channel alongside Termii so SMS routing issues never strand
     a user mid-signup. Pass `html` for a branded body (the plain `message` is
     kept as the text fallback for clients that don't render HTML)."""
     cfg = settings.RESEND
@@ -333,7 +293,7 @@ def send_email(to: str, subject: str, message: str, html: str | None = None) -> 
 
 
 def sms_probe(phone: str = "") -> dict:
-    """Live self-test for the ACTIVE SMS rail — returns NO secrets.
+    """Live self-test for the SMS rail — returns NO secrets.
 
     Proves the key authenticates and, when a phone is supplied, sends ONE real test
     SMS and returns the provider's raw response — so a non-delivery (unapproved or
@@ -341,29 +301,17 @@ def sms_probe(phone: str = "") -> dict:
     visible. The signup flow deliberately hides send failures (anti-enumeration), so
     this is the only place OTP delivery can be observed end to end.
     """
-    provider = sms_provider()
-    if provider == "termii":
-        cfg = settings.TERMII
-        config = {"provider": "termii", "base_url": cfg["BASE_URL"],
-                  "api_key_set": bool(cfg["API_KEY"]), "sender_id": cfg["SENDER_ID"],
-                  "channel": cfg["CHANNEL"]}
-        unset_hint = "TERMII_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
-        fail_hint = (
-            f"Termii accepted the request but returned no message_id. Most common causes: "
-            f"the sender ID '{cfg['SENDER_ID']}' is not whitelisted for the '{cfg['CHANNEL']}' "
-            f"route (DND whitelisting is required to reach most Nigerian numbers), the Termii "
-            f"wallet is empty, the number is invalid, or TERMII_BASE_URL is not the host for "
-            f"this account.")
-    else:
-        cfg = settings.SENDCHAMP
-        config = {"provider": "sendchamp", "base_url": cfg["BASE_URL"],
-                  "api_key_set": bool(cfg["API_KEY"]), "sender_name": cfg["SENDER_NAME"],
-                  "route": "dnd"}
-        unset_hint = "SENDCHAMP_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
-        fail_hint = (
-            f"Sent to Sendchamp but not accepted. Most common causes: the sender ID "
-            f"'{cfg['SENDER_NAME']}' is not approved in your Sendchamp account (required for the "
-            f"DND route), the Sendchamp wallet is empty, or the number is invalid.")
+    cfg = settings.TERMII
+    config = {"provider": "termii", "base_url": cfg["BASE_URL"],
+              "api_key_set": bool(cfg["API_KEY"]), "sender_id": cfg["SENDER_ID"],
+              "channel": cfg["CHANNEL"]}
+    unset_hint = "TERMII_API_KEY unset — no real SMS sends, so the signup OTP won't deliver."
+    fail_hint = (
+        f"Termii accepted the request but returned no message_id. Most common causes: "
+        f"the sender ID '{cfg['SENDER_ID']}' is not whitelisted for the '{cfg['CHANNEL']}' "
+        f"route (DND whitelisting is required to reach most Nigerian numbers), the Termii "
+        f"wallet is empty, the number is invalid, or TERMII_BASE_URL is not the host for "
+        f"this account.")
 
     out = {"config": config}
     if not cfg["API_KEY"]:
@@ -380,7 +328,7 @@ def sms_probe(phone: str = "") -> dict:
         out["send"]["message_id"] = res["message_id"]
     if not res.get("success"):
         out["send"]["hint"] = fail_hint
-    # Accepted is not delivered. Both rails answer "accepted" long before the handset
+    # Accepted is not delivered. Termii answers "accepted" long before the handset
     # sees anything, and an unapproved sender ID fails at exactly that later step.
     out["note"] = ("ok=true means the provider ACCEPTED the message, not that it was "
                    "delivered. Confirm the handset actually received it.")

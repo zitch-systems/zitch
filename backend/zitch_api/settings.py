@@ -358,12 +358,11 @@ MONO = {
     # OFF for a live deployment; set MONO_SIMULATION=true to demo/test.
     "SIMULATION": env_bool("MONO_SIMULATION", False),
 }
-# SMS / OTP — Sendchamp.
-# SMS rail. "termii" | "sendchamp"; blank => AUTO (termii when its key is set, else
-# sendchamp). Both are kept wired so an unapproved sender ID on one is a one-env-var
-# switch back rather than a deploy — sender-ID approval is the usual reason OTPs stop
-# arriving, and it is a carrier decision we don't control.
-SMS_PROVIDER = os.environ.get("SMS_PROVIDER", "").strip().lower()
+# SMS / OTP — Termii, the sole SMS rail. Blank API_KEY => mock mode (send_sms returns
+# a silent success and nothing leaves the box). Sending is the easy part: the usual
+# reason OTPs stop arriving is SENDER-ID APPROVAL, a carrier decision we don't control,
+# so a keyed deploy still needs the sender ID approved and DND-whitelisted below. The
+# stopgap while approval is pending is the TEST_OTP pair further down, not another rail.
 TERMII = {
     # Termii serves several regional hosts and the dashboard shows the one for YOUR
     # account, so this is configurable rather than assumed.
@@ -372,17 +371,9 @@ TERMII = {
     "SENDER_ID": os.environ.get("TERMII_SENDER_ID", "Zitch").strip(),
     # "dnd" is the TRANSACTIONAL route and the only correct one for OTP: most Nigerian
     # lines are DND-registered, and Termii documents the "generic" route as promotional
-    # only. The sender ID must be whitelisted for DND or messages are accepted and never
-    # delivered — the same failure mode Sendchamp had.
+    # only. The sender ID must be whitelisted for DND or messages are accepted and
+    # never delivered — the failure mode /sms-diagnose exists to make visible.
     "CHANNEL": os.environ.get("TERMII_CHANNEL", "dnd").strip() or "dnd",
-}
-SENDCHAMP = {
-    "BASE_URL": os.environ.get("SENDCHAMP_BASE_URL", "https://api.sendchamp.com/api/v1"),
-    "API_KEY": os.environ.get("SENDCHAMP_API_KEY", ""),
-    # Default sender ID is "Zitch" — it must be an APPROVED Sender ID in
-    # Sendchamp for the DND route to deliver; override with SENDCHAMP_SENDER_NAME
-    # (e.g. an already-approved "SC-OTP") until "Zitch" is approved.
-    "SENDER_NAME": os.environ.get("SENDCHAMP_SENDER_NAME", "Zitch"),
 }
 # TEST-ONLY OTP bypass — LEAVE UNSET IN PRODUCTION. When BOTH TEST_OTP_PHONE and
 # TEST_OTP_CODE are set, that ONE phone number accepts that fixed OTP code in every
@@ -404,7 +395,7 @@ TEST_OTP = {
 # while this is set. Remove it before launch.
 SIMULATE_DEPOSIT_TOKEN = os.environ.get("SIMULATE_DEPOSIT_TOKEN", "").strip()
 # Email / OTP fallback — Resend. Sends the same OTP code in parallel with
-# Sendchamp so SMS delivery issues (DND, sender ID approval, carrier blocks)
+# Termii so SMS delivery issues (DND, sender ID approval, carrier blocks)
 # don't strand a user. Blank API_KEY => mock mode (silent success).
 # FROM_EMAIL MUST be on a Resend-verified domain or every send is REJECTED (dropped).
 # The verified sending domain is `send.zitch.ng` (DKIM + SPF verified) — NOT the bare

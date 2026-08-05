@@ -217,7 +217,8 @@ class FlowArmingTests(TestCase):
         pa = _transfer_action(self.user, state="bank")
         with patch.object(router, "flows_live", return_value=True), \
              patch.object(router, "send_flow", return_value={"success": False}), \
-             override_settings(SENDCHAMP={"API_KEY": ""}):
+             override_settings(TERMII={"BASE_URL": "https://v3.api.termii.com", "API_KEY": "",
+                                       "SENDER_ID": "Zitch", "CHANNEL": "dnd"}):
             router._arm_confirm(pa, self.user)
         pa.refresh_from_db()
         self.assertEqual(pa.state, "pin")   # fell back to the chat PIN gate

@@ -996,8 +996,8 @@ class SmsCodeConfirmTests(TestCase):
         self.last_reply = self._vt.last_reply
         self.bal = self._vt.bal
 
-    @override_settings(SENDCHAMP={"BASE_URL": "https://api.sendchamp.com/api/v1",
-                                  "API_KEY": "sc-key", "SENDER_NAME": "Zitch"})
+    @override_settings(TERMII={"BASE_URL": "https://v3.api.termii.com", "API_KEY": "tk-key",
+                               "SENDER_ID": "Zitch", "CHANNEL": "dnd"})
     def test_confirm_uses_sms_code_not_pin(self):
         sent = {}
         with patch("whatsapp.router.send_sms",
@@ -1022,7 +1022,10 @@ class ProductionConfirmSafetyTests(TestCase):
     @override_settings(
         DEBUG=False,
         TESTING=False,
-        SENDCHAMP={"BASE_URL": "", "API_KEY": "", "SENDER_NAME": "Zitch"},
+        # Both halves of the premise are pinned: production, and no SMS rail to fall
+        # back to. An empty key here rather than an absent one, so the test keeps
+        # meaning what it says if a Termii key ever reaches the test environment.
+        TERMII={"BASE_URL": "", "API_KEY": "", "SENDER_ID": "Zitch", "CHANNEL": "dnd"},
     )
     def test_production_never_falls_back_to_requesting_pin_in_chat(self):
         from whatsapp.router import _arm_confirm, _confirm_prompt

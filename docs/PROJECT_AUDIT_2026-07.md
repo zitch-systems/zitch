@@ -4,7 +4,7 @@
 
 The repository is buildable and materially safer after this pass. The existing Codemagic `android-apk` workflow completed successfully on 25 July 2026 and produced an 89.66 MB `app-release.apk`. TypeScript, Jest, Expo prebuild, Expo static export, Django checks, migration drift checks, production deployment checks, and all backend tests pass.
 
-This is not a certification that every external financial rail is correct in production. Live Wema, Mono, VTU.ng, Sendchamp, card-issuer, KYC, and FX behavior still requires controlled sandbox/production-candidate testing with provider credentials and contractual event samples.
+This is not a certification that every external financial rail is correct in production. Live Wema, Mono, VTU.ng, SMS, card-issuer, KYC, and FX behavior still requires controlled sandbox/production-candidate testing with provider credentials and contractual event samples.
 
 ## Changes in this PR
 

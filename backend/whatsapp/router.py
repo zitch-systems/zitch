@@ -19,7 +19,8 @@ from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_
 from transfers.models import Bank
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
-from utility.providers import payout_resolve_account, send_sms, vtu_purchase, vtu_verify_customer
+from utility.providers import (payout_resolve_account, send_sms, sms_live, vtu_purchase,
+                               vtu_verify_customer)
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
@@ -251,7 +252,9 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
        when neither secure channel is available."""
     if flows_live() and _send_pin_flow(pa, user):
         return True
-    if settings.SENDCHAMP.get("API_KEY"):
+    # Checked before sending, not after: unkeyed, send_sms succeeds in mock mode, which
+    # would arm this rung around a code that never left the building.
+    if sms_live():
         code = f"{secrets.randbelow(10**6):06d}"
         sent = send_sms(user.phone or "",
                         f"Zitch: {code} is your confirmation code. It expires in 5 minutes. Never share it.")

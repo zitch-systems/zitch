@@ -102,7 +102,8 @@ _VTU_OK = {"config": {"live": True, "api_key_set": True},
 class PreflightSimDepositGateTests(TestCase):
     @override_settings(SIMULATE_DEPOSIT_TOKEN=_TOKEN, TEST_OTP={"PHONE": "", "CODE": ""},
                        RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
-                       SENDCHAMP={"API_KEY": "sc_x", "BASE_URL": "x", "SENDER_NAME": "Zitch"},
+                       TERMII={"API_KEY": "tk_x", "BASE_URL": "x", "SENDER_ID": "Zitch",
+                               "CHANNEL": "dnd"},
                        CARD_ISSUER={"API_KEY": "ci_x"})
     def test_preflight_hard_fails_while_token_set(self):
         out = StringIO()
