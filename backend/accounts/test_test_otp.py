@@ -76,7 +76,8 @@ _VTU_OK = {"config": {"live": True, "api_key_set": True},
 
 class PreflightTestOtpGateTests(TestCase):
     @override_settings(TEST_OTP=_TEST, RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
-                       SENDCHAMP={"API_KEY": "sc_x", "BASE_URL": "x", "SENDER_NAME": "Zitch"},
+                       TERMII={"API_KEY": "tk_x", "BASE_URL": "x", "SENDER_ID": "Zitch",
+                               "CHANNEL": "dnd"},
                        CARD_ISSUER={"API_KEY": "ci_x"})
     def test_preflight_hard_fails_while_bypass_on(self):
         out = StringIO()

@@ -9,14 +9,11 @@ from unittest.mock import Mock, patch
 
 from django.test import SimpleTestCase, override_settings
 
-from utility.providers import _ng_msisdn, send_sms, sms_live, sms_probe, sms_provider
+from utility.providers import _ng_msisdn, send_sms, sms_live, sms_probe
 
 TERMII = {"BASE_URL": "https://v3.api.termii.com", "API_KEY": "tk_live",
           "SENDER_ID": "Zitch", "CHANNEL": "dnd"}
-SENDCHAMP = {"BASE_URL": "https://api.sendchamp.com/api/v1", "API_KEY": "sc_live",
-             "SENDER_NAME": "Zitch"}
 NO_KEY = {**TERMII, "API_KEY": ""}
-SC_NO_KEY = {**SENDCHAMP, "API_KEY": ""}
 
 
 def _resp(payload, ok=True, status=200):
@@ -25,14 +22,15 @@ def _resp(payload, ok=True, status=200):
     return r
 
 
-@override_settings(TERMII=TERMII, SENDCHAMP=SENDCHAMP, SMS_PROVIDER="termii")
+@override_settings(TERMII=TERMII)
 class TermiiWireFormatTests(SimpleTestCase):
-    """Termii's shape differs from Sendchamp's in ways that fail SILENTLY."""
+    """Termii's request shape, pinned field by field — get any of these wrong and the
+    call still looks like it worked."""
 
     @patch("utility.providers.requests.post")
     def test_api_key_travels_in_the_body_not_a_header(self, mock_post):
-        # Sendchamp uses `Authorization: Bearer`; Termii reads api_key from the JSON
-        # body. Sending the Bearer header instead authenticates as nobody.
+        # Termii reads api_key from the JSON body. A bearer header is the reflex for
+        # most APIs and here it authenticates as nobody.
         mock_post.return_value = _resp({"message_id": "m-1", "message": "Successfully Sent"})
         send_sms("08031234567", "hello")
         body = mock_post.call_args[1]["json"]
@@ -42,7 +40,7 @@ class TermiiWireFormatTests(SimpleTestCase):
 
     @patch("utility.providers.requests.post")
     def test_recipient_is_a_bare_string_not_a_list(self, mock_post):
-        # Sendchamp takes {"to": [...]}. Termii takes a string; a list is rejected.
+        # `to` is one number as a string; the list-of-recipients shape is rejected.
         mock_post.return_value = _resp({"message_id": "m-1"})
         send_sms("08031234567", "hello")
         self.assertEqual(mock_post.call_args[1]["json"]["to"], "2348031234567")
@@ -82,40 +80,40 @@ class TermiiWireFormatTests(SimpleTestCase):
         self.assertFalse(send_sms("08031234567", "x")["success"])
 
 
-@override_settings(TERMII=TERMII, SENDCHAMP=SENDCHAMP)
-class SmsProviderSelectionTests(SimpleTestCase):
-    @override_settings(SMS_PROVIDER="")
-    def test_auto_prefers_termii_when_keyed(self):
-        self.assertEqual(sms_provider(), "termii")
+@override_settings(TERMII=NO_KEY)
+class SmsMockModeTests(SimpleTestCase):
+    """An unkeyed rail must short-circuit before the network, not attempt a send that
+    can only fail. The key is pinned empty here rather than left to the ambient test
+    environment, so this keeps testing the branch if a TERMII key ever appears in CI."""
 
-    @override_settings(SMS_PROVIDER="", TERMII=NO_KEY)
-    def test_auto_falls_back_to_sendchamp(self):
-        self.assertEqual(sms_provider(), "sendchamp")
-
-    @override_settings(SMS_PROVIDER="sendchamp")
     @patch("utility.providers.requests.post")
-    def test_explicit_choice_wins_so_a_cutover_is_reversible(self, mock_post):
-        # Sender-ID approval is a carrier decision. Switching back must be one env var,
-        # not a deploy.
-        mock_post.return_value = _resp({"status": "success"})
-        send_sms("08031234567", "x")
-        self.assertIn("sendchamp", mock_post.call_args[0][0])
-
-    @override_settings(SMS_PROVIDER="", TERMII=NO_KEY, SENDCHAMP=SC_NO_KEY)
-    @patch("utility.providers.requests.post")
-    def test_no_key_anywhere_is_mock_and_calls_nothing(self, mock_post):
+    def test_no_key_is_mock_and_calls_nothing(self, mock_post):
         self.assertFalse(sms_live())
         self.assertTrue(send_sms("08031234567", "x")["mock"])
         mock_post.assert_not_called()
 
 
-@override_settings(TERMII=TERMII, SENDCHAMP=SENDCHAMP, SMS_PROVIDER="termii")
+@override_settings(TERMII=TERMII)
 class SmsProbeTests(SimpleTestCase):
-    def test_probe_names_the_active_rail_and_never_leaks_the_key(self):
+    def test_probe_names_the_rail_and_never_leaks_the_key(self):
         out = sms_probe()
         self.assertEqual(out["config"]["provider"], "termii")
         self.assertTrue(out["config"]["api_key_set"])
         self.assertNotIn("tk_live", str(out))
+
+    @override_settings(TERMII=NO_KEY)
+    def test_an_unkeyed_rail_says_so_instead_of_sending(self):
+        out = sms_probe("08031234567")
+        self.assertFalse(out["config"]["api_key_set"])
+        self.assertIn("hint", out)
+        self.assertNotIn("send", out)
+
+    def test_a_key_alone_proves_nothing_so_the_probe_asks_for_a_number(self):
+        # Configuration is not delivery: without a handset to send to there is
+        # nothing to report, and the probe must ask rather than imply success.
+        out = sms_probe("")
+        self.assertIn("phone", out["hint"].lower())
+        self.assertNotIn("send", out)
 
     @patch("utility.providers.requests.post")
     def test_probe_says_accepted_is_not_delivered(self, mock_post):
@@ -123,6 +121,9 @@ class SmsProbeTests(SimpleTestCase):
         mock_post.return_value = _resp({"message_id": "m-1"})
         out = sms_probe("08031234567")
         self.assertTrue(out["send"]["ok"])
+        # Echo the number actually dialled: a typo'd or mis-normalised MSISDN looks
+        # identical to a sender-ID problem from the operator's side otherwise.
+        self.assertEqual(out["send"]["to_normalised"], "2348031234567")
         self.assertIn("not that it was delivered", out["note"])
 
     @patch("utility.providers.requests.post")

@@ -43,7 +43,7 @@ curl -X POST localhost:8000/api/verify_otp/ -H 'Content-Type: application/json' 
 1. Push this repo to GitHub (already done).
 2. Render dashboard -> **New + -> Blueprint** -> select this repo.
    `render.yaml` creates the web service (rootDir `backend`) + Postgres.
-3. After first deploy, set the service env vars (Wema/ALAT / VTU.ng / Sendchamp / Prembly keys).
+3. After first deploy, set the service env vars (Wema/ALAT / VTU.ng / Termii / Prembly keys).
 4. Create an admin: Render shell -> `python manage.py createsuperuser`.
 5. Set the app's `baseUrl` to the Render URL.
 
@@ -223,10 +223,11 @@ following `../docs/whatsapp-production-operations.md`.
   name-enquiry and identity (BVN·NIN·vNIN) field names, the `securityInfo`
   construction and the tx-status legend against Wema's integration guide. Verify auth
   + connectivity by POSTing JSON to `/wema-diagnose` with a diagnostic bearer token.
-- Set `SENDCHAMP_API_KEY`, `PREMBLY_API_KEY` / `PREMBLY_APP_ID` (selfie/liveness +
-  address + ID-document only), and (when a card issuer is chosen) `CARD_ISSUER_*` /
-  `CARD_PROVIDER` — confirm the request/response mapping in `utility/providers.py` /
-  `utility/wema.py`.
+- Set `TERMII_API_KEY` (the key alone doesn't make OTPs arrive — `TERMII_SENDER_ID`
+  must be approved AND DND-whitelisted), `PREMBLY_API_KEY` / `PREMBLY_APP_ID`
+  (selfie/liveness + address + ID-document only), and (when a card issuer is chosen)
+  `CARD_ISSUER_*` / `CARD_PROVIDER` — confirm the request/response mapping in
+  `utility/providers.py` / `utility/wema.py`.
 - Auth accepts `Authorization: Bearer <token>` (preferred) or body `access_token`.
   The app's `lib/api.ts` `apiPost`/`apiJson` helpers send the Bearer header and
   the core money screens use them; remaining screens can adopt incrementally —

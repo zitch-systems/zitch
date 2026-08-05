@@ -15,6 +15,26 @@ endpoint was removed or restructured. All 174 existing backend tests pass after 
 
 ---
 
+## Update — Termii became the sole SMS rail (this PR)
+
+The Termii sender ID was approved, so the dual-rail SMS layer was retired and **Sendchamp was
+removed entirely**: the `_send_sms_sendchamp` sender, the `SENDCHAMP` settings dict and every
+`SENDCHAMP_*` env var (Render blueprint and `.env.example`), and the Sendchamp branch in
+`/sms-diagnose`, `/healthz`, `wema_preflight` and the operator portal's provider table. The
+`SMS_PROVIDER` selector went with it — with one rail it selects nothing — and `sms_provider()`
+was **deleted** rather than left returning a constant (unlike `payment_provider`/`payout_provider`/
+`kyc_provider`, which were kept); its two callers now report the literal `"termii"`. `/healthz`
+therefore no longer emits `sms_sendchamp`, which is a payload change for anything reading it.
+The surface callers bind — `send_sms(phone, message)`, `sms_live()`, `sms_probe(phone)` — is
+unchanged in name and signature, as is Termii's own behaviour (DND channel, 234-format
+normalisation, the `message_id` success check, mock mode when `TERMII_API_KEY` is unset).
+
+Worth carrying forward: there is no longer a one-env-var switch when a sender ID is unapproved or
+Termii is failing. What remains is the Resend email OTP already sent in parallel, and — pre-launch
+only — the `TEST_OTP_PHONE`/`TEST_OTP_CODE` pair.
+
+---
+
 ## Update — Wema/ALAT money-rail audit (this PR, `claude/continue-audit-bj0qo7`)
 
 Since the last audit pass the entire money + KYC rail was rewritten: Monnify and Korapay/Baxi
@@ -86,7 +106,7 @@ suite green: 432 passing;** `check` clean; migrations complete; no schema/flow r
   credit only on a terminal `*successful` event with a positive settled amount, and move to a per-payload
   HMAC signature.
 - **`[OPEN]` Medium — WhatsApp confirm gate degrades to PIN-in-chat.** When Flows isn't live and the SMS
-  code can't be sent (unset/failed Sendchamp), `_arm_confirm` falls back to entering the raw PIN in the
+  code can't be sent (the SMS rail unset or failing), `_arm_confirm` falls back to entering the raw PIN in the
   chat — exactly what the secure-PIN Flow / SMS-code design exists to prevent. **Recommend:** in prod,
   refuse the transaction (send the user to the app) rather than fall back to chat-PIN.
 - **`[OPEN]` Low/Medium — WhatsApp `PendingAction` per-msisdn attempt counter is raceable.** No `unique`
@@ -300,9 +320,11 @@ for a controlled rollout.
 
 **Stack.** Backend: Django 5.2 (function-views + a tiny `common.http` JSON/`@api`/`@require_user` layer — no DRF),
 SQLite (dev) / Postgres (prod via `dj-database-url`), WhiteNoise static, gunicorn, Render blueprint with two cron
-workers (maturity sweep, VTU reconcile). App: Expo SDK 51 / expo-router v3 / NativeWind. Integrations (all with a
-clean **mock-mode-when-unkeyed** seam): Monnify (funding/payout), Baxi (VTU), Sendchamp (SMS/OTP), Prembly (KYC),
-Fincra (FX), Meta WhatsApp Cloud API, optional LLM intent layer.
+workers (maturity sweep, VTU reconcile). App: Expo SDK 51 / expo-router v3 / NativeWind. Integrations **as they
+stood at this pass** (all with a clean **mock-mode-when-unkeyed** seam): Monnify (funding/payout), Baxi (VTU),
+Sendchamp (SMS/OTP), Prembly (KYC), Fincra (FX), Meta WhatsApp Cloud API, optional LLM intent layer. Three of
+those are gone since: Monnify and Baxi to Wema/ALAT + VTU.ng (see the money-rail update above), Sendchamp to
+Termii. The seam itself is unchanged, which is why those swaps stayed surgical.
 
 **Strengths.**
 - **Single money chokepoint** (`wallet/services.py`): debit/credit/transfer/settle all in one audited, atomic, locked place.

@@ -58,12 +58,9 @@ crons too (`render.yaml` already declares the slots on each).
 | `DIAG_TOKEN` | Enables `/vtu-diagnose`, `/sms-diagnose`, and `/wema-callbacks-diagnose` using bearer auth (either diagnostic token opens the callback probe). Never put either token in a URL. |
 | `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
-| `TERMII_API_KEY` | SMS / OTP-by-SMS (default rail once set). |
+| `TERMII_API_KEY` | The SMS / OTP-by-SMS rail — the only one. **Blank = mock mode: nothing is sent**, so no user receives a code. |
 | `TERMII_SENDER_ID` | Sender ID (default `Zitch`) — **must be approved AND whitelisted for DND**, or messages are accepted by the API and never reach the handset. |
 | `TERMII_BASE_URL` | Termii's regional host for *your* account (see the Termii dashboard). |
-| `SMS_PROVIDER` | `termii` \| `sendchamp`; blank = auto. The one-env-var switch back if a sender ID isn't approved yet. |
-| `SENDCHAMP_API_KEY` | Fallback SMS rail. |
-| `SENDCHAMP_SENDER_NAME` | Sender ID (default `Zitch`) — **must be an approved sender ID in Sendchamp** for the DND route to deliver. |
 
 > ⚠️ **Test-only switches — pre-launch testing ONLY, all must be UNSET for go-live.**
 > `wema_preflight` **hard-fails** while any of these is set, so readiness cannot pass

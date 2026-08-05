@@ -220,14 +220,14 @@ def _success_rate() -> float:
 
 def _providers() -> list:
     from django.conf import settings as st
-    from utility.providers import _prembly_live, payout_live, vtu_live
+    from utility.providers import _prembly_live, payout_live, sms_live, vtu_live
 
     rows = [
         ("Wema", "Funding · payouts · KYC", payout_live()),
         ("VTU.ng", "Airtime · data · bills", vtu_live()),
         ("Fincra", "FX rates & settlement", bool(getattr(st, "FINCRA", {}).get("SECRET_KEY"))),
         ("Meta WhatsApp", "Chat channel", bool(st.WHATSAPP.get("TOKEN"))),
-        ("Sendchamp", "SMS / OTP", bool(st.SENDCHAMP["API_KEY"])),
+        ("Termii", "SMS / OTP", sms_live()),
         ("Resend", "Email / OTP fallback", bool(st.RESEND["API_KEY"])),
         ("Prembly", "KYC (face · address · ID)", _prembly_live()),
     ]

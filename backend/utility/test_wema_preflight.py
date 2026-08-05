@@ -38,13 +38,19 @@ def _run(*args):
 
 
 @override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
-                   SENDCHAMP={"API_KEY": "sc_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
                    WEMA=_SAFE_CALLBACKS)
 class PreflightGoTests(TestCase):
     def test_all_pass_is_go(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
             out, code = _run()
         self.assertIn("RESULT: GO", out)
+        # Asserted line by line because "RESULT: GO" is also a prefix of the degraded
+        # "GO for money rails — N soft warning(s)" summary: a soft check silently
+        # flipping to WARN would not move it. The SMS rail is named because the class
+        # keys it above, and an override for a setting that no longer exists is a
+        # no-op Django does not complain about.
+        self.assertIn("SMS (termii): keyed", out)
         self.assertNotIn("NOT READY", out)
         self.assertEqual(code, 0)
 
