@@ -473,3 +473,25 @@ class DiagnosticsPageTests(TestCase):
                                        "CHANNEL": "dnd", "BASE_URL": "https://v3.api.termii.com"}):
             res = self.client.get("/admin/diagnostics/")
         self.assertNotIn("tk_supersecret", res.content.decode())
+
+    def test_the_whatsapp_verdict_reaches_the_page(self):
+        """The page exists so an operator with no shell can find out why something is
+        broken. WhatsApp's failure mode — a queue nobody is draining — is invisible
+        from every other surface, including the webhook's own 200s."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from whatsapp.models import WaMessageLog
+
+        row = WaMessageLog.objects.create(
+            msisdn="2348011112222", direction=WaMessageLog.IN,
+            wa_message_id="stuck-page-1", text="hello")
+        # `created` is auto_now_add, so age it with an UPDATE rather than on insert.
+        WaMessageLog.objects.filter(pk=row.pk).update(
+            created=timezone.now() - timedelta(minutes=9))
+        self.client.force_login(self.staff)
+        res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("WhatsApp", res.content.decode())
+        self.assertIn("worker_appears_stalled", res.content.decode())

@@ -26,6 +26,9 @@ const Betting = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one funding attempt
@@ -59,6 +62,7 @@ const Betting = () => {
       // server replayed a completed attempt — also not a failure.
       if (res.success || res.pending || res.duplicate) {
         idemKey.current = '';
+        setTxnRef(String(res.reference || ''));
         setPending(!res.success && !!res.pending && !res.duplicate);
         setStep(null);
         setDone(true);
@@ -89,6 +93,7 @@ const Betting = () => {
             ? `${money(amount)} to your ${platform.name} account ${userId} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
             : `${money(amount)} added to your ${platform.name} account ${userId}.`}
           rows={[['Platform', platform.name], ['User ID', userId], ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

@@ -243,6 +243,16 @@ def upload_media(data: bytes, mime: str, filename: str) -> str:
         return ""
 
 
+def send_image_media(msisdn: str, media_id: str, caption: str = "") -> dict:
+    """Send a previously-uploaded image by media id, so it renders INLINE in the
+    chat rather than as a file card. `send_image` posts a public link instead;
+    this one is for bytes we generated ourselves and never published."""
+    image = {"id": media_id}
+    if caption:
+        image["caption"] = caption[:1024]
+    return _send_payload(msisdn, {"type": "image", "image": image}, "[image] receipt")
+
+
 def send_document(msisdn: str, media_id: str, filename: str, caption: str = "") -> dict:
     """Send a previously-uploaded document (e.g. a receipt JPEG) as a downloadable
     file with `filename` and an optional caption."""

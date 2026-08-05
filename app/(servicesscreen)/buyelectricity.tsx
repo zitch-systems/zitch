@@ -40,6 +40,9 @@ const BuyElectricity = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
@@ -94,6 +97,7 @@ const BuyElectricity = () => {
         idemKey.current = '';
         // `pending` = provider timeout: held while reconciliation confirms or
         // refunds — no token yet, and the receipt must not claim delivery.
+        setTxnRef(String(result.reference || ''));
         setPending(!!result.pending);
         if (result.token) setPurchasedToken(String(result.token));
         setStep(null);
@@ -129,6 +133,7 @@ const BuyElectricity = () => {
             ...(purchasedToken ? ([['Token', purchasedToken]] as [string, string][]) : []),
             ['Total', money(amount), true],
           ]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

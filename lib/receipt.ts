@@ -1,0 +1,220 @@
+/**
+ * Turning a receipt on screen into a file the user actually keeps.
+ *
+ * "Save" used to copy plain text to the clipboard. That is a poor artifact: it
+ * survives one paste and nothing about it says Zitch. What people do with a
+ * transfer receipt is send it to whoever they paid, so it has to be a real file —
+ * an image to drop into a chat, or a PDF to attach to an email or file with an
+ * accountant. Both, because which one is right depends entirely on where it's going.
+ *
+ * The two formats come from two different sources on purpose:
+ *   * JPEG is a screenshot of the receipt card the user is looking at, so what
+ *     they share is exactly what they saw — same fonts, same theme, no second
+ *     rendering that could drift out of sync with the screen.
+ *   * PDF is rendered from HTML, because a page-shaped document should be laid
+ *     out for paper, not scaled up from a phone-width bitmap.
+ *
+ * The pure parts (stamp, filename, HTML) are separated from the native calls so
+ * they can be tested without a device.
+ */
+import { Platform } from 'react-native';
+
+export type ReceiptRow = [string, string, boolean?];
+export type ReceiptFormat = 'jpeg' | 'pdf';
+
+/** What happened, in the user's terms — the caller turns this into one line of copy. */
+export type ExportOutcome =
+  | 'saved'        // written somewhere the user can find it again
+  | 'shared'       // handed to the OS share sheet
+  | 'cancelled'    // user backed out of the system dialog
+  | 'denied'       // permission refused
+  | 'unsupported'  // platform can't do it (web)
+  | 'failed';
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Date and time as the receipt shows them. Formatted by hand rather than through
+ * `toLocaleString`, whose output depends on which Intl data the JS engine shipped
+ * with — a receipt is a record, so the same transaction must not read differently
+ * on two phones.
+ */
+export const receiptStamp = (when: Date = new Date()): { date: string; time: string } => {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const h = when.getHours();
+  const hour12 = h % 12 === 0 ? 12 : h % 12;
+  return {
+    date: `${pad(when.getDate())} ${MONTHS[when.getMonth()]} ${when.getFullYear()}`,
+    time: `${pad(hour12)}:${pad(when.getMinutes())} ${h < 12 ? 'AM' : 'PM'}`,
+  };
+};
+
+/**
+ * A filename that survives every filesystem: the reference reduced to safe
+ * characters, never empty, never unbounded. The name is what the recipient sees
+ * in their downloads folder, so it leads with the brand.
+ */
+export const receiptFileName = (reference: string, format: ReceiptFormat): string => {
+  const slug = (reference || '').replace(/[^A-Za-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return `Zitch-Receipt${slug ? `-${slug}` : ''}.${format === 'pdf' ? 'pdf' : 'jpg'}`;
+};
+
+const esc = (s: string) =>
+  String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * The PDF body. Deliberately self-contained — no remote fonts or images, because
+ * the renderer may run with no network and a receipt that half-loads is worse
+ * than a plain one.
+ */
+export const receiptHtml = ({
+  title,
+  message,
+  rows,
+}: {
+  title: string;
+  message: string;
+  rows: ReceiptRow[];
+}): string => `<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  @page { margin: 0; }
+  body { margin: 0; font-family: -apple-system, "Helvetica Neue", Roboto, sans-serif; color: #11181c; }
+  .band { background: #0FA295; color: #fff; padding: 28px 40px 22px; }
+  .mark { font-size: 30px; font-weight: 800; letter-spacing: -.5px; }
+  .kicker { font-size: 12px; opacity: .85; margin-top: 4px; letter-spacing: .8px; text-transform: uppercase; }
+  .body { padding: 32px 40px 0; }
+  h1 { font-size: 21px; margin: 0; }
+  .msg { color: #667; font-size: 13px; margin: 8px 0 26px; line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 12px 0; border-bottom: 1px solid #e6eaec; font-size: 13px; vertical-align: top; }
+  td.k { color: #6e7a80; }
+  td.v { text-align: right; font-weight: 600; }
+  tr.total td { font-size: 16px; font-weight: 800; border-bottom: 0; }
+  .foot { padding: 22px 40px; color: #8b969b; font-size: 11px; }
+  .badge { display: inline-block; background: #e8f6ee; color: #128c4a; border-radius: 20px;
+           padding: 5px 13px; font-size: 12px; font-weight: 700; float: right; }
+</style></head><body>
+<div class="band"><div class="mark">zitch</div><div class="kicker">Transaction receipt</div></div>
+<div class="body">
+  <span class="badge">Successful</span>
+  <h1>${esc(title)}</h1>
+  <p class="msg">${esc(message)}</p>
+  <table>${rows
+    .map(([k, v, strong]) =>
+      `<tr${strong ? ' class="total"' : ''}><td class="k">${esc(k)}</td><td class="v">${esc(v)}</td></tr>`)
+    .join('')}</table>
+</div>
+<div class="foot">Generated by Zitch · zitch.ng — keep this receipt for your records.</div>
+</body></html>`;
+
+/** Where the bytes come from. `capture` screenshots the on-screen card (JPEG path). */
+export type ReceiptSource = {
+  capture: () => Promise<string>;
+  html: string;
+  reference: string;
+};
+
+const withScheme = (uri: string) => (uri.startsWith('file://') || uri.includes('://') ? uri : `file://${uri}`);
+
+/**
+ * Produce the file and return where it landed. The name matters: `captureRef` and
+ * `printToFileAsync` both hand back a random temp name, and a share sheet shows
+ * that name to the recipient, so we always copy to a branded one.
+ */
+export const exportReceipt = async (
+  format: ReceiptFormat,
+  src: ReceiptSource,
+): Promise<{ uri: string; mime: string; filename: string }> => {
+  const FS = await import('expo-file-system/legacy');
+  const filename = receiptFileName(src.reference, format);
+  const mime = format === 'pdf' ? 'application/pdf' : 'image/jpeg';
+
+  const raw = format === 'pdf'
+    ? (await (await import('expo-print')).printToFileAsync({ html: src.html, base64: false })).uri
+    : await src.capture();
+
+  const target = `${FS.cacheDirectory}${filename}`;
+  try {
+    // A previous export of the same reference would otherwise make copyAsync fail.
+    await FS.deleteAsync(target, { idempotent: true });
+    await FS.copyAsync({ from: withScheme(raw), to: target });
+    return { uri: target, mime, filename };
+  } catch {
+    // Renaming is a nicety; never lose the receipt over it.
+    return { uri: withScheme(raw), mime, filename };
+  }
+};
+
+/** Hand the file to the OS share sheet (WhatsApp, mail, AirDrop, …). */
+export const shareReceipt = async (format: ReceiptFormat, src: ReceiptSource): Promise<ExportOutcome> => {
+  if (Platform.OS === 'web') return 'unsupported';
+  try {
+    const Sharing = await import('expo-sharing');
+    if (!(await Sharing.isAvailableAsync())) return 'unsupported';
+    const { uri, mime } = await exportReceipt(format, src);
+    await Sharing.shareAsync(uri, {
+      mimeType: mime,
+      dialogTitle: 'Share receipt',
+      UTI: format === 'pdf' ? 'com.adobe.pdf' : 'public.jpeg',
+    });
+    return 'shared';
+  } catch {
+    return 'failed';
+  }
+};
+
+/**
+ * Put the file somewhere the user can find it later.
+ *
+ * An image belongs in the photo gallery — that is where people look for a receipt
+ * they saved. A PDF has no gallery to go to, so Android writes it to a folder the
+ * user picks (normally Downloads) and iOS goes through the system sheet, whose
+ * "Save to Files" is the platform's own answer to this. Different mechanics,
+ * same promise: the file exists somewhere findable when this returns 'saved'.
+ */
+export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Promise<ExportOutcome> => {
+  if (Platform.OS === 'web') return 'unsupported';
+  try {
+    const { uri, mime, filename } = await exportReceipt(format, src);
+
+    if (format === 'jpeg') {
+      const MediaLibrary = await import('expo-media-library');
+      const perm = await MediaLibrary.requestPermissionsAsync(true);  // writeOnly
+      if (!perm?.granted) return 'denied';
+      await MediaLibrary.saveToLibraryAsync(uri);
+      return 'saved';
+    }
+
+    if (Platform.OS === 'android') {
+      const FS = await import('expo-file-system/legacy');
+      const saf = FS.StorageAccessFramework;
+      const perm = await saf.requestDirectoryPermissionsAsync();
+      if (!perm?.granted) return 'cancelled';
+      const base64 = await FS.readAsStringAsync(uri, { encoding: 'base64' });
+      const target = await saf.createFileAsync(perm.directoryUri, filename, mime);
+      await FS.writeAsStringAsync(target, base64, { encoding: 'base64' });
+      return 'saved';
+    }
+
+    const Sharing = await import('expo-sharing');
+    if (!(await Sharing.isAvailableAsync())) return 'unsupported';
+    await Sharing.shareAsync(uri, { mimeType: mime, dialogTitle: 'Save receipt', UTI: 'com.adobe.pdf' });
+    return 'shared';
+  } catch {
+    return 'failed';
+  }
+};
+
+/** One line of confirmation copy per outcome — the popup never asks a question. */
+export const outcomeMessage = (outcome: ExportOutcome, format: ReceiptFormat): string | null => {
+  const what = format === 'pdf' ? 'PDF' : 'Image';
+  switch (outcome) {
+    case 'saved': return `${what} saved to your device`;
+    case 'shared': return `${what} ready to share`;
+    case 'denied': return 'Zitch needs permission to save to your gallery';
+    case 'unsupported': return 'Saving receipts is not available on this device';
+    case 'failed': return 'Could not create the receipt file';
+    case 'cancelled': return null;   // the user backed out; say nothing
+  }
+};

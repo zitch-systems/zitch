@@ -13,9 +13,52 @@ class WhatsAppLinkAdmin(admin.ModelAdmin):
 
 @admin.register(WaMessageLog)
 class WaMessageLogAdmin(admin.ModelAdmin):
-    list_display = ("created", "direction", "msisdn", "text", "flagged")
+    """The message log, plus the inbound queue's processing state.
+
+    The queue columns are here because "the bot isn't replying" is answered by them
+    and nowhere else: an inbound row with no `processed_at` is a message Meta
+    delivered and we accepted but never acted on. A screenful of those means the
+    worker service is down, not that the router is broken.
+    """
+
+    list_display = ("created", "direction", "msisdn", "text", "queue_state", "flagged")
     search_fields = ("msisdn", "text", "wa_message_id")
-    list_filter = ("direction", "flagged")
+    list_filter = ("direction", "flagged", "processed_at")
+    readonly_fields = ("processing_attempts", "processing_started_at", "processed_at",
+                       "next_attempt_at", "processing_error")
+    actions = ["process_now"]
+
+    @admin.display(description="Queue")
+    def queue_state(self, obj):
+        if obj.direction != WaMessageLog.IN:
+            return "—"
+        if obj.processing_error.startswith("dead_letter"):
+            return f"✗ gave up ({obj.processing_error})"
+        if obj.processed_at:
+            return "✓ processed"
+        return f"⏳ waiting (attempt {obj.processing_attempts})"
+
+    @admin.action(description="Process now (run the queued message through the bot)")
+    def process_now(self, request, queryset):
+        """Drain selected inbound messages in-process.
+
+        The worker normally does this. When it is down — and there is no shell to
+        start it from — this is how a stuck conversation gets its reply without
+        waiting for the service to come back. It runs the same job function, so
+        leases, retries and dead-lettering behave identically; re-running an
+        already-processed row is a no-op.
+        """
+        from .jobs import process_inbound_message
+
+        counts = {}
+        for row in queryset.filter(direction=WaMessageLog.IN):
+            outcome = process_inbound_message(row.pk)
+            counts[outcome] = counts.get(outcome, 0) + 1
+        if not counts:
+            self.message_user(request, "Nothing to do — outbound rows are not queued work.")
+            return
+        self.message_user(
+            request, "; ".join(f"{n} {outcome}" for outcome, n in sorted(counts.items())))
 
 
 @admin.register(PendingAction)
@@ -58,6 +101,28 @@ class ConversationStateAdmin(admin.ModelAdmin):
     list_filter = ("status", "ai_enabled")
     search_fields = ("msisdn",)
     raw_id_fields = ("assigned_agent",)
+    actions = ["return_to_bot"]
+
+    @admin.action(description="Return to bot (un-mute the automated replies)")
+    def return_to_bot(self, request, queryset):
+        """`status=human` silences the bot on purpose so an agent can take over. If
+        the handover is never closed the conversation stays silent forever and looks
+        identical, from the customer's side, to an outage. This is the same
+        transition as the ops endpoint, audited the same way."""
+        from .ops import record_audit
+
+        changed = 0
+        for convo in queryset.exclude(status=ConversationState.BOT):
+            before = {"status": convo.status, "ai_enabled": convo.ai_enabled}
+            convo.status = ConversationState.BOT
+            convo.ai_enabled = True
+            convo.assigned_agent = None
+            convo.save(update_fields=["status", "ai_enabled", "assigned_agent"])
+            record_audit("conversation.return_to_bot", actor=request.user,
+                         target=f"wa:{convo.msisdn}", before=before,
+                         after={"status": convo.status, "ai_enabled": True})
+            changed += 1
+        self.message_user(request, f"{changed} conversation(s) returned to the bot.")
 
 
 @admin.register(AuditLog)

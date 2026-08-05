@@ -38,6 +38,9 @@ const BuyData = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   // Fetch plans whenever network + plan type are chosen.
@@ -106,6 +109,7 @@ const BuyData = () => {
         idemKey.current = '';
         // `pending` = provider timeout: held while reconciliation confirms or
         // refunds — the receipt must say "processing", not claim delivery.
+        setTxnRef(String(result.reference || ''));
         setPending(!!result.pending);
         setStep(null);
         setDone(true);
@@ -134,6 +138,7 @@ const BuyData = () => {
             ? `Your ${planObj?.label || 'data'} purchase to ${phone} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
             : `Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
           rows={[['Type', 'Data bundle'], ['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

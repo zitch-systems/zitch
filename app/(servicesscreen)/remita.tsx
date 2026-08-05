@@ -27,6 +27,9 @@ const Remita = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false); // rail-pending: bill may still be settling
   const [pinError, setPinError] = useState('');
   const idemKey = useRef(''); // stable across retries of one payment attempt
@@ -83,6 +86,7 @@ const Remita = () => {
       // a completed attempt — the payment DID go through.
       if (res.success || res.pending || res.duplicate) {
         idemKey.current = '';
+        setTxnRef(String(res.reference || ''));
         setPending(!res.success && !!res.pending && !res.duplicate);
         setStep(null);
         setDone(true);
@@ -114,6 +118,7 @@ const Remita = () => {
             ? `Your Remita payment of ${money(amount)} is processing and will be confirmed shortly. Keep your RRR — the biller will reflect it once settled.`
             : `Your Remita payment of ${money(amount)} was successful.`}
           rows={[['Type', 'Remita bill'], ['RRR', rrr], ...(payerName ? ([['Payer', payerName]] as [string, string][]) : []), ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

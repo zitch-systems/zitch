@@ -9,12 +9,17 @@ import { useTheme, font } from '@/lib/theme';
  *
  *   notify('Success', 'BVN verified');   // kind inferred from the title
  *   notifyError('Could not start payment');
+ *   flash('Saved', 'Image saved to your device');  // clears itself, no OK button
  *
  * Mount <NotifyHost/> once at the app root. Confirmation dialogs that need
  * action buttons should keep using Alert.alert (this is for one-shot messages).
  */
 type Kind = 'success' | 'error' | 'info';
-type Item = { title: string; message?: string; kind: Kind };
+type Item = { title: string; message?: string; kind: Kind; dismissMs?: number };
+
+/** How long a self-clearing popup stays up: long enough to read, short enough
+ *  that it never feels like something waiting on you. */
+export const FLASH_MS = 1600;
 
 let _emit: ((i: Item) => void) | null = null;
 
@@ -29,6 +34,15 @@ export function notify(title: string, message?: string, kind?: Kind): void {
 export const notifySuccess = (title: string, message?: string) => notify(title, message, 'success');
 export const notifyError = (title: string, message?: string) => notify(title, message, 'error');
 
+/**
+ * A popup that clears itself. For confirmations that carry no decision — "saved",
+ * "shared", "copied" — where an OK button is one tap of pure ceremony standing
+ * between the user and the thing they already did.
+ */
+export function flash(title: string, message?: string, kind?: Kind): void {
+  _emit?.({ title, message, kind: kind ?? inferKind(title), dismissMs: FLASH_MS });
+}
+
 export const NotifyHost = () => {
   const { c } = useTheme();
   const [item, setItem] = useState<Item | null>(null);
@@ -37,6 +51,15 @@ export const NotifyHost = () => {
     _emit = setItem;
     return () => { _emit = null; };
   }, []);
+
+  // Self-clearing popups. Keyed on the item object, so a second flash arriving
+  // while the first is still up restarts the clock instead of inheriting the
+  // remainder of the old one and vanishing early.
+  useEffect(() => {
+    if (!item?.dismissMs) return;
+    const t = setTimeout(() => setItem((cur) => (cur === item ? null : cur)), item.dismissMs);
+    return () => clearTimeout(t);
+  }, [item]);
 
   // Icon colours come from the theme tokens (bright in both light AND dark) so
   // the success/error mark never goes muddy on the near-black dark surface —
@@ -73,9 +96,13 @@ export const NotifyHost = () => {
               {item.message}
             </Text>
           ) : null}
-          <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close notification" style={{ marginTop: 22, alignSelf: 'stretch', height: 50, borderRadius: 14, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
-            <Text style={{ color: c.inkOnBrand, fontSize: 15, fontFamily: font.bold }}>OK</Text>
-          </Pressable>
+          {/* No button on a self-clearing popup — there is nothing to acknowledge,
+              and an OK that outlives the message it confirms is just a dead tap. */}
+          {item.dismissMs ? null : (
+            <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close notification" style={{ marginTop: 22, alignSelf: 'stretch', height: 50, borderRadius: 14, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: c.inkOnBrand, fontSize: 15, fontFamily: font.bold }}>OK</Text>
+            </Pressable>
+          )}
         </Pressable>
       </Pressable>
     </Modal>
