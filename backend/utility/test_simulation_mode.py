@@ -75,3 +75,71 @@ class PreflightSimulationGateTests(TestCase):
         self.assertIn("NOT READY", out.getvalue())
         self.assertIn("Simulation mode", out.getvalue())
         self.assertEqual(code, 1)
+
+
+_KEYED_SIM = {"CHANNEL_ID": "chan-1", "KEYS": {"wallet": "subkey", "card": "cardkey",
+                                               "airtime": "airkey"},
+              "BASE_URL": "https://apiplayground.alat.ng", "SIMULATION": True,
+              "SOURCE_ACCOUNT": "0100000001"}
+_KEYED_LIVE = {**_KEYED_SIM, "SIMULATION": False}
+
+
+class SimulationBeatsKeysTests(SimpleTestCase):
+    """WEMA_SIMULATION used to be consulted only where an UNKEYED deploy chose between
+    a mock and failing closed — so on a keyed deploy it did nothing at all, and every
+    call went to WEMA_BASE_URL for real. Pointed at the live host that moves REAL
+    MONEY while the operator believes, from the variable's name and the runbook, that
+    nothing can."""
+
+    @override_settings(WEMA=_KEYED_SIM)
+    def test_keys_present_but_simulating_is_not_live(self):
+        from utility import wema
+
+        self.assertTrue(wema.wema_keys_configured())   # the credentials ARE there…
+        self.assertFalse(wema.wema_live())             # …and nothing real is sent
+
+    @override_settings(WEMA=_KEYED_LIVE)
+    def test_keys_present_without_simulation_is_live(self):
+        from utility import wema
+
+        self.assertTrue(wema.wema_live())
+
+    @override_settings(WEMA=_KEYED_SIM)
+    def test_a_transfer_is_mocked_rather_than_sent(self):
+        # The one that matters: money movement must not reach the gateway.
+        from utility import wema
+
+        with mock.patch("utility.wema.requests.post") as post:
+            res = wema.transfer(1000, "REF-SIM", "test", source_account="01",
+                                destination_account="02", destination_bank_code="035",
+                                destination_bank_name="Wema", destination_name="ADA")
+        post.assert_not_called()
+        self.assertTrue(res["success"])
+        self.assertTrue(res["mock"])
+
+    @override_settings(WEMA=_KEYED_SIM)
+    def test_vas_and_cards_honour_it_too(self):
+        # Airtime spends real money and issuing a card is a real-world side effect;
+        # a switch that only covered transfers would be a trap of its own.
+        from utility import wema
+
+        self.assertFalse(wema._vas_live("airtime"))
+        self.assertFalse(wema._card_live())
+
+    @override_settings(WEMA=_KEYED_SIM)
+    def test_diagnostics_distinguish_simulating_from_unconfigured(self):
+        # Both report wema_live false and need opposite fixes.
+        from utility import wema
+
+        diag = wema.wema_diagnostics()
+        self.assertEqual(diag["status"], "simulation")
+        self.assertTrue(diag["keys_configured"])
+        self.assertIn("WEMA_SIMULATION", diag["hint"])
+
+    @override_settings(WEMA={**_KEYED_SIM, "CHANNEL_ID": "", "KEYS": {}})
+    def test_unconfigured_still_says_so(self):
+        from utility import wema
+
+        diag = wema.wema_diagnostics()
+        self.assertEqual(diag["status"], "simulation")
+        self.assertFalse(diag["keys_configured"])

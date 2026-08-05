@@ -4,11 +4,12 @@ Hard gates (Wema keys, securityInfo, live host) fail the run with exit 1; a
 fully-configured environment reports GO. Soft checks (VTU balance, email, SMS,
 cards) only fail the run under --strict.
 """
+import os
 from io import StringIO
 from unittest import mock
 
 from django.core.management import call_command
-from django.test import TestCase, override_settings
+from django.test import Client, TestCase, override_settings
 
 _LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,
               "wallet_key_set": True, "security_info_set": True, "wema_live": True,
@@ -101,3 +102,48 @@ class PreflightGateTests(TestCase):
             out, code = _run()
         self.assertIn("NOT READY", out)
         self.assertEqual(code, 1)
+
+
+class PreflightOverHttpTests(TestCase):
+    """The go-live gate was reachable only from a shell, and the deploys that most
+    need it are the ones without one (Render's free tier has none). Same command,
+    same wording, same exit status — over the diagnostic bearer token."""
+
+    def setUp(self):
+        self.client = Client()
+        self._patch = mock.patch.dict(os.environ, {"DIAG_TOKEN": "diag-token"})
+        self._patch.start()
+        self.addCleanup(self._patch.stop)
+
+    def _get(self, qs="", token="diag-token"):
+        return self.client.get(f"/preflight{qs}", HTTP_AUTHORIZATION=f"Bearer {token}")
+
+    def test_requires_the_diagnostic_token(self):
+        self.assertEqual(self.client.get("/preflight").status_code, 403)
+        self.assertEqual(self._get(token="wrong").status_code, 403)
+
+    def test_a_failing_gate_answers_503_with_the_report(self):
+        # SystemExit(1) is how the command says NOT READY; it must not read as a crash.
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG, wema_live=False)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            res = self._get()
+        self.assertEqual(res.status_code, 503)
+        body = res.json()["preflight"]
+        self.assertFalse(body["ready"])
+        self.assertTrue(any("NOT READY" in line for line in body["report"]))
+        self.assertNotIn("error", body)          # a failing gate is not an error
+
+    def test_strict_is_passed_through(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), \
+             mock.patch(_PROBE, return_value=_VTU_EMPTY):
+            strict = self._get("?strict=1")
+        self.assertTrue(strict.json()["preflight"]["strict"])
+        self.assertFalse(strict.json()["preflight"]["ready"])
+
+    def test_a_broken_preflight_is_not_a_passing_preflight(self):
+        with mock.patch(_DIAG, side_effect=RuntimeError("boom")):
+            res = self._get()
+        self.assertEqual(res.status_code, 503)
+        body = res.json()["preflight"]
+        self.assertFalse(body["ready"])
+        self.assertIn("RuntimeError", body["error"])

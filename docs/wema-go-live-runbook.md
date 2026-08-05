@@ -7,6 +7,12 @@ fail-closed, so going live is a config + verification exercise, not a code chang
 > **One-line status check any time:** `python manage.py wema_preflight`
 > (add `--strict` to also gate on the non-money rails). It exits non-zero until
 > every hard gate passes. `/healthz` shows the same gate as booleans over HTTP.
+>
+> **No shell?** Every step below has an HTTP or Django-admin equivalent, because the
+> deploys that most need a go-live gate are the ones without a shell (Render's free
+> tier has none). The preflight itself is `GET /preflight` with a diagnostic bearer
+> token — the same command, same wording, `200` when ready and `503` when not
+> (`?strict=1` for `--strict`).
 
 ---
 
@@ -96,7 +102,7 @@ KYC rail.
 - Set `SENTRY_DSN` everywhere.
 
 ### Step 2 — confirm keys load (still sandbox)
-- Run: `python manage.py wema_preflight`
+- Run: `python manage.py wema_preflight` (no shell: `GET /preflight`)
   - Expect: `Wema live keys` → **PASS**, `Live host` → **FAIL** (still sandbox —
     correct at this step). `securityInfo` and the callback token are hard gates;
     configure strong development values before profiling or transaction testing.
@@ -108,7 +114,7 @@ KYC rail.
 - Redeploy so every process picks up the new env.
 
 ### Step 4 — preflight must now say GO
-- Run: `python manage.py wema_preflight`
+- Run: `python manage.py wema_preflight` (no shell: `GET /preflight`, expect `200`)
   - Expect: **`RESULT: GO`** (every hard gate PASS). If not, stop and fix.
 - `/healthz` should now show `wema_sandbox: false`.
 
@@ -123,7 +129,9 @@ KYC rail.
   name enquiry, and the gateway reports that as *"account enquiry failed, confirm
   that the account number is valid"* — it never says the bank code is wrong. Exits 1
   while anything differs; `--apply` takes the rail's codes (ambiguous name matches
-  are reported for a human, never auto-applied).
+  are reported for a human, never auto-applied). **No shell:** the read-only half is
+  the `bank_codes` block of `POST /wema-diagnose`, and the fix is Django admin →
+  Banks → *"Sync bank codes from the payout rail"*.
 - `GET /vtu-diagnose` with `Authorization: Bearer <DIAG_TOKEN>` — proves the VTU.ng wallet authenticates
   and shows its balance (VAS buys fail on an empty provider wallet).
 - `GET /wema-callbacks-diagnose` with a diagnostic bearer token — prints the

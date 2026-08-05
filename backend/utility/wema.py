@@ -103,7 +103,30 @@ def bank_tier_limit(tier, kind: str):
 
 
 def wema_live() -> bool:
-    """Whether Wema has the channel id + the Wallet-Services subscription key."""
+    """Whether real Wema calls are made: keys configured AND simulation off.
+
+    Simulation is checked HERE, in the gate every rail asks, rather than only where
+    an unkeyed deploy decides between a mock and failing closed. It used to be the
+    latter, which made WEMA_SIMULATION a no-op on the deploys most likely to set it:
+    with keys present this returned True and every call went to WEMA_BASE_URL for
+    real. On the sandbox host that was merely surprising; pointed at the live host it
+    would move REAL MONEY while the operator believed — from the variable's name, its
+    own docstring, and the runbook — that nothing could. A safety switch that silently
+    does nothing is worse than no switch, because it is trusted.
+    """
+    if wema_simulation():
+        return False
+    m = settings.WEMA
+    return bool(m.get("CHANNEL_ID") and (m.get("KEYS") or {}).get("wallet"))
+
+
+def wema_keys_configured() -> bool:
+    """Whether the credentials exist, regardless of simulation.
+
+    Separate from wema_live() because "has keys" and "will make a real call" are now
+    different questions, and diagnostics need the first to tell a simulation deploy
+    apart from an unconfigured one.
+    """
     m = settings.WEMA
     return bool(m.get("CHANNEL_ID") and (m.get("KEYS") or {}).get("wallet"))
 
@@ -858,7 +881,11 @@ def credit_wallet(amount_naira, reference: str, narration: str, *, destination_a
 # stored VTU.ng codes) — see docs/wema-migration.md.
 # ---------------------------------------------------------------------------
 def _vas_live(product: str) -> bool:
-    """Whether the VAS product (airtime/bills) has its subscription key + channel."""
+    """Whether the VAS product (airtime/bills) makes real calls: key + channel, and
+    simulation off — VAS spends real money too, so it honours the switch like the
+    money rail does."""
+    if wema_simulation():
+        return False
     return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key(product))
 
 
@@ -1357,8 +1384,11 @@ def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
 # alternative reveal endpoint if virtual-card-details doesn't return the full PAN/CVV.)
 # ---------------------------------------------------------------------------
 def _card_live() -> bool:
-    """Whether Card-Management can AUTHENTICATE — own key, or the Wallet Services key
-    that bundles the product. Gates mock-vs-real inside the card_* calls."""
+    """Whether Card-Management makes real calls — own key, or the Wallet Services key
+    that bundles the product, and simulation off. Gates mock-vs-real inside the card_*
+    calls; issuing a real card is a real-world side effect like any other."""
+    if wema_simulation():
+        return False
     return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("card"))
 
 
@@ -1659,11 +1689,23 @@ def wema_diagnostics() -> dict:
            # carry the SECRET_KEY-derived fallback rather than a blank value ALAT
            # would reject. This says whether SOMETHING will be sent.
            "security_info_effective": bool(security_info_value()),
-           "wema_live": wema_live(), "simulation": wema_simulation()}
+           "wema_live": wema_live(), "keys_configured": wema_keys_configured(),
+           "simulation": wema_simulation()}
     if not wema_live():
-        out["status"] = "simulation" if wema_simulation() else "keys_incomplete"
-        out["hint"] = ("Set WEMA_CHANNEL_ID + WEMA_WALLET_KEY (and the per-product keys) and the "
-                       "live WEMA_BASE_URL. WEMA_SIMULATION=true tests the flow without live keys.")
+        # A simulation deploy WITH keys reads identically to an unconfigured one on
+        # wema_live alone, and they need opposite fixes — so say which it is.
+        if wema_simulation():
+            out["status"] = "simulation"
+            out["hint"] = (
+                "WEMA_SIMULATION is on, so every Wema call is mocked and no real money "
+                "or identity moves — even though the keys are "
+                + ("present" if wema_keys_configured() else "absent")
+                + ". Clear WEMA_SIMULATION to make real calls; wema_preflight hard-fails "
+                  "while it is set.")
+        else:
+            out["status"] = "keys_incomplete"
+            out["hint"] = ("Set WEMA_CHANNEL_ID + WEMA_WALLET_KEY (and the per-product keys) and the "
+                           "live WEMA_BASE_URL. WEMA_SIMULATION=true tests the flow without live keys.")
         return out
     # securityInfo is OUR value, echoed back by the bank to the authentication callback
     # (Wema, 2026-07-27), never a bank-issued scheme. Its boolean is reported above;

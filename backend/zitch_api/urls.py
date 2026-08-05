@@ -185,6 +185,50 @@ def _diag_denied(request, *env_names):
 
 @never_cache
 @require_http_methods(["GET"])
+def preflight_diagnose(request):
+    """GET /preflight with an Authorization bearer token.
+
+    The go-live readiness check over HTTP. It is the same `manage.py wema_preflight`
+    run verbatim — same checks, same wording, same exit status — because a second
+    implementation would drift from the one the runbook cites, and a readiness gate
+    that disagrees with itself is worse than one place to look.
+
+    It exists because the command was reachable ONLY from a shell, and the deploys
+    that most need a go-live gate are precisely the ones without one (Render's free
+    tier has no shell at all). Read-only: every check the command runs is a read.
+
+    `ready` is the machine-readable answer (exit 0); `report` is the operator-readable
+    one. `?strict=1` also gates on the soft checks, exactly as `--strict` does.
+    """
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    import io
+
+    from django.core.management import call_command
+
+    buf = io.StringIO()
+    ready, error = True, ""
+    try:
+        call_command("wema_preflight", stdout=buf, stderr=buf,
+                     **({"strict": True} if request.GET.get("strict") else {}))
+    except SystemExit:
+        # How the command reports "not ready" — a failing gate, not a crash.
+        ready = False
+    except Exception as exc:                                  # noqa: BLE001
+        # A preflight that cannot run is not a passing preflight.
+        ready, error = False, f"{type(exc).__name__}: {exc}"
+    body = {"ready": ready, "strict": bool(request.GET.get("strict")),
+            "report": buf.getvalue().splitlines()}
+    if error:
+        body["error"] = error
+    response = JsonResponse({"preflight": body}, status=200 if ready else 503)
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@never_cache
+@require_http_methods(["GET"])
 def vtu_diagnose(request):
     """GET /vtu-diagnose with an Authorization bearer token.
 
@@ -369,7 +413,8 @@ urlpatterns = [
     *[p for frag, view in (("wema-diagnose", wema_diagnose),
                            ("wema-callbacks-diagnose", wema_callbacks_diagnose),
                            ("vtu-diagnose", vtu_diagnose),
-                           ("sms-diagnose", sms_diagnose))
+                           ("sms-diagnose", sms_diagnose),
+                           ("preflight", preflight_diagnose))
       for p in (path(frag, view), path(frag + "/", view))],
     path("robots.txt", robots_txt),
     path("admin/", admin.site.urls),
