@@ -9,6 +9,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
+from portal.diagnostics import diagnostics_view
 from portal.pages import admin_portal, landing, prototype
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
@@ -417,6 +418,13 @@ urlpatterns = [
                            ("preflight", preflight_diagnose))
       for p in (path(frag, view), path(frag + "/", view))],
     path("robots.txt", robots_txt),
+    # The diagnostics as a PAGE. Every *-diagnose endpoint needs an Authorization
+    # header, which means curl, which means a terminal — so on a deploy whose operator
+    # works from a browser and the hosting dashboard (no shell anywhere), all of it was
+    # unreachable and only /healthz answered. Same checks, same functions, admin's own
+    # staff-session auth instead of a shared bearer token. Registered BEFORE admin/ so
+    # it resolves rather than being swallowed by the admin catch-all.
+    path("admin/diagnostics/", admin.site.admin_view(diagnostics_view), name="diagnostics"),
     path("admin/", admin.site.urls),
     # Meta calls this exact path (no /api prefix, no trailing slash).
     path("webhooks/whatsapp", whatsapp_webhook),
