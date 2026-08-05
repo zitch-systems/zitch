@@ -10,7 +10,9 @@ from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
-from django.test import Client, SimpleTestCase, TestCase
+from unittest.mock import patch
+
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from accounts.models import AccessToken
 from wallet.forex import FxError, create_fx_quote
@@ -417,3 +419,57 @@ class DemoBundleTests(SimpleTestCase):
         they forbid has to exist next door, or they prove nothing about
         isolation — an empty or renamed folder would satisfy them too."""
         self.assertIn("fetch(", (self.LIVE / "api.js").read_text(encoding="utf-8"))
+
+
+class DiagnosticsPageTests(TestCase):
+    """Every *-diagnose endpoint needs an Authorization header — curl, therefore a
+    terminal. An operator working from a browser and the hosting dashboard could reach
+    only /healthz and was otherwise blind."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = User.objects.create_user(username="ops-diag", password="pw-diag-1",
+                                              is_staff=True, is_superuser=True)
+
+    def test_requires_a_staff_session_not_a_bearer_token(self):
+        res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 302)                 # to the admin login
+        self.assertIn("/admin/login/", res["Location"])
+
+    def test_renders_every_rail_without_a_terminal(self):
+        self.client.force_login(self.staff)
+        res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 200)
+        body = res.content.decode()
+        for expected in ("Go-live preflight", "Wema / ALAT", "SMS (Termii)", "VTU.ng"):
+            self.assertIn(expected, body)
+
+    def test_a_failing_probe_does_not_take_the_page_down(self):
+        # The page exists precisely for when something is broken.
+        self.client.force_login(self.staff)
+        with patch("utility.wema.wema_diagnostics", side_effect=RuntimeError("rail down")):
+            res = self.client.get("/admin/diagnostics/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("rail down", res.content.decode())
+
+    def test_a_page_load_never_sends_an_sms(self):
+        # It costs money and it is a real message to a real handset.
+        self.client.force_login(self.staff)
+        with patch("utility.providers.sms_probe") as probe:
+            self.client.get("/admin/diagnostics/")
+        probe.assert_not_called()
+
+    def test_the_button_sends_one_and_says_accepted_is_not_delivered(self):
+        self.client.force_login(self.staff)
+        with patch("utility.providers.sms_probe",
+                   return_value={"sent": {"ok": True}}) as probe:
+            res = self.client.post("/admin/diagnostics/", {"sms_to": "0803 000 0000"})
+        self.assertEqual(probe.call_args[0][0], "08030000000")   # digits only
+        self.assertIn("Accepted is not delivered", res.content.decode())
+
+    def test_no_secret_reaches_the_page(self):
+        self.client.force_login(self.staff)
+        with override_settings(TERMII={"API_KEY": "tk_supersecret", "SENDER_ID": "Zitch",
+                                       "CHANNEL": "dnd", "BASE_URL": "https://v3.api.termii.com"}):
+            res = self.client.get("/admin/diagnostics/")
+        self.assertNotIn("tk_supersecret", res.content.decode())

@@ -8,11 +8,14 @@ fail-closed, so going live is a config + verification exercise, not a code chang
 > (add `--strict` to also gate on the non-money rails). It exits non-zero until
 > every hard gate passes. `/healthz` shows the same gate as booleans over HTTP.
 >
-> **No shell?** Every step below has an HTTP or Django-admin equivalent, because the
+> **No shell? Start at `/admin/diagnostics/`.** It renders the preflight and every
+> rail probe as a page, using your existing admin login — no token, no terminal. The
 > deploys that most need a go-live gate are the ones without a shell (Render's free
-> tier has none). The preflight itself is `GET /preflight` with a diagnostic bearer
-> token — the same command, same wording, `200` when ready and `503` when not
-> (`?strict=1` for `--strict`).
+> tier has none), and the `*-diagnose` endpoints all need an `Authorization` header,
+> which in practice means curl. Every step below names its admin or HTTP equivalent.
+> (For scripting, the endpoint form is `GET /preflight` with a diagnostic bearer
+> token: same command, same wording, `200` ready / `503` not, `?strict=1` for
+> `--strict`.)
 
 ---
 
@@ -162,7 +165,10 @@ KYC rail.
 
 ### Step 6 — seed the catalogue
 - `python manage.py seed_wema_plans` — maps the live data/cable catalogue onto
-  `wema_code` (cable scoped per biller). Re-runnable.
+  `wema_code` (cable scoped per biller). Re-runnable. **No shell:** Django admin →
+  Data plans (and Cable plans) → *"Preview a Wema catalogue sync"*, then *"Apply"*.
+  Preview first: the matching is by price then normalised name, and a wrong
+  `packageCode` sells the customer a different bundle than the one they paid for.
 
 ### Step 7 — controlled smoke test (small real money)
 1. Provision a NUBAN for a test user (BVN/NIN → OTP), confirm PND is lifted.
