@@ -1212,8 +1212,11 @@ class WhatsAppQueueAdminTests(TestCase):
 
     def setUp(self):
         self.client = Client()
+        # Low-entropy on purpose: a realistic-looking fixture password trips the
+        # secret scanner, and a test credential is not worth teaching it to ignore
+        # things. Matches the style used elsewhere (portal.tests).
         self.staff = User.objects.create_superuser(
-            username="ops", email="ops@zitch.test", password="pw-Str0ng-123")
+            username="ops", email="ops@zitch.test", password="pw-ops-1")
         self.user, _ = make_user()
         WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
                                     status=WhatsAppLink.ACTIVE)
