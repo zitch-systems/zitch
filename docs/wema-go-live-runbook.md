@@ -61,7 +61,8 @@ crons too (`render.yaml` already declares the slots on each).
 |---|---|
 | `SENTRY_DSN` | So the reconcile crons can page on drift/outage (they call `utility.alerts.alert`). Set it on the **web service and every cron**. |
 | `WEMA_DIAG_TOKEN` | Enables the `/wema-diagnose` remote self-test using an `Authorization: Bearer …` header. |
-| `DIAG_TOKEN` | Enables `/vtu-diagnose`, `/sms-diagnose`, and `/wema-callbacks-diagnose` using bearer auth (either diagnostic token opens the callback probe). Never put either token in a URL. |
+| `DIAG_TOKEN` | Enables `/preflight`, `/vtu-diagnose`, `/sms-diagnose`, and `/wema-callbacks-diagnose` using bearer auth (either diagnostic token opens the callback probe). Never put either token in a URL. |
+| `COMPLIANCE_EXPORT_EMAIL` | Where an NDPR data-subject export is delivered (Django admin → Users). Unset means that action **refuses** — the export is never shown in a browser, so with no destination there is nowhere safe for it to go. Set it before you need it: the NDPR clock is 30 days and it is not a good day to discover the setting. |
 | `VTUNG_API_KEY` **or** `VTUNG_USERNAME`+`VTUNG_PASSWORD` | Airtime/data/bills rail (VTU.ng). |
 | `RESEND_API_KEY` | Transactional email (`RESEND_FROM_EMAIL` is already `no-reply@send.zitch.ng`). |
 | `TERMII_API_KEY` | The SMS / OTP-by-SMS rail — the only one. **Blank = mock mode: nothing is sent**, so no user receives a code. |

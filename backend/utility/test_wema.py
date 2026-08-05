@@ -845,3 +845,48 @@ class WemaConformanceFixTests(SimpleTestCase):
                          "Request failed")
         self.assertEqual(wema._msg({"errorMessages": ["Wema could not process this"]}),
                          "Request failed")
+
+
+class CatalogueSyncFromAdminTests(TestCase):
+    """Data and cable purchases stay on VTU.ng until a plan carries the rail's own
+    packageCode, and that mapping only existed as a management command — unreachable on
+    a deploy with no shell, which is exactly where it is needed."""
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from utility.admin import CablePlanAdmin, DataPlanAdmin
+        from utility.models import CablePlan, DataPlan
+
+        self.data_admin = DataPlanAdmin(DataPlan, AdminSite())
+        self.cable_admin = CablePlanAdmin(CablePlan, AdminSite())
+        self.messages = []
+        for adm in (self.data_admin, self.cable_admin):
+            adm.message_user = lambda req, msg, level=None: self.messages.append(msg)
+
+    def test_preview_runs_the_command_dry_and_scoped_to_data(self):
+        with patch("utility.admin.call_command") as run:
+            self.data_admin.preview_wema_codes(None, None)
+        self.assertEqual(run.call_args[0][0], "seed_wema_plans")
+        self.assertTrue(run.call_args[1]["dry_run"])      # writes nothing…
+        self.assertEqual(run.call_args[1]["only"], "data")  # …and only these rows
+        self.assertIn("DRY RUN", " ".join(self.messages))
+
+    def test_apply_is_not_a_dry_run_and_cable_scopes_itself(self):
+        with patch("utility.admin.call_command") as run:
+            self.cable_admin.apply_wema_codes(None, None)
+        self.assertFalse(run.call_args[1]["dry_run"])
+        self.assertEqual(run.call_args[1]["only"], "cable")
+        self.assertNotIn("DRY RUN", " ".join(self.messages))
+
+    def test_a_failing_command_is_reported_not_swallowed(self):
+        with patch("utility.admin.call_command", side_effect=RuntimeError("catalogue down")):
+            self.data_admin.preview_wema_codes(None, None)
+        self.assertIn("catalogue down", " ".join(self.messages))
+
+    def test_silence_is_reported_as_silence(self):
+        # "No output" reads as success otherwise, and an operator would believe the
+        # catalogue synced when nothing matched at all.
+        with patch("utility.admin.call_command"):
+            self.data_admin.preview_wema_codes(None, None)
+        self.assertIn("nothing matched", " ".join(self.messages))

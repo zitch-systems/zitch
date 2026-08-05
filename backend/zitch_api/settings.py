@@ -406,6 +406,12 @@ RESEND = {
     "API_KEY": os.environ.get("RESEND_API_KEY", ""),
     "FROM_EMAIL": os.environ.get("RESEND_FROM_EMAIL", "Zitch <no-reply@send.zitch.ng>"),
 }
+# Where an NDPR/GDPR data-subject EXPORT is delivered. Deliberately a fixed address set
+# in the environment, not something the operator running the export chooses: the export
+# is the complete personal record of one customer, so the destination must not be
+# selectable from a session that might be stolen. Unset => the admin export refuses,
+# rather than falling back to showing the record in a browser.
+COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
 # KYC — selfie/liveness + address + ID-document (image/biometric) — Prembly
 # (IdentityPass). Blank => mock mode.
 PREMBLY = {

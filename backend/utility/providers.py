@@ -263,19 +263,36 @@ def send_sms(phone: str, message: str) -> dict:
     return _send_sms_termii(phone, message)
 
 
-def send_email(to: str, subject: str, message: str, html: str | None = None) -> dict:
+def send_email(to: str, subject: str, message: str, html: str | None = None,
+               attachments: list | None = None) -> dict:
     """Send a transactional email via Resend. Mirrors send_sms's mock-mode
     contract: blank API_KEY or empty `to` returns a silent-success dict so
     callers can fire-and-forget without branching on configuration. Used as a
     parallel OTP channel alongside Termii so SMS routing issues never strand
     a user mid-signup. Pass `html` for a branded body (the plain `message` is
-    kept as the text fallback for clients that don't render HTML)."""
+    kept as the text fallback for clients that don't render HTML).
+
+    `attachments` is [{"filename": str, "content": bytes|str}] — used by the NDPR
+    data-subject export, which must arrive as a file rather than a body: it is a
+    complete personal record, and a mail body is quoted, forwarded and trimmed by
+    clients in ways a file is not.
+    """
     cfg = settings.RESEND
     if not cfg["API_KEY"] or not to:
         return {"success": True, "mock": True, "message": "Email sent (mock mode)"}
     payload = {"from": cfg["FROM_EMAIL"], "to": [to], "subject": subject, "text": message}
     if html:
         payload["html"] = html
+    if attachments:
+        import base64
+
+        payload["attachments"] = [
+            {"filename": a["filename"],
+             "content": base64.b64encode(
+                 a["content"].encode() if isinstance(a["content"], str) else a["content"]
+             ).decode()}
+            for a in attachments
+        ]
     try:
         resp = requests.post(
             f"{cfg['BASE_URL']}/emails",
