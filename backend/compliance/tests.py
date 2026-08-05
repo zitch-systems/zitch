@@ -351,3 +351,113 @@ class DisputeTests(TestCase):
         from whatsapp.models import AuditLog
         row = AuditLog.objects.filter(action="dispute.upheld").first()
         self.assertTrue(row.after["on_time"])
+
+
+class DsrFromAdminTests(TestCase):
+    """`manage.py data_subject_request` needs a production shell. A deploy without one
+    (Render's free tier has none) could not service an NDPR request AT ALL — not an
+    answer a regulator accepts for an obligation with a 30-day statutory clock. These
+    are the same operations from the browser, keeping the command's security posture:
+    the export never reaches the browser, and erasure needs two people."""
+
+    def setUp(self):
+        from django.contrib.admin.sites import AdminSite
+
+        from accounts.admin import UserAdmin
+        from accounts.models import User
+
+        self.admin = UserAdmin(User, AdminSite())
+        self.messages = []
+        self.admin.message_user = lambda req, msg, level=None: self.messages.append((msg, level))
+        self.subject = User.objects.create(username="0801000900", phone="0801000900",
+                                           email="subject@zitch.test", first_name="Ada",
+                                           last_name="Eze")
+        self.op_a = User.objects.create(username="op-a", email="a@zitch.test", is_staff=True)
+        self.op_b = User.objects.create(username="op-b", email="b@zitch.test", is_staff=True)
+
+    def _req(self, actor):
+        return type("R", (), {"user": actor})()
+
+    def _subjects(self):
+        from accounts.models import User
+
+        return User.objects.filter(pk=self.subject.pk)
+
+    def _said(self):
+        return " ".join(m for m, _ in self.messages)
+
+    # --- export ---------------------------------------------------------------
+    @override_settings(COMPLIANCE_EXPORT_EMAIL="dpo@zitch.ng")
+    def test_export_is_emailed_as_a_file_and_never_returned(self):
+        with mock.patch("utility.providers.send_email",
+                        return_value={"success": True}) as send:
+            self.admin.dsr_export(self._req(self.op_a), self._subjects())
+        to, subject, body = send.call_args[0]
+        self.assertEqual(to, "dpo@zitch.ng")
+        attachments = send.call_args[1]["attachments"]
+        self.assertEqual(len(attachments), 1)
+        payload = json.loads(attachments[0]["content"])
+        self.assertTrue(payload)
+        # The RECORD travels as a file. Naming the subject in the body and in the admin
+        # message is intended — the DPO has to know whose export arrived, and that is
+        # what subject_label is for. What must not travel loose is the data itself.
+        self.assertNotIn("transactions", body.split("Sections:")[0])
+        for blob in (body, self._said()):
+            self.assertNotIn(json.dumps(payload["account"], ensure_ascii=False), blob)
+        req = DataSubjectRequest.objects.get(kind=DataSubjectRequest.EXPORT)
+        self.assertEqual(req.status, DataSubjectRequest.COMPLETED)
+        self.assertEqual(req.requested_by, self.op_a)
+
+    @override_settings(COMPLIANCE_EXPORT_EMAIL="")
+    def test_export_refuses_rather_than_falling_back_to_the_browser(self):
+        with mock.patch("utility.providers.send_email") as send:
+            self.admin.dsr_export(self._req(self.op_a), self._subjects())
+        send.assert_not_called()
+        self.assertFalse(DataSubjectRequest.objects.exists())
+        self.assertIn("COMPLIANCE_EXPORT_EMAIL", self._said())
+
+    @override_settings(COMPLIANCE_EXPORT_EMAIL="dpo@zitch.ng")
+    def test_a_failed_delivery_is_not_reported_as_delivered(self):
+        with mock.patch("utility.providers.send_email",
+                        return_value={"success": False, "message": "smtp down"}):
+            self.admin.dsr_export(self._req(self.op_a), self._subjects())
+        # The row stays: an examiner asks WHEN the export was run, not whether the mail
+        # server was up. But the operator must not think it arrived.
+        self.assertTrue(DataSubjectRequest.objects.filter(
+            kind=DataSubjectRequest.EXPORT).exists())
+        self.assertIn("email failed", self._said())
+        self.assertIn("do not treat this as delivered", self._said())
+
+    # --- erasure --------------------------------------------------------------
+    def test_erasure_takes_two_people(self):
+        self.admin.dsr_request_erasure(self._req(self.op_a), self._subjects())
+        req = DataSubjectRequest.objects.get(kind=DataSubjectRequest.ERASE)
+        self.assertEqual(req.status, DataSubjectRequest.RECEIVED)
+
+        # The same operator cannot carry out their own request.
+        self.admin.dsr_carry_out_erasure(self._req(self.op_a), self._subjects())
+        self.subject.refresh_from_db()
+        self.assertEqual(self.subject.email, "subject@zitch.test")   # untouched
+        self.assertIn("second operator", self._said())
+
+        # A different one can.
+        self.admin.dsr_carry_out_erasure(self._req(self.op_b), self._subjects())
+        self.subject.refresh_from_db()
+        self.assertNotEqual(self.subject.email, "subject@zitch.test")
+        req.refresh_from_db()
+        self.assertEqual(req.status, DataSubjectRequest.COMPLETED)
+        self.assertTrue(req.completed)
+        self.assertTrue(req.subject_label)      # the only handle left on the request
+
+    def test_erasure_refuses_without_a_request(self):
+        self.admin.dsr_carry_out_erasure(self._req(self.op_b), self._subjects())
+        self.subject.refresh_from_db()
+        self.assertEqual(self.subject.email, "subject@zitch.test")
+        self.assertIn("no open erasure request", self._said())
+
+    def test_a_second_request_does_not_stack(self):
+        self.admin.dsr_request_erasure(self._req(self.op_a), self._subjects())
+        self.admin.dsr_request_erasure(self._req(self.op_b), self._subjects())
+        self.assertEqual(DataSubjectRequest.objects.filter(
+            kind=DataSubjectRequest.ERASE).count(), 1)
+        self.assertIn("already open", self._said())
