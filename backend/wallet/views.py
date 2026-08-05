@@ -24,6 +24,7 @@ from .models import FundingIntent, Wallet, WemaProvisioningAttempt
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
+    attach_existing_bank_account,
     ensure_reserved_account,
     existing_for_key,
     get_or_create_wallet,
@@ -216,24 +217,9 @@ def _adopt_existing_wema_account(user, *, using_bvn: bool, reason: str) -> dict 
     """
     if not _ALREADY_ONBOARDED.search(reason or ""):
         return None
-    acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
-    number = str(acct.get("account_number") or "").strip()
-    if not acct.get("success") or not number:
+    wallet, _detail = attach_existing_bank_account(user, using_bvn=using_bvn)
+    if wallet is None or not wallet.account_number:
         return None
-    wallet, outcome = provision_wema_account(
-        user, account_number=number, account_name=acct.get("account_name", ""),
-        bank_name=acct.get("bank_name", ""), source="adopt-existing")
-    if outcome.startswith("conflict"):
-        log.warning("wema_adopt_conflict user=%s outcome=%s", user.id, outcome)
-        return None
-    # A partnership NUBAN is created under a Post-No-Debit hold, so an adopted one
-    # may still be carrying it — and the payout debits this very account. Best-effort,
-    # exactly as the OTP path treats it.
-    pnd = wema_provider.lift_debit_restriction(number, bvn=using_bvn)
-    if not pnd.get("success"):
-        log.warning("wema_pnd_lift_failed user=%s account=%s msg=%s",
-                    user.id, number, pnd.get("message", ""))
-    log.info("wema_adopted_existing_account user=%s outcome=%s", user.id, outcome)
     return _account_payload(
         wallet, already=True,
         message="Your bank account was already set up — we've reconnected it.")
