@@ -26,6 +26,7 @@ def health(_request):
                                     payout_live, payout_provider, sms_live,
                                     vas_provider, vtu_live)
     from utility import wema
+    from whatsapp.providers import wa_live, wa_mode
 
     integrations = {
         "funding_provider": payment_provider(),   # which rail funds the wallet (wema)
@@ -52,8 +53,36 @@ def health(_request):
         "kyc_wema": wema.wema_live(),
         "kyc_prembly": _prembly_live(),  # selfie/liveness + address + ID-doc stay on Prembly
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
+        # The chat channel belongs here for the same reason as every rail above:
+        # this is the only endpoint an operator can read without a login, and a
+        # silent WhatsApp bot is indistinguishable from a healthy one everywhere
+        # else. `disabled` is the answer most of the time — the webhook then
+        # returns 404 to Meta and no message is ever seen.
+        "whatsapp_mode": wa_mode(),               # disabled | sandbox | live
+        "whatsapp_live": wa_live(),
+        # Has Meta ever SUCCESSFULLY called the webhook? Nothing downstream can
+        # explain silence when the callback never arrives, and that case is
+        # invisible in every other reading: no call means no queue row, no log
+        # line, nothing — which reads exactly like an idle, healthy channel.
+        "whatsapp_webhook_reached": _whatsapp_webhook_reached(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_webhook_reached():
+    """True once Meta has made one verified call. None if we cannot tell.
+
+    Guarded because /healthz is the platform's LIVENESS probe: it answers 200
+    over plain HTTP whether or not the database is reachable (that is `readyz`'s
+    job). A diagnostic detail must never be the reason the platform decides the
+    service is down and cycles it.
+    """
+    try:
+        from whatsapp.models import WebhookEvent
+
+        return WebhookEvent.objects.filter(source="whatsapp", verified=True).exists()
+    except Exception:      # noqa: BLE001 — liveness outranks this datum
+        return None
 
 
 def readyz(_request):

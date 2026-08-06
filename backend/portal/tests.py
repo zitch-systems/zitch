@@ -357,6 +357,32 @@ class WebPagesTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.json()["status"])
 
+    def test_healthz_answers_the_whatsapp_question(self):
+        """This is the only endpoint reachable without a login, and a silent
+        WhatsApp bot is indistinguishable from a healthy one everywhere else. The
+        two readings that matter are whether the channel is switched on at all,
+        and whether Meta has ever actually reached us."""
+        integrations = Client().get("/healthz").json()["integrations"]
+        self.assertIn(integrations["whatsapp_mode"], {"disabled", "sandbox", "live"})
+        self.assertIn("whatsapp_live", integrations)
+        self.assertIn("whatsapp_webhook_reached", integrations)
+
+    def test_healthz_carries_no_secret(self):
+        """It is public. Every value is a boolean or a provider name."""
+        body = Client().get("/healthz").content.decode()
+        for secret in ("TOKEN", "APP_SECRET", "api_key", "Bearer"):
+            self.assertNotIn(secret, body)
+
+    def test_healthz_still_answers_when_the_database_is_gone(self):
+        """/healthz is the platform's LIVENESS probe — `readyz` owns the database.
+        A diagnostic detail must never be the reason the platform decides the
+        service is down and cycles it."""
+        with patch("whatsapp.models.WebhookEvent.objects") as objects:
+            objects.filter.side_effect = RuntimeError("no database")
+            res = Client().get("/healthz")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.json()["integrations"]["whatsapp_webhook_reached"])
+
 
 class DemoBundleTests(SimpleTestCase):
     """The demo bundle must be incapable of reaching the network.
