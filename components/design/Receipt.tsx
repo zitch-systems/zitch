@@ -55,6 +55,12 @@ const Receipt = ({
   const run = async (action: 'save' | 'share', fmt: ReceiptFormat) => {
     setFormat(null);
     setBusy(true);
+    // Let the format sheet finish its dismiss animation before presenting the
+    // next system UI. On iOS, presenting the share sheet (or the SAF picker's
+    // activity on Android) while the previous modal is still animating out
+    // fails — the same race every other screen avoids with a ~320ms pause
+    // after closing a sheet. The JPEG capture is fast enough to hit it.
+    await new Promise((resolve) => setTimeout(resolve, 350));
     const source = {
       capture: async () => {
         const { captureRef } = await import('react-native-view-shot');
