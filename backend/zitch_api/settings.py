@@ -535,6 +535,13 @@ WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool(
 # inline only for local development/tests. The dedicated key encrypts queued command
 # text at rest and must be identical in the web and worker processes.
 WHATSAPP_PROCESS_INLINE = not _PROD
+# The web service also drains the inbound queue in a bounded background thread
+# after acknowledging a webhook, so a stopped/crashed/never-created worker service
+# cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so
+# this never double-processes alongside a healthy worker. Set to "false" only when
+# a dedicated worker is confirmed running and you want the web dynos doing nothing
+# but serving HTTP.
+WHATSAPP_WEB_DRAIN = env_bool("WHATSAPP_WEB_DRAIN", True)
 WHATSAPP_QUEUE_KEY = os.environ.get("WHATSAPP_QUEUE_KEY", "").strip()
 WHATSAPP_QUEUE_KEY_PREV = os.environ.get("WHATSAPP_QUEUE_KEY_PREV", "").strip()
 if not WHATSAPP_QUEUE_KEY and not _PROD:

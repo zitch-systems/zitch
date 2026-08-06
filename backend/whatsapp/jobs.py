@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 import logging
+import threading
 from datetime import timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -311,3 +312,70 @@ def process_outbound_batch(limit=20) -> int:
 
 def process_once(limit=20) -> tuple[int, int]:
     return process_inbound_batch(limit), process_outbound_batch(limit)
+
+
+# --------------------------------------------------------------------------- #
+# web-service safety net
+# --------------------------------------------------------------------------- #
+# Replies are the worker's job. But the worker is a SEPARATE Render service, and
+# when it is not running — never created, crashed at boot on a missing credential,
+# OOM-killed, suspended for billing — the webhook still stores the message and
+# still answers Meta 200, so the channel looks healthy from every angle while the
+# customer gets nothing back. A chat product whose entire delivery path hangs on
+# one process that fails silently is a bad bet.
+#
+# So the web service drains the queue too, opportunistically, on the one event
+# that proves work exists: an inbound webhook. It changes no semantics. Rows are
+# claimed with SELECT FOR UPDATE and a lease, so a running worker and this thread
+# cannot process the same message — whichever claims it first wins and the other
+# skips. With a healthy worker this thread finds nothing and costs nothing.
+#
+# It is deliberately bounded: one drain at a time per process, a small batch, and
+# every failure swallowed. This is a safety net, not a second worker — it must
+# never become the reason an HTTP worker thread is unavailable to serve requests.
+_DRAIN_LOCK = threading.Lock()
+WEB_DRAIN_BATCH = 5
+
+
+def _drain_worker(batch: int) -> None:
+    from django.db import connections
+
+    try:
+        process_inbound_batch(batch)
+    except Exception:  # noqa: BLE001 — a safety net must never raise into nothing
+        log.exception("wa_web_drain_failed")
+    finally:
+        try:
+            # Connections are thread-local and this thread is outside the
+            # request/response cycle, so Django never reaps them. Leaking one per
+            # webhook would exhaust the Postgres connection limit within a day of
+            # ordinary traffic. close_all() only touches THIS thread's.
+            connections.close_all()
+        except Exception:  # noqa: BLE001
+            log.exception("wa_web_drain_cleanup_failed")
+        finally:
+            # Released last, so the next webhook cannot start a drain while this
+            # one is still tearing down.
+            _DRAIN_LOCK.release()
+
+
+def drain_in_background(batch: int = WEB_DRAIN_BATCH) -> bool:
+    """Kick off a bounded queue drain off the request thread. Returns whether one
+    started — False means a drain is already running in this process, which is
+    not an error: the message is durably queued and the running drain (or the
+    worker, or the next webhook) will pick it up."""
+    if not getattr(settings, "WHATSAPP_WEB_DRAIN", True):
+        return False
+    if not _DRAIN_LOCK.acquire(blocking=False):
+        return False
+    try:
+        # daemon: a deploy/restart must not wait on this. A thread killed
+        # mid-flight leaves the row claimed but unprocessed, and the five-minute
+        # lease returns it to the queue — the same recovery a crashed worker gets.
+        threading.Thread(target=_drain_worker, args=(batch,),
+                         name="wa-web-drain", daemon=True).start()
+        return True
+    except Exception:  # noqa: BLE001 — e.g. thread limit reached
+        _DRAIN_LOCK.release()
+        log.exception("wa_web_drain_start_failed")
+        return False

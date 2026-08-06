@@ -100,6 +100,14 @@ def webhook(request):
         _process(message)
     for status in statuses:
         _apply_status(status)
+    if messages:
+        # Safety net for a worker that isn't running. Off the request thread, so
+        # the acknowledgement below is not delayed by it, and a no-op whenever the
+        # worker is healthy (it will already hold the row's lease). See
+        # jobs.drain_in_background.
+        from .jobs import drain_in_background
+
+        drain_in_background()
     return JsonResponse({"status": True})
 
 

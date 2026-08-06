@@ -108,11 +108,14 @@ def diagnostics_view(request):
     from whatsapp.health import whatsapp_diagnostics
     parts.append(_section(
         "WhatsApp", _json(_safe("whatsapp", whatsapp_diagnostics)),
-        note="Read <code>verdict</code> first. <code>worker_appears_stalled: true</code> means "
-             "inbound messages are queued and nobody is draining them — check the "
-             "<b>zitch-whatsapp-worker</b> service in Render, or drain by hand from "
+        note="Read <code>verdict</code> first. <code>webhook.ever_accepted_a_call: false</code> "
+             "means Meta has never reached us — no setting below the webhook can explain the "
+             "silence, so check the callback URL and its <code>messages</code> subscription in "
+             "the Meta dashboard. <code>worker_appears_stalled: true</code> means queued "
+             "messages are FAILING (the web service drains the queue itself after every "
+             "callback) — open them in "
              "<a href='../whatsapp/wamessagelog/?processed_at__isnull=1'>the message log</a> "
-             "with “Process now”."))
+             "and read <code>processing_error</code>, or run “Process now”."))
 
     # --- the SMS form ---------------------------------------------------------
     form = (
