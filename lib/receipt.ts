@@ -180,7 +180,12 @@ export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Pr
 
     if (format === 'jpeg') {
       const MediaLibrary = await import('expo-media-library');
-      const perm = await MediaLibrary.requestPermissionsAsync(true);  // writeOnly
+      // writeOnly is LOAD-BEARING, not an optimisation. Saving needs no read
+      // access to the gallery, so the Android manifest blocks READ_MEDIA_IMAGES
+      // (a Play-restricted permission a money app can't justify carrying) — and
+      // a read-mode request would therefore fail. Write-only requests nothing at
+      // all on Android 13+, WRITE_EXTERNAL_STORAGE on 10–12, add-only on iOS.
+      const perm = await MediaLibrary.requestPermissionsAsync(true);
       if (!perm?.granted) return 'denied';
       await MediaLibrary.saveToLibraryAsync(uri);
       return 'saved';
