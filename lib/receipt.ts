@@ -62,19 +62,33 @@ export const receiptFileName = (reference: string, format: ReceiptFormat): strin
 const esc = (s: string) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+/** Badge colours per outcome — a shared document must never dress a pending or
+ *  failed transaction in success green. */
+const badgeTone = (status: string): { bg: string; fg: string } => {
+  if (/fail|revers|declin/i.test(status)) return { bg: '#fdecec', fg: '#c0392b' };
+  if (/pend|process/i.test(status)) return { bg: '#fdf3e0', fg: '#b9770e' };
+  return { bg: '#e8f6ee', fg: '#128c4a' };
+};
+
 /**
  * The PDF body. Deliberately self-contained — no remote fonts or images, because
  * the renderer may run with no network and a receipt that half-loads is worse
  * than a plain one.
+ *
+ * `status` is stamped on the badge. It defaults to Successful because most
+ * receipts are, but callers exporting a pending or failed transaction MUST pass
+ * the real status — this file is the artifact a recipient treats as proof.
  */
 export const receiptHtml = ({
   title,
   message,
   rows,
+  status = 'Successful',
 }: {
   title: string;
   message: string;
   rows: ReceiptRow[];
+  status?: string;
 }): string => `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
@@ -92,12 +106,12 @@ export const receiptHtml = ({
   td.v { text-align: right; font-weight: 600; }
   tr.total td { font-size: 16px; font-weight: 800; border-bottom: 0; }
   .foot { padding: 22px 40px; color: #8b969b; font-size: 11px; }
-  .badge { display: inline-block; background: #e8f6ee; color: #128c4a; border-radius: 20px;
-           padding: 5px 13px; font-size: 12px; font-weight: 700; float: right; }
+  .badge { display: inline-block; background: ${badgeTone(status).bg}; color: ${badgeTone(status).fg};
+           border-radius: 20px; padding: 5px 13px; font-size: 12px; font-weight: 700; float: right; }
 </style></head><body>
 <div class="band"><div class="mark">zitch</div><div class="kicker">Transaction receipt</div></div>
 <div class="body">
-  <span class="badge">Successful</span>
+  <span class="badge">${esc(status)}</span>
   <h1>${esc(title)}</h1>
   <p class="msg">${esc(message)}</p>
   <table>${rows

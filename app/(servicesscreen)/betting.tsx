@@ -94,6 +94,7 @@ const Betting = () => {
             : `${money(amount)} added to your ${platform.name} account ${userId}.`}
           rows={[['Platform', platform.name], ['User ID', userId], ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

@@ -153,6 +153,7 @@ const BuyCable = () => {
             : `${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
           rows={[['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
           reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

@@ -58,6 +58,25 @@ describe('receiptHtml', () => {
     expect(html).toContain('<tr><td class="k">Bank</td>');
   });
 
+  it('stamps Successful by default', () => {
+    expect(html).toContain('<span class="badge">Successful</span>');
+  });
+
+  // The exported file is what a recipient treats as proof. A pending transfer
+  // may yet be reversed and a failed one never happened — neither may leave the
+  // app dressed in success green.
+  it('stamps the real status on a pending or failed transaction', () => {
+    const pendingHtml = receiptHtml({ title: 'Transfer processing', message: 'x', rows: [], status: 'Processing' });
+    expect(pendingHtml).toContain('<span class="badge">Processing</span>');
+    expect(pendingHtml).not.toContain('Successful');
+    expect(pendingHtml).toContain('#b9770e');   // amber, not success green
+
+    const failedHtml = receiptHtml({ title: 'Transfer', message: 'x', rows: [], status: 'Failed' });
+    expect(failedHtml).toContain('<span class="badge">Failed</span>');
+    expect(failedHtml).toContain('#c0392b');    // red
+    expect(failedHtml).not.toContain('#128c4a');
+  });
+
   // A recipient name comes from the bank and a note comes from the user; neither
   // is ours to trust. Escaping matters here because the PDF renderer is a real
   // browser engine — an unescaped value would become markup in the receipt.
