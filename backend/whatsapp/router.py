@@ -5,6 +5,7 @@ services the app uses (balance, NGN bank transfer with name-enquiry, confirm,
 PIN, idempotency). The LLM intent layer (later) sits *in front* of this and
 hands it the same structured actions, so money never depends on the AI being up.
 """
+import logging
 import re
 import secrets
 from datetime import timedelta
@@ -37,6 +38,7 @@ from .models import ConversationState, PendingAction, SystemSetting, WaMessageLo
 from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
 
 User = get_user_model()
+log = logging.getLogger("whatsapp")
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
@@ -125,27 +127,43 @@ def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
 
 
 def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
-    """Send the transaction receipt as a branded, downloadable JPEG (rendered
-    server-side and uploaded as a document) with the readable text as the caption.
-    Falls back to the text receipt when the channel is mock/dev or any step fails,
-    so a receipt is never lost. Returns the text form (used as the Flow success
-    screen message and the OUT log row)."""
-    text = _receipt(title, rows)
-    from .providers import send_document, upload_media, wa_live
+    """Send the transaction receipt as a branded JPEG rendered server-side, with the
+    readable text as the caption.
 
-    delivered = False
+    It goes out as an IMAGE, not a document: an image renders in the thread where the
+    user can read it without tapping, forward it in one gesture, and save it to their
+    gallery — which is the whole point of a receipt. A document arrives as a grey file
+    card nobody opens. If the image send is refused we still try the document (a
+    receipt on file beats no receipt), and text is the last resort so one is never
+    lost. Returns the text form, also used as the Flow success screen message and the
+    OUT log row.
+
+    Every fall-back is logged. A silent downgrade to text is exactly the kind of
+    failure that looks like a cosmetic choice and hides a broken media pipeline.
+    """
+    text = _receipt(title, rows)
+    from .providers import send_document, send_image_media, upload_media, wa_live
+
+    delivered = ""
     if wa_live():
         try:
             from .receipt import render_receipt
 
-            media_id = upload_media(render_receipt(title, rows, ref), "image/jpeg",
-                                    f"Zitch-Receipt-{ref}.jpg")
-            if media_id:
-                delivered = send_document(msisdn, media_id, f"Zitch-Receipt-{ref}.jpg",
-                                          caption=text).get("success", False)
+            filename = f"Zitch-Receipt-{ref}.jpg"
+            media_id = upload_media(render_receipt(title, rows, ref), "image/jpeg", filename)
+            if not media_id:
+                log.warning("wa_receipt_upload_failed ref=%s", ref)
+            else:
+                if send_image_media(msisdn, media_id, caption=text).get("success"):
+                    delivered = "image"
+                elif send_document(msisdn, media_id, filename, caption=text).get("success"):
+                    delivered = "document"
+                    log.warning("wa_receipt_image_refused ref=%s fell_back=document", ref)
         except Exception:  # never let receipt rendering break a completed txn
-            delivered = False
+            log.exception("wa_receipt_render_failed ref=%s", ref)
     if not delivered:
+        if wa_live():
+            log.warning("wa_receipt_text_fallback ref=%s", ref)
         send_text(msisdn, text)
     WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text)
     return text

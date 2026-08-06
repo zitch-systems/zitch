@@ -61,6 +61,29 @@ creating a duplicate.
 7. Monitor queue age, `processing_error`, broadcast `unknown`, worker restarts, Meta
    delivery failures, and Sentry. Treat `unknown` as a manual reconciliation case.
 
+## When the bot stops replying
+
+This failure is quiet by construction. The webhook's job is to store and acknowledge,
+so it answers Meta `200` whether or not anything downstream is working; the router —
+where every log line and audit row is written — is only reached by the worker. A dead
+worker therefore produces a chat that goes silent and a service that looks perfectly
+healthy from `/healthz`, the Render metrics, and Meta's delivery reports alike.
+
+Start at **`/admin/diagnostics/` → WhatsApp**, which needs nothing but an admin login,
+and read `verdict` first. (`GET /whatsapp-diagnose` returns the same JSON for
+scripting.) The causes it distinguishes, in the order they actually occur:
+
+| What you see | What it means | Fix |
+| --- | --- | --- |
+| `worker_appears_stalled: true`, `unprocessed` climbing | Nobody is draining the queue — usually `zitch-whatsapp-worker` is not running, was never created, or crashed at boot | Start/redeploy the worker in Render. To unblock the waiting customers immediately, select their rows in **WhatsApp → Message logs** (filter `processed_at` = empty) and run **Process now** — it runs the same job in the web process |
+| `mode: disabled` | No token / phone-number id, so the webhook returns `404` and Meta gets nothing | Set the WhatsApp credentials and `WHATSAPP_MODE=live` |
+| `mode: sandbox` | Inbound is routed, outbound is mocked — replies are generated and thrown away | Same as above |
+| `dead_lettered` above zero | The worker ran and kept failing | Open those rows and read `processing_error` |
+| `handed_to_human` lists a number | Deliberate: `status=human` mutes the bot so an agent can take over, and it stays muted until someone closes it | **WhatsApp → Conversations** → **Return to bot** |
+
+The worker refuses to boot unless the channel is fully live, so a half-configured
+deploy shows up as a stalled queue rather than as replies sent without receipts.
+
 ## Commands
 
 ```bash

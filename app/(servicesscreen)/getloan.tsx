@@ -38,6 +38,9 @@ const GetLoan = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   useEffect(() => {
@@ -78,6 +81,7 @@ const GetLoan = () => {
         idempotency_key: idemKey.current,
       });
       if (res.success) {
+        setTxnRef(String(res.loan?.reference || ''));
         setStep(null);
         setDone(true);
         idemKey.current = '';   // fresh key for a genuinely new request
@@ -107,6 +111,7 @@ const GetLoan = () => {
           title="Loan disbursed"
           message={`${money(amount)} has been added to your wallet. Repay by the due date to boost your limit.`}
           rows={[['Loan amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repayment', money(repay), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

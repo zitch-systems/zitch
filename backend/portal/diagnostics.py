@@ -103,6 +103,17 @@ def diagnostics_view(request):
                           note="Airtime/data/bills. A purchase fails on an empty provider "
                                "wallet however correct the code is."))
 
+    # The channel most likely to be "just not responding" with nothing in any log:
+    # the webhook acks 200 and queues, and a SEPARATE service does the replying.
+    from whatsapp.health import whatsapp_diagnostics
+    parts.append(_section(
+        "WhatsApp", _json(_safe("whatsapp", whatsapp_diagnostics)),
+        note="Read <code>verdict</code> first. <code>worker_appears_stalled: true</code> means "
+             "inbound messages are queued and nobody is draining them — check the "
+             "<b>zitch-whatsapp-worker</b> service in Render, or drain by hand from "
+             "<a href='../whatsapp/wamessagelog/?processed_at__isnull=1'>the message log</a> "
+             "with “Process now”."))
+
     # --- the SMS form ---------------------------------------------------------
     form = (
         "<h2 style='margin:1.6rem 0 .3rem;font:600 15px/1.3 system-ui'>Send a test SMS</h2>"
@@ -129,5 +140,7 @@ def diagnostics_view(request):
         "Bank codes: <a href='../transfers/bank/'>Banks</a> → “Sync bank codes from the payout "
         "rail”. Wallets: <a href='../wallet/wallet/'>Wallets</a> → reconnect or clear a funding "
         "account. Failed payouts: <a href='../wallet/transaction/?transaction_status__exact=Failed'>"
-        "Transactions</a> → “Why it failed”.</p></div>")
+        "Transactions</a> → “Why it failed”. Silent WhatsApp chats: "
+        "<a href='../whatsapp/conversationstate/?status__exact=human'>Conversations</a> → "
+        "“Return to bot”.</p></div>")
     return HttpResponse(body)

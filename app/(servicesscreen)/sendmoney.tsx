@@ -47,6 +47,9 @@ const SendMoney = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false);  // queued by the rail, not yet confirmed
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
@@ -261,6 +264,7 @@ const SendMoney = () => {
         idemKey.current = '';
         setPending(!res.success && !!res.pending && !res.duplicate);
         if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
+        setTxnRef(String(res.reference || ''));
         setStep(null);   // close the PIN sheet FIRST…
         reload();
         // …then show the receipt once the sheet has animated out. Switching to the
@@ -302,6 +306,7 @@ const SendMoney = () => {
             ? `${money(amount)} to ${finalName || 'recipient'} is processing and will be confirmed shortly.`
             : `${money(amount)} sent to ${finalName || 'recipient'}.`}
           rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

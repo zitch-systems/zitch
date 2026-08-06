@@ -230,6 +230,27 @@ def preflight_diagnose(request):
 
 @never_cache
 @require_http_methods(["GET"])
+def whatsapp_diagnose(request):
+    """GET /whatsapp-diagnose with an Authorization bearer token.
+
+    The WhatsApp channel's own probe: mode, the durable inbound queue, and whether
+    anything is draining it. "The bot stopped replying" has no signature anywhere
+    else — the webhook still answers 200 and the router is never reached — so this
+    is the only view that distinguishes a dead worker from a muted conversation.
+    Read-only; sends nothing.
+    """
+    denied = _diag_denied(request, "DIAG_TOKEN", "WEMA_DIAG_TOKEN")
+    if denied:
+        return denied
+    from whatsapp.health import whatsapp_diagnostics
+
+    response = JsonResponse({"whatsapp": whatsapp_diagnostics()})
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+@never_cache
+@require_http_methods(["GET"])
 def vtu_diagnose(request):
     """GET /vtu-diagnose with an Authorization bearer token.
 
@@ -414,6 +435,7 @@ urlpatterns = [
     *[p for frag, view in (("wema-diagnose", wema_diagnose),
                            ("wema-callbacks-diagnose", wema_callbacks_diagnose),
                            ("vtu-diagnose", vtu_diagnose),
+                           ("whatsapp-diagnose", whatsapp_diagnose),
                            ("sms-diagnose", sms_diagnose),
                            ("preflight", preflight_diagnose))
       for p in (path(frag, view), path(frag + "/", view))],

@@ -30,6 +30,9 @@ const BuyAirtime = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one purchase attempt
@@ -64,6 +67,7 @@ const BuyAirtime = () => {
         // `pending` = provider timeout: the money is HELD while reconciliation
         // confirms or refunds it — the receipt must say "processing", not claim
         // a delivery that may yet be reversed.
+        setTxnRef(String(result.reference || ''));
         setPending(!!result.pending);
         setStep(null);
         setDone(true);
@@ -93,6 +97,7 @@ const BuyAirtime = () => {
             ? `Your airtime purchase to ${phone} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
             : `Your airtime purchase to ${phone} was successful.`}
           rows={[['Type', 'Airtime top-up'], ['Network', network.name], ['Phone', phone], ['Amount', money(amount)], ['Fee', '₦0'], ['Total', money(amount), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

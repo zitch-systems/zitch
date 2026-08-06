@@ -28,6 +28,9 @@ const Exams = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one purchase attempt
@@ -61,6 +64,7 @@ const Exams = () => {
       // server replayed a completed attempt — also not a failure.
       if (res.success || res.pending || res.duplicate) {
         idemKey.current = '';
+        setTxnRef(String(res.reference || ''));
         setPending(!res.success && !!res.pending && !res.duplicate);
         setStep(null);
         setDone(true);
@@ -91,6 +95,7 @@ const Exams = () => {
             ? `Your ${exam.name} ${exam.description} (${qty}) order is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
             : `Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
           rows={[['Exam', exam.name], ['Item', exam.description], ['Quantity', String(qty)], ['Phone', phone], ['Total', money(amount), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>

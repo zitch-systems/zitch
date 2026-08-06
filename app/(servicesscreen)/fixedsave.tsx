@@ -36,6 +36,9 @@ const FixedSave = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // The ledger reference the server minted for this transaction — shown on the
+  // receipt and carried into the saved/shared file, so a support ticket can name it.
+  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const [rates, setRates] = useState<Record<number, number>>(FALLBACK_RATES);
   const [periods, setPeriods] = useState<number[]>(FALLBACK_PERIODS);
@@ -82,6 +85,7 @@ const FixedSave = () => {
     try {
       const res = await apiJson('/api/savings/create/', { amount: amt, days, transaction_pin: pin, idempotency_key: idemKey.current });
       if (res.success) {
+        setTxnRef(String(res.plan?.reference || ''));
         idemKey.current = '';
         setStep(null);
         setDone(true);
@@ -110,6 +114,7 @@ const FixedSave = () => {
           title="Savings locked 🔒"
           message={`${money(amount)} locked for ${days} days at ${(rate * 100).toFixed(0)}% p.a. You can't withdraw until maturity.`}
           rows={[['Principal', money(amount)], ['Rate', `${(rate * 100).toFixed(0)}% p.a`], ['Duration', `${days} days`], ['Interest earned', money(interest)], ['Maturity value', money(maturity), true]]}
+          reference={txnRef}
           onDone={() => router.replace('/savings')}
         />
       </Screen>

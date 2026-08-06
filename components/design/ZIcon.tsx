@@ -154,6 +154,16 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Path key="b" d="m7 11 5 4 5-4" />,
     <Path key="c" d="M5 21h14" />,
   ],
+  // The two receipt export formats — a picture and a document.
+  image: () => [
+    <Rect key="a" x={3} y={3} width={18} height={18} rx={3} />,
+    <Circle key="b" cx={8.5} cy={9} r={1.6} />,
+    <Path key="c" d="m20.5 15.5-4.5-4.5L7 20" />,
+  ],
+  file: () => [
+    <Path key="a" d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />,
+    <Path key="b" d="M14 3v5h5" />,
+  ],
   history: () => [
     <Path key="a" d="M3 12a9 9 0 1 0 3-6.7L3 8" />,
     <Path key="b" d="M3 4v4h4" />,

@@ -298,10 +298,25 @@ def _process(msg: dict) -> None:
             message_id=mid, msisdn=frm, logged_text=logged, reason="throttled",
         )
         return
-    row, _created = enqueue_inbound(
-        message_id=mid, msisdn=frm, logged_text=logged,
-        payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply},
-    )
+    try:
+        row, _created = enqueue_inbound(
+            message_id=mid, msisdn=frm, logged_text=logged,
+            payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply},
+        )
+    except Exception as exc:  # noqa: BLE001 — re-raised below; this is for visibility
+        # A message that cannot even be QUEUED leaves no row anywhere, so the queue
+        # looks empty and every diagnostic reports a healthy, idle channel while the
+        # customer gets nothing. Record the failure before re-raising: the 500 is
+        # correct (Meta retries; swallowing would lose the message outright), but it
+        # must not be the only trace. The message text is deliberately not recorded.
+        #
+        # `accepted` with a 500 is the accurate pair: the callback itself was valid
+        # (signed, well-formed, for our number) — we are the ones who failed it.
+        from .ops import record_webhook
+
+        record_webhook("whatsapp", verified=True, http_status=500,
+                       action=f"enqueue_failed:{type(exc).__name__}")
+        raise
     if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
         process_inbound_message(row.pk, raise_errors=True)
 

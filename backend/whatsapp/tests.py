@@ -1073,8 +1073,8 @@ except Exception:
 
 
 class WhatsAppReceiptTests(TestCase):
-    """The transaction receipt is a branded, downloadable JPEG (uploaded as a
-    document) when the channel is live, with a text fallback in mock/dev."""
+    """The transaction receipt is a branded JPEG sent as an inline image when the
+    channel is live, degrading to a document and then to text."""
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
     def test_render_receipt_is_a_jpeg(self):
@@ -1085,19 +1085,53 @@ class WhatsAppReceiptTests(TestCase):
         self.assertGreater(len(b), 1000)
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
-    def test_reply_receipt_sends_downloadable_document_when_live(self):
+    def test_reply_receipt_sends_an_inline_image_when_live(self):
+        """An image renders in the thread and can be forwarded or saved to the
+        gallery in one gesture; a document arrives as a file card that has to be
+        opened first. The receipt is something people SHOW someone, so it is sent
+        as an image and the document is only the fallback."""
         from whatsapp import providers
         from whatsapp.router import reply_receipt
         with patch.object(providers, "wa_live", return_value=True), \
              patch.object(providers, "upload_media", return_value="mid-123") as up, \
-             patch.object(providers, "send_document", return_value={"success": True}) as sd:
+             patch.object(providers, "send_image_media", return_value={"success": True}) as si, \
+             patch.object(providers, "send_document") as sd:
             text = reply_receipt("2348011112222", "Airtime receipt",
                                  [("Network", "MTN"), ("Amount", "₦500.00")], ref="ZTC-1")
         up.assert_called_once()
-        sd.assert_called_once()
-        self.assertIn("Airtime receipt", sd.call_args.kwargs.get("caption", ""))
-        self.assertTrue(sd.call_args.args[2].endswith(".jpg"))   # filename
+        si.assert_called_once()
+        sd.assert_not_called()
+        self.assertEqual(si.call_args.args[1], "mid-123")
+        self.assertIn("Airtime receipt", si.call_args.kwargs.get("caption", ""))
         self.assertIn("Airtime receipt", text)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_reply_receipt_falls_back_to_a_document_if_the_image_is_refused(self):
+        from whatsapp import providers
+        from whatsapp.router import reply_receipt
+        with patch.object(providers, "wa_live", return_value=True), \
+             patch.object(providers, "upload_media", return_value="mid-123"), \
+             patch.object(providers, "send_image_media", return_value={"success": False}), \
+             patch.object(providers, "send_document", return_value={"success": True}) as sd, \
+             patch("whatsapp.router.send_text") as st:
+            reply_receipt("2348011112222", "Airtime receipt", [("Network", "MTN")], ref="ZTC-1")
+        sd.assert_called_once()
+        self.assertTrue(sd.call_args.args[2].endswith(".jpg"))   # filename
+        st.assert_not_called()
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_reply_receipt_still_sends_text_when_the_media_upload_fails(self):
+        """A completed transaction always produces a receipt. If Meta's media store
+        refuses the upload, the user gets the text one rather than nothing."""
+        from whatsapp import providers
+        from whatsapp.router import reply_receipt
+        with patch.object(providers, "wa_live", return_value=True), \
+             patch.object(providers, "upload_media", return_value=""), \
+             patch.object(providers, "send_image_media") as si, \
+             patch("whatsapp.router.send_text") as st:
+            reply_receipt("2348011112222", "Airtime receipt", [("Network", "MTN")], ref="ZTC-1")
+        si.assert_not_called()
+        st.assert_called_once()
 
     def test_reply_receipt_text_fallback_in_mock(self):
         from whatsapp.router import reply_receipt
@@ -1106,3 +1140,130 @@ class WhatsAppReceiptTests(TestCase):
         self.assertTrue(WaMessageLog.objects.filter(
             msisdn="2348011112222", text__icontains="Airtime receipt").exists())
 
+
+class WhatsAppHealthTests(TestCase):
+    """"The bot isn't replying" is a symptom with several unrelated causes. These
+    pin the one thing that separates them: whether inbound work is being drained."""
+
+    def _queue(self, msisdn=MSISDN, mid="stuck-1", age_minutes=0):
+        row = WaMessageLog.objects.create(
+            msisdn=msisdn, direction=WaMessageLog.IN, wa_message_id=mid, text="hello",
+        )
+        if age_minutes:
+            WaMessageLog.objects.filter(pk=row.pk).update(
+                created=timezone.now() - timedelta(minutes=age_minutes))
+        return row
+
+    def test_a_quiet_healthy_channel_says_so(self):
+        from whatsapp.health import whatsapp_diagnostics
+        report = whatsapp_diagnostics()
+        self.assertEqual(report["queue"]["unprocessed"], 0)
+        self.assertFalse(report["queue"]["worker_appears_stalled"])
+
+    def test_an_old_backlog_names_the_worker(self):
+        """The webhook keeps answering 200 while the worker is down, so from every
+        other angle the channel looks healthy. The age of the oldest unprocessed
+        message is the only signal that says otherwise."""
+        from whatsapp.health import whatsapp_diagnostics
+        self._queue(age_minutes=9)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertEqual(report["queue"]["unprocessed"], 1)
+        self.assertTrue(report["queue"]["worker_appears_stalled"])
+        self.assertIn("zitch-whatsapp-worker", report["verdict"])
+
+    def test_a_message_that_just_arrived_is_not_called_a_stall(self):
+        from whatsapp.health import whatsapp_diagnostics
+        self._queue()
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertFalse(report["queue"]["worker_appears_stalled"])
+        self.assertIn("draining", report["verdict"])
+
+    def test_a_handover_is_reported_rather_than_looking_like_an_outage(self):
+        from whatsapp.health import whatsapp_diagnostics
+        ConversationState.objects.create(msisdn=MSISDN, status=ConversationState.HUMAN)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertIn(MSISDN, report["handed_to_human"])
+        self.assertIn("human agent", report["verdict"])
+
+    def test_sandbox_mode_is_named_as_the_reason_nothing_is_sent(self):
+        from whatsapp.health import whatsapp_diagnostics
+        with patch("whatsapp.providers.wa_mode", return_value="sandbox"), \
+             patch("whatsapp.providers.wa_live", return_value=False):
+            self.assertIn("SANDBOX", whatsapp_diagnostics()["verdict"])
+
+    def test_the_report_never_carries_a_token(self):
+        from whatsapp.health import whatsapp_diagnostics
+        with override_settings(WHATSAPP={"MODE": "live", "TOKEN": "wa_supersecret",
+                                         "APP_SECRET": "s", "BASE_URL": "x",
+                                         "PHONE_NUMBER_ID": "p", "VERIFY_TOKEN": "v",
+                                         "BUSINESS_NUMBER": "2348000000000"}):
+            self.assertNotIn("wa_supersecret", json.dumps(whatsapp_diagnostics()))
+
+
+class WhatsAppQueueAdminTests(TestCase):
+    """The operator has no shell. Draining a stuck message and un-muting a handed-over
+    conversation both have to be possible from the admin changelist."""
+
+    def setUp(self):
+        self.client = Client()
+        # Low-entropy on purpose: a realistic-looking fixture password trips the
+        # secret scanner, and a test credential is not worth teaching it to ignore
+        # things. Matches the style used elsewhere (portal.tests).
+        self.staff = User.objects.create_superuser(
+            username="ops", email="ops@zitch.test", password="pw-ops-1")
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+        self.client.force_login(self.staff)
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_process_now_replies_to_a_message_the_worker_never_picked_up(self):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": "stuck-9", "type": "text", "text": {"body": "balance"}}]}}]}]}
+        self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                         content_type="application/json")
+        row = WaMessageLog.objects.get(wa_message_id="stuck-9")
+        self.assertIsNone(row.processed_at)
+
+        self.client.post("/admin/whatsapp/wamessagelog/",
+                         {"action": "process_now", "_selected_action": [str(row.pk)]},
+                         follow=True)
+        row.refresh_from_db()
+        self.assertIsNotNone(row.processed_at)
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).exists())
+
+    def test_return_to_bot_un_mutes_a_conversation_and_is_audited(self):
+        convo = ConversationState.objects.create(
+            msisdn=MSISDN, status=ConversationState.HUMAN, ai_enabled=False)
+        self.client.post("/admin/whatsapp/conversationstate/",
+                         {"action": "return_to_bot", "_selected_action": [str(convo.pk)]},
+                         follow=True)
+        convo.refresh_from_db()
+        self.assertEqual(convo.status, ConversationState.BOT)
+        self.assertTrue(convo.ai_enabled)
+        self.assertTrue(AuditLog.objects.filter(
+            action="conversation.return_to_bot", target=f"wa:{MSISDN}").exists())
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_a_message_that_cannot_be_queued_leaves_a_trace(self):
+        """The worst version of "the bot isn't responding": nothing is stored, so the
+        queue reads empty and every health check says the channel is idle and fine."""
+        from whatsapp.models import WebhookEvent
+
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": "unstorable-1", "type": "text",
+             "text": {"body": "balance"}}]}}]}]}
+        with patch("whatsapp.jobs.enqueue_inbound", side_effect=RuntimeError("no queue key")):
+            with self.assertRaises(RuntimeError):
+                self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                 content_type="application/json")
+        self.assertTrue(WebhookEvent.objects.filter(
+            source="whatsapp", http_status=500,
+            action="enqueue_failed:RuntimeError").exists())

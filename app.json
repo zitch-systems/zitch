@@ -75,6 +75,15 @@
           }
         }
       ],
+      [
+        "expo-media-library",
+        {
+          "savePhotosPermission": "Allow Zitch to save your transaction receipts to your photos.",
+          "photosPermission": "Allow Zitch to save your transaction receipts to your photos.",
+          "isAccessMediaLocationEnabled": false,
+          "granularPermissions": ["photo"]
+        }
+      ],
       "./plugins/withAndroidReleaseSigning",
       "expo-font",
       "expo-secure-store",
