@@ -32,4 +32,10 @@ appId: com.zitch.app
       - assertVisible: "Reference"
       - assertVisible: "Description"
       - assertVisible: "Share receipt"
+      # Sharing now asks for a format first. Assert both options are offered —
+      # the chooser opening is the seam between our UI and the OS share sheet,
+      # and a missing option here is a whole export path silently gone. Stop at
+      # the chooser: the OS sheet beyond it can't be dismissed portably.
       - tapOn: "Share receipt"
+      - assertVisible: "JPEG image"
+      - assertVisible: "PDF document"

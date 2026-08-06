@@ -307,6 +307,7 @@ const SendMoney = () => {
             : `${money(amount)} sent to ${finalName || 'recipient'}.`}
           rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

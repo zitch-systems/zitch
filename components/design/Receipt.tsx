@@ -2,12 +2,11 @@ import React, { useRef, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator, ScrollView } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import ZIcon from '@/components/design/ZIcon';
-import { Btn, Sheet } from '@/components/design/ui';
+import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
-import { flash, notifyError } from '@/components/design/Notify';
-import {
-  ReceiptFormat, ReceiptRow, outcomeMessage, receiptHtml, receiptStamp, saveReceipt, shareReceipt,
-} from '@/lib/receipt';
+import { flash } from '@/components/design/Notify';
+import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
+import { ReceiptRow, receiptHtml, receiptStamp } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
 
 // Full-screen success receipt shown after a completed purchase.
@@ -22,17 +21,21 @@ const Receipt = ({
   message,
   rows,
   reference,
+  status = 'Successful',
   onDone,
 }: {
   title: string;
   message: string;
   rows: ReceiptRow[];
   reference?: string;
+  /** Stamped on the exported PDF's badge. Pass the real state for a pending
+   *  transaction — a shared document must never claim success early. */
+  status?: string;
   onDone: () => void;
 }) => {
   const { c } = useTheme();
   const card = useRef<View>(null);
-  const [format, setFormat] = useState<null | { action: 'save' | 'share' }>(null);
+  const [action, setAction] = useState<ExportAction | null>(null);
   const [busy, setBusy] = useState(false);
   // Lazy initial state, never set again: the clock is read once, on the render
   // that first shows the receipt, and that reading is what every copy of it —
@@ -52,51 +55,15 @@ const Receipt = ({
   // reference to copy.
   const asText = [title, message, '', ...allRows.map(([k, v]) => `${k}: ${v}`), '', 'Zitch'].join('\n');
 
-  const run = async (action: 'save' | 'share', fmt: ReceiptFormat) => {
-    setFormat(null);
-    setBusy(true);
-    // Let the format sheet finish its dismiss animation before presenting the
-    // next system UI. On iOS, presenting the share sheet (or the SAF picker's
-    // activity on Android) while the previous modal is still animating out
-    // fails — the same race every other screen avoids with a ~320ms pause
-    // after closing a sheet. The JPEG capture is fast enough to hit it.
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    const source = {
-      capture: async () => {
-        const { captureRef } = await import('react-native-view-shot');
-        return captureRef(card, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
-      },
-      html: receiptHtml({ title, message, rows: allRows }),
-      reference: reference || '',
-    };
-    try {
-      const outcome = await (action === 'save' ? saveReceipt : shareReceipt)(fmt, source);
-      const line = outcomeMessage(outcome, fmt);
-      if (!line) return;                                    // user backed out
-      // Titled by what actually happened, not what was asked for: saving a PDF on
-      // iOS goes through the system sheet, so "Saved" there would be a claim we
-      // can't make.
-      if (outcome === 'saved' || outcome === 'shared') flash(outcome === 'saved' ? 'Saved' : 'Ready', line);
-      else notifyError(outcome === 'denied' ? 'Permission needed' : 'Receipt', line);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const onCopyRef = async () => {
     await Clipboard.setStringAsync(reference || asText);
     flash('Copied', reference ? 'Reference copied' : 'Receipt copied');
   };
 
   const actions: [string, string, () => void][] = [
-    ['download', 'Save', () => setFormat({ action: 'save' })],
-    ['share', 'Share', () => setFormat({ action: 'share' })],
+    ['download', 'Save', () => setAction('save')],
+    ['share', 'Share', () => setAction('share')],
     ['copy', 'Copy ref', onCopyRef],
-  ];
-
-  const FORMATS: [ReceiptFormat, string, string, string][] = [
-    ['jpeg', 'image', 'JPEG image', 'Best for WhatsApp and chat'],
-    ['pdf', 'file', 'PDF document', 'Best for email, print and records'],
   ];
 
   return (
@@ -149,28 +116,19 @@ const Receipt = ({
         </View>
       </ScrollView>
 
-      <Sheet
-        open={format !== null}
-        onClose={() => setFormat(null)}
-        title={format?.action === 'share' ? 'Share receipt as' : 'Save receipt as'}
-      >
-        {FORMATS.map(([fmt, icon, label, hint]) => (
-          <Pressable
-            key={fmt}
-            onPress={() => run(format?.action ?? 'save', fmt)}
-            accessibilityRole="button"
-            accessibilityLabel={label}
-            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 14, paddingVertical: 16, paddingHorizontal: 16, borderRadius: 18, borderWidth: 1.5, borderColor: c.line, backgroundColor: pressed ? c.line : 'transparent', marginBottom: 10 })}
-          >
-            <ZIcon name={icon} size={22} color={c.brand} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{label}</Text>
-              <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular, marginTop: 2 }}>{hint}</Text>
-            </View>
-            <ZIcon name="right" size={18} color={c.ink3} />
-          </Pressable>
-        ))}
-      </Sheet>
+      <ReceiptExport
+        action={action}
+        onClose={() => setAction(null)}
+        onBusy={setBusy}
+        source={() => ({
+          capture: async () => {
+            const { captureRef } = await import('react-native-view-shot');
+            return captureRef(card, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
+          },
+          html: receiptHtml({ title, message, rows: allRows, status }),
+          reference: reference || '',
+        })}
+      />
 
       <View style={{ paddingBottom: 24, paddingTop: 12 }}>
         <Btn label="Back to Dashboard" onPress={onDone} />

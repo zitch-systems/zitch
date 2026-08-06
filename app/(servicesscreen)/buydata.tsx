@@ -139,6 +139,7 @@ const BuyData = () => {
             : `Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
           rows={[['Type', 'Data bundle'], ['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
           reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

@@ -96,6 +96,7 @@ const Exams = () => {
             : `Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
           rows={[['Exam', exam.name], ['Item', exam.description], ['Quantity', String(qty)], ['Phone', phone], ['Total', money(amount), true]]}
           reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>

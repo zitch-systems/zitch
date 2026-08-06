@@ -134,6 +134,7 @@ const BuyElectricity = () => {
             ['Total', money(amount), true],
           ]}
           reference={txnRef}
+          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
