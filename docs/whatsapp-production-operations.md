@@ -47,6 +47,36 @@ existing service or apply the equivalent dashboard changes. Confirm that Render 
 the existing display-named service (`zitch main app`, slug `zitch-api`) rather than
 creating a duplicate.
 
+## The variables that switch the channel on
+
+Every `WHATSAPP_*` key in `render.yaml` is `sync: false` — blank until an operator
+types it into the Render dashboard. With them blank, production resolves to
+`WHATSAPP_MODE=disabled`, and a disabled channel makes the webhook return **404 to
+Meta**: no message is ever seen, no row is ever written, and every other reading
+says the service is healthy. `/healthz` reports `whatsapp_mode` so this is visible
+without a login.
+
+Set all of these on **zitch-api** (the worker inherits them via `fromService`):
+
+| Variable | Where it comes from |
+| --- | --- |
+| `WHATSAPP_MODE` | `live` |
+| `WHATSAPP_TOKEN` | Meta → WhatsApp → API Setup → permanent access token |
+| `WHATSAPP_PHONE_NUMBER_ID` | Meta → WhatsApp → API Setup (the ID, not the number) |
+| `WHATSAPP_BUSINESS_NUMBER` | the display number in international form, e.g. `2348…` |
+| `WHATSAPP_VERIFY_TOKEN` | any string you choose — paste the SAME one into Meta's callback form |
+| `WHATSAPP_APP_SECRET` | Meta → App Settings → Basic → App Secret |
+| `WHATSAPP_QUEUE_KEY` | any 32+ byte random string (encrypts queued command text at rest) |
+
+Then in the Meta dashboard set the callback URL to
+`https://api.zitch.ng/webhooks/whatsapp`, verify it (Meta calls `GET` with your
+verify token), and **subscribe it to the `messages` field**. A saved-but-unsubscribed
+callback is the classic silent misconfiguration: verification passes, and no message
+is ever delivered.
+
+Confirm with `/healthz`: `whatsapp_mode: "live"` and, after sending one message,
+`whatsapp_webhook_reached: true`.
+
 ## Activation sequence
 
 1. Merge only after CI is green and apply migrations before starting the worker.
