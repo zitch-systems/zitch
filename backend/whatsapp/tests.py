@@ -1403,3 +1403,58 @@ class WhatsAppWebhookReachabilityTests(TestCase):
             report = whatsapp_diagnostics()
         self.assertTrue(report["webhook"]["ever_accepted_a_call"])
         self.assertIn("processing inbound messages", report["verdict"])
+
+
+class WrongPhoneNumberIdTests(TestCase):
+    """A signed call naming an unknown phone-number id is the one failure the boot
+    guards cannot catch: they prove WHATSAPP_PHONE_NUMBER_ID is SET, never that it is
+    the id of the number being messaged. The webhook records such a call verified=True
+    and drops it with a 400, so any health read keyed on `verified` reports a healthy
+    channel while every single message is being refused."""
+
+    def _call(self, outcome, action=""):
+        from .models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", outcome=outcome,
+                                    verified=True, action=action)
+
+    def test_reached_is_false_when_every_call_is_refused_on_the_id(self):
+        from . import health
+        from .models import WebhookEvent
+
+        self._call(WebhookEvent.BAD_BODY, "invalid_phone_number_id")
+        snap = health.whatsapp_diagnostics()
+        self.assertFalse(snap["webhook"]["ever_accepted_a_call"])
+        self.assertEqual(snap["webhook"]["rejected_wrong_phone_number_id"], 1)
+
+    def test_healthz_agrees_with_the_snapshot(self):
+        from .models import WebhookEvent
+
+        self._call(WebhookEvent.BAD_BODY, "invalid_phone_number_id")
+        reached = Client().get("/healthz").json()["integrations"]["whatsapp_webhook_reached"]
+        self.assertFalse(reached)
+
+    def test_one_accepted_call_flips_both_to_true(self):
+        from . import health
+        from .models import WebhookEvent
+
+        self._call(WebhookEvent.BAD_BODY, "invalid_phone_number_id")
+        self._call(WebhookEvent.ACCEPTED)
+        self.assertTrue(health.whatsapp_diagnostics()["webhook"]["ever_accepted_a_call"])
+        self.assertTrue(Client().get("/healthz").json()
+                        ["integrations"]["whatsapp_webhook_reached"])
+
+    def test_verdict_names_the_phone_number_id_not_the_subscription(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=False,
+                                  wrong_number_id=4)
+        self.assertIn("WHATSAPP_PHONE_NUMBER_ID", verdict)
+        self.assertNotIn("SUBSCRIBED", verdict)
+
+    def test_a_genuinely_unreached_webhook_still_names_the_subscription(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=False,
+                                  wrong_number_id=0)
+        self.assertIn("SUBSCRIBED", verdict)

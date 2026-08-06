@@ -80,7 +80,12 @@ def _whatsapp_webhook_reached():
     try:
         from whatsapp.models import WebhookEvent
 
-        return WebhookEvent.objects.filter(source="whatsapp", verified=True).exists()
+        # ACCEPTED, not verified=True: `verified` means only that the signature
+        # checked out, and a call naming a phone-number id we do not recognise is
+        # signed by Meta, recorded verified, then dropped with a 400. Keyed on
+        # verified this read "true" for a channel refusing every single message.
+        return WebhookEvent.objects.filter(source="whatsapp",
+                                           outcome=WebhookEvent.ACCEPTED).exists()
     except Exception:      # noqa: BLE001 — liveness outranks this datum
         return None
 

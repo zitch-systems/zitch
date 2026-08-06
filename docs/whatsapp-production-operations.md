@@ -75,7 +75,16 @@ callback is the classic silent misconfiguration: verification passes, and no mes
 is ever delivered.
 
 Confirm with `/healthz`: `whatsapp_mode: "live"` and, after sending one message,
-`whatsapp_webhook_reached: true`.
+`whatsapp_webhook_reached: true`. That flag counts only calls we **accepted** — a
+signed call naming the wrong phone-number id is refused with a 400 and does not
+count, which is the point: it is the one wrong value no boot check can catch.
+
+Note what booting proves. A live channel fails closed at startup if any of `TOKEN`,
+`PHONE_NUMBER_ID`, `APP_SECRET`, `VERIFY_TOKEN`, `BUSINESS_NUMBER` or a 32-byte
+`QUEUE_KEY` is missing (`settings.py`), so a *running* production service has all of
+them set. What no boot check can verify is whether each holds the **correct value** —
+which is why a wrong `APP_SECRET` or `PHONE_NUMBER_ID` is the residual failure mode
+once the service is up, and why both now have their own counter above.
 
 ## Activation sequence
 
@@ -111,6 +120,7 @@ scripting.) The causes it distinguishes, in the order they actually occur:
 | --- | --- | --- |
 | `webhook.ever_accepted_a_call: false` | **Meta has never reached us.** Nothing below the webhook can explain the silence, and no other number shows this — an uncalled webhook leaves no queue row, which reads exactly like an idle, healthy channel | In the Meta dashboard, confirm the callback URL is saved AND subscribed to the `messages` field, and that `WHATSAPP_VERIFY_TOKEN` matches |
 | `webhook.rejected_signature` climbing, `ever_accepted_a_call: false` | Meta is calling; we are refusing every call | `WHATSAPP_APP_SECRET` does not match the app secret in the Meta dashboard |
+| `webhook.rejected_wrong_phone_number_id` climbing, `ever_accepted_a_call: false` | Meta is calling AND the signature verifies, but each call names a phone-number id we do not recognise, so it is refused with a 400 and no message is read | `WHATSAPP_PHONE_NUMBER_ID` is not the id of the number being messaged. The boot check only proves it is set — never that it is the right id |
 | `worker_appears_stalled: true`, `unprocessed` climbing | The messages are **failing**, not merely unattended — the web service drains the queue itself after every callback, so an old backlog is not an idle-worker symptom | Open those rows and read `processing_error`. If it is empty, no webhook has arrived since they queued: start `zitch-whatsapp-worker`, or select the rows in **WhatsApp → Message logs** (filter `processed_at` = empty) and run **Process now** |
 | `mode: disabled` | No token / phone-number id, so the webhook returns `404` and Meta gets nothing | Set the WhatsApp credentials and `WHATSAPP_MODE=live` |
 | `mode: sandbox` | Inbound is routed, outbound is mocked — replies are generated and thrown away | Same as above |

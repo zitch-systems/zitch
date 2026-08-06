@@ -70,7 +70,15 @@ def whatsapp_diagnostics() -> dict:
     calls = WebhookEvent.objects.filter(source="whatsapp")
     last_call = calls.order_by("-created").values_list("created", flat=True).first()
     rejected = calls.filter(outcome=WebhookEvent.REJECTED_SIGNATURE).count()
-    accepted_ever = calls.filter(verified=True).exists()
+    # ACCEPTED, not verified=True. `verified` means only that the SIGNATURE checked
+    # out; a call whose metadata names a different phone-number id is signed by Meta,
+    # recorded verified, and then dropped with a 400. Keying "did a message get in"
+    # on verified=True therefore reports a healthy channel while every message is
+    # being refused — the one wrong value the boot guards cannot catch, since they
+    # check that PHONE_NUMBER_ID is set, never that it is the right id.
+    accepted_ever = calls.filter(outcome=WebhookEvent.ACCEPTED).exists()
+    wrong_number_id = calls.filter(outcome=WebhookEvent.BAD_BODY,
+                                   action="invalid_phone_number_id").count()
 
     return {
         "mode": wa_mode(),
@@ -89,15 +97,18 @@ def whatsapp_diagnostics() -> dict:
             "last_call_age_seconds": _age_seconds(last_call),
             "ever_accepted_a_call": accepted_ever,
             "rejected_signature": rejected,
+            "rejected_wrong_phone_number_id": wrong_number_id,
         },
         "handed_to_human": muted,
         "verdict": _verdict(wa_mode(), backlog, stalled, dead, muted,
-                            accepted_ever=accepted_ever, rejected=rejected),
+                            accepted_ever=accepted_ever, rejected=rejected,
+                            wrong_number_id=wrong_number_id),
     }
 
 
 def _verdict(mode: str, backlog: int, stalled: bool, dead: int, muted: list,
-             *, accepted_ever: bool = True, rejected: int = 0) -> str:
+             *, accepted_ever: bool = True, rejected: int = 0,
+             wrong_number_id: int = 0) -> str:
     """One sentence naming the most likely reason the bot is not replying — the
     thing an operator reads first, before any of the numbers above."""
     if mode == "disabled":
@@ -112,6 +123,15 @@ def _verdict(mode: str, backlog: int, stalled: bool, dead: int, muted: list,
         return (f"Meta is calling the webhook but every call is REJECTED ({rejected} so far) "
                 "because the signature does not verify. WHATSAPP_APP_SECRET does not match "
                 "the app secret in the Meta dashboard.")
+    # Before the generic "never reached us": these calls DID reach us, verified, and
+    # were then refused — a materially different fix (an id in our own config, not a
+    # subscription in Meta's dashboard).
+    if wrong_number_id and not accepted_ever:
+        return (f"Meta is calling and the signature verifies, but every call ({wrong_number_id} "
+                "so far) names a phone-number id we do not recognise, so each one is "
+                "refused with a 400 and no message is ever read. WHATSAPP_PHONE_NUMBER_ID "
+                "does not match the id of the number being messaged — note the boot check "
+                "only proves it is SET, never that it is the right id.")
     if not accepted_ever:
         return ("Meta has never successfully called this webhook. Nothing below the webhook "
                 "can explain the silence: check that the callback URL "
