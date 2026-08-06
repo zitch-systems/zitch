@@ -1146,6 +1146,12 @@ class WhatsAppHealthTests(TestCase):
     pin the one thing that separates them: whether inbound work is being drained."""
 
     def _queue(self, msisdn=MSISDN, mid="stuck-1", age_minutes=0):
+        from whatsapp.models import WebhookEvent
+
+        # A queue row cannot exist without a callback having arrived, and the
+        # verdict checks reachability first — so the fixture has to record the
+        # call too, or it describes a state production can never be in.
+        WebhookEvent.objects.create(source="whatsapp", verified=True, http_status=200)
         row = WaMessageLog.objects.create(
             msisdn=msisdn, direction=WaMessageLog.IN, wa_message_id=mid, text="hello",
         )
@@ -1171,6 +1177,7 @@ class WhatsAppHealthTests(TestCase):
             report = whatsapp_diagnostics()
         self.assertEqual(report["queue"]["unprocessed"], 1)
         self.assertTrue(report["queue"]["worker_appears_stalled"])
+        self.assertIn("processing_error", report["verdict"])
         self.assertIn("zitch-whatsapp-worker", report["verdict"])
 
     def test_a_message_that_just_arrived_is_not_called_a_stall(self):
@@ -1184,6 +1191,9 @@ class WhatsAppHealthTests(TestCase):
 
     def test_a_handover_is_reported_rather_than_looking_like_an_outage(self):
         from whatsapp.health import whatsapp_diagnostics
+        from whatsapp.models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", verified=True, http_status=200)
         ConversationState.objects.create(msisdn=MSISDN, status=ConversationState.HUMAN)
         with patch("whatsapp.providers.wa_mode", return_value="live"), \
              patch("whatsapp.providers.wa_live", return_value=True):
@@ -1267,3 +1277,129 @@ class WhatsAppQueueAdminTests(TestCase):
         self.assertTrue(WebhookEvent.objects.filter(
             source="whatsapp", http_status=500,
             action="enqueue_failed:RuntimeError").exists())
+
+
+class WhatsAppWebDrainTests(TestCase):
+    """Replies must not depend on one background service nobody can see failing.
+
+    The webhook stores and acks; when the worker is gone that ack is the whole
+    interaction, and the customer gets silence from a channel that reports 200 to
+    Meta. These pin the web service's own drain — the thing that makes a reply
+    arrive whether or not the worker exists.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+
+    def _inbound(self, body="balance", mid="drain-1"):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": body}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_a_reply_arrives_with_no_worker_running(self):
+        """The production path, with the worker service absent — which is how it
+        behaves when it was never created, crashed at boot, or was OOM-killed."""
+        from whatsapp.jobs import _drain_worker
+
+        # Run the drain body synchronously so the test observes its effect rather
+        # than racing a daemon thread; the threading wrapper is covered below.
+        with patch("whatsapp.jobs.threading.Thread") as thread:
+            response = self._inbound()
+        self.assertEqual(response.status_code, 200)
+        thread.assert_called_once()
+        self.assertTrue(thread.call_args.kwargs["daemon"])
+
+        _drain_worker(5)
+        row = WaMessageLog.objects.get(wa_message_id="drain-1")
+        self.assertIsNotNone(row.processed_at)
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).exists())
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_the_webhook_is_acknowledged_even_if_the_drain_cannot_start(self):
+        """The drain is a safety net. Meta's acknowledgement is the contract, and
+        it must not depend on the net — a thread that cannot start (process thread
+        limit) must not turn into a 500 and a redelivery loop."""
+        with patch("whatsapp.jobs.threading.Thread", side_effect=RuntimeError("no threads")):
+            response = self._inbound(mid="drain-2")
+        self.assertEqual(response.status_code, 200)
+        # Still durably queued: the worker or the next webhook picks it up.
+        self.assertIsNone(WaMessageLog.objects.get(wa_message_id="drain-2").processed_at)
+
+    def test_only_one_drain_runs_at_a_time_per_process(self):
+        """Unbounded drains would let a burst of inbound messages consume every
+        HTTP thread in the web process."""
+        from whatsapp import jobs
+
+        self.assertTrue(jobs._DRAIN_LOCK.acquire(blocking=False))
+        try:
+            with patch("whatsapp.jobs.threading.Thread") as thread:
+                self.assertFalse(jobs.drain_in_background())
+            thread.assert_not_called()
+        finally:
+            jobs._DRAIN_LOCK.release()
+
+    @override_settings(WHATSAPP_WEB_DRAIN=False)
+    def test_the_safety_net_can_be_switched_off(self):
+        from whatsapp.jobs import drain_in_background
+
+        with patch("whatsapp.jobs.threading.Thread") as thread:
+            self.assertFalse(drain_in_background())
+        thread.assert_not_called()
+
+    def test_a_failing_drain_releases_its_lock_and_closes_its_connection(self):
+        """A safety net that leaks the lock disables itself permanently after one
+        bad message; one that leaks connections exhausts Postgres instead."""
+        from whatsapp import jobs
+
+        with patch("whatsapp.jobs.process_inbound_batch", side_effect=RuntimeError("boom")), \
+             patch("django.db.connections.close_all") as close_all:
+            jobs._DRAIN_LOCK.acquire()
+            jobs._drain_worker(5)
+        close_all.assert_called_once()
+        self.assertTrue(jobs._DRAIN_LOCK.acquire(blocking=False))
+        jobs._DRAIN_LOCK.release()
+
+
+class WhatsAppWebhookReachabilityTests(TestCase):
+    """The one cause no other number can show: Meta never reached us. A callback
+    that was never called leaves no queue row, so every other reading says the
+    channel is idle and healthy."""
+
+    def test_never_being_called_is_named_rather_than_read_as_healthy(self):
+        from whatsapp.health import whatsapp_diagnostics
+
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertFalse(report["webhook"]["ever_accepted_a_call"])
+        self.assertIn("never successfully called", report["verdict"])
+
+    def test_a_wrong_app_secret_is_named_rather_than_looking_like_no_traffic(self):
+        from whatsapp.health import whatsapp_diagnostics
+        from whatsapp.models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", verified=False,
+                                    outcome=WebhookEvent.REJECTED_SIGNATURE,
+                                    http_status=401)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertEqual(report["webhook"]["rejected_signature"], 1)
+        self.assertIn("WHATSAPP_APP_SECRET", report["verdict"])
+
+    def test_an_accepted_call_moves_the_verdict_past_the_webhook(self):
+        from whatsapp.health import whatsapp_diagnostics
+        from whatsapp.models import WebhookEvent
+
+        WebhookEvent.objects.create(source="whatsapp", verified=True, http_status=200)
+        with patch("whatsapp.providers.wa_mode", return_value="live"), \
+             patch("whatsapp.providers.wa_live", return_value=True):
+            report = whatsapp_diagnostics()
+        self.assertTrue(report["webhook"]["ever_accepted_a_call"])
+        self.assertIn("processing inbound messages", report["verdict"])

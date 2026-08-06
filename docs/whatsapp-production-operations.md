@@ -65,9 +65,13 @@ creating a duplicate.
 
 This failure is quiet by construction. The webhook's job is to store and acknowledge,
 so it answers Meta `200` whether or not anything downstream is working; the router —
-where every log line and audit row is written — is only reached by the worker. A dead
-worker therefore produces a chat that goes silent and a service that looks perfectly
-healthy from `/healthz`, the Render metrics, and Meta's delivery reports alike.
+where every log line and audit row is written — is only reached by a queue consumer. A
+chat can therefore go silent while the service looks perfectly healthy from `/healthz`,
+the Render metrics, and Meta's delivery reports alike.
+
+The quietest case of all is a callback that never arrives: it leaves no queue row, no
+log line and no audit trail, so every other reading says "idle and healthy". That is
+why the verdict checks reachability first and everything else second.
 
 Start at **`/admin/diagnostics/` → WhatsApp**, which needs nothing but an admin login,
 and read `verdict` first. (`GET /whatsapp-diagnose` returns the same JSON for
@@ -75,7 +79,9 @@ scripting.) The causes it distinguishes, in the order they actually occur:
 
 | What you see | What it means | Fix |
 | --- | --- | --- |
-| `worker_appears_stalled: true`, `unprocessed` climbing | Nobody is draining the queue — usually `zitch-whatsapp-worker` is not running, was never created, or crashed at boot | Start/redeploy the worker in Render. To unblock the waiting customers immediately, select their rows in **WhatsApp → Message logs** (filter `processed_at` = empty) and run **Process now** — it runs the same job in the web process |
+| `webhook.ever_accepted_a_call: false` | **Meta has never reached us.** Nothing below the webhook can explain the silence, and no other number shows this — an uncalled webhook leaves no queue row, which reads exactly like an idle, healthy channel | In the Meta dashboard, confirm the callback URL is saved AND subscribed to the `messages` field, and that `WHATSAPP_VERIFY_TOKEN` matches |
+| `webhook.rejected_signature` climbing, `ever_accepted_a_call: false` | Meta is calling; we are refusing every call | `WHATSAPP_APP_SECRET` does not match the app secret in the Meta dashboard |
+| `worker_appears_stalled: true`, `unprocessed` climbing | The messages are **failing**, not merely unattended — the web service drains the queue itself after every callback, so an old backlog is not an idle-worker symptom | Open those rows and read `processing_error`. If it is empty, no webhook has arrived since they queued: start `zitch-whatsapp-worker`, or select the rows in **WhatsApp → Message logs** (filter `processed_at` = empty) and run **Process now** |
 | `mode: disabled` | No token / phone-number id, so the webhook returns `404` and Meta gets nothing | Set the WhatsApp credentials and `WHATSAPP_MODE=live` |
 | `mode: sandbox` | Inbound is routed, outbound is mocked — replies are generated and thrown away | Same as above |
 | `dead_lettered` above zero | The worker ran and kept failing | Open those rows and read `processing_error` |
@@ -83,6 +89,15 @@ scripting.) The causes it distinguishes, in the order they actually occur:
 
 The worker refuses to boot unless the channel is fully live, so a half-configured
 deploy shows up as a stalled queue rather than as replies sent without receipts.
+
+**The web service drains the queue too.** After acknowledging a callback it starts a
+bounded background drain (one at a time per process, five messages, every failure
+swallowed). Rows are claimed with `SELECT FOR UPDATE` and a lease, so this never
+double-processes alongside a running worker — whichever claims a row first wins.
+The worker remains the primary consumer and is what you want for throughput and for
+draining broadcasts; the web drain exists so that a worker which is stopped, crashed
+or never created cannot silently swallow every reply. Set `WHATSAPP_WEB_DRAIN=false`
+to turn it off once a dedicated worker is confirmed healthy.
 
 ## Commands
 
