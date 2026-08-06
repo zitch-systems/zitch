@@ -113,7 +113,7 @@ scripting.) The causes it distinguishes, in the order they actually occur:
 | `webhook.rejected_signature` climbing, `ever_accepted_a_call: false` | Meta is calling; we are refusing every call | `WHATSAPP_APP_SECRET` does not match the app secret in the Meta dashboard |
 | `worker_appears_stalled: true`, `unprocessed` climbing | The messages are **failing**, not merely unattended — the web service drains the queue itself after every callback, so an old backlog is not an idle-worker symptom | Open those rows and read `processing_error`. If it is empty, no webhook has arrived since they queued: start `zitch-whatsapp-worker`, or select the rows in **WhatsApp → Message logs** (filter `processed_at` = empty) and run **Process now** |
 | `mode: disabled` | No token / phone-number id, so the webhook returns `404` and Meta gets nothing | Set the WhatsApp credentials and `WHATSAPP_MODE=live` |
-| `mode: sandbox` | Inbound is routed, outbound is mocked — replies are generated and thrown away | Same as above |
+| `mode: sandbox` | Outbound is mocked — replies are generated and thrown away. And with no `WHATSAPP_APP_SECRET`, inbound is not routed either: outside DEBUG, `verify_signature` rejects every callback, so the channel can neither receive nor reply while still answering (not 404) at the door | Set `WHATSAPP_APP_SECRET` and `WHATSAPP_MODE=live` |
 | `dead_lettered` above zero | The worker ran and kept failing | Open those rows and read `processing_error` |
 | `handed_to_human` lists a number | Deliberate: `status=human` mutes the bot so an agent can take over, and it stays muted until someone closes it | **WhatsApp → Conversations** → **Return to bot** |
 

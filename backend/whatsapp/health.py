@@ -92,20 +92,47 @@ def whatsapp_diagnostics() -> dict:
         },
         "handed_to_human": muted,
         "verdict": _verdict(wa_mode(), backlog, stalled, dead, muted,
-                            accepted_ever=accepted_ever, rejected=rejected),
+                            accepted_ever=accepted_ever, rejected=rejected,
+                            can_accept_inbound=_can_accept_inbound()),
     }
 
 
+def _can_accept_inbound() -> bool:
+    """Can a Meta callback's signature ever verify on this deploy?
+
+    Mirrors verify_signature(): an APP_SECRET verifies for real, and a sandbox
+    channel without one is only accepted under DEBUG/TESTING. In production that
+    fallback is False, so a secretless sandbox channel rejects every call.
+    """
+    from django.conf import settings
+
+    if settings.WHATSAPP.get("APP_SECRET"):
+        return True
+    return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
+
+
 def _verdict(mode: str, backlog: int, stalled: bool, dead: int, muted: list,
-             *, accepted_ever: bool = True, rejected: int = 0) -> str:
+             *, accepted_ever: bool = True, rejected: int = 0,
+             can_accept_inbound: bool = True) -> str:
     """One sentence naming the most likely reason the bot is not replying — the
     thing an operator reads first, before any of the numbers above."""
     if mode == "disabled":
         return ("WhatsApp is switched off (no token / phone number id), so the webhook "
                 "returns 404 and nothing is processed.")
     if mode == "sandbox":
+        # A sandbox channel in production is not merely "outbound is mocked". With no
+        # APP_SECRET, verify_signature() falls through to DEBUG/TESTING and rejects
+        # EVERY callback, so nothing is routed either. Reporting "inbound is routed"
+        # there sends the operator hunting a mocked-send problem while the real
+        # failure is one layer earlier: the messages are never accepted at all.
+        if not can_accept_inbound:
+            return ("Channel is in SANDBOX with no WHATSAPP_APP_SECRET, so outside DEBUG "
+                    "every Meta callback is rejected unverified AND every reply is "
+                    "discarded. The webhook answers (it is not 404) but the channel can "
+                    "neither receive nor reply: set the live credentials, WHATSAPP_APP_SECRET, "
+                    "and WHATSAPP_MODE=live.")
         return ("Channel is in SANDBOX: inbound is routed but nothing is actually sent to "
-                "Meta, so the user sees no reply.")
+                "Meta, so the user sees no reply. Set WHATSAPP_MODE=live.")
     # Ordered before the queue checks: a call that never arrived cannot have
     # produced a queue row, so every queue number below would read "healthy".
     if rejected and not accepted_ever:

@@ -13,6 +13,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
@@ -22,6 +23,7 @@ from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
+from . import health
 from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
     PendingAction, SystemSetting, WaMessageLog, WhatsAppLink,
@@ -1215,6 +1217,35 @@ class WhatsAppHealthTests(TestCase):
                                          "BUSINESS_NUMBER": "2348000000000"}):
             self.assertNotIn("wa_supersecret", json.dumps(whatsapp_diagnostics()))
 
+
+class SandboxVerdictTests(TestCase):
+    """A sandbox channel in production is not just "outbound is mocked".
+
+    verify_signature() accepts an unsigned sandbox call only under DEBUG/TESTING,
+    so with no APP_SECRET a production sandbox channel rejects every callback.
+    The verdict used to say inbound was routed, which sends the operator hunting a
+    mocked-send problem while the messages are never accepted in the first place.
+    """
+
+    def test_secretless_sandbox_says_nothing_is_accepted_either(self):
+        verdict = health._verdict("sandbox", 0, False, 0, [], can_accept_inbound=False)
+        self.assertIn("rejected unverified", verdict)
+        self.assertIn("WHATSAPP_APP_SECRET", verdict)
+
+    def test_sandbox_with_a_secret_still_reports_the_mocked_send(self):
+        verdict = health._verdict("sandbox", 0, False, 0, [], can_accept_inbound=True)
+        self.assertIn("nothing is actually sent", verdict)
+        self.assertIn("WHATSAPP_MODE=live", verdict)
+
+    def test_can_accept_inbound_is_false_for_a_secretless_production_sandbox(self):
+        with override_settings(WHATSAPP={**settings.WHATSAPP, "APP_SECRET": ""},
+                               DEBUG=False, TESTING=False):
+            self.assertFalse(health._can_accept_inbound())
+
+    def test_can_accept_inbound_is_true_once_the_secret_is_set(self):
+        with override_settings(WHATSAPP={**settings.WHATSAPP, "APP_SECRET": "s3cret"},
+                               DEBUG=False, TESTING=False):
+            self.assertTrue(health._can_accept_inbound())
 
 class WhatsAppQueueAdminTests(TestCase):
     """The operator has no shell. Draining a stuck message and un-muting a handed-over
