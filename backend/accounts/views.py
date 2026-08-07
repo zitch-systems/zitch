@@ -872,11 +872,19 @@ def kyc_face(request):
 @api
 @require_user
 def kyc_address(request):
-    """POST /api/kyc/address/ {access_token, address, city?, state?, document?}
+    """POST /api/kyc/address/ {access_token, address, city, state?, document}
 
-    Verifies a residential address (Tier 2, together with face). Accepts an
-    address (optionally city/state and a proof-of-address document); marks the
-    address verified on success and recomputes the tier.
+    Verifies a residential address (Tier 2, together with face). Requires the
+    address AND a proof-of-address document; marks the address verified on
+    success and recomputes the tier.
+
+    The document is mandatory. Typed text is a claim, not evidence: without a
+    utility bill or bank statement behind it, "verified address" on a Tier 2
+    account means only that the user typed something over six characters long,
+    while the tier it unlocks raises the transaction limit to ₦200,000. Every
+    other document-bearing check here (NIN slip, government ID) already refuses
+    an empty image; the address check was the one that did not. Only the
+    verified flag survives — the image is never retained, as with the others.
     """
     user = request.user_obj
     address = (request.data.get("address") or "").strip()
@@ -885,11 +893,11 @@ def kyc_address(request):
     city = (request.data.get("city") or "").strip()
     state = (request.data.get("state") or "").strip()
     full = ", ".join(p for p in [address, city, state] if p)
-    document = request.data.get("document") or ""
-    if document:
-        image_error = _kyc_image_error(document)
-        if image_error:
-            return fail(image_error)
+    document = request.data.get("document") or request.data.get("image") or ""
+    image_error = _kyc_image_error(document)
+    if image_error:
+        return fail("Upload a proof of address (utility bill or bank statement)"
+                    if image_error == "Upload a clear image" else image_error)
     result = kyc_verify_address(full, document=document)
     if not result.get("success"):
         return fail(result.get("message", "Couldn't verify your address"), status=400)

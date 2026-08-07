@@ -8,6 +8,8 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
+
+from accounts import views
 from django.utils import timezone
 
 from betting.models import BettingPlatform
@@ -324,12 +326,50 @@ class KycTierTests(TestCase):
         b1 = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
         self.assertEqual(b1["tier"], 1)
         self.post("/api/kyc/face/", {"access_token": self.token})
-        b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos"})[1]
+        b2 = self.post("/api/kyc/address/", {"access_token": self.token, "address": "12 Allen Avenue", "city": "Ikeja", "state": "Lagos", "document": "ZmFrZQ=="})[1]
         self.assertEqual(b2["tier"], 2)
         self.assertTrue(b2["address_verified"] and b2["face_verified"])
         b3 = self.post("/api/kyc/id/", {"access_token": self.token, "image": "ZmFrZQ==", "doc_type": "passport"})[1]
         self.assertEqual(b3["tier"], 3)
         self.assertTrue(b3["id_document_verified"])
+
+    def test_address_without_proof_document_is_refused(self):
+        """Typed text is a claim, not evidence. Tier 2 raises the limit to
+        ₦200,000, so "address verified" has to mean a document was seen — not
+        that the user typed seven characters."""
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        self.post("/api/kyc/face/", {"access_token": self.token})
+        res, body = self.post("/api/kyc/address/", {
+            "access_token": self.token, "address": "12 Allen Avenue",
+            "city": "Ikeja", "state": "Lagos"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("proof of address", body["message"].lower())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.address_verified)
+        self.assertLess(self.user.tier, 2)
+
+    def test_address_proof_too_large_is_refused_by_size_not_absence(self):
+        """A document IS present, so the message must name the real problem —
+        the size cap, not a missing upload. (The cap is patched down so the test
+        exercises our check rather than Django's request-body limit.)"""
+        with patch.object(views, "MAX_KYC_IMAGE_BASE64", 8):
+            res, body = self.post("/api/kyc/address/", {
+                "access_token": self.token, "address": "12 Allen Avenue",
+                "document": "A" * 64})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("too large", body["message"].lower())
+
+    def test_address_proof_is_not_retained(self):
+        """Same promise as the NIN slip and government ID: the flag survives,
+        the image does not."""
+        self.post("/api/kyc/address/", {"access_token": self.token,
+                                        "address": "12 Allen Avenue",
+                                        "document": "ZmFrZXByb29m"})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.address_verified)
+        blob = " ".join(str(v) for v in vars(self.user).values())
+        self.assertNotIn("ZmFrZXByb29m", blob)
 
     def test_bvn_nin_stored_hashed_not_raw(self):
         # Defence in depth: the raw government IDs must not be recoverable at rest —
@@ -577,7 +617,8 @@ class FullJourneyE2ETests(TestCase):
         # the >=₦100k face step-up, so the same transfer now goes through.
         self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
         self.assertEqual(self.post("/api/kyc/address/", access_token=tok,
-                                   address="12 Allen Avenue", city="Ikeja", state="Lagos")[1]["tier"], 2)
+                                   address="12 Allen Avenue", city="Ikeja", state="Lagos",
+                                   document="ZmFrZQ==")[1]["tier"], 2)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
                                    amount="150000", transaction_pin="1234")[0], 200)
 
