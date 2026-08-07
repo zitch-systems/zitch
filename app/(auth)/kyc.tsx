@@ -52,6 +52,7 @@ const Kyc = () => {
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('');
+  const [addressDoc, setAddressDoc] = useState(''); // base64 proof of address
   const [idImage, setIdImage] = useState(''); // base64 of the government ID
   const [busy, setBusy] = useState(false);
 
@@ -210,7 +211,7 @@ const Kyc = () => {
         <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
       </KycRow>
 
-      <KycRow icon="home" title="Residential address" sub="Your home address — unlocks Tier 2" done={!!status?.address_verified}>
+      <KycRow icon="home" title="Residential address" sub="Address + proof of address — unlocks Tier 2" done={!!status?.address_verified}>
         <Field value={address} onChangeText={setAddress} placeholder="Street address" />
         <View style={{ height: 10 }} />
         <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -218,8 +219,16 @@ const Kyc = () => {
           <View style={{ flex: 1 }}><Field value={stateName} onChangeText={setStateName} placeholder="State" /></View>
         </View>
         <View style={{ height: 10 }} />
-        <Btn label="Verify address" size="md" disabled={busy || address.trim().length < 6}
-          onPress={() => submit('/api/kyc/address/', { address, city, state: stateName }, 'Address')} />
+        {/* Named so the user knows what counts before opening the picker — the
+            server refuses this step without a document, and a rejection after
+            the fact is a worse way to learn the requirement. */}
+        <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>
+          Upload a utility bill, bank statement or tenancy agreement showing this address (issued in the last 3 months).
+        </Text>
+        <Btn label={addressDoc ? 'Proof of address added ✓' : 'Upload proof of address'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => pickImage(setAddressDoc)} />
+        <View style={{ height: 10 }} />
+        <Btn label="Verify address" size="md" disabled={busy || address.trim().length < 6 || !addressDoc}
+          onPress={() => submit('/api/kyc/address/', { address, city, state: stateName, document: addressDoc }, 'Address')} />
       </KycRow>
 
       <KycRow icon="shield" title="Government ID" sub="Passport, driver's licence or voter's card — unlocks Tier 3" done={!!status?.id_document_verified}>
@@ -230,7 +239,7 @@ const Kyc = () => {
       </KycRow>
 
       <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
-        Zitch app limits: Unverified ₦20,000 · Verified (BVN + NIN) ₦50,000 · Enhanced (+ selfie + address) ₦200,000 · Premium (+ government ID) ₦5,000,000 per transaction. These are additional to the partner bank limits above. Raw BVN, NIN and ID images are not retained by Zitch.
+        Zitch app limits: Unverified ₦20,000 · Verified (BVN + NIN) ₦50,000 · Enhanced (+ selfie + address) ₦200,000 · Premium (+ government ID) ₦5,000,000 per transaction. These are additional to the partner bank limits above. Raw BVN, NIN, proof-of-address and ID images are not retained by Zitch.
       </NText>
     </Screen>
   );

@@ -1,5 +1,5 @@
 import {
-  outcomeMessage, receiptFileName, receiptHtml, receiptStamp,
+  outcomeMessage, receiptFileName, receiptHtml, receiptStamp, senderRows,
 } from '@/lib/receipt';
 
 // Dates are built with the local-time constructor on purpose: the stamp is
@@ -99,5 +99,68 @@ describe('outcomeMessage', () => {
   it('names the format the user picked', () => {
     expect(outcomeMessage('saved', 'jpeg')).toBe('Image saved to your device');
     expect(outcomeMessage('saved', 'pdf')).toBe('PDF saved to your device');
+  });
+});
+
+describe('senderRows', () => {
+  it('names who paid, in the order a reader scans', () => {
+    expect(senderRows({ name: 'ADA OKafor', account: '0123456789', bank: 'Zitch' }))
+      .toEqual([
+        ['Sender', 'ADA OKafor'],
+        ['Sender account', '0123456789'],
+        ['Sender bank', 'Zitch'],
+      ]);
+  });
+
+  it('omits what it does not know rather than printing a blank row', () => {
+    // A receipt is treated as proof. "Sender: —" reads as missing data; no row
+    // at all reads as a receipt that never carried the field.
+    expect(senderRows({ name: 'ADA OKafor' })).toEqual([['Sender', 'ADA OKafor']]);
+    expect(senderRows({ name: '  ', account: '', bank: undefined })).toEqual([]);
+    expect(senderRows(undefined)).toEqual([]);
+  });
+
+  it('trims, so a stray space from the API is not printed as indentation', () => {
+    expect(senderRows({ name: ' ADA OKafor ' })).toEqual([['Sender', 'ADA OKafor']]);
+  });
+
+  it('feeds receiptHtml as ordinary rows', () => {
+    const html = receiptHtml({
+      title: 'Money sent',
+      message: 'sent',
+      rows: [['Recipient', 'ADEYEMI WILLIAM'], ...senderRows({ name: 'ADA OKafor' })],
+    });
+    expect(html).toContain('<tr><td class="k">Sender</td><td class="v">ADA OKafor</td></tr>');
+  });
+});
+
+describe('receiptHtml typography', () => {
+  const html = receiptHtml({ title: 'T', message: 'm', rows: [['k', 'v']] });
+  const sizeOf = (selector: string): number => {
+    const block = new RegExp(`${selector}\\s*\\{[^}]*?font-size:\\s*([\\d.]+)px`).exec(html);
+    if (!block) throw new Error(`no font-size for ${selector}`);
+    return Number(block[1]);
+  };
+
+  // The PDF is a page-shaped document. CSS px map at 96dpi, so 13px was under
+  // 10pt — below what a printed receipt can be read at comfortably, and well
+  // under the ~11pt body text normally sets at.
+  it('sets row text at a readable print size', () => {
+    expect(sizeOf('  td')).toBeGreaterThanOrEqual(15);
+  });
+
+  it('keeps the amount the largest thing on the page after the wordmark', () => {
+    expect(sizeOf('tr.total td')).toBeGreaterThan(sizeOf('  td'));
+    expect(sizeOf('.mark')).toBeGreaterThan(sizeOf('tr.total td'));
+  });
+
+  it('leaves no text below 12px, the floor for the footer and labels', () => {
+    const all = [...html.matchAll(/font-size:\s*([\d.]+)px/g)].map((m) => Number(m[1]));
+    expect(all.length).toBeGreaterThan(5);
+    expect(Math.min(...all)).toBeGreaterThanOrEqual(12);
+  });
+
+  it('lets a long value wrap instead of colliding with its label', () => {
+    expect(html).toContain('word-break: break-word');
   });
 });

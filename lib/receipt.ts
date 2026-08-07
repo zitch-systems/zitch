@@ -59,6 +59,32 @@ export const receiptFileName = (reference: string, format: ReceiptFormat): strin
   return `Zitch-Receipt${slug ? `-${slug}` : ''}.${format === 'pdf' ? 'pdf' : 'jpg'}`;
 };
 
+/**
+ * Who paid. A receipt that names only the recipient answers half the question a
+ * receipt exists to answer — the person receiving it needs to see which account
+ * the money left, and so does anyone the file is forwarded to afterwards.
+ */
+export type ReceiptSender = {
+  name?: string;
+  account?: string;
+  bank?: string;
+};
+
+/**
+ * Sender lines, omitting whatever we don't actually know. A receipt with a blank
+ * "Sender: —" row is worse than one without the row: it reads as missing data on
+ * a document people treat as proof, when the truth is simply that this receipt
+ * had nothing to put there.
+ */
+export const senderRows = (sender?: ReceiptSender): ReceiptRow[] => {
+  const rows: ReceiptRow[] = [];
+  if (!sender) return rows;
+  if (sender.name?.trim()) rows.push(['Sender', sender.name.trim()]);
+  if (sender.account?.trim()) rows.push(['Sender account', sender.account.trim()]);
+  if (sender.bank?.trim()) rows.push(['Sender bank', sender.bank.trim()]);
+  return rows;
+};
+
 const esc = (s: string) =>
   String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -92,22 +118,31 @@ export const receiptHtml = ({
 }): string => `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
+  /* Sizes are in CSS px, which the print renderer maps at 96dpi — so 13px was
+     under 10pt, below what most people can read on paper without holding it up
+     to the light, and well under the ~11pt a printed document normally sets body
+     text at. Everything here is scaled to read comfortably at A4, with the row
+     text at 15px (~11.3pt) and the amount large enough to find at a glance. */
   @page { margin: 0; }
-  body { margin: 0; font-family: -apple-system, "Helvetica Neue", Roboto, sans-serif; color: #11181c; }
-  .band { background: #0FA295; color: #fff; padding: 28px 40px 22px; }
-  .mark { font-size: 30px; font-weight: 800; letter-spacing: -.5px; }
-  .kicker { font-size: 12px; opacity: .85; margin-top: 4px; letter-spacing: .8px; text-transform: uppercase; }
-  .body { padding: 32px 40px 0; }
-  h1 { font-size: 21px; margin: 0; }
-  .msg { color: #667; font-size: 13px; margin: 8px 0 26px; line-height: 1.5; }
+  body { margin: 0; font-family: -apple-system, "Helvetica Neue", Roboto, sans-serif;
+         color: #11181c; -webkit-font-smoothing: antialiased; }
+  .band { background: #0FA295; color: #fff; padding: 34px 44px 26px; }
+  .mark { font-size: 36px; font-weight: 800; letter-spacing: -.5px; }
+  .kicker { font-size: 13px; opacity: .9; margin-top: 6px; letter-spacing: 1px; text-transform: uppercase; }
+  .body { padding: 36px 44px 0; }
+  h1 { font-size: 27px; margin: 0; line-height: 1.25; }
+  .msg { color: #5c686e; font-size: 15px; margin: 10px 0 28px; line-height: 1.55; }
   table { width: 100%; border-collapse: collapse; }
-  td { padding: 12px 0; border-bottom: 1px solid #e6eaec; font-size: 13px; vertical-align: top; }
-  td.k { color: #6e7a80; }
-  td.v { text-align: right; font-weight: 600; }
-  tr.total td { font-size: 16px; font-weight: 800; border-bottom: 0; }
-  .foot { padding: 22px 40px; color: #8b969b; font-size: 11px; }
+  td { padding: 15px 0; border-bottom: 1px solid #e6eaec; font-size: 15px;
+       line-height: 1.45; vertical-align: top; }
+  td.k { color: #5c686e; padding-right: 18px; }
+  /* The value column wraps rather than running under the label: an account name
+     long enough to collide is exactly the kind a receipt must still show whole. */
+  td.v { text-align: right; font-weight: 600; word-break: break-word; }
+  tr.total td { font-size: 21px; font-weight: 800; border-bottom: 0; padding-top: 20px; }
+  .foot { padding: 26px 44px; color: #7c878c; font-size: 13px; line-height: 1.5; }
   .badge { display: inline-block; background: ${badgeTone(status).bg}; color: ${badgeTone(status).fg};
-           border-radius: 20px; padding: 5px 13px; font-size: 12px; font-weight: 700; float: right; }
+           border-radius: 20px; padding: 7px 16px; font-size: 14px; font-weight: 700; float: right; }
 </style></head><body>
 <div class="band"><div class="mark">zitch</div><div class="kicker">Transaction receipt</div></div>
 <div class="body">

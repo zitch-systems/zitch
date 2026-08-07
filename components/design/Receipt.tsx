@@ -6,16 +6,21 @@ import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
 import { flash } from '@/components/design/Notify';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
-import { ReceiptRow, receiptHtml, receiptStamp } from '@/lib/receipt';
+import { ReceiptRow, receiptHtml, receiptStamp, senderRows } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
 
 // Full-screen success receipt shown after a completed purchase.
 //
-// The rows a caller passes describe WHAT happened; the three rows this component
-// adds — date, time, reference — describe WHICH transaction, and every screen
-// needs them, so they live here rather than being re-typed ten times. The stamp is
-// taken once, when the receipt first renders, so it can't tick forward while the
-// user is looking at it or differ between the screen and the exported file.
+// The rows a caller passes describe WHAT happened; the rows this component adds
+// describe WHO paid (sender) and WHICH transaction (date, time, reference), and
+// every screen needs them, so they live here rather than being re-typed ten
+// times. Sender in particular has to be central: a receipt is forwarded to the
+// person who was paid, and one that names only the recipient answers half the
+// question it exists to answer — the reader cannot see which account the money
+// actually left. The stamp is taken once, when the receipt first renders, so it
+// can't tick forward while the user is looking at it or differ between the
+// screen and the exported file.
 const Receipt = ({
   title,
   message,
@@ -42,10 +47,23 @@ const Receipt = ({
   // screen, JPEG, PDF — reports.
   const [stamp] = useState(receiptStamp);
 
+  // The wallet is the sender on every receipt this component renders — these
+  // screens all spend from it. senderRows drops whatever the wallet hasn't
+  // loaded yet rather than printing a blank row onto a document people treat as
+  // proof. accountName is the bank's legal name for the NUBAN; firstName is a
+  // greeting and only stands in when the fuller name isn't there.
+  const { accountName, firstName, accountNumber, bankName } = useWallet();
+  const from = senderRows({
+    name: accountName || firstName,
+    account: accountNumber,
+    bank: bankName,
+  });
+
   // Date and time always; the reference only when the server actually gave us one
   // — an invented reference on a receipt is worse than no reference at all.
   const allRows: ReceiptRow[] = [
     ...rows,
+    ...from,
     ['Date', stamp.date],
     ['Time', stamp.time],
     ...(reference ? ([['Reference', reference]] as ReceiptRow[]) : []),

@@ -5,8 +5,9 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Monogram } from '@/components/design/flowkit';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
-import { ReceiptRow, receiptHtml } from '@/lib/receipt';
+import { ReceiptRow, receiptHtml, senderRows } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
+import { useWallet } from '@/lib/wallet';
 
 const Row2 = ({ k, v }: { k: string; v: string }) => {
   const { c } = useTheme();
@@ -42,11 +43,24 @@ const TxnDetail = () => {
   const statusColor = sl === 'failed' ? c.red : sl === 'pending' ? c.amber : c.lime;
   const statusIcon = sl === 'failed' ? 'x' : sl === 'pending' ? 'history' : 'check';
 
+  // Sender is the wallet this transaction ran through — same rows the
+  // post-purchase receipt prints, because a receipt that reads differently
+  // depending on which door you entered through is two different documents.
+  // On an inflow the wallet is the party receiving, so the lines would be
+  // actively wrong; they are only printed for money leaving.
+  const { accountName, firstName, accountNumber, bankName } = useWallet();
+  const from = inflow ? [] : senderRows({
+    name: accountName || firstName,
+    account: accountNumber,
+    bank: bankName,
+  });
+
   const rows: ReceiptRow[] = [
     ['Description', p.type || 'Transaction'],
     ...(p.detail ? ([['Date', p.detail]] as ReceiptRow[]) : []),
     ['Reference', p.reference || '—'],
     ['Channel', 'Zitch Wallet'],
+    ...from,
     ['Amount', (inflow ? '+' : '-') + money(Math.abs(amount)), true],
   ];
 
@@ -73,6 +87,9 @@ const TxnDetail = () => {
           {p.detail ? <Row2 k="Date" v={p.detail} /> : null}
           <Row2 k="Reference" v={p.reference || '—'} />
           <Row2 k="Channel" v="Zitch Wallet" />
+          {/* Same sender lines the exported file carries — the JPEG is a capture
+              of this card, so anything missing here is missing from the share. */}
+          {from.map(([k, v]) => <Row2 key={k} k={k} v={v} />)}
         </View>
       </View>
 
