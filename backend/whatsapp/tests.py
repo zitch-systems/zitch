@@ -22,10 +22,12 @@ from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
+from .flows import PIN_SCREEN, FLOW_PIN_STATE, handle_flow_request, resolve_onboarding_token, sign_onboarding_token
 from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
-    PendingAction, SystemSetting, WaMessageLog, WhatsAppLink,
+    PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink,
 )
+from .router import _local_phone
 
 User = get_user_model()
 MSISDN = "2348011112222"
@@ -1786,3 +1788,117 @@ class ChatAccountSetupTests(TestCase):
         self.link()
         self.inbound("7", "d4")
         self.assertIn("Add money", self.last_reply())
+
+
+class SignupPinPrivacyTests(TestCase):
+    """The signup PIN must never become a chat message. WhatsApp gives a business
+    no way to delete or expire a message it received — there is no view-once for
+    text — so the only thing that keeps a PIN out of the customer's own thread is
+    never asking for it there."""
+
+    def setUp(self):
+        self.client = Client()
+        self.m = "2349090000031"
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def to_pin_step(self, m=None):
+        m = m or self.m
+        self.inbound("1", f"p1-{m}", msisdn=m)
+        self.inbound("Chidi", f"p2-{m}", msisdn=m)
+        self.inbound("Obi", f"p3-{m}", msisdn=m)
+        self.inbound(f"chidi{m[-4:]}@zitch.test", f"p4-{m}", msisdn=m)
+        return m
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_pin_is_collected_in_the_secure_flow_not_the_chat(self, _live, flow):
+        m = self.to_pin_step()
+        flow.assert_called_once()
+        self.assertEqual(WaOnboarding.objects.get(msisdn=m).step, FLOW_PIN_STATE)
+        self.assertIn("never appears in this chat", self.last_reply(m))
+        # No prompt anywhere asks for a PIN in the chat.
+        prompts = WaMessageLog.objects.filter(msisdn=m, direction=WaMessageLog.OUT)
+        self.assertFalse([r for r in prompts if "Create a *4-digit PIN*" in r.text])
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_a_pin_typed_in_chat_is_masked_and_the_user_is_told_to_delete_it(self, _live, _flow):
+        m = self.to_pin_step()
+        self.inbound("4321", f"p5-{m}", msisdn=m)
+        self.assertIn("Delete for everyone", self.last_reply(m))
+        # Masked in our log, and the account is NOT created from a chat-typed PIN.
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="4321").exists())
+        self.assertTrue(WaMessageLog.objects.filter(msisdn=m, text="[PIN]").exists())
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_flow_sets_the_pin_with_a_confirm_round_trip(self, _live, _flow):
+        m = self.to_pin_step()
+        ob = WaOnboarding.objects.get(msisdn=m)
+        token = sign_onboarding_token(ob)
+
+        # First submit holds only a hash and re-renders the same screen.
+        r1 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
+        self.assertEqual(r1["screen"], PIN_SCREEN)
+        self.assertIn("Re-enter", r1["data"]["summary"])
+        ob.refresh_from_db()
+        self.assertTrue(ob.payload["flow_pin_hash"])
+        self.assertNotIn("2468", json.dumps(ob.payload))     # never the raw PIN
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+        # A mismatch restarts the pair rather than setting the wrong PIN.
+        r2 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "1111"}})
+        self.assertEqual(r2["screen"], PIN_SCREEN)
+        self.assertIn("didn't match", r2["data"]["error"])
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+        # Set again, then confirm: the account is created with that PIN.
+        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
+        r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
+        self.assertEqual(r3["screen"], "SUCCESS")
+        u = User.objects.get(phone=_local_phone(m))
+        self.assertTrue(u.check_transaction_pin("2468"))
+        self.assertIn("Welcome to Zitch", WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome").first().text)
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_a_forged_or_foreign_token_sets_nothing(self, _live, _flow):
+        m = self.to_pin_step()
+        ob = WaOnboarding.objects.get(msisdn=m)
+        forged = f"ob{ob.id}.notarealsignature"
+        r = handle_flow_request({"action": "data_exchange", "flow_token": forged, "data": {"pin": "2468"}})
+        self.assertEqual(r["screen"], "SUCCESS")          # terminal, not the PIN screen
+        ob.refresh_from_db()
+        self.assertFalse(ob.payload.get("flow_pin_hash"))
+        # A money-action token must not resolve as an onboarding one, or vice versa.
+        self.assertIsNone(resolve_onboarding_token(f"{ob.id}.{forged.split('.')[1]}"))
+
+    @patch("whatsapp.router._pin_in_chat_allowed", return_value=False)
+    @patch("whatsapp.router.flows_live", return_value=False)
+    def test_production_without_flows_never_asks_for_a_pin_in_chat(self, _live, _chat):
+        # The account is still created — it just has no PIN until the app sets
+        # one, and nothing that spends money works without a PIN.
+        m = self.to_pin_step(m="2349090000032")
+        u = User.objects.get(phone=_local_phone(m))
+        self.assertEqual(u.transaction_pin, "")   # no PIN was ever collected
+        welcome = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
+        self.assertIn("Set your *transaction PIN* in the Zitch app", welcome.text)
+        self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
+        # Nothing in the thread ever asked for a PIN.
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Create a *4-digit PIN*").exists())
+
+    def test_a_stray_pin_shaped_message_warns_a_linked_user(self):
+        user, _ = make_user(phone="08010000077", email="stray@zitch.test")
+        WhatsAppLink.objects.create(user=user, wa_msisdn="2349090000033",
+                                    status=WhatsAppLink.ACTIVE)
+        self.inbound("1234", "stray1", msisdn="2349090000033")
+        r = self.last_reply("2349090000033")
+        self.assertIn("Delete for everyone", r)
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn="2349090000033", text__contains="1234").exists())

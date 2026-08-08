@@ -114,6 +114,26 @@ on the way:
    codes: it was typed into a chat, one typo from someone else's inbox.
 3. BVN/NIN and above proceed as normal.
 
+### The signup PIN never enters the chat
+
+WhatsApp gives a business no way to delete or expire a message it received, and
+there is no view-once for text — so a PIN sent as chat text stays in the
+customer's history for good. The only real protection is never asking for it
+there, which is what the signup does, in the same order the money flows use:
+
+1. **Secure Flow** (`WHATSAPP_FLOW` configured) — the PIN is typed into a native
+   masked field and submitted encrypted. Set-then-confirm runs as two
+   data_exchange round-trips on the already-published `PIN_SCREEN`, so no Flow
+   JSON change or re-publishing with Meta is needed.
+2. **Dev/test only** — chat entry, masked in the message log.
+3. **Production without Flows** — no PIN is collected at all. The account is
+   created without one and the customer sets it in the app; nothing that spends
+   money works until they do.
+
+A PIN typed into the chat anyway is masked in our log by shape as well as by
+flow state, and the customer is told to delete it from their own thread — the
+one place we cannot reach.
+
 ### Funding account (NUBAN) from the chat
 
 Signup rolls straight into minting the customer's dedicated Wema account —

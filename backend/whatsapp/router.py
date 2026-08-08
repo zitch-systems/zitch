@@ -35,7 +35,7 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import FLOW_PIN_STATE, PIN_SCREEN, sign_flow_token
+from .flows import FLOW_PIN_STATE, PIN_SCREEN, sign_flow_token, sign_onboarding_token
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
 
@@ -331,7 +331,7 @@ def is_awaiting_pin(msisdn: str) -> bool:
     if pa and pa.state in ("pin", FLOW_PIN_STATE):
         return True
     ob = _current_onboarding(msisdn)
-    return bool(ob and ob.step in ("pin", "pin_confirm"))
+    return bool(ob and ob.step in ("pin", "pin_confirm", FLOW_PIN_STATE))
 
 
 def is_awaiting_bvn(msisdn: str) -> bool:
@@ -424,6 +424,16 @@ def handle_inbound(msisdn: str, text: str) -> None:
     pa = _current_action(msisdn)
     if pa is not None:
         return _advance(pa, user, msisdn, text)
+
+    # A bare 4-6 digit message with nothing expecting one is very often a PIN
+    # typed out of habit. It is already masked in our log, but it is still in
+    # the customer's own thread and only they can remove it — WhatsApp gives a
+    # business no way to delete or expire a message it received.
+    if re.fullmatch(r"\d{4}|\d{6}", low):
+        return reply(msisdn, "⚠️ That looks like a *PIN or code*, and nothing here was waiting for one.\n\n"
+                             "We never ask for your PIN in this chat — please delete that message "
+                             "(press and hold → Delete → *Delete for everyone*).\n\n"
+                             "Reply \"menu\" for options.")
 
     # Fresh command (keyword or menu number).
     if low in ("balance", "bal", "1"):
@@ -542,6 +552,46 @@ def _start_onboarding(msisdn: str) -> None:
     reply(msisdn, "Let's set up your Zitch account \U0001f389\n\nWhat's your *first name*?")
 
 
+def _pin_in_chat_allowed() -> bool:
+    """A PIN may only be typed into the chat in dev/test. Production never asks:
+    WhatsApp has no delete-or-expire for a message a business received, so a PIN
+    sent as chat text stays in the customer's history for good."""
+    return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
+
+
+def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
+    """Collect the signup PIN over the most private channel available, in the same
+    order the money flows use:
+
+    1. The secure Flow — a native masked field, submitted encrypted. The PIN is
+       never a chat message, so there is nothing left in the thread afterwards.
+       WhatsApp has no way to delete or expire a message once sent, so not sending
+       one is the only thing that actually keeps a PIN out of the history.
+    2. Dev/test only: the chat, masked in our log.
+    3. Production without Flows: no PIN in chat, ever. The account is created
+       without one and the PIN is set in the app, where it belongs.
+    """
+    if flows_live():
+        _onboard_to(ob, FLOW_PIN_STATE)
+        res = send_flow(
+            msisdn, sign_onboarding_token(ob),
+            header="Set your PIN", body="Choose the 4-digit PIN you'll use to authorise payments.",
+            screen=PIN_SCREEN,
+            screen_data={"summary": "Create a 4-digit PIN to authorise payments", "error": ""},
+        )
+        if res.get("success"):
+            return reply(msisdn, "🔐 Tap the secure screen above to set your *4-digit PIN*. "
+                                 "It's typed privately and never appears in this chat.")
+        log.warning("wa_onboarding_pin_flow_failed msisdn=%s", msisdn)
+    if _pin_in_chat_allowed():
+        _onboard_to(ob, "pin")
+        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+    # No secure channel: finish the signup without a PIN rather than ask for one
+    # in a chat that keeps it forever. Everything that spends money already
+    # requires a PIN, so the account is simply not spendable until it is set.
+    return _finish_onboarding(ob, msisdn, "")
+
+
 def _onboard_to(ob: WaOnboarding, step: str) -> None:
     ob.step = step
     ob.expires_at = timezone.now() + ONBOARD_TTL
@@ -556,6 +606,15 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
         return reply(msisdn, "No problem — signup cancelled. Reply *1* to start again anytime.")
+    if ob.step == FLOW_PIN_STATE:
+        # The PIN belongs in the secure screen, never here. If they typed one
+        # anyway it is already masked in our log — but it is still sitting in
+        # their own chat, and only they can remove it.
+        if re.fullmatch(r"\d{4,6}", val):
+            return reply(msisdn, "🔐 Please set your PIN on the *secure screen* above — not in the chat. "
+                                 "Delete the message you just sent (press and hold → Delete → "
+                                 "*Delete for everyone*), then tap the secure screen.")
+        return reply(msisdn, "🔐 Tap the *secure screen* above to set your PIN, or reply \"cancel\".")
     if ob.step == "first_name":
         if len(val) < 2:
             return reply(msisdn, "Please enter your first name.")
@@ -577,8 +636,7 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
             # address would make reset codes ambiguous. Refuse here, at entry.
             return reply(msisdn, "That email is already on a Zitch account. Enter a different email address.")
         ob.payload["email"] = email
-        _onboard_to(ob, "pin")
-        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+        return _arm_onboarding_pin(ob, msisdn)
     if ob.step == "pin":
         if not re.fullmatch(r"\d{4}", val):
             return reply(msisdn, "Your PIN must be exactly 4 digits. Try again.")
@@ -613,7 +671,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         email_verified=False,          # chat-collected: unverified until the app OTP
     )
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
-    user.set_transaction_pin(pin)
+    if pin:
+        user.set_transaction_pin(pin)
     user.save()
     get_or_create_wallet(user)
     WhatsAppLink.objects.create(
@@ -625,7 +684,10 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
         f"Your current transfer limit is *₦{user.daily_transfer_limit:,.0f}/day*. "
         "You can pay bills, buy airtime & data, and check your balance here.\n\n"
-        "To raise your limits: download the *Zitch app*, tap *Forgot password* "
+        + ("" if pin else
+           "🔐 Set your *transaction PIN* in the Zitch app before you send money — "
+           "we never collect a PIN in this chat.\n\n")
+        + "To raise your limits: download the *Zitch app*, tap *Forgot password* "
         "with this phone number to set your password, then confirm your email "
         "and verify your identity.\n\n" + MENU,
     )
@@ -634,6 +696,15 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     # is off; option 6 offers the same setup any time.
     if wallet_views._wema_funding_enabled():
         _start_add_account(user, msisdn, after_signup=True)
+
+
+def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
+    """Complete a signup whose PIN was set in the secure Flow. Returns the terminal
+    message for the Flow's success screen; the chat welcome + account setup are
+    sent by _finish_onboarding as usual."""
+    msisdn = ob.msisdn
+    _finish_onboarding(ob, msisdn, pin)
+    return "✅ PIN set — your Zitch account is ready. Head back to the chat."
 
 
 # --------------------------------------------------------------------------- #
