@@ -17,7 +17,7 @@ from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import api, fail, ok, require_user
+from common.http import api, evaluate_transaction_pin, fail, ok, require_user
 from common.ratelimit import ratelimit
 
 from .models import Broadcast, BroadcastRecipient, ConversationState, WhatsAppLink
@@ -25,7 +25,7 @@ from .ops import record_audit, validate_broadcast_spec
 from .providers import verify_signature, wa_enabled, wa_live
 from .router import is_awaiting_bvn, is_awaiting_pin, reply
 
-LINK_CODE_TTL = timedelta(minutes=10)
+LINK_CODE_TTL = timedelta(minutes=30)
 WHATSAPP_WEBHOOK_BODY_MAX = 1024 * 1024
 
 
@@ -348,12 +348,22 @@ def _process(msg: dict) -> None:
 @ratelimit("whatsapp_link_start", limit=5, window=300)
 @require_user
 def link_start(request):
-    """POST /api/whatsapp/link/start/ {access_token}
+    """POST /api/whatsapp/link/start/ {access_token, transaction_pin}
     -> {success, code, wa_link, expires_in} — a code to send from WhatsApp.
+
+    The PIN is required before a code is issued. A link grants a channel that can
+    move money, so it is a privileged action, not a display: without this, anyone
+    holding an unlocked phone (or a live session on a lost one) could bind their
+    own WhatsApp to the account. The PIN check shares the app's brute-force
+    lockout, so it cannot be ground down here either.
     """
     if not wa_enabled():
         return fail("WhatsApp banking is currently unavailable", status=503)
     user = request.user_obj
+    pin_ok, pin_code, pin_message = evaluate_transaction_pin(
+        user, (request.data.get("transaction_pin") or "").strip())
+    if not pin_ok:
+        return fail(pin_message, status=429 if pin_code == "pin_locked" else 400)
     WhatsAppLink.objects.filter(user=user, status=WhatsAppLink.PENDING).delete()
     code = secrets.token_hex(16).upper()  # 128-bit, normally opened via prefilled wa.me link
     WhatsAppLink.objects.create(

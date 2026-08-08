@@ -290,6 +290,7 @@ export const ZItem = ({
   icon,
   iconColor,
   iconBg,
+  leading,
   title,
   sub,
   right,
@@ -299,6 +300,10 @@ export const ZItem = ({
   icon?: string;
   iconColor?: string;
   iconBg?: string;
+  /** Custom glyph for the icon box (e.g. a brand mark ZIcon doesn't carry).
+   *  Rendered in the same 44px box as `icon`, so a row using it stays on the
+   *  same alignment grid as every other row in the group. */
+  leading?: React.ReactNode;
   title: string;
   sub?: string;
   right?: React.ReactNode;
@@ -326,9 +331,9 @@ export const ZItem = ({
         borderBottomColor: c.line,
       }}
     >
-      {icon && (
+      {(icon || leading) && (
         <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name={icon} size={21} color={accent} stroke={2} />
+          {leading ?? <ZIcon name={icon as string} size={21} color={accent} stroke={2} />}
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>
