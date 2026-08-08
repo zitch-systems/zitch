@@ -27,7 +27,7 @@ from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
     PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink,
 )
-from .router import _local_phone
+from .router import _local_phone, reply_receipt
 
 User = get_user_model()
 MSISDN = "2348011112222"
@@ -138,6 +138,15 @@ class ChannelTests(TestCase):
 
     def link(self):
         return WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def receipt_text(self, msisdn=MSISDN):
+        """The receipt message. The balance is deliberately sent AFTER it, so the
+        receipt is no longer last_reply()."""
+        for row in WaMessageLog.objects.filter(
+                msisdn=msisdn, direction=WaMessageLog.OUT).order_by("-created"):
+            if "receipt" in row.text.lower():
+                return row.text
+        return ""
 
     def balance(self):
         return get_or_create_wallet(self.user).balance
@@ -303,7 +312,8 @@ class ChannelTests(TestCase):
         self.user.phone = "08011112222"
         self.user.save(update_fields=["phone"])
         res = self.client.post("/api/whatsapp/link/start/",
-                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+                               data=json.dumps({"access_token": self.token, "transaction_pin": "1234"}),
+                               content_type="application/json")
         code = res.json()["code"]
         self.assertGreaterEqual(len(code), 32)  # at least 128 bits, not a 24-bit brute-force code
         self.inbound(f"LINK {code}", "m1")
@@ -316,7 +326,8 @@ class ChannelTests(TestCase):
         # Default user phone (08010000001) does NOT match MSISDN — a leaked code
         # sent from another WhatsApp number must not bind the account.
         res = self.client.post("/api/whatsapp/link/start/",
-                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+                               data=json.dumps({"access_token": self.token, "transaction_pin": "1234"}),
+                               content_type="application/json")
         code = res.json()["code"]
         self.inbound(f"LINK {code}", "m1")
         self.assertFalse(WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).exists())
@@ -327,7 +338,8 @@ class ChannelTests(TestCase):
         # sender against, so the bind must FAIL CLOSED (else a leaked code from any
         # WhatsApp number would claim the account).
         res = self.client.post("/api/whatsapp/link/start/",
-                               data=json.dumps({"access_token": self.token}), content_type="application/json")
+                               data=json.dumps({"access_token": self.token, "transaction_pin": "1234"}),
+                               content_type="application/json")
         code = res.json()["code"]
         self.user.phone = None
         self.user.save(update_fields=["phone"])
@@ -419,7 +431,7 @@ class ChannelTests(TestCase):
         self.assertIn("Confirm transfer", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # the BANK's name, not a typed one
         self.inbound("1234", "t5")
-        self.assertIn("Transfer receipt", self.last_reply())
+        self.assertIn("Transfer receipt", self.receipt_text())
         self.assertEqual(self.balance(), Decimal("45000"))
         self.assertEqual(
             Transaction.objects.filter(user=self.user, direction=Transaction.OUT,
@@ -430,7 +442,7 @@ class ChannelTests(TestCase):
         self.inbound("0123456789 GTBank John Doe 5000", "p1")  # single bank match -> confirm
         self.assertIn("Confirm transfer", self.last_reply())
         self.inbound("1234", "p2")
-        self.assertIn("Transfer receipt", self.last_reply())
+        self.assertIn("Transfer receipt", self.receipt_text())
         self.assertEqual(self.balance(), Decimal("45000"))
 
     def test_paste_amount_before_account(self):
@@ -520,6 +532,15 @@ class VtuTests(TestCase):
         row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
         return row.text if row else ""
 
+    def receipt_text(self, msisdn=MSISDN):
+        """The receipt message. The balance is deliberately sent AFTER it, so the
+        receipt is no longer last_reply()."""
+        for row in WaMessageLog.objects.filter(
+                msisdn=msisdn, direction=WaMessageLog.OUT).order_by("-created"):
+            if "receipt" in row.text.lower():
+                return row.text
+        return ""
+
     def bal(self):
         return get_or_create_wallet(self.user).balance
 
@@ -530,7 +551,7 @@ class VtuTests(TestCase):
         self.inbound("200", "a4")             # amount -> confirm
         self.assertIn("Confirm airtime", self.last_reply())
         self.inbound("1234", "a5")            # PIN
-        self.assertIn("Airtime receipt", self.last_reply())
+        self.assertIn("Airtime receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("19800"))
 
     def test_data(self):
@@ -541,7 +562,7 @@ class VtuTests(TestCase):
         self.inbound("me", "d4")              # phone -> confirm
         self.assertIn("Confirm data", self.last_reply())
         self.inbound("1234", "d5")
-        self.assertIn("Data receipt", self.last_reply())
+        self.assertIn("Data receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("19500"))
 
     def test_electricity_returns_token(self):
@@ -554,7 +575,7 @@ class VtuTests(TestCase):
         self.assertIn("Confirm electricity", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # validated customer name
         self.inbound("1234", "e6")
-        self.assertIn("Token", self.last_reply())            # prepaid token in the receipt
+        self.assertIn("Token", self.receipt_text())          # prepaid token in the receipt
         self.assertEqual(self.bal(), Decimal("17000"))
 
     def test_cable(self):
@@ -565,7 +586,7 @@ class VtuTests(TestCase):
         self.inbound("1234567890", "c4")      # IUC -> validated -> confirm
         self.assertIn("Confirm cable", self.last_reply())
         self.inbound("1234", "c5")
-        self.assertIn("Cable receipt", self.last_reply())
+        self.assertIn("Cable receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("11000"))
 
     def test_wrong_network_reprompts(self):
@@ -1051,7 +1072,7 @@ class SmsCodeConfirmTests(TestCase):
         self.assertIn("isn't right", self.last_reply())
         # …the SMS code does.
         self.inbound(code, "s6")
-        self.assertIn("Airtime receipt", self.last_reply())
+        self.assertIn("Airtime receipt", ChannelTests.receipt_text(self))
         self.assertEqual(self.bal(), Decimal("19800"))
 
 
@@ -1967,3 +1988,118 @@ class MenuLinksTests(TestCase):
         self.link()
         self.inbound("menu", "L5")
         self.assertIn("https://wa.me/2348011110000", self.last_reply())
+
+
+class ReceiptPrivacyTests(TestCase):
+    """A receipt is forwarded as proof of payment, so it must carry the SENDER —
+    and must not carry the balance, which is nobody's business but the payer's."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    def replies(self, msisdn=MSISDN):
+        return [r.text for r in WaMessageLog.objects.filter(
+            msisdn=msisdn, direction=WaMessageLog.OUT).order_by("created")]
+
+    def test_receipt_shows_the_sender_and_never_the_balance(self):
+        text = reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],
+                             ref="ZTC-1", user=self.user, balance_after=Decimal("12345"))
+        self.assertIn("From: ADA EZE", text)
+        self.assertIn("Sender: •••••••0001", text)     # last four only
+        self.assertNotIn("08010000001", text)          # never the full number
+        self.assertNotIn("balance", text.lower())
+        self.assertNotIn("12,345", text)
+
+    def test_balance_arrives_as_its_own_message_after_the_receipt(self):
+        reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")],
+                      ref="ZTC-2", user=self.user, balance_after=Decimal("12345"))
+        out = self.replies()
+        self.assertIn("Airtime receipt", out[-2])      # receipt first...
+        self.assertIn("12,345", out[-1])               # ...then the balance, separately
+        self.assertIn("balance", out[-1].lower())
+
+    def test_no_balance_message_when_none_is_given(self):
+        reply_receipt(MSISDN, "Airtime receipt", [("Network", "MTN")], ref="ZTC-3", user=self.user)
+        self.assertNotIn("balance", self.last_reply().lower())
+
+    def test_a_real_transfer_receipt_follows_the_same_rules(self):
+        self.link()
+        Bank.objects.get_or_create(code="gtb", defaults={"name": "GTBank", "bank_code": "058",
+                                                         "color": "#e30613", "active": True})
+        self.inbound("send", "r1")
+        self.inbound("1000", "r2")
+        self.inbound("0123456789", "r3")
+        self.inbound("gtb", "r4")
+        self.inbound("yes", "r5")
+        self.inbound("1234", "r6")   # PIN (dev/test path)
+        out = self.replies()
+        receipt = next((t for t in out if "Transfer receipt" in t), "")
+        self.assertTrue(receipt, f"no receipt in {out[-3:]}")
+        self.assertIn("From: ADA EZE", receipt)
+        self.assertNotIn("New balance", receipt)
+        self.assertIn("balance", out[-1].lower())      # balance is the message after
+
+
+class LinkCodeTests(TestCase):
+    """A link code grants a money-moving channel, so it is PIN-gated, single use,
+    and short-lived."""
+
+    def setUp(self):
+        self.client = Client()
+        # Phone must match MSISDN — the code is only accepted from the number on
+        # the account (the SIM-swap guard), which these tests exercise.
+        self.user, self.token = make_user(phone="08011112222")
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def start(self, pin="1234"):
+        res = self.client.post("/api/whatsapp/link/start/",
+                               data=json.dumps({"access_token": self.token, "transaction_pin": pin}),
+                               content_type="application/json")
+        return res, res.json()
+
+    def test_a_code_requires_the_pin(self):
+        res, body = self.start(pin="")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WhatsAppLink.objects.filter(user=self.user, status=WhatsAppLink.PENDING).exists())
+        res, body = self.start(pin="9999")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WhatsAppLink.objects.filter(user=self.user, status=WhatsAppLink.PENDING).exists())
+        res, body = self.start()
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body["code"])
+
+    def test_the_code_expires_in_thirty_minutes(self):
+        _, body = self.start()
+        self.assertEqual(body["expires_in"], 30 * 60)
+        link = WhatsAppLink.objects.get(user=self.user, status=WhatsAppLink.PENDING)
+        self.assertAlmostEqual((link.expires_at - timezone.now()).total_seconds(), 30 * 60, delta=30)
+
+    def test_the_code_is_single_use(self):
+        _, body = self.start()
+        code = body["code"]
+        self.inbound(f"LINK {code}", "lk1")
+        self.assertIn("Linked!", self.last_reply())
+        # Replaying it links nothing — it was consumed.
+        self.inbound(f"LINK {code}", "lk2", msisdn="2349099999999")
+        self.assertFalse(WhatsAppLink.objects.filter(
+            wa_msisdn="2349099999999", status=WhatsAppLink.ACTIVE).exists())
+
+    def test_a_code_sent_from_another_number_is_burned(self):
+        # The shape of a leaked code being tried from an attacker's WhatsApp:
+        # refuse AND retire it, so it cannot be retried from a third number.
+        _, body = self.start()
+        code = body["code"]
+        self.inbound(f"LINK {code}", "lk3", msisdn="2349088888888")
+        self.assertIn("send this code from the phone number", self.last_reply("2349088888888"))
+        link = WhatsAppLink.objects.get(user=self.user, status=WhatsAppLink.PENDING)
+        self.assertEqual(link.link_code, "")
+        # Even the rightful owner cannot use it now — a fresh code is required.
+        self.inbound(f"LINK {code}", "lk4")
+        self.assertNotIn("Linked!", self.last_reply())

@@ -192,9 +192,34 @@ def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
     _log_out(msisdn, caption, result)
 
 
-def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
+def _sender_rows(user) -> list:
+    """Who the money came FROM, on every receipt. A receipt is forwarded as proof
+    of payment, so the payer has to be on the artifact itself — a screenshot with
+    only a recipient proves nothing about who sent it."""
+    if user is None:
+        return []
+    name = (user.get_full_name() or user.first_name or "").strip().upper()
+    phone = (user.phone or "").strip()
+    rows = []
+    if name:
+        rows.append(("From", name))
+    if phone:
+        # Last four only: the receipt is designed to be forwarded, and a full
+        # number on a shared artifact is an invitation to impersonation.
+        rows.append(("Sender", f"•••••••{phone[-4:]}"))
+    return rows
+
+
+def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,
+                  user=None, balance_after=None) -> str:
     """Send the transaction receipt as a branded JPEG rendered server-side, with the
     readable text as the caption.
+
+    Sender details are prepended for every receipt. The BALANCE is deliberately
+    never a receipt row: receipts get screenshotted and forwarded to the person
+    who was paid, and a balance is not theirs to see. When `balance_after` is
+    given it is sent as a separate message afterwards, which the customer can
+    keep or delete independently of the receipt they share.
 
     It goes out as an IMAGE, not a document: an image renders in the thread where the
     user can read it without tapping, forward it in one gesture, and save it to their
@@ -207,6 +232,7 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
     Every fall-back is logged. A silent downgrade to text is exactly the kind of
     failure that looks like a cosmetic choice and hides a broken media pipeline.
     """
+    rows = _sender_rows(user) + list(rows)
     text = _receipt(title, rows)
     from .providers import send_document, send_image_media, upload_media, wa_live
 
@@ -233,6 +259,10 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
             log.warning("wa_receipt_text_fallback ref=%s", ref)
         result = send_text(msisdn, text)
     _log_out(msisdn, text, result)
+    if balance_after is not None:
+        # Separate message, sent after the receipt — never part of the artifact
+        # the customer forwards.
+        reply(msisdn, f"💰 Your Zitch balance is now {_money(balance_after)}.")
     return text
 
 
@@ -355,7 +385,12 @@ def _confirm_prompt(pa: PendingAction) -> str:
         return "Secure confirmation is unavailable right now. Please complete this payment in the Zitch app."
     if pa.payload.get("otp_hash"):
         return "🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". (Never type your PIN here.)"
-    return "Reply with your PIN to confirm, or \"cancel\"."
+    # Only reachable in dev/test — production arms a Flow or an SMS code and
+    # fails closed rather than ask for a PIN here. The delete advice rides along
+    # anyway, so the one prompt that can put a PIN in a thread also says how to
+    # get it out: WhatsApp lets the sender delete, and nobody else.
+    return ("Reply with your PIN to confirm, or \"cancel\".\n"
+            "_Delete your PIN message afterwards (press and hold → Delete → Delete for everyone)._")
 
 
 def active_link_for(msisdn: str) -> WhatsAppLink | None:
@@ -556,7 +591,14 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         # nothing to match against — binding anyway would let a leaked code attach an
         # attacker's WhatsApp to that account. Require a registered number that matches.
         if not registered or registered[-10:] != sender[-10:]:
-            return reply(msisdn, "For your security, send this code from the phone number on your Zitch account.")
+            # Burn it. A code arriving from a number that is not the account's is
+            # the exact shape of a leaked or shoulder-surfed code being tried from
+            # an attacker's WhatsApp; leaving it live would let them keep trying
+            # from other numbers. The owner can mint a fresh one in the app.
+            link.link_code = ""
+            link.save(update_fields=["link_code"])
+            return reply(msisdn, "For your security, send this code from the phone number on your Zitch account. "
+                                 "That code has now expired — generate a new one in the Zitch app.")
         link.wa_msisdn = msisdn
         link.status = WhatsAppLink.ACTIVE
         link.link_code = ""
@@ -1133,8 +1175,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         ("Amount", _money(amount)),
         ("Reference", txn.reference),
         ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
-        ("New balance", _money(wallet.balance)),
-    ], ref=txn.reference)
+    ], ref=txn.reference, user=user, balance_after=wallet.balance)
 
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
@@ -1255,7 +1296,8 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     _clear_actions(msisdn)
     if status == "success":
         title, rows = receipt(txn, result)
-        return reply_receipt(msisdn, title, rows, ref=txn.reference)
+        return reply_receipt(msisdn, title, rows, ref=txn.reference,
+                             user=user, balance_after=get_or_create_wallet(user).balance)
     if status == "pending":
         line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
         reply(msisdn, line)

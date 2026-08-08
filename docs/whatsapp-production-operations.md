@@ -114,6 +114,30 @@ on the way:
    codes: it was typed into a chat, one typo from someone else's inbox.
 3. BVN/NIN and above proceed as normal.
 
+### Receipts carry the sender, never the balance
+
+A receipt is designed to be forwarded as proof of payment, so every receipt
+leads with who paid — full name plus the last four digits of the sender's phone
+(never the whole number, which on a shared artifact invites impersonation).
+
+The balance is never a receipt row. It is sent as a **separate message after**
+the receipt, so the customer can forward the receipt to whoever they paid
+without handing over their account balance, and can delete the balance message
+independently.
+
+### Linking is PIN-gated, single use, 30 minutes
+
+A link binds a channel that can move money, so `/api/whatsapp/link/start/`
+requires the transaction PIN — an unlocked phone must not be enough to bind a
+stranger's WhatsApp to an account. The PIN check shares the app's brute-force
+lockout.
+
+Codes last 30 minutes and are consumed on first use. A code arriving from a
+number that is not the one on the account is **refused and burned**: that is the
+shape of a leaked code being tried from an attacker's WhatsApp, and leaving it
+live would let them keep trying from other numbers. The owner mints a fresh one
+in the app.
+
 ### The signup PIN never enters the chat
 
 WhatsApp gives a business no way to delete or expire a message it received, and

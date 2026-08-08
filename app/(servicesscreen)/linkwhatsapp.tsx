@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Linking, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Screen, Header, Card, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
@@ -40,6 +40,7 @@ const LinkWhatsApp = () => {
   const [code, setCode] = useState('');
   const [waLink, setWaLink] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
   const [polling, setPolling] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDeadlineRef = useRef(0);
@@ -75,9 +76,13 @@ const LinkWhatsApp = () => {
     return () => { clearTimeout(timer); stopPoll(); };
   }, [refreshStatus, stopPoll]);
 
-  const generate = async () => {
+  // Linking grants a channel that can move money, so the PIN is required before
+  // a code is issued — an unlocked phone must not be enough to bind a stranger's
+  // WhatsApp to this account.
+  const generate = async (transaction_pin: string) => {
+    setPinOpen(false);
     setBusy(true);
-    const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; message?: string }>('/api/whatsapp/link/start/');
+    const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; message?: string }>('/api/whatsapp/link/start/', { transaction_pin });
     setBusy(false);
     if (res?.success && res.code) {
       setCode(res.code);
@@ -86,7 +91,7 @@ const LinkWhatsApp = () => {
       // Auto-detect the moment the user sends the code from WhatsApp.
       stopPoll();
       setPolling(true);
-      pollDeadlineRef.current = Date.now() + (10 * 60 * 1000);
+      pollDeadlineRef.current = Date.now() + (30 * 60 * 1000);  // matches LINK_CODE_TTL
       pollRef.current = setInterval(() => {
         if (Date.now() >= pollDeadlineRef.current) {
           stopPoll();
@@ -147,7 +152,7 @@ const LinkWhatsApp = () => {
             <Step n={3} text="You're linked. This screen updates on its own." />
           </Card>
           <View style={{ height: 18 }} />
-          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary" onPress={generate} disabled={busy} />
+          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary" onPress={() => setPinOpen(true)} disabled={busy} />
         </>
       )}
 
@@ -191,6 +196,13 @@ const LinkWhatsApp = () => {
           <Btn label={busy ? 'Unlinking…' : 'Unlink WhatsApp'} variant="outline" onPress={unlink} disabled={busy} />
         </>
       )}
+      <PinSheet
+        open={pinOpen}
+        onClose={() => setPinOpen(false)}
+        onComplete={generate}
+        title="Confirm it's you"
+        subtitle="Enter your 4-digit PIN to generate a WhatsApp link code."
+      />
     </Screen>
   );
 };
