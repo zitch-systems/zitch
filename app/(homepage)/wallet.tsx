@@ -37,7 +37,7 @@ const Wallet = () => {
         <Pressable onPress={() => { reload(); reloadLinked(); }} style={hdrBtn}>
           <ZIcon name="refresh" size={19} color={c.ink1} />
         </Pressable>
-        <Pressable onPress={() => router.push('/settings')} style={hdrBtn}>
+        <Pressable onPress={() => router.push('/me')} style={hdrBtn}>
           <ZIcon name="settings" size={19} color={c.ink1} />
         </Pressable>
       </View>

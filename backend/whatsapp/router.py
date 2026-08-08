@@ -45,7 +45,39 @@ log = logging.getLogger("whatsapp")
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
 
-MENU = (
+def _links() -> dict:
+    return getattr(settings, "ZITCH_LINKS", {}) or {}
+
+
+def _support_wa_link() -> str:
+    """wa.me deep link for customer care. Falls back to the business number, so
+    the link always resolves once the channel is configured; blank when neither
+    is set, in which case the caller omits the line rather than print a dead one."""
+    num = (_links().get("SUPPORT_WA") or "").strip()
+    if not num:
+        num = ((getattr(settings, "WHATSAPP", {}) or {}).get("BUSINESS_NUMBER") or "").strip()
+    digits = re.sub(r"\D", "", num)
+    return f"https://wa.me/{digits}" if digits else ""
+
+
+def _more_info_block() -> str:
+    """The footer shown under the menu and by \"help\" — website, app, support.
+    Each line is omitted when unconfigured, so the block never shows a dead link."""
+    L = _links()
+    lines = []
+    if L.get("WEBSITE"):
+        lines.append(f"🌐 More information: {L['WEBSITE']}")
+    if L.get("APP"):
+        lines.append(f"📲 Get the Zitch app: {L['APP']}")
+    wa = _support_wa_link()
+    if wa:
+        lines.append(f"💬 Customer care: {wa}")
+    if L.get("SUPPORT_EMAIL"):
+        lines.append(f"✉️ {L['SUPPORT_EMAIL']}")
+    return "\n".join(lines)
+
+
+MENU_BODY = (
     "💚 *Zitch* — what would you like to do?\n\n"
     "1️⃣  💰 Check balance\n"
     "2️⃣  💸 Send money\n"
@@ -56,6 +88,13 @@ MENU = (
     "7️⃣  🧾 My account details\n\n"
     "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
+
+
+def menu_text() -> str:
+    """The menu plus the links footer. Built per call, not frozen at import, so
+    the links follow settings (which deployments and tests both override)."""
+    block = _more_info_block()
+    return MENU_BODY + (f"\n\n{block}" if block else "")
 UNLINKED = (
     "👋 Welcome to *Zitch* — banking right here on WhatsApp.\n\n"
     "Reply *1* to create a new account, or *2* if you already have one."
@@ -222,7 +261,7 @@ def send_menu(msisdn: str) -> None:
     """The main menu as a plain numbered list — reply with the number (1–6) or
     type the action (e.g. \"send 5k\"). Kept as text rather than a tappable list
     so it reads as the classic numbered menu."""
-    reply(msisdn, MENU)
+    reply(msisdn, menu_text())
 
 
 def _ask_network(msisdn: str) -> None:
@@ -459,6 +498,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _start_convert(user, msisdn)
     if low in ("7", "account", "my account", "account details", "my details", "details"):
         return _do_account_details(user, msisdn)
+    if low in ("support", "customer care", "care", "contact", "contact us", "info", "more info"):
+        return _do_support(msisdn)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
@@ -471,7 +512,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
             _record_intent(msisdn, intent)
             if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent):
                 return
-    return reply(msisdn, "Sorry, I didn't get that.\n\n" + MENU)
+    return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
 
 
 # --------------------------------------------------------------------------- #
@@ -522,7 +563,7 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         link.linked_at = timezone.now()
         link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
         name = (link.user.first_name or "there").strip()
-        return reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + MENU)
+        return reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + menu_text())
 
     # 3. Brand-new number: offer to create an account or link an existing one.
     if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started"):
@@ -531,7 +572,9 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         return reply(msisdn, "To connect an existing account, open the Zitch app → *Settings → Link WhatsApp*, get your code, and send it here.")
 
     # 4. Default welcome (with the create/link choices).
-    return reply(msisdn, UNLINKED if _chat_signup_allowed() else UNLINKED_APP_ONLY)
+    intro = UNLINKED if _chat_signup_allowed() else UNLINKED_APP_ONLY
+    block = _more_info_block()
+    return reply(msisdn, intro + (f"\n\n{block}" if block else ""))
 
 
 # --------------------------------------------------------------------------- #
@@ -689,7 +732,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
            "we never collect a PIN in this chat.\n\n")
         + "To raise your limits: download the *Zitch app*, tap *Forgot password* "
         "with this phone number to set your password, then confirm your email "
-        "and verify your identity.\n\n" + MENU,
+        "and verify your identity.\n\n" + menu_text(),
     )
     # Roll straight into minting their funding NUBAN — a wallet you can't pay
     # into isn't much of an account. Skipped quietly when the bank integration
@@ -746,6 +789,15 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
     return _start_add_account(user, msisdn)
+
+
+def _do_support(msisdn: str) -> None:
+    """Website / app / customer-care links, on demand as well as under the menu."""
+    block = _more_info_block()
+    if not block:
+        return reply(msisdn, "💬 *Need help?* Reply \"menu\" for options — or type your question and we'll help right here.")
+    return reply(msisdn, "💬 *Zitch help & information*\n\n" + block +
+                 "\n\nOr just type your question here — reply \"menu\" for options.")
 
 
 def _do_account_details(user, msisdn: str) -> None:

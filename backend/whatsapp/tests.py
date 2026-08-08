@@ -1902,3 +1902,68 @@ class SignupPinPrivacyTests(TestCase):
         self.assertIn("Delete for everyone", r)
         self.assertFalse(WaMessageLog.objects.filter(
             msisdn="2349090000033", text__contains="1234").exists())
+
+
+class MenuLinksTests(TestCase):
+    """The menu carries the website, app and customer-care links; each line is
+    omitted rather than shown dead when its setting is blank."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    LINKS = {"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
+             "SUPPORT_WA": "2349012345678", "SUPPORT_EMAIL": "support@zitch.ng"}
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_menu_carries_the_links(self):
+        self.link()
+        self.inbound("menu", "L1")
+        r = self.last_reply()
+        self.assertIn("https://zitch.ng", r)
+        self.assertIn("https://zitch.ng/app", r)
+        self.assertIn("https://wa.me/2349012345678", r)   # rendered as a deep link
+        self.assertIn("support@zitch.ng", r)
+        self.assertIn("More information", r)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_support_keyword_shows_the_links(self):
+        self.link()
+        for word in ("support", "customer care", "more info"):
+            self.inbound(word, f"L2-{word}")
+            self.assertIn("https://wa.me/2349012345678", self.last_reply())
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_first_contact_welcome_carries_them_too(self):
+        # A brand-new number is exactly who needs "get the app" / "more info".
+        self.inbound("hi", "L3", msisdn="2349090000041")
+        r = self.last_reply("2349090000041")
+        self.assertIn("Welcome to *Zitch*", r)
+        self.assertIn("https://zitch.ng/app", r)
+
+    @override_settings(ZITCH_LINKS={"WEBSITE": "", "APP": "", "SUPPORT_WA": "", "SUPPORT_EMAIL": ""},
+                       WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": True, "VERIFY_TOKEN": "",
+                                 "TOKEN": "", "APP_SECRET": "", "BASE_URL": "x",
+                                 "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""})
+    def test_unconfigured_links_are_omitted_not_dead(self):
+        self.link()
+        self.inbound("menu", "L4")
+        r = self.last_reply()
+        self.assertIn("Check balance", r)          # the menu itself still renders
+        self.assertNotIn("More information", r)
+        self.assertNotIn("wa.me", r)
+        self.assertNotIn("None", r)
+
+    @override_settings(ZITCH_LINKS={"WEBSITE": "https://zitch.ng", "APP": "", "SUPPORT_WA": "",
+                                    "SUPPORT_EMAIL": ""},
+                       WHATSAPP={"MODE": "sandbox", "ALLOW_CHAT_SIGNUP": True, "VERIFY_TOKEN": "",
+                                 "TOKEN": "", "APP_SECRET": "", "BASE_URL": "x",
+                                 "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": "2348011110000"})
+    def test_care_link_falls_back_to_the_business_number(self):
+        self.link()
+        self.inbound("menu", "L5")
+        self.assertIn("https://wa.me/2348011110000", self.last_reply())

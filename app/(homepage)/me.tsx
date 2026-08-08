@@ -1,25 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text, Pressable, Linking } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
+import Constants from 'expo-constants';
 import { apiJson, apiPost } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, ZItem, money, NText, PinSheet } from '@/components/design/ui';
+import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
+import { Screen, Card, ZItem, Toggle, money, NText, PinSheet } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { clearSession, getToken, saveTransactionPin } from '@/lib/secureStore';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, isBiometricTxnEnabled, setBiometricTxnEnabled, authenticate } from '@/lib/biometrics';
-
-const Toggle = ({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) => {
-  const { c } = useTheme();
-  return (
-    <Pressable onPress={() => onChange(!on)} style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center' }}>
-      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
-    </Pressable>
-  );
-};
+import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 
 const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
   const { c } = useTheme();
@@ -30,28 +24,46 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
   );
 };
 
-const SettingsGroup = ({ items }: { items: any[] }) => {
+/** Uppercase group heading. One spacing rule for every section on the screen. */
+const GroupLabel = ({ children }: { children: string }) => {
   const { c } = useTheme();
   return (
-    <Card style={{ marginHorizontal: 16, marginTop: 14, paddingVertical: 2 }} pad={0}>
-      <View style={{ paddingHorizontal: 16 }}>
-        {items.map((r, i) => (
-          <ZItem
-            key={r.title}
-            icon={r.icon}
-            title={r.title}
-            sub={r.sub}
-            onPress={r.go}
-            last={i === items.length - 1}
-            right={
+    <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 22, marginTop: 20, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+      {children}
+    </Text>
+  );
+};
+
+type Row = { icon: string; title: string; sub?: string; badge?: string; hot?: boolean; go?: () => void; right?: React.ReactNode };
+
+/**
+ * A group of rows in one card. Every group on this screen renders through here,
+ * so the icon column, text baseline and divider insets line up from top to
+ * bottom — rows and toggles alike, which is what previously drifted when
+ * toggles lived in their own one-off cards.
+ */
+const Group = ({ items }: { items: Row[] }) => {
+  const { c } = useTheme();
+  return (
+    <Card pad={0} style={{ marginHorizontal: 16, paddingHorizontal: 16 }}>
+      {items.map((r, i) => (
+        <ZItem
+          key={r.title}
+          icon={r.icon}
+          title={r.title}
+          sub={r.sub}
+          onPress={r.go}
+          last={i === items.length - 1}
+          right={
+            r.right ?? (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 {r.badge && <RowBadge label={r.badge} hot={r.hot} />}
                 <ZIcon name="right" size={18} color={c.ink3} />
               </View>
-            }
-          />
-        ))}
-      </View>
+            )
+          }
+        />
+      ))}
     </Card>
   );
 };
@@ -79,7 +91,7 @@ const Me = () => {
         if (!t) return;
         try {
           const res = await apiJson('/api/kyc/status/');
-          if (res?.tier) setTier(Number(res.tier));
+          if (res?.tier !== undefined) setTier(Number(res.tier));
         } catch {
           // keep last-known tier
         }
@@ -133,6 +145,8 @@ const Me = () => {
     notify('Done', 'You can now approve payments with biometrics.');
   };
 
+  const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
+
   const handleLogout = async () => {
     // Revoke the token server-side first so a leaked copy can't be replayed;
     // best-effort — a network error must not block signing out locally.
@@ -141,25 +155,45 @@ const Me = () => {
     router.replace('/signin');
   };
 
-  const grp1: any[] = [
+  const version = Constants.expoConfig?.version ?? '1.0.0';
+
+  const account: Row[] = [
+    { icon: 'user', title: 'Personal details', sub: 'Name, photo, email & phone', go: () => router.push('/accountdetails') },
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
     { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
-    { icon: 'card', title: 'Bank Card / Account', sub: 'Add a payment option', go: () => router.push('/accountdetails') },
-    { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/junior') },
-    { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Shop now, spread the cost', badge: 'Enjoy ₦0', go: () => router.push('/bnpl') },
+    { icon: 'card', title: 'Cards', sub: 'Your virtual cards', go: () => router.push('/cards') },
   ];
-  const grp2: any[] = [
+  const preferences: Row[] = [
+    { icon: 'spark', title: 'Dark mode', sub: 'Easier on the eyes at night', right: <Toggle on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} /> },
+    { icon: 'fingerprint', title: 'Biometric sign-in', sub: 'Unlock the app with Face ID / fingerprint', right: <Toggle on={biometrics} onChange={toggleBio} /> },
+    { icon: 'faceid', title: 'Approve payments with biometrics', sub: 'Confirm transfers & bills with Face ID / fingerprint instead of your PIN', right: <Toggle on={bioTxn} onChange={toggleBioTxn} /> },
+  ];
+  const security: Row[] = [
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
     { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 4-digit PIN', go: () => router.push('/resetpin') },
-    { icon: 'help', title: 'Customer Service Center', go: () => router.push('/support') },
+  ];
+  const explore: Row[] = [
+    { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/junior') },
+    { icon: 'loan', title: 'Buy Now, Pay Later', sub: 'Shop now, spread the cost', badge: 'Enjoy ₦0', go: () => router.push('/bnpl') },
     { icon: 'gift', title: 'Invitation', sub: 'Share Zitch — rewards coming soon', go: () => router.push('/invite') },
     { icon: 'airtime', title: 'Zitch USSD', sub: 'Bank without internet', go: () => router.push('/ussd') },
+  ];
+  const about: Row[] = [
+    { icon: 'help', title: 'Help & Support', go: () => router.push('/support') },
+    { icon: 'ticket', title: 'Terms of Service', go: () => openUrl(TERMS_URL) },
+    { icon: 'insurance', title: 'Privacy Policy', go: () => openUrl(PRIVACY_URL) },
   ];
 
   return (
     <Screen pad={false} tab>
-      {/* header */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 6 }}>
+      {/* header — the whole block is the profile tap target (it previously did
+          nothing, which read as a broken screen) */}
+      <Pressable
+        onPress={() => router.push('/accountdetails')}
+        accessibilityRole="button"
+        accessibilityLabel="Your profile"
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 6 }}
+      >
         <Avatar size={50} ring={c.brand} surface={c.surface} uri={avatar} />
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
@@ -171,10 +205,10 @@ const Me = () => {
             <Text style={{ color: theme === 'dark' ? c.amber : '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
           </View>
         </View>
-        <Pressable onPress={() => router.push('/settings')} style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name="settings" size={20} color={c.ink1} />
-        </Pressable>
-      </View>
+        <View style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name="right" size={20} color={c.ink1} />
+        </View>
+      </Pressable>
 
       {/* balance */}
       <View style={{ paddingHorizontal: 20, paddingTop: 12 }}>
@@ -188,7 +222,7 @@ const Me = () => {
       </View>
 
       {/* safety tips */}
-      <Pressable onPress={() => router.push('/safetytips')} style={{ marginHorizontal: 16, marginTop: 12 }}>
+      <Pressable onPress={() => router.push('/safetytips')} style={{ marginHorizontal: 16, marginTop: 16 }}>
         <Hero style={{ padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }} watermark={0}>
           <ZIcon name="insurance" size={22} color="#fff" />
           <View style={{ flex: 1 }}>
@@ -201,48 +235,39 @@ const Me = () => {
         </Hero>
       </Pressable>
 
-      <SettingsGroup items={grp1} />
-      <SettingsGroup items={grp2} />
-
-      {/* biometrics — sign-in */}
-      <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name="fingerprint" size={20} color={c.brand} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Biometric sign-in</Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Unlock the app with Face ID / fingerprint</Text>
-        </View>
-        <Toggle on={biometrics} onChange={toggleBio} />
+      {/* Bank on WhatsApp — the channel's hero entry */}
+      <Card pad={0} style={{ marginHorizontal: 16, marginTop: 14, paddingHorizontal: 16 }}>
+        <ZItem
+          leading={<WhatsAppGlyph size={22} color="#fff" />} iconBg="#25D366"
+          title="Link WhatsApp" sub="Bank from your WhatsApp chats" last
+          onPress={() => router.push('/linkwhatsapp')}
+          right={<ZIcon name="right" size={18} color={c.ink3} />}
+        />
       </Card>
 
-      {/* biometrics — transaction approval (separate toggle) */}
-      <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name="faceid" size={20} color={c.brand} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.semibold, color: c.ink1 }}>Approve payments with biometrics</Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Confirm transfers & bills with Face ID / fingerprint instead of your PIN</Text>
-        </View>
-        <Toggle on={bioTxn} onChange={toggleBioTxn} />
-      </Card>
+      <GroupLabel>Account</GroupLabel>
+      <Group items={account} />
 
-      {/* dark mode */}
-      <Card style={{ marginHorizontal: 16, marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name="spark" size={20} color={c.brand} />
-        </View>
-        <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>Dark mode</Text>
-        <Toggle on={theme === 'dark'} onChange={(v) => setTheme(v ? 'dark' : 'light')} />
-      </Card>
+      <GroupLabel>Preferences</GroupLabel>
+      <Group items={preferences} />
+
+      <GroupLabel>Security</GroupLabel>
+      <Group items={security} />
+
+      <GroupLabel>Explore</GroupLabel>
+      <Group items={explore} />
+
+      <GroupLabel>About</GroupLabel>
+      <Group items={about} />
 
       {/* logout */}
-      <View style={{ paddingHorizontal: 16, paddingTop: 16 }}>
+      <View style={{ paddingHorizontal: 16, paddingTop: 20 }}>
         <Pressable onPress={handleLogout} style={{ paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,59,59,.1)', alignItems: 'center' }}>
           <Text style={{ color: c.red, fontFamily: font.bold }}>Log out</Text>
         </Pressable>
       </View>
+
+      <Text style={{ textAlign: 'center', color: c.ink3, fontSize: 12, marginTop: 16, fontFamily: font.regular }}>Zitch v{version}</Text>
 
       <PinSheet
         open={pinOpen}

@@ -446,6 +446,18 @@ WHATSAPP = {
     "ALLOW_CHAT_SIGNUP": False,  # resolved after _PROD is known below
 }
 
+# Public-facing links shown in the WhatsApp menu and help. Env-overridable so a
+# store listing or a support number can change without a deploy; a blank value
+# simply omits that line rather than printing a dead link.
+ZITCH_LINKS = {
+    "WEBSITE": os.environ.get("ZITCH_WEBSITE_URL", "https://zitch.ng"),
+    "APP": os.environ.get("ZITCH_APP_URL", "https://zitch.ng/app"),
+    # Support handle as a bare MSISDN (2348…); rendered as a wa.me deep link.
+    # Defaults to the business number so "chat support" always resolves.
+    "SUPPORT_WA": os.environ.get("ZITCH_SUPPORT_WHATSAPP", ""),
+    "SUPPORT_EMAIL": os.environ.get("ZITCH_SUPPORT_EMAIL", "support@zitch.ng"),
+}
+
 # WhatsApp Flows — the secure PIN pad. When a published Flow ID + our RSA private
 # key are set (and the WhatsApp channel is live), a money confirm sends an
 # encrypted Flow whose masked PIN field never reaches the chat; the submit hits
