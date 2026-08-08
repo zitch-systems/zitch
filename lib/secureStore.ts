@@ -119,8 +119,23 @@ export async function markBiometricPayOffered(): Promise<void> {
   await AsyncStorage.setItem(BIOPAY_OFFERED_KEY, '1');
 }
 
+// The signed-in user's display name, remembered for the sign-in screen so a
+// returning user (especially one unlocking with a fingerprint, who never types
+// an identifier) is greeted by name instead of a blank "Welcome back". Not a
+// credential — a name, in plain AsyncStorage — and cleared on sign-out.
+const DISPLAY_NAME_KEY = 'z-display-name';
+
+export async function saveDisplayName(name: string): Promise<void> {
+  const clean = (name || '').trim();
+  if (clean) await AsyncStorage.setItem(DISPLAY_NAME_KEY, clean);
+}
+
+export async function getDisplayName(): Promise<string> {
+  return (await AsyncStorage.getItem(DISPLAY_NAME_KEY)) || '';
+}
+
 export async function clearSession(): Promise<void> {
   await clearToken();
   await clearTransactionPin();
-  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', BIOPAY_OFFERED_KEY]);
+  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', BIOPAY_OFFERED_KEY, DISPLAY_NAME_KEY]);
 }

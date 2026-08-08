@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import { publicPost } from '@/lib/api';
-import { saveToken, getToken } from '@/lib/secureStore';
+import { saveToken, getToken, getDisplayName } from '@/lib/secureStore';
 import { unlockSession } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -18,18 +18,21 @@ const Signin = () => {
   const [ischecking, setIsChecking] = useState(false);
   const [form, setForm] = useState({ email: '', password: '' });
   const [bioReady, setBioReady] = useState(false);
+  const [knownName, setKnownName] = useState('');
   const autoPrompted = useRef(false);
 
   // Offer instant sign-in only if the user enabled biometrics, the device
   // supports them, and a previous session token is still on the device.
   useEffect(() => {
     (async () => {
-      const [enabled, available, token] = await Promise.all([
+      const [enabled, available, token, name] = await Promise.all([
         isBiometricEnabled(),
         isBiometricAvailable(),
         getToken(),
+        getDisplayName(),
       ]);
       setBioReady(enabled && available && !!token);
+      setKnownName(name);
     })();
   }, []);
 
@@ -101,7 +104,9 @@ const Signin = () => {
     <Screen>
       <View style={{ alignItems: 'center', marginTop: 18, marginBottom: 26 }}>
         <ZMark size={56} />
-        <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Welcome back</Text>
+        <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>
+          {knownName ? `Welcome back, ${knownName}` : 'Welcome back'}
+        </Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular, textAlign: 'center' }}>
           Sign in to continue to Zitch
         </Text>

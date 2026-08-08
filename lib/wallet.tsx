@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
-import { getToken } from '@/lib/secureStore';
+import { getToken, saveDisplayName } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
 
@@ -127,7 +127,14 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
 
       if (balRes.status === 'fulfilled' && balRes.value?.success) {
         setBalance(Number(balRes.value.wallet ?? 0));
-        setFirstName(String(balRes.value.user_first_name ?? balRes.value.user_last_name ?? ''));
+        // `||`, not `??`: the API returns "" for a missing name, which `??` keeps.
+        // Fall back through last name, then the email local-part, so the app
+        // never greets a signed-in customer as "there".
+        const v = balRes.value;
+        const named = String(v.user_first_name || v.user_last_name
+          || String(v.user_email || '').split('@')[0] || '');
+        setFirstName(named);
+        void saveDisplayName(named);
         setAvatar(String(balRes.value.user_avatar ?? ''));
         setAccountNumber(String(balRes.value.account_number ?? ''));
         setAccountName(String(balRes.value.account_name ?? ''));

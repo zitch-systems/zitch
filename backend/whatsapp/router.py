@@ -23,6 +23,8 @@ from utility.models import CablePlan, DataPlan
 from utility.providers import (payout_resolve_account, send_sms, sms_live, vtu_purchase,
                                vtu_verify_customer)
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
+from utility import wema as wema_provider
+from wallet import views as wallet_views
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
     DuplicateTransaction,
@@ -33,7 +35,7 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import FLOW_PIN_STATE, PIN_SCREEN, sign_flow_token
+from .flows import FLOW_PIN_STATE, PIN_SCREEN, sign_flow_token, sign_onboarding_token
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
 
@@ -50,7 +52,8 @@ MENU = (
     "3️⃣  📱 Airtime / Data\n"
     "4️⃣  💡 Pay a bill\n"
     "5️⃣  💱 Convert currency\n"
-    "6️⃣  🏦 Add money\n\n"
+    "6️⃣  🏦 Add money\n"
+    "7️⃣  🧾 My account details\n\n"
     "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
 UNLINKED = (
@@ -328,7 +331,7 @@ def is_awaiting_pin(msisdn: str) -> bool:
     if pa and pa.state in ("pin", FLOW_PIN_STATE):
         return True
     ob = _current_onboarding(msisdn)
-    return bool(ob and ob.step in ("pin", "pin_confirm"))
+    return bool(ob and ob.step in ("pin", "pin_confirm", FLOW_PIN_STATE))
 
 
 def is_awaiting_bvn(msisdn: str) -> bool:
@@ -422,6 +425,16 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if pa is not None:
         return _advance(pa, user, msisdn, text)
 
+    # A bare 4-6 digit message with nothing expecting one is very often a PIN
+    # typed out of habit. It is already masked in our log, but it is still in
+    # the customer's own thread and only they can remove it — WhatsApp gives a
+    # business no way to delete or expire a message it received.
+    if re.fullmatch(r"\d{4}|\d{6}", low):
+        return reply(msisdn, "⚠️ That looks like a *PIN or code*, and nothing here was waiting for one.\n\n"
+                             "We never ask for your PIN in this chat — please delete that message "
+                             "(press and hold → Delete → *Delete for everyone*).\n\n"
+                             "Reply \"menu\" for options.")
+
     # Fresh command (keyword or menu number).
     if low in ("balance", "bal", "1"):
         return _do_balance(user, msisdn)
@@ -444,6 +457,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _start_service_menu(user, msisdn, "bill")
     if low in ("5", "convert", "conversion"):
         return _start_convert(user, msisdn)
+    if low in ("7", "account", "my account", "account details", "my details", "details"):
+        return _do_account_details(user, msisdn)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
@@ -537,6 +552,46 @@ def _start_onboarding(msisdn: str) -> None:
     reply(msisdn, "Let's set up your Zitch account \U0001f389\n\nWhat's your *first name*?")
 
 
+def _pin_in_chat_allowed() -> bool:
+    """A PIN may only be typed into the chat in dev/test. Production never asks:
+    WhatsApp has no delete-or-expire for a message a business received, so a PIN
+    sent as chat text stays in the customer's history for good."""
+    return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
+
+
+def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
+    """Collect the signup PIN over the most private channel available, in the same
+    order the money flows use:
+
+    1. The secure Flow — a native masked field, submitted encrypted. The PIN is
+       never a chat message, so there is nothing left in the thread afterwards.
+       WhatsApp has no way to delete or expire a message once sent, so not sending
+       one is the only thing that actually keeps a PIN out of the history.
+    2. Dev/test only: the chat, masked in our log.
+    3. Production without Flows: no PIN in chat, ever. The account is created
+       without one and the PIN is set in the app, where it belongs.
+    """
+    if flows_live():
+        _onboard_to(ob, FLOW_PIN_STATE)
+        res = send_flow(
+            msisdn, sign_onboarding_token(ob),
+            header="Set your PIN", body="Choose the 4-digit PIN you'll use to authorise payments.",
+            screen=PIN_SCREEN,
+            screen_data={"summary": "Create a 4-digit PIN to authorise payments", "error": ""},
+        )
+        if res.get("success"):
+            return reply(msisdn, "🔐 Tap the secure screen above to set your *4-digit PIN*. "
+                                 "It's typed privately and never appears in this chat.")
+        log.warning("wa_onboarding_pin_flow_failed msisdn=%s", msisdn)
+    if _pin_in_chat_allowed():
+        _onboard_to(ob, "pin")
+        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+    # No secure channel: finish the signup without a PIN rather than ask for one
+    # in a chat that keeps it forever. Everything that spends money already
+    # requires a PIN, so the account is simply not spendable until it is set.
+    return _finish_onboarding(ob, msisdn, "")
+
+
 def _onboard_to(ob: WaOnboarding, step: str) -> None:
     ob.step = step
     ob.expires_at = timezone.now() + ONBOARD_TTL
@@ -551,6 +606,15 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
         return reply(msisdn, "No problem — signup cancelled. Reply *1* to start again anytime.")
+    if ob.step == FLOW_PIN_STATE:
+        # The PIN belongs in the secure screen, never here. If they typed one
+        # anyway it is already masked in our log — but it is still sitting in
+        # their own chat, and only they can remove it.
+        if re.fullmatch(r"\d{4,6}", val):
+            return reply(msisdn, "🔐 Please set your PIN on the *secure screen* above — not in the chat. "
+                                 "Delete the message you just sent (press and hold → Delete → "
+                                 "*Delete for everyone*), then tap the secure screen.")
+        return reply(msisdn, "🔐 Tap the *secure screen* above to set your PIN, or reply \"cancel\".")
     if ob.step == "first_name":
         if len(val) < 2:
             return reply(msisdn, "Please enter your first name.")
@@ -572,8 +636,7 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
             # address would make reset codes ambiguous. Refuse here, at entry.
             return reply(msisdn, "That email is already on a Zitch account. Enter a different email address.")
         ob.payload["email"] = email
-        _onboard_to(ob, "pin")
-        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+        return _arm_onboarding_pin(ob, msisdn)
     if ob.step == "pin":
         if not re.fullmatch(r"\d{4}", val):
             return reply(msisdn, "Your PIN must be exactly 4 digits. Try again.")
@@ -608,7 +671,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         email_verified=False,          # chat-collected: unverified until the app OTP
     )
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
-    user.set_transaction_pin(pin)
+    if pin:
+        user.set_transaction_pin(pin)
     user.save()
     get_or_create_wallet(user)
     WhatsAppLink.objects.create(
@@ -620,10 +684,27 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
         f"Your current transfer limit is *₦{user.daily_transfer_limit:,.0f}/day*. "
         "You can pay bills, buy airtime & data, and check your balance here.\n\n"
-        "To raise your limits: download the *Zitch app*, tap *Forgot password* "
+        + ("" if pin else
+           "🔐 Set your *transaction PIN* in the Zitch app before you send money — "
+           "we never collect a PIN in this chat.\n\n")
+        + "To raise your limits: download the *Zitch app*, tap *Forgot password* "
         "with this phone number to set your password, then confirm your email "
         "and verify your identity.\n\n" + MENU,
     )
+    # Roll straight into minting their funding NUBAN — a wallet you can't pay
+    # into isn't much of an account. Skipped quietly when the bank integration
+    # is off; option 6 offers the same setup any time.
+    if wallet_views._wema_funding_enabled():
+        _start_add_account(user, msisdn, after_signup=True)
+
+
+def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
+    """Complete a signup whose PIN was set in the secure Flow. Returns the terminal
+    message for the Flow's success screen; the chat welcome + account setup are
+    sent by _finish_onboarding as usual."""
+    msisdn = ob.msisdn
+    _finish_onboarding(ob, msisdn, pin)
+    return "✅ PIN set — your Zitch account is ready. Head back to the chat."
 
 
 # --------------------------------------------------------------------------- #
@@ -658,19 +739,119 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
 
 def _do_add_money(user, msisdn: str) -> None:
     """Show the user's dedicated Zitch account for bank-transfer funding (credited
-    automatically by the reconcile_wema poller). Setting up that account needs a
-    BVN/NIN + OTP round-trip with our licensed bank partner (Wema), which runs in the
-    Zitch app — so a user without an account yet is pointed there."""
+    automatically by the reconcile_wema poller) — or, if it hasn't been minted
+    yet, run the BVN/NIN + OTP round-trip with our licensed bank partner right
+    here in the chat."""
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
-    return reply(
-        msisdn,
-        "🏦 *Add money*\n\nTo fund by bank transfer you'll need your dedicated Zitch "
-        "account. Set it up in the *Zitch app* (Home → *Add money*): we verify your "
-        "BVN or NIN with our licensed bank partner and issue your account in a moment. "
-        'Once it\'s ready, come back here and reply "add money" to see it.',
+    return _start_add_account(user, msisdn)
+
+
+def _do_account_details(user, msisdn: str) -> None:
+    """Menu 7: who Zitch thinks you are, plus the funding account (or the way
+    to mint one)."""
+    wallet = get_or_create_wallet(user)
+    lines = [
+        "🧾 *My account details*\n",
+        f"👤 {user.get_full_name() or user.first_name or '—'}",
+        f"📱 {user.phone}",
+    ]
+    if user.email:
+        lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
+    lines.append(f"⭐ Tier {user.tier} · up to ₦{user.transaction_limit:,.0f}/transaction")
+    reply(msisdn, "\n".join(lines))
+    if wallet.account_number:
+        return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
+    return reply(msisdn, "You don't have a funding account number yet — reply *6* (Add money) to set one up in a minute.")
+
+
+# --------------------------------------------------------------------------- #
+# add_account — mint the dedicated Wema NUBAN without leaving the chat.
+# Same two-step contract as the app (identity → bank OTP), driving the same
+# shared code: _start_wema_attempt / complete_wema_provisioning in wallet.views.
+# The BVN/NIN input state is masked out of the message log by is_awaiting_bvn.
+# --------------------------------------------------------------------------- #
+def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
+    if not wallet_views._wema_funding_enabled():
+        return reply(msisdn, "🏦 Account setup isn't available right now — please try again later.")
+    _clear_actions(msisdn)
+    PendingAction.objects.create(
+        user=user, msisdn=msisdn, action_type="add_account", state="id_type",
+        payload={}, expires_at=timezone.now() + FLOW_TTL,
     )
+    intro = ("🏦 Let's get you a *personal Zitch account number* so you can add money "
+             "by bank transfer.\n\n" if not after_signup else
+             "One more thing — let's mint your *personal Zitch account number* so you "
+             "can add money by bank transfer.\n\n")
+    reply(msisdn, intro +
+          "Our licensed bank partner needs one ID to open it:\n"
+          "1️⃣  BVN\n2️⃣  NIN\n\nReply *1* or *2* (or \"cancel\" to do this later).")
+
+
+def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    val = text.strip()
+    if pa.state == "id_type":
+        low = val.lower()
+        if low in ("1", "bvn"):
+            pa.payload["id_type"] = "bvn"
+        elif low in ("2", "nin"):
+            pa.payload["id_type"] = "nin"
+        else:
+            return reply(msisdn, "Reply *1* to use your BVN or *2* to use your NIN.")
+        pa.state = "bvn"  # the masked identity-entry state, whichever ID was picked
+        pa.expires_at = timezone.now() + FLOW_TTL
+        pa.save(update_fields=["payload", "state", "expires_at"])
+        which = pa.payload["id_type"].upper()
+        return reply(msisdn, f"Enter your 11-digit *{which}*. It goes only to our bank partner to open your account — it never appears in this chat's history.")
+    if pa.state == "bvn":
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) != 11:
+            return reply(msisdn, f"That should be exactly 11 digits. Enter your {pa.payload.get('id_type', 'BVN').upper()} again, or reply \"cancel\".")
+        using_bvn = pa.payload.get("id_type") == "bvn"
+        res, identity_error = wallet_views._start_wema_attempt(
+            user, digits if using_bvn else "", "" if using_bvn else digits)
+        if identity_error:
+            _clear_actions(msisdn)
+            return reply(msisdn, f"⚠️ {identity_error}")
+        if not res.get("success"):
+            # The bank may already hold an account for this customer — adopt it
+            # instead of dead-ending (same recovery the app performs).
+            recovered = wallet_views._adopt_existing_wema_account(
+                user, using_bvn=using_bvn, reason=res.get("message", ""))
+            if recovered is not None:
+                _clear_actions(msisdn)
+                return _send_account_details(msisdn, get_or_create_wallet(user),
+                                             intro="✅ *Found it!* Your Zitch account was already set up")
+            _clear_actions(msisdn)
+            return reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
+        pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
+        pa.payload["using_bvn"] = using_bvn
+        pa.state = "otp"
+        pa.expires_at = timezone.now() + FLOW_TTL
+        pa.save(update_fields=["payload", "state", "expires_at"])
+        return reply(msisdn, "📲 Our bank partner just sent a code to your phone by SMS. Enter it here to finish. (Reply *resend* if it doesn't arrive.)")
+    if pa.state == "otp":
+        if val.lower() == "resend":
+            res = wema_provider.resend_wallet_otp(user.phone or "", pa.payload.get("tracking_id", ""),
+                                                  bvn=bool(pa.payload.get("using_bvn")))
+            if res.get("success"):
+                return reply(msisdn, "📲 Code re-sent — enter it here.")
+            return reply(msisdn, "⚠️ " + (res.get("message") or "Couldn't resend the code — try again shortly."))
+        payload, status = wallet_views.complete_wema_provisioning(
+            user, val, pa.payload.get("tracking_id", ""))
+        if payload.get("success"):
+            _clear_actions(msisdn)
+            _send_account_details(msisdn, get_or_create_wallet(user),
+                                  intro="🎉 *Your Zitch account number is ready!*")
+            return
+        if status == 400:   # expired / mismatched attempt: retrying the same code can't help
+            _clear_actions(msisdn)
+            return reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
+        return reply(msisdn, "⚠️ " + (payload.get("message") or "That code didn't work.")
+                     + ' Try again, reply *resend* for a new code, or "cancel".')
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
 
 
 
@@ -701,6 +882,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "cable": _advance_cable,
         "convert": _advance_convert,
         "pick_service": _advance_pick_service,
+        "add_account": _advance_add_account,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)

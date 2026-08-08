@@ -21,7 +21,8 @@ log = logging.getLogger("whatsapp")
 
 PIN_SCREEN = "PIN_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
-FLOW_PIN_STATE = "flow_pin"   # PendingAction.state while a secure Flow is armed
+FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
+_OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 
 
 # --------------------------------------------------------------------------- #
@@ -37,6 +38,33 @@ def sign_flow_token(pa) -> str:
     the signature binds the id to the number, so a token can't be edited to point
     at another user's action even if the encrypted channel were somehow bypassed."""
     return f"{pa.id}.{_sig(f'{pa.id}:{pa.msisdn}')}"
+
+
+def sign_onboarding_token(ob) -> str:
+    """Signed handle for a signup in its PIN step. Prefixed so it can never be
+    confused with a money-action token: the two resolve through different
+    lookups, and a token for one is rejected by the other."""
+    return f"{_OB_PREFIX}{ob.id}.{_sig(f'{_OB_PREFIX}{ob.id}:{ob.msisdn}')}"
+
+
+def resolve_onboarding_token(token: str):
+    """Return the live WaOnboarding for a signed onboarding flow_token, or None
+    if it is malformed, forged, expired, or no longer in the Flow-PIN step."""
+    from .models import WaOnboarding
+
+    raw = (token or "").strip()
+    if not raw.startswith(_OB_PREFIX) or "." not in raw:
+        return None
+    head, _, sig = raw.partition(".")
+    pid = head[len(_OB_PREFIX):]
+    if not pid.isdigit():
+        return None
+    ob = WaOnboarding.objects.filter(id=int(pid)).first()
+    if ob is None or ob.step != FLOW_PIN_STATE or ob.expired:
+        return None
+    if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
+        return None
+    return ob
 
 
 def resolve_flow_token(token: str):
@@ -93,6 +121,17 @@ def handle_flow_request(payload: dict) -> dict:
 
     token = payload.get("flow_token", "")
 
+    # A signup setting its PIN uses the same published screen, addressed by a
+    # prefixed token. Handled first so an onboarding token never falls through
+    # to the money-action lookup.
+    if str(token).startswith(_OB_PREFIX):
+        ob = resolve_onboarding_token(token)
+        if ob is None:
+            return _success_screen("This signup expired. Send us a message to start again.")
+        if action == "data_exchange":
+            return _submit_onboarding_pin(ob, data)
+        return _pin_screen(_ob_summary(ob))
+
     if action == "INIT":
         pa = resolve_flow_token(token)
         if pa is None:
@@ -105,6 +144,44 @@ def handle_flow_request(payload: dict) -> dict:
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
     pa = resolve_flow_token(token)
     return _pin_screen(pa.payload.get("flow_summary", "")) if pa else _success_screen("Session ended.")
+
+
+def _ob_summary(ob) -> str:
+    return ("Re-enter your new PIN to confirm" if ob.payload.get("flow_pin_hash")
+            else "Create a 4-digit PIN to authorise payments")
+
+
+def _submit_onboarding_pin(ob, data: dict) -> dict:
+    """Set-then-confirm across two data_exchange round-trips on the SAME published
+    screen, so the signup PIN is typed into the encrypted Flow and never becomes a
+    chat message. The first submit holds only a hash; the second must match it."""
+    import re
+
+    from django.contrib.auth.hashers import check_password, make_password
+
+    from .router import finish_onboarding_from_flow
+
+    pin = str(data.get("pin", "")).strip()
+    if not re.fullmatch(r"\d{4}", pin):
+        return _pin_screen(_ob_summary(ob), error="Your PIN must be exactly 4 digits.")
+
+    held = ob.payload.get("flow_pin_hash") or ""
+    if not held:
+        ob.payload["flow_pin_hash"] = make_password(pin)   # never the raw PIN
+        ob.save(update_fields=["payload"])
+        return _pin_screen(_ob_summary(ob))
+
+    if not check_password(pin, held):
+        ob.payload["flow_pin_hash"] = ""                   # start the pair over
+        ob.save(update_fields=["payload"])
+        return _pin_screen(_ob_summary(ob), error="Those didn't match — set your PIN again.")
+
+    try:
+        message = finish_onboarding_from_flow(ob, pin)
+    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+        log.exception("onboarding flow completion failed for ob=%s", ob.id)
+        return _success_screen("Something went wrong finishing your signup. Send us a message to try again.")
+    return _success_screen(message)
 
 
 def _submit_pin(token: str, data: dict) -> dict:

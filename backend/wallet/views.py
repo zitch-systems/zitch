@@ -304,22 +304,18 @@ def wema_wallet_create(request):
               message=res.get("message", "Enter the OTP sent to your phone"))
 
 
-@api
-@ratelimit("wema_wallet_verify", limit=10, window=60)
-@require_user
-def wema_wallet_verify_otp(request):
-    """POST /api/wallet/wema/verify-otp/
-       {access_token, otp, tracking_id, using_bvn?, bvn?, nin?}
-    -> {success, account_number, account_name, bank_name, tier, bvn_verified, nin_verified}
+def complete_wema_provisioning(user, otp: str, tracking_id: str,
+                               echoed_identity: str = "") -> tuple[dict, int]:
+    """Validate a Wema account-creation OTP and finish provisioning: fetch and
+    persist the NUBAN, lift the PND hold, and (name-match permitting) bind the
+    verified identity. Returns (payload, http_status); payload["success"] says
+    which. Shared by the app endpoint below and the WhatsApp add-account flow,
+    so the AML-sensitive logic lives exactly once.
 
-    Step 2: validate the OTP, then fetch + persist the created NUBAN (marked with a
-    WEMA account_reference so the reconcile poller sweeps it for deposits). The
-    identity and its type come from the server-side initiation record, never from
-    client claims in this second request.
+    The identity and its type come from the server-side initiation record, never
+    from caller claims; echoed_identity, when supplied by older app clients, must
+    match that record or the request is rejected loudly.
     """
-    if not _wema_funding_enabled():
-        return fail("Bank account creation is not available right now")
-    user = request.user_obj
     wallet = get_or_create_wallet(user)
     # NOTE: no early return when a NUBAN already exists. The bank's Account Creation
     # callback can provision it before the customer finishes the OTP step, and an
@@ -327,26 +323,22 @@ def wema_wallet_verify_otp(request):
     # working account permanently stuck at the tier-0 limit. Provisioning is skipped
     # when it is already done; identity verification still runs.
     already = bool(wallet.account_number)
-    otp = (request.data.get("otp") or "").strip()
-    tracking_id = (request.data.get("tracking_id") or "").strip()
     if not otp or not tracking_id:
-        return fail("Enter the OTP sent to your phone")
+        return {"success": False, "message": "Enter the OTP sent to your phone"}, 400
     attempt = WemaProvisioningAttempt.objects.filter(
         user=user, tracking_id=tracking_id, status=WemaProvisioningAttempt.PENDING,
     ).first()
     if attempt is None or attempt.expired:
-        return fail("This verification request has expired. Start account setup again.", status=400)
+        return {"success": False, "message": "This verification request has expired. Start account setup again."}, 400
     using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     # Older clients echo the raw value. It is not required, but if present it must
     # match the initiation record so tampering is rejected loudly rather than ignored.
-    echoed = "".join(ch for ch in (
-        request.data.get("bvn" if using_bvn else "nin") or ""
-    ) if ch.isdigit())
+    echoed = "".join(ch for ch in (echoed_identity or "") if ch.isdigit())
     if echoed and not hmac.compare_digest(hash_identifier(echoed), attempt.identity_hash):
-        return fail("Identity details do not match this verification request.", status=400)
+        return {"success": False, "message": "Identity details do not match this verification request."}, 400
     val = wema_provider.validate_wallet_otp(user.phone or "", otp, tracking_id, bvn=using_bvn)
     if not val.get("success"):
-        return fail(val.get("message", "OTP verification failed"), status=502)
+        return {"success": False, "message": val.get("message", "OTP verification failed")}, 502
     if already:
         # Provisioned already (by an earlier verify, or by the bank's Account Creation
         # callback). Skip the provisioning write. The holder name is NOT read back from
@@ -356,8 +348,8 @@ def wema_wallet_verify_otp(request):
     else:
         acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
         if not acct.get("success") or not acct.get("account_number"):
-            return fail(acct.get("message", "Your account is being created — try again shortly"),
-                        status=502)
+            return {"success": False,
+                    "message": acct.get("message", "Your account is being created — try again shortly")}, 502
         wallet, outcome = provision_wema_account(
             user, account_number=acct["account_number"],
             account_name=acct.get("account_name", ""), bank_name=acct.get("bank_name", ""),
@@ -365,8 +357,8 @@ def wema_wallet_verify_otp(request):
         if outcome.startswith("conflict"):
             log.warning("wema_account_conflict user=%s account=%s outcome=%s",
                         user.id, acct["account_number"], outcome)
-            return fail("We couldn't finish setting up your account. Please contact support.",
-                        status=409)
+            return {"success": False,
+                    "message": "We couldn't finish setting up your account. Please contact support."}, 409
         # Lift the Post-No-Debit hold ALAT places on a new Tier-1 NUBAN — until it's
         # lifted the account can be funded but not debited, so a payout/VAS from the
         # user's own NUBAN would fail. Best-effort: the account is already usable for
@@ -434,8 +426,8 @@ def wema_wallet_verify_otp(request):
         except IntegrityError:
             attempt.status = WemaProvisioningAttempt.FAILED
             attempt.save(update_fields=["status", "updated"])
-            return fail("This identity is already linked to another account. Contact support.",
-                        status=409)
+            return {"success": False,
+                    "message": "This identity is already linked to another account. Contact support."}, 409
     attempt.status = WemaProvisioningAttempt.VERIFIED
     attempt.save(update_fields=["status", "updated"])
     # Read back the tier the BANK holds the NUBAN at. It runs its own ladder with its
@@ -446,9 +438,33 @@ def wema_wallet_verify_otp(request):
         sync_bank_tier(wallet)
     except Exception:                                        # noqa: BLE001
         log.warning("wema_bank_tier_sync_failed user=%s", user.id, exc_info=True)
-    return ok(**_account_payload(
+    return {"success": True, **_account_payload(
         wallet, message="Your Zitch account is ready", tier=user.tier,
-        bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
+        bvn_verified=user.bvn_verified, nin_verified=user.nin_verified)}, 200
+
+
+
+@api
+@ratelimit("wema_wallet_verify", limit=10, window=60)
+@require_user
+def wema_wallet_verify_otp(request):
+    """POST /api/wallet/wema/verify-otp/
+       {access_token, otp, tracking_id, using_bvn?, bvn?, nin?}
+    -> {success, account_number, account_name, bank_name, tier, bvn_verified, nin_verified}
+
+    Step 2 of account setup — a thin HTTP shell over complete_wema_provisioning.
+    """
+    if not _wema_funding_enabled():
+        return fail("Bank account creation is not available right now")
+    payload, status = complete_wema_provisioning(
+        request.user_obj,
+        (request.data.get("otp") or "").strip(),
+        (request.data.get("tracking_id") or "").strip(),
+        echoed_identity=(request.data.get("bvn") or request.data.get("nin") or ""),
+    )
+    if payload.get("success"):
+        return ok(**payload)
+    return fail(payload.get("message", "OTP verification failed"), status=status)
 
 
 @api
