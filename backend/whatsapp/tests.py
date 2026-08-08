@@ -1585,3 +1585,66 @@ class FallbackSenderLoggingTests(TestCase):
         with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
             reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
         self.assertEqual(health.whatsapp_diagnostics()["outbound"]["send_failures_last_hour"], 1)
+
+
+class InlineOverrideTests(TestCase):
+    """WHATSAPP_PROCESS_INLINE must be settable from the environment. The web-drain
+    daemon thread is reaped without a trace when a hobby-tier instance recycles
+    after the response — attempts stay 0, nothing is logged — and with no worker
+    service the queue then just sits. Inline is the one execution context such a
+    host guarantees; before the override, production had no way to choose it."""
+
+    WA = {"MODE": "live", "VERIFY_TOKEN": "v", "TOKEN": "t", "APP_SECRET": "shh",
+          "BASE_URL": "x", "PHONE_NUMBER_ID": "phone-1",
+          "BUSINESS_NUMBER": "2348000000000"}
+
+    def _post_hi(self):
+        event = {"entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": "phone-1"},
+            "messages": [{"id": "wamid.inline-1", "from": MSISDN,
+                          "type": "text", "text": {"body": "menu"}}]}}]}]}
+        body = json.dumps(event).encode()
+        sig = hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+        return Client().post("/webhooks/whatsapp", data=body,
+                             content_type="application/json",
+                             HTTP_X_HUB_SIGNATURE_256=f"sha256={sig}")
+
+    def test_env_true_turns_inline_on_in_production(self):
+        from zitch_api.settings import env_bool
+
+        with patch.dict("os.environ", {"WHATSAPP_PROCESS_INLINE": "true"}):
+            self.assertTrue(env_bool("WHATSAPP_PROCESS_INLINE", False))
+
+    def test_unset_keeps_the_dev_default(self):
+        from zitch_api.settings import env_bool
+
+        self.assertTrue(env_bool("WHATSAPP_PROCESS_INLINE", True))
+        self.assertFalse(env_bool("WHATSAPP_PROCESS_INLINE", False))
+
+    def test_inline_processing_answers_within_the_webhook_request(self):
+        """One signed webhook POST, no worker, no drain thread — the reply must
+        already be in the OUT log when the response returns."""
+        with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True):
+            res = self._post_hi()
+        self.assertEqual(res.status_code, 200)
+        row = WaMessageLog.objects.filter(direction=WaMessageLog.IN,
+                                          msisdn=MSISDN).latest("created")
+        self.assertIsNotNone(row.processed_at)
+        self.assertTrue(WaMessageLog.objects.filter(
+            direction=WaMessageLog.OUT, msisdn=MSISDN).exists())
+
+    def test_a_router_crash_in_production_inline_does_not_500_the_webhook(self):
+        """Meta redelivers on 500 for a row that is already queued and counted, and
+        enough 500s get the callback throttled. In production inline mode the job
+        function records the failure on the row instead of raising."""
+        with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True,
+                               DEBUG=False, TESTING=False), \
+             patch("whatsapp.jobs.handle_inbound",
+                   side_effect=RuntimeError("router bug")):
+            res = self._post_hi()
+        self.assertEqual(res.status_code, 200)
+        row = WaMessageLog.objects.filter(direction=WaMessageLog.IN,
+                                          msisdn=MSISDN).latest("created")
+        self.assertIsNone(row.processed_at)
+        self.assertEqual(row.processing_attempts, 1)
+        self.assertTrue(row.processing_error)
