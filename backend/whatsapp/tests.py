@@ -1519,3 +1519,69 @@ class OutboundSendFailureTests(TestCase):
 
         verdict = health._verdict("live", 0, False, 0, [], accepted_ever=True)
         self.assertNotIn("WHATSAPP_TOKEN", verdict)
+
+
+class FallbackSenderLoggingTests(TestCase):
+    """reply() records whether Meta accepted the send; the senders that FALL BACK
+    did not. They attempted a send, dropped the result, and wrote a row saying
+    "replied" either way — so `send_failures` undercounted, and worst on the paths
+    a new user hits first: the menu goes out through reply_list/reply_buttons, so a
+    dead token produced a spotless outbound log for the very first reply missed."""
+
+    class _Resp:
+        def __init__(self, ok, status, payload):
+            self.ok, self.status_code, self.content = ok, status, b"x"
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def _refused(self):
+        return self._Resp(False, 401, {"error": {"code": 190, "type": "OAuthException"}})
+
+    def _live(self):
+        return patch.multiple("whatsapp.providers",
+                              wa_live=lambda: True,
+                              _cfg=lambda: {"BASE_URL": "https://graph.facebook.com/v20.0",
+                                            "PHONE_NUMBER_ID": "1", "TOKEN": "t"})
+
+    def _last_error(self):
+        return WaMessageLog.objects.filter(
+            direction=WaMessageLog.OUT).latest("created").processing_error
+
+    def test_reply_list_records_a_refused_send(self):
+        from .router import reply_list
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
+        self.assertEqual(self._last_error(), "190")
+
+    def test_reply_buttons_records_a_refused_send(self):
+        from .router import reply_buttons
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_buttons("2348010000000", "Confirm?", [("yes", "Yes")])
+        self.assertEqual(self._last_error(), "190")
+
+    def test_reply_image_records_a_refused_send(self):
+        from .router import reply_image
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_image("2348010000000", None, "MTN")
+        self.assertEqual(self._last_error(), "190")
+
+    def test_a_mocked_channel_still_records_a_clean_row(self):
+        """Not live => the send is mocked and succeeds; the row must stay clean or
+        every dev/sandbox reply would read as a failure."""
+        from .router import reply_list
+
+        reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
+        self.assertEqual(self._last_error(), "")
+
+    def test_the_menu_path_is_counted_by_diagnostics(self):
+        from . import health
+        from .router import reply_list
+
+        with self._live(), patch("whatsapp.providers.requests.post", return_value=self._refused()):
+            reply_list("2348010000000", "Menu", [("1", "Airtime", "")])
+        self.assertEqual(health.whatsapp_diagnostics()["outbound"]["send_failures_last_hour"], 1)

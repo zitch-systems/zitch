@@ -366,6 +366,24 @@ class WebPagesTests(TestCase):
         self.assertIn(integrations["whatsapp_mode"], {"disabled", "sandbox", "live"})
         self.assertIn("whatsapp_live", integrations)
         self.assertIn("whatsapp_webhook_reached", integrations)
+        self.assertIn("whatsapp_outbound_failing", integrations)
+
+    def test_healthz_separates_not_receiving_from_cannot_reply(self):
+        """An expired token breaks only the outbound leg, so `reached` stays true
+        while the bot is mute. /whatsapp-diagnose reports that behind an admin
+        login — which an operator debugging from a phone does not have."""
+        from whatsapp.models import WaMessageLog
+
+        def reading():
+            return Client().get("/healthz").json()["integrations"]["whatsapp_outbound_failing"]
+
+        self.assertIsNone(reading())          # nothing sent: not evidence of health
+        WaMessageLog.objects.create(msisdn="2348010000000", direction=WaMessageLog.OUT,
+                                    text="a", processing_error="190")
+        self.assertTrue(reading())
+        WaMessageLog.objects.create(msisdn="2348010000000", direction=WaMessageLog.OUT,
+                                    text="b")
+        self.assertFalse(reading())
 
     def test_healthz_carries_no_secret(self):
         """It is public. Every value is a boolean or a provider name."""
