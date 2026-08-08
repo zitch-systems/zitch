@@ -157,6 +157,18 @@
   .chat-input input:focus{border-color:var(--teal);}
 
   .kill{display:flex;justify-content:space-between;gap:16px;align-items:center;}
+  /* labelled form rows — provider config, and anything else that is a short
+     list of labelled inputs. Grid rather than flex so every label column is the
+     same width and the inputs line up down the card. */
+  .form-rows{display:grid;gap:10px;}
+  .form-rows .fr{display:grid;grid-template-columns:92px 1fr;align-items:center;gap:12px;}
+  .form-rows .fr>span{font-size:12.5px;font-weight:600;color:var(--navy);}
+  .form-rows .fr input,.form-rows .fr select{font:inherit;font-size:13px;border:1.5px solid var(--line);border-radius:9px;padding:8px 11px;outline:none;background:#fff;width:100%;min-width:0;}
+  .form-rows .fr input:focus,.form-rows .fr select:focus{border-color:var(--teal);}
+  .form-rows .fr input:disabled,.form-rows .fr select:disabled{background:#F4F7F8;color:#7B96A0;cursor:not-allowed;}
+  .admin-links{display:flex;flex-wrap:wrap;gap:8px;}
+  .admin-links a{font-size:12.5px;font-weight:600;color:var(--navy);border:1.5px solid var(--line);border-radius:9px;padding:7px 11px;text-decoration:none;}
+  .admin-links a:hover{border-color:var(--teal);color:var(--teal-deep);}
   .f-label{display:block;font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--t3);margin:14px 0 7px;}
   .f-input{width:100%;font:inherit;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff;outline:none;}
   .f-input:focus{border-color:var(--teal);}

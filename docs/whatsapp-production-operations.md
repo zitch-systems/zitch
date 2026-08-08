@@ -114,6 +114,34 @@ on the way:
    codes: it was typed into a chat, one typo from someone else's inbox.
 3. BVN/NIN and above proceed as normal.
 
+### Choosing the model provider
+
+The console (**AI controls → Model provider**) picks which LLM reads a
+customer's sentence: Claude, OpenAI, Gemini, Grok, Groq, DeepSeek, Kimi, Qwen,
+or any OpenAI-compatible endpoint. Two wire formats cover all of them, so
+adding a provider is usually a row in `whatsapp/llm.PROVIDERS`.
+
+Swapping the provider cannot change what the platform will DO. The model only
+proposes an intent; `router.py` validates it and is the only thing that moves
+money. A worse model means worse comprehension and a fallback to the
+deterministic menus — never a payment the rules would not allow.
+
+Operational notes:
+
+- The API key is **encrypted at rest** (Fernet, keyed from `SECRET_KEY`) and is
+  never returned by any endpoint — the console shows the last four only. Saving
+  a model change does not require re-pasting the key.
+- **Test connection** does a live round-trip, so a wrong key is found by an
+  operator rather than by customers.
+- A **custom** endpoint must be HTTPS and must resolve to a public address.
+  Private and link-local targets are refused: a configurable base URL otherwise
+  turns the backend into an SSRF probe carrying a bearer header, with cloud
+  metadata (169.254.169.254) the obvious target.
+- Config falls back to the `LLM_*` env vars when nothing is stored, so an
+  untouched deployment behaves exactly as before.
+- Rotating `SECRET_KEY` makes a stored key undecryptable; it reads as "not
+  configured" and is re-entered in the console.
+
 ### Receipts carry the sender, never the balance
 
 A receipt is designed to be forwarded as proof of payment, so every receipt

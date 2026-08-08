@@ -540,3 +540,165 @@ class DiagnosticsPageTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn("WhatsApp", res.content.decode())
         self.assertIn("worker_appears_stalled", res.content.decode())
+
+
+class AiProviderConfigTests(PortalTestCase):
+    """Operators pick the model provider from the console. The key is stored
+    encrypted, never echoed back, and a provider swap cannot change what the
+    platform will DO — the router still validates every intent."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = AccessToken.issue(make_staff("amara", superuser=True),
+                                       scope=AccessToken.ADMIN).key
+        self.viewer = AccessToken.issue(make_staff("kunle", role="support"),
+                                        scope=AccessToken.ADMIN).key
+
+    def test_catalogue_lists_every_supported_provider(self):
+        body = self.post("ai-config", token=self.admin).json()
+        ids = {p["id"] for p in body["providers"]}
+        self.assertTrue({"anthropic", "openai", "gemini", "xai", "groq",
+                         "deepseek", "moonshot", "qwen", "custom"} <= ids)
+
+    def test_saving_stores_the_key_encrypted_and_never_returns_it(self):
+        res = self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                           "api_key": "sk-secret-value-1234"}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["api_key_masked"], "••••••••1234")
+        self.assertNotIn("sk-secret", json.dumps(body))
+        # At rest: ciphertext, not the key.
+        stored = SystemSetting.get("llm_api_key_enc", "")
+        self.assertTrue(stored)
+        self.assertNotIn("sk-secret", stored)
+        # ...and it round-trips for the caller that actually needs it.
+        from whatsapp import llm
+        self.assertEqual(llm.stored_api_key(), "sk-secret-value-1234")
+        self.assertTrue(llm.configured())
+
+    def test_reading_the_config_never_exposes_the_key(self):
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                     "api_key": "sk-secret-value-1234"}, token=self.admin)
+        body = self.post("ai-config", token=self.admin).json()
+        self.assertNotIn("sk-secret", json.dumps(body))
+        self.assertEqual(body["api_key_masked"], "••••••••1234")
+
+    def test_changing_the_model_keeps_the_existing_key(self):
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                     "api_key": "sk-secret-value-1234"}, token=self.admin)
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o"}, token=self.admin)
+        from whatsapp import llm
+        self.assertEqual(llm.stored_api_key(), "sk-secret-value-1234")
+        self.assertEqual(llm.active_config()["model"], "gpt-4o")
+
+    def test_a_custom_provider_needs_an_https_base_url(self):
+        self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m"},
+                                   token=self.admin).status_code, 400)
+        # http:// would put the provider key on the wire in clear.
+        self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                      "base_url": "http://llm.example.com/v1"},
+                                   token=self.admin).status_code, 400)
+        with patch("socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                          "base_url": "https://llm.example.com/v1"},
+                                       token=self.admin).status_code, 200)
+
+    def test_a_custom_endpoint_cannot_be_aimed_inside_the_deployment(self):
+        """A configurable base URL makes the backend an HTTP client pointed
+        wherever an operator says, carrying customer text and a bearer header.
+        Private and link-local targets — cloud metadata above all — are refused."""
+        for addr in ("169.254.169.254",   # cloud instance metadata
+                     "127.0.0.1",         # loopback
+                     "10.1.2.3",          # private
+                     "192.168.1.10"):
+            with patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", (addr, 443))]):
+                res = self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                   "base_url": "https://sneaky.example.com/v1"},
+                                token=self.admin)
+                self.assertEqual(res.status_code, 400, addr)
+                self.assertIn("private or link-local", res.json()["message"])
+        # Unresolvable is refused too, rather than saved and failing later.
+        with patch("socket.getaddrinfo", side_effect=OSError("nxdomain")):
+            self.assertEqual(self.post("ai-config-save", {"provider": "custom", "model": "m",
+                                                          "base_url": "https://nope.example.com/v1"},
+                                       token=self.admin).status_code, 400)
+        # A built-in provider is never re-validated against DNS — its URL is ours,
+        # so a resolver outage cannot lock an operator out of switching provider.
+        with patch("socket.getaddrinfo", side_effect=AssertionError("must not resolve")):
+            self.assertEqual(self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini"},
+                                       token=self.admin).status_code, 200)
+
+    def test_an_unknown_provider_is_refused(self):
+        self.assertEqual(self.post("ai-config-save", {"provider": "hal9000", "model": "m"},
+                                   token=self.admin).status_code, 400)
+
+    def test_only_the_settings_capability_can_read_or_change_it(self):
+        self.assertEqual(self.post("ai-config", token=self.viewer).status_code, 403)
+        self.assertEqual(self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini"},
+                                   token=self.viewer).status_code, 403)
+        self.assertEqual(self.post("ai-config", token=None).status_code, 401)
+
+    def test_the_change_is_audited_without_the_key(self):
+        self.post("ai-config-save", {"provider": "deepseek", "model": "deepseek-chat",
+                                     "api_key": "sk-secret-value-1234"}, token=self.admin)
+        row = AuditLog.objects.filter(action="ai.config").first()
+        self.assertIsNotNone(row)
+        blob = json.dumps({"b": row.before, "a": row.after})
+        self.assertNotIn("sk-secret", blob)
+        self.assertIn("deepseek", blob)
+        self.assertTrue(row.after["key_changed"])
+
+    def test_an_openai_style_provider_is_called_in_its_own_wire_format(self):
+        from whatsapp import ai, llm
+
+        self.post("ai-config-save", {"provider": "groq", "model": "llama-3.3-70b-versatile",
+                                     "api_key": "gsk-1234"}, token=self.admin)
+
+        class Resp:
+            status_code = 200
+            @staticmethod
+            def json():
+                return {"choices": [{"message": {"tool_calls": [
+                    {"function": {"name": "check_balance", "arguments": '{"currency": null}'}}]}}]}
+
+        with patch("requests.post", return_value=Resp()) as post:
+            intent = ai.extract_intent("what is my balance")
+        self.assertEqual(intent["name"], "check_balance")
+        url = post.call_args[0][0]
+        self.assertEqual(url, "https://api.groq.com/openai/v1/chat/completions")
+        sent = post.call_args.kwargs["json"]
+        self.assertEqual(sent["tools"][0]["type"], "function")     # OpenAI shape...
+        self.assertIn("parameters", sent["tools"][0]["function"])  # ...not input_schema
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer gsk-1234")
+
+    def test_a_provider_failure_falls_back_to_the_deterministic_router(self):
+        from whatsapp import ai
+
+        self.post("ai-config-save", {"provider": "openai", "model": "gpt-4o-mini",
+                                     "api_key": "sk-1234"}, token=self.admin)
+        with patch("requests.post", side_effect=OSError("provider down")):
+            self.assertIsNone(ai.extract_intent("send 5k to john"))
+
+    def test_a_half_configured_provider_reads_as_off(self):
+        from whatsapp import ai, llm
+
+        SystemSetting.set(llm.K_PROVIDER, "custom")
+        SystemSetting.set(llm.K_MODEL, "m")
+        llm.set_api_key("k")
+        SystemSetting.set(llm.K_BASE_URL, "")     # no endpoint to call
+        self.assertFalse(llm.configured())
+        self.assertIsNone(ai.extract_intent("balance"))
+
+    def test_django_admin_links_are_superuser_only(self):
+        body = self.post("django-admin", token=self.admin).json()
+        self.assertTrue(body["available"])
+        self.assertTrue(any(s["url"].startswith("/admin/") for s in body["sections"]))
+        # A super_admin GROUP member is not a Django superuser: they hold the
+        # settings capability but the admin itself would refuse them, so say so
+        # here rather than send them to a login they cannot pass.
+        grouped = AccessToken.issue(make_staff("bola", role="super_admin"),
+                                    scope=AccessToken.ADMIN).key
+        body = self.post("django-admin", token=grouped).json()
+        self.assertFalse(body["available"])
+        self.assertIn("superuser", body["message"])

@@ -34,6 +34,8 @@ window.ZADM = (function () {
     KYCQ: [],
     RECON: { rows: [], providers: [] },
     AI: { enabled: true, intents: [] },
+    AI_CFG: { providers: [], provider: '', model: '', base_url: '', api_key_masked: '', configured: false },
+    DJANGO_ADMIN: { available: false, sections: [], message: '' },
     SETTINGS: [], TEAM: [], PERMS: [], ROLES: ['super_admin', 'finance', 'support', 'read_only'],
     PROVIDERS: [],
     VOLUME_14D: [],
