@@ -15,6 +15,8 @@ urlpatterns = [
     path("set-transaction-pin/", views.set_transaction_pin),
     path("update_info/", views.update_info),
     path("profile/avatar/", views.avatar_upload),
+    path("email/verify/start/", views.email_verify_start),
+    path("email/verify/confirm/", views.email_verify_confirm),
     path("kyc/status/", views.kyc_status),
     path("kyc/bvn/", views.kyc_bvn),
     path("kyc/bvn/start/", views.kyc_bvn_start),

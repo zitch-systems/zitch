@@ -220,20 +220,43 @@ class ChannelTests(TestCase):
         self.inbound("Tunde", "o2", msisdn=m)
         self.assertIn("last name", self.last_reply(m).lower())
         self.inbound("Bello", "o3", msisdn=m)
+        self.assertIn("email", self.last_reply(m).lower())
+        self.inbound("not-an-email", "o3b", msisdn=m)         # rejected, re-asked
+        self.assertIn("look like an email", self.last_reply(m))
+        self.inbound("Tunde.Bello@Example.com", "o3c", msisdn=m)
         self.assertIn("PIN", self.last_reply(m))
         self.inbound("1357", "o4", msisdn=m)   # set PIN
         self.inbound("1357", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
         self.assertEqual(u.tier, 0)            # unverified chat signup (no BVN/NIN) -> Tier 0
         self.assertTrue(u.check_transaction_pin("1357"))
+        self.assertEqual(u.email, "tunde.bello@example.com")  # stored lowercased
+        self.assertTrue(u.onboarded_via_whatsapp)
+        self.assertFalse(u.email_verified)                    # chat-collected: unproven
+        self.assertFalse(u.has_usable_password())             # app entry = OTP reset
         self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
         self.assertIn("Welcome to Zitch", self.last_reply(m))
+        self.assertIn("Forgot password", self.last_reply(m))  # the upgrade path is named
+
+    def test_onboarding_refuses_an_email_already_on_an_account(self):
+        # Recovery looks accounts up by email; two accounts sharing one address
+        # would make reset codes ambiguous, so the collision is refused at entry.
+        User.objects.create(username="08199990000", phone="08199990000", email="taken@zitch.test")
+        m = "2349090000012"
+        self.inbound("1", "d1", msisdn=m)
+        self.inbound("Ada", "d2", msisdn=m)
+        self.inbound("Obi", "d3", msisdn=m)
+        self.inbound("TAKEN@zitch.test", "d4", msisdn=m)
+        self.assertIn("already on a Zitch account", self.last_reply(m))
+        self.inbound("ada.obi@zitch.test", "d5", msisdn=m)    # a fresh one proceeds
+        self.assertIn("PIN", self.last_reply(m))
 
     def test_onboarding_pin_mismatch_retries(self):
         m = "2349090000003"
         self.inbound("1", "p1", msisdn=m)
         self.inbound("Ada", "p2", msisdn=m)
         self.inbound("Okafor", "p3", msisdn=m)
+        self.inbound("ada.okafor@example.com", "p3e", msisdn=m)
         self.inbound("1111", "p4", msisdn=m)
         self.inbound("2222", "p5", msisdn=m)  # mismatch
         self.assertIn("match", self.last_reply(m).lower())

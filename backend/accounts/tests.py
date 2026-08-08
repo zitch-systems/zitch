@@ -815,3 +815,108 @@ class PasswordRecoveryTests(TestCase):
     def _auth(self, token):
         return self.client.post("/api/wallet_balance/", data=json.dumps({"access_token": token}),
                                 content_type="application/json").status_code
+
+
+class ChatOnboardedUpgradeTests(TestCase):
+    """The app-side upgrade contract for WhatsApp-onboarded accounts: both contact
+    channels must be re-proven before the KYC ladder opens. The phone re-proves
+    itself on the way in (no usable password, so entering the app runs the OTP
+    password reset against the same number); the email was typed into a chat and
+    is one typo from being someone else's inbox, so it gets its own round-trip —
+    and until then it must never receive a password-reset code."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create(
+            username="08155550001", phone="08155550001", first_name="Chidi",
+            email="chidi@zitch.test", tier=0,
+            onboarded_via_whatsapp=True, email_verified=False,
+        )
+        self.user.set_unusable_password()
+        self.user.save()
+        self.token = AccessToken.issue(self.user).key
+
+    def post(self, path, payload):
+        payload = {"access_token": self.token, **payload}
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_kyc_is_closed_until_the_email_is_confirmed(self):
+        res, body = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
+        self.assertEqual(res.status_code, 403)
+        self.assertIn("email", body["message"].lower())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+
+    def test_kyc_status_names_the_gate(self):
+        res, body = self.post("/api/kyc/status/", {})
+        self.assertTrue(body["email_verification_required"])
+        self.assertEqual(body["email"], "chidi@zitch.test")
+
+    def test_email_round_trip_opens_the_ladder(self):
+        with patch("accounts.views._otp_code", return_value="424242"):
+            self.post("/api/email/verify/start/", {})
+        res, body = self.post("/api/email/verify/confirm/", {"otp": "424242"})
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+        self.assertFalse(body["email_verification_required"])
+        res, _ = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
+        self.assertEqual(res.status_code, 200)   # the gate is open
+
+    def test_a_wrong_code_does_not_verify(self):
+        with patch("accounts.views._otp_code", return_value="424242"):
+            self.post("/api/email/verify/start/", {})
+        res, _ = self.post("/api/email/verify/confirm/", {"otp": "000000"})
+        self.assertEqual(res.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.email_verified)
+
+    def test_a_reset_code_cannot_stand_in_for_inbox_control(self):
+        """purpose=EMAIL is filtered: a code minted for password reset must not
+        mark the email verified."""
+        from accounts.models import OTP
+
+        with patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550001"}),
+                             content_type="application/json")
+        res, _ = self.post("/api/email/verify/confirm/", {"otp": "424242"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_unverified_chat_email_never_receives_a_reset_code(self):
+        with patch("accounts.views.send_email") as email, \
+             patch("accounts.views.send_sms") as sms, \
+             patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550001"}),
+                             content_type="application/json")
+        self.assertTrue(sms.called)                      # the phone is the channel
+        self.assertEqual(email.call_args[0][0], "")      # the inbox gets nothing
+
+    def test_a_verified_email_receives_reset_codes_again(self):
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        with patch("accounts.views.send_email") as email, \
+             patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550001"}),
+                             content_type="application/json")
+        self.assertEqual(email.call_args[0][0], "chidi@zitch.test")
+
+    def test_app_signup_accounts_are_untouched_by_the_gate(self):
+        """The gate is scoped to chat onboarding — an app-signup account keeps
+        today's behaviour on both KYC and recovery."""
+        plain = User.objects.create(username="08155550002", phone="08155550002",
+                                    email="plain@zitch.test")
+        tok = AccessToken.issue(plain).key
+        res = self.client.post("/api/kyc/bvn/start/",
+                               data=json.dumps({"access_token": tok, "bvn": "12345678901"}),
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        with patch("accounts.views.send_email") as email, \
+             patch("accounts.views._otp_code", return_value="424242"):
+            self.client.post("/api/password/forgot/",
+                             data=json.dumps({"email_or_phone": "08155550002"}),
+                             content_type="application/json")
+        self.assertEqual(email.call_args[0][0], "plain@zitch.test")

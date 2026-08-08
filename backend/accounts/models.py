@@ -84,6 +84,18 @@ class User(AbstractUser):
     # string for support/records and a verified flag the tier logic reads.
     address = models.CharField(max_length=255, blank=True, default="")
     address_verified = models.BooleanField(default=False)
+    # Chat-onboarded accounts carry credentials collected over WhatsApp: name,
+    # email and PIN, but never a password and never a verified contact channel.
+    # The flag gates the app-side upgrade: KYC (and therefore any tier above the
+    # unverified floor) stays closed until the email collected in chat is
+    # re-verified in the app; the phone re-verifies itself because these accounts
+    # have no usable password, so entering the app at all runs the OTP-backed
+    # password-reset flow against the same number.
+    onboarded_via_whatsapp = models.BooleanField(default=False)
+    # Set by the in-app email OTP round-trip. Deliberately consulted by recovery:
+    # an UNVERIFIED chat-collected email is one typo away from being someone
+    # else's inbox, so it must never receive a password-reset code.
+    email_verified = models.BooleanField(default=False)
     # Tier 3: a verified government-issued ID document (passport / driver's licence
     # / voter's card / NIN slip). Only the verified flag and the document type are
     # retained — never the raw document image.
@@ -261,7 +273,8 @@ class OTP(models.Model):
 
     SIGNUP = "signup"
     RESET = "reset"
-    PURPOSES = [(SIGNUP, SIGNUP), (RESET, RESET)]
+    EMAIL = "email"           # in-app verification of a chat-collected email
+    PURPOSES = [(SIGNUP, SIGNUP), (RESET, RESET), (EMAIL, EMAIL)]
 
     phone = models.CharField(max_length=20, db_index=True)
     # The raw 6-digit code is NEVER stored — only its keyed hash. A 6-digit code
