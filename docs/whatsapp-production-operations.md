@@ -142,6 +142,25 @@ Operational notes:
 - Rotating `SECRET_KEY` makes a stored key undecryptable; it reads as "not
   configured" and is re-entered in the console.
 
+### What the model may see — and what it may not
+
+Two rules, enforced in `whatsapp/ai.sanitize_for_model` before any provider is
+called (and mirrored in the support-log redaction):
+
+1. **Secrets never reach a model.** Card numbers (Luhn-confirmed, however they
+   are spaced), and any short digit group in a message that mentions
+   pin/otp/cvv, are REMOVED — not tokenized. No intent needs them; PIN entry
+   lives in the encrypted Flow, OTP entry in its deterministic state, and card
+   details belong in the app, never in free text.
+2. **Identifiers are tokenized in, re-hydrated out.** Account, meter, smartcard
+   and phone numbers become opaque tokens (`num_ref_1`, …); the model routes a
+   de-identified sentence and copies tokens into fields; the router swaps the
+   real values back before dispatch. The stored `intent_json` keeps only the
+   tokens, so the ops console shows routing quality without customer numbers.
+
+Amounts survive: "send 5000" keeps its 5000 — the secret-context words are the
+discriminator between an amount and a PIN, since the shapes are identical.
+
 ### Receipts carry the sender, never the balance
 
 A receipt is designed to be forwarded as proof of payment, so every receipt

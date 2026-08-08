@@ -2103,3 +2103,147 @@ class LinkCodeTests(TestCase):
         # Even the rightful owner cannot use it now — a fresh code is required.
         self.inbound(f"LINK {code}", "lk4")
         self.assertNotIn("Linked!", self.last_reply())
+
+
+class ModelDataBoundaryTests(TestCase):
+    """What may and may not reach an LLM. Secrets (PIN, OTP, card numbers) are
+    removed outright — no model needs them and no intent uses them. Identifiers
+    (account, meter, smartcard, phone) are tokenized on the way in and
+    re-hydrated on the way out, so the model routes a de-identified sentence and
+    the deterministic flow still receives the customer's real numbers."""
+
+    def test_secrets_are_removed_not_tokenized(self):
+        from whatsapp.ai import sanitize_for_model
+
+        masked, mapping = sanitize_for_model("my pin is 1234 please fix my account")
+        self.assertNotIn("1234", masked)
+        self.assertIn("[code removed]", masked)
+        self.assertNotIn("1234", json.dumps(mapping))   # never in the map either
+
+        masked, _ = sanitize_for_model("the otp is 482910")
+        self.assertNotIn("482910", masked)
+
+        # A card typed the way people type cards: four short groups. Neither the
+        # 7+-digit rule nor a bare-PIN mask sees it; the Luhn-checked shape does.
+        masked, mapping = sanitize_for_model("pay with 4242 4242 4242 4242 please")
+        self.assertNotIn("4242", masked)
+        self.assertIn("[card removed]", masked)
+        self.assertNotIn("4242", json.dumps(mapping))
+
+    def test_amounts_survive(self):
+        from whatsapp.ai import sanitize_for_model
+
+        # 5000 is PIN-shaped, but nothing in the message says "secret" — an
+        # amount must reach the model or intent extraction is pointless.
+        masked, _ = sanitize_for_model("send 5000 to my brother")
+        self.assertIn("5000", masked)
+
+    def test_identifiers_become_tokens_and_round_trip(self):
+        from whatsapp.ai import rehydrate_value, sanitize_for_model
+
+        masked, mapping = sanitize_for_model("buy power for meter 04123456789 and send 2k to 0123456789 gtb")
+        self.assertNotIn("04123456789", masked)
+        self.assertNotIn("0123456789", masked)
+        self.assertIn("num_ref_1", masked)
+        self.assertIn("num_ref_2", masked)
+        out = rehydrate_value({"meter": "num_ref_1", "account_number": "num_ref_2",
+                               "note": "pay num_ref_1 now"}, mapping)
+        self.assertEqual(out["meter"], "04123456789")
+        self.assertEqual(out["account_number"], "0123456789")
+        self.assertEqual(out["note"], "pay 04123456789 now")
+
+    def test_an_unknown_token_is_left_alone(self):
+        from whatsapp.ai import rehydrate_value
+
+        # A hallucinated token must not become a real value; the flow will treat
+        # it as missing and ask.
+        self.assertEqual(rehydrate_value("num_ref_9", {"num_ref_1": "0123456789"}), "num_ref_9")
+
+    def test_a_meter_number_is_not_mistaken_for_a_card(self):
+        from whatsapp.ai import sanitize_for_model
+
+        # 11 digits, fails the card length/Luhn gate -> tokenized, not removed.
+        masked, mapping = sanitize_for_model("meter 04123456789")
+        self.assertIn("num_ref_1", masked)
+        self.assertEqual(mapping["num_ref_1"], "04123456789")
+
+    def test_extract_intent_rehydrates_for_dispatch_and_masks_for_the_log(self):
+        from whatsapp import ai
+
+        captured = {}
+
+        def fake_call(system, user_text, tools, cfg=None):
+            captured["text"] = user_text
+            return {"name": "transfer", "input": {"amount": 5000, "account_number": "num_ref_1",
+                                                  "bank_name": "gtb"}}
+
+        with patch("whatsapp.llm.call_tools", side_effect=fake_call), \
+             patch("whatsapp.ai.llm_available", return_value=True):
+            intent = ai.extract_intent("send 5k to 0123456789 gtb, my pin is 1234")
+
+        self.assertNotIn("0123456789", captured["text"])    # the model saw a token
+        self.assertNotIn("1234", captured["text"])          # and never the PIN
+        self.assertEqual(intent["input"]["account_number"], "0123456789")   # dispatch gets the real one
+        self.assertEqual(intent["masked_input"]["account_number"], "num_ref_1")  # the log copy stays masked
+
+
+class AiIntentRehydrationEndToEndTests(TestCase):
+    """The webhook path: a sentence with a real account number routes through the
+    model as tokens, dispatches with the real number, and stores only tokens."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def test_token_round_trip_reaches_the_confirm_step(self):
+        def fake_call(system, user_text, tools, cfg=None):
+            # The model echoes the token it was shown, as instructed.
+            m = re.search(r"num_ref_\d+", user_text)
+            return {"name": "transfer",
+                    "input": {"amount": 4000, "account_number": m.group(0) if m else None,
+                              "bank_name": "gtb"}}
+
+        with patch("whatsapp.llm.call_tools", side_effect=fake_call), \
+             patch("whatsapp.ai.llm_available", return_value=True):
+            # Free-form (not the paste shape): amount word, prose, one account number.
+            self.inbound("please could you send four thousand naira to 0199887766 at gtb", "rh1")
+        r = self.last_reply()
+        self.assertIn("0199887766", r)                       # name-enquiry/confirm shows the real account
+        row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.IN,
+                                          wa_message_id="rh1").first()
+        # The stored intent never holds the real number. (The key-based redactor
+        # in WebhookEvent.redact may blank even the token — two layers agreeing.)
+        blob = json.dumps(row.intent_json)
+        self.assertNotIn("0199887766", blob)
+        self.assertIn(row.intent_json["input"]["account_number"], ("num_ref_1", "[redacted]"))
+
+
+class ChatLogSecretRedactionTests(TestCase):
+    """The support log mirrors the model boundary: cards collapsed however they
+    are spaced, and pin/otp-adjacent short codes masked inside sentences."""
+
+    def test_spaced_card_is_masked_to_last_four(self):
+        from whatsapp.views import _redact_chat_log
+
+        out = _redact_chat_log("charge my card 4242 4242 4242 4242 thanks")
+        self.assertNotIn("4242 4242", out)
+        self.assertIn("[card …4242]", out)
+
+    def test_pin_in_a_sentence_is_masked(self):
+        from whatsapp.views import _redact_chat_log
+
+        out = _redact_chat_log("my pin is 1234")
+        self.assertNotIn("1234", out)
+        self.assertIn("[code redacted]", out)
+
+    def test_plain_amounts_in_plain_sentences_survive(self):
+        from whatsapp.views import _redact_chat_log
+
+        self.assertIn("5000", _redact_chat_log("send 5000 to mama"))

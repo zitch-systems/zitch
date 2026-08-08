@@ -235,14 +235,35 @@ def _apply_status(st: dict) -> None:
 _PIN_RE = re.compile(r"^\s*\d{4,6}\s*$")
 _LOG_IDENTIFIER_RE = re.compile(r"(?<!\d)\d{7,}(?!\d)")
 _LOG_EMAIL_RE = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+_LOG_SECRET_CONTEXT_RE = re.compile(r"(?i)\b(pin|otp|password|passcode|passwd|cvv|cvc|secret)\b")
+_LOG_SHORT_CODE_RE = re.compile(r"(?<!\d)\d{3,6}(?!\d)")
 
 
 def _redact_chat_log(text: str) -> str:
-    """Minimise long-lived support-log PII while preserving conversation shape."""
-    safe = _LOG_EMAIL_RE.sub("[email redacted]", str(text or ""))
-    return _LOG_IDENTIFIER_RE.sub(
-        lambda m: f"[identifier …{m.group(0)[-4:]}]", safe,
-    )
+    """Minimise long-lived support-log PII while preserving conversation shape.
+
+    Card numbers are collapsed first, however they are spaced — "4242 4242 4242
+    4242" is four short groups, so neither the 7+-digit rule nor the bare-PIN
+    mask would touch it, and a card in a support log is a card in every export
+    of that log. Then, in a message that talks about a pin/otp/cvv, the short
+    digit groups beside those words are masked too: "my pin is 1234" was stored
+    verbatim before, and the whole-message [PIN] mask only covers bare digits."""
+    from .ai import _CARD_SHAPE, _luhn_ok
+
+    safe = str(text or "")
+
+    def _card(m):
+        digits = re.sub(r"\D", "", m.group(0))
+        if 13 <= len(digits) <= 19 and _luhn_ok(digits):
+            return f"[card …{digits[-4:]}]"
+        return m.group(0)
+
+    safe = _CARD_SHAPE.sub(_card, safe)
+    safe = _LOG_EMAIL_RE.sub("[email redacted]", safe)
+    safe = _LOG_IDENTIFIER_RE.sub(lambda m: f"[identifier …{m.group(0)[-4:]}]", safe)
+    if _LOG_SECRET_CONTEXT_RE.search(safe):
+        safe = _LOG_SHORT_CODE_RE.sub("[code redacted]", safe)
+    return safe
 
 
 def _inbound_throttled(msisdn: str) -> bool:
