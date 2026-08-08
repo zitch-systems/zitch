@@ -56,6 +56,7 @@ const Kyc = () => {
   const [addressDoc, setAddressDoc] = useState(''); // base64 proof of address
   const [idImage, setIdImage] = useState(''); // base64 of the government ID
   const [emailOtp, setEmailOtp] = useState('');
+  const [emailAddr, setEmailAddr] = useState('');
   const [emailOtpSent, setEmailOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -184,22 +185,34 @@ const Kyc = () => {
         </View>
       )}
 
-      {status?.email_verification_required ? (
-        <KycRow icon="mail" title="Confirm your email" sub={`We'll send a code to ${status.email || 'your email'} — required before identity verification`} done={false}>
-          {/* Chat-onboarded accounts typed this address into WhatsApp, unverified.
-              Every identity step below is closed server-side until it's confirmed,
-              so surfacing it first saves a confusing 403 later. */}
+      {status && !status.email_verified ? (
+        <KycRow icon="mail" title="Confirm your email"
+          sub={status.email
+            ? `We'll send a code to ${status.email} — ${status.email_verification_required ? 'required before identity verification' : 'required to reach Tier 1'}`
+            : 'Add and confirm an email — required to reach Tier 1'}
+          done={false}>
+          {/* Tier 1 requires a verified email for every account. For chat-onboarded
+              accounts the identity steps below are additionally closed server-side
+              until it's confirmed, so surfacing it first saves a confusing 403. */}
           {!emailOtpSent ? (
-            <Btn label="Send code" size="md" disabled={busy}
-              onPress={async () => {
-                setBusy(true);
-                try {
-                  const res = await apiJson('/api/email/verify/start/', {});
-                  if (res.success) { setEmailOtpSent(true); notify('Code sent', res.message || 'Check your inbox.'); }
-                  else notify('Error', res.message || 'Could not send the code');
-                } catch { notify('Error', 'Something went wrong.'); }
-                finally { setBusy(false); }
-              }} />
+            <>
+              {!status.email ? (
+                <>
+                  <Field value={emailAddr} onChangeText={setEmailAddr} keyboardType="email-address" autoCapitalize="none" placeholder="you@example.com" />
+                  <View style={{ height: 10 }} />
+                </>
+              ) : null}
+              <Btn label="Send code" size="md" disabled={busy || (!status.email && !emailAddr.includes('@'))}
+                onPress={async () => {
+                  setBusy(true);
+                  try {
+                    const res = await apiJson('/api/email/verify/start/', emailAddr ? { email: emailAddr.trim() } : {});
+                    if (res.success) { setEmailOtpSent(true); notify('Code sent', res.message || 'Check your inbox.'); }
+                    else notify('Error', res.message || 'Could not send the code');
+                  } catch { notify('Error', 'Something went wrong.'); }
+                  finally { setBusy(false); }
+                }} />
+            </>
           ) : (
             <>
               <Field value={emailOtp} onChangeText={(v) => setEmailOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code from the email" />

@@ -105,7 +105,8 @@ class MutationTests(PortalTestCase):
         super().setUp()
         self.admin = AccessToken.issue(make_staff("amara", superuser=True), scope=AccessToken.ADMIN).key
         self.user = User.objects.create(username="08010000009", phone="08010000009",
-                                        first_name="Kemi", tier=1)
+                                        first_name="Kemi", tier=1,
+                                        email_verified=True)  # Tier >= 1 requires it
         get_or_create_wallet(self.user)
 
     def test_kyc_queue_lists_pending_item_without_crashing(self):

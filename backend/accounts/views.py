@@ -622,10 +622,20 @@ def email_verify_start(request):
     on file. EMAIL ONLY, never SMS: this code proves control of the inbox, and
     delivering it to the phone would verify nothing."""
     user = request.user_obj
-    if not user.email:
-        return fail("No email address on this account")
     if user.email_verified:
         return ok(message="Email already verified", **_kyc_state(user))
+    # While unverified, the address may be set or corrected — an account with a
+    # blank or mistyped email would otherwise be locked out of Tier 1 for good.
+    new_email = (request.data.get("email") or "").strip().lower()
+    if new_email:
+        if len(new_email) > 254 or "@" not in new_email:
+            return fail("Enter a valid email address")
+        if User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
+            return fail("That email is already on another account")
+        user.email = new_email
+        user.save(update_fields=["email"])
+    if not user.email:
+        return fail("No email address on this account — include one in the request")
     if not _otp_on_cooldown(user.phone):
         code = _otp_code()
         OTP.issue(phone=user.phone, code=code, email=user.email, purpose=OTP.EMAIL)
@@ -661,7 +671,8 @@ def email_verify_confirm(request):
     otp.used = True
     otp.save(update_fields=["used"])
     user.email_verified = True
-    user.save(update_fields=["email_verified"])
+    user.recompute_tier()  # Tier 1 requires the verified email; it may be the last piece
+    user.save(update_fields=["email_verified", "tier"])
     return ok(message="Email verified", **_kyc_state(user))
 
 
@@ -786,6 +797,7 @@ def simulate_kyc(request):
     user.bvn_last4 = f"{user.id:04d}"[-4:]
     user.nin_hash = hash_identifier(f"simulation:nin:{user.id}")
     user.nin_last4 = f"{user.id:04d}"[-4:]
+    user.email_verified = True   # every tier >= 1 requires it; simulated like the rest
     user.bvn_verified = True
     user.nin_verified = True
     user.face_verified = tier >= 2

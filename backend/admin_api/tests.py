@@ -27,7 +27,8 @@ def make_staff(username, role=None, superuser=False):
 
 
 def make_customer(username="ada", phone="08011112222", balance="0"):
-    u = User.objects.create(username=username, email=f"{username}@x.test", phone=phone)
+    u = User.objects.create(username=username, email=f"{username}@x.test", phone=phone,
+                            email_verified=True)  # Tier >= 1 requires it
     Wallet.objects.create(user=u, balance=Decimal(balance))
     return u
 

@@ -35,7 +35,8 @@ def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="
     # App-linked users have completed KYC (BVN verified), so they can send on
     # WhatsApp. WhatsApp-onboarded accounts start unverified (tested separately).
     u = User.objects.create(username=phone, phone=phone, email=email,
-                            first_name="Ada", last_name="Eze", tier=1, bvn_verified=True)
+                            first_name="Ada", last_name="Eze", tier=1, bvn_verified=True,
+                            email_verified=True)  # Tier >= 1 requires it
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)
