@@ -1458,3 +1458,64 @@ class WrongPhoneNumberIdTests(TestCase):
         verdict = health._verdict("live", 0, False, 0, [], accepted_ever=False,
                                   wrong_number_id=0)
         self.assertIn("SUBSCRIBED", verdict)
+
+
+class OutboundSendFailureTests(TestCase):
+    """A rejected Graph send (expired WHATSAPP_TOKEN, recipient not on the app's
+    allowed-testers list, etc.) never raises — reply() returns normally, so the
+    inbound job marks the message processed and no backlog ever forms. Without
+    recording the failure on the OUT row, it left no trace anywhere: not in the
+    queue, not in the logs, not in whatsapp_diagnostics(). This is the failure
+    that made "Meta reached us, everything reports healthy, user gets nothing"
+    possible even with the right APP_SECRET and PHONE_NUMBER_ID."""
+
+    def test_reply_records_the_error_on_the_out_row_when_the_send_is_rejected(self):
+        from whatsapp.router import reply
+
+        with patch("whatsapp.router.send_text",
+                   return_value={"success": False, "error_code": 190}):
+            reply(MSISDN, "hi")
+        row = WaMessageLog.objects.get(msisdn=MSISDN, direction=WaMessageLog.OUT)
+        self.assertEqual(row.processing_error, "190")
+
+    def test_reply_leaves_the_out_row_clean_when_the_send_succeeds(self):
+        from whatsapp.router import reply
+
+        with patch("whatsapp.router.send_text",
+                   return_value={"success": True, "message_id": "wamid.1"}):
+            reply(MSISDN, "hi")
+        row = WaMessageLog.objects.get(msisdn=MSISDN, direction=WaMessageLog.OUT)
+        self.assertEqual(row.processing_error, "")
+
+    def test_diagnostics_count_recent_send_failures(self):
+        from . import health
+
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.OUT,
+                                    text="hi", processing_error="190")
+        snap = health.whatsapp_diagnostics()
+        self.assertEqual(snap["outbound"]["send_failures_last_hour"], 1)
+        self.assertEqual(snap["outbound"]["last_send_error"], "190")
+
+    def test_old_send_failures_age_out_of_the_window(self):
+        from . import health
+
+        old = WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.OUT,
+                                          text="hi", processing_error="190")
+        WaMessageLog.objects.filter(pk=old.pk).update(
+            created=timezone.now() - health.SEND_FAILURE_WINDOW - timedelta(minutes=1))
+        snap = health.whatsapp_diagnostics()
+        self.assertEqual(snap["outbound"]["send_failures_last_hour"], 0)
+
+    def test_verdict_names_send_failures_ahead_of_a_healthy_looking_queue(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=True,
+                                  send_failures=3, last_send_error="190")
+        self.assertIn("190", verdict)
+        self.assertIn("WHATSAPP_TOKEN", verdict)
+
+    def test_healthy_channel_names_neither_token_nor_send_failures(self):
+        from . import health
+
+        verdict = health._verdict("live", 0, False, 0, [], accepted_ever=True)
+        self.assertNotIn("WHATSAPP_TOKEN", verdict)

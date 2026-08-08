@@ -32,6 +32,12 @@ from .models import ConversationState, WaMessageLog, WebhookEvent
 # minutes, so a minute of untouched backlog is already well outside normal.
 STALL_AFTER = timedelta(minutes=1)
 
+# A failed *send* (Meta rejects the Graph call) is invisible everywhere else: the
+# inbound message is still marked processed and the queue never backs up, because
+# reply() doesn't raise on a non-2xx response. Older failures age out on their own
+# once sends start succeeding again, so this only reports what's happening now.
+SEND_FAILURE_WINDOW = timedelta(hours=1)
+
 
 def _age_seconds(when) -> int | None:
     return None if when is None else max(0, int((timezone.now() - when).total_seconds()))
@@ -80,6 +86,12 @@ def whatsapp_diagnostics() -> dict:
     wrong_number_id = calls.filter(outcome=WebhookEvent.BAD_BODY,
                                    action="invalid_phone_number_id").count()
 
+    recent_out = WaMessageLog.objects.filter(
+        direction=WaMessageLog.OUT, created__gte=timezone.now() - SEND_FAILURE_WINDOW)
+    send_failures = recent_out.exclude(processing_error="").count()
+    last_send_error = (recent_out.exclude(processing_error="")
+                       .order_by("-created").values_list("processing_error", flat=True).first())
+
     return {
         "mode": wa_mode(),
         "live": wa_live(),
@@ -99,16 +111,22 @@ def whatsapp_diagnostics() -> dict:
             "rejected_signature": rejected,
             "rejected_wrong_phone_number_id": wrong_number_id,
         },
+        "outbound": {
+            "send_failures_last_hour": send_failures,
+            "last_send_error": last_send_error or "",
+        },
         "handed_to_human": muted,
         "verdict": _verdict(wa_mode(), backlog, stalled, dead, muted,
                             accepted_ever=accepted_ever, rejected=rejected,
-                            wrong_number_id=wrong_number_id),
+                            wrong_number_id=wrong_number_id,
+                            send_failures=send_failures, last_send_error=last_send_error or ""),
     }
 
 
 def _verdict(mode: str, backlog: int, stalled: bool, dead: int, muted: list,
              *, accepted_ever: bool = True, rejected: int = 0,
-             wrong_number_id: int = 0) -> str:
+             wrong_number_id: int = 0, send_failures: int = 0,
+             last_send_error: str = "") -> str:
     """One sentence naming the most likely reason the bot is not replying — the
     thing an operator reads first, before any of the numbers above."""
     if mode == "disabled":
@@ -138,6 +156,18 @@ def _verdict(mode: str, backlog: int, stalled: bool, dead: int, muted: list,
                 "(https://api.zitch.ng/webhooks/whatsapp) is saved and SUBSCRIBED to the "
                 "`messages` field in the Meta dashboard, and that WHATSAPP_VERIFY_TOKEN "
                 "matches.")
+    # Everything above rules out ingestion (Meta reached us, on the right id). A
+    # reply that Meta itself refuses is otherwise invisible: reply() doesn't raise
+    # on a non-2xx response, so the inbound message is still marked processed and
+    # no backlog ever forms — checked before `stalled` because that flag can never
+    # catch this failure (the queue drains cleanly; the deliveries just vanish).
+    if send_failures:
+        return (f"{send_failures} outbound reply attempt(s) in the last hour were rejected "
+                f"by Meta ({last_send_error or 'no error detail recorded'}). Inbound processing "
+                "and the queue both look healthy because a rejected send doesn't raise — it is "
+                "marked delivered anyway. Most common causes: WHATSAPP_TOKEN is expired/invalid, "
+                "or the recipient number is not on the app's allowed-testers list while the Meta "
+                "app is still in Development mode.")
     if stalled:
         return (f"{backlog} inbound message(s) are queued and not being drained. The web "
                 "service drains the queue itself after each webhook, so a backlog this old "

@@ -110,9 +110,17 @@ def provider_logo(name: str) -> str | None:
 # messaging + small parsers
 # --------------------------------------------------------------------------- #
 def reply(msisdn: str, text: str) -> dict:
-    """Send a message and record it (the OUT audit row; never contains a PIN)."""
+    """Send a message and record it (the OUT audit row; never contains a PIN).
+
+    A failed Graph call does not raise — reply() always returns normally, so the
+    inbound job that called us marks the message "processed" either way. The OUT
+    row is therefore the only place a failed *send* (as opposed to a failed
+    *process*) can be found; without recording it here, `whatsapp_diagnostics`
+    would have no failed sends to count."""
     result = send_text(msisdn, text)
-    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text)
+    error = "" if result.get("success") else str(result.get("error_code") or "send_failed")[:64]
+    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text,
+                                processing_error=error)
     return result
 
 

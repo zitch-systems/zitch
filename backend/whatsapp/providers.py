@@ -121,11 +121,26 @@ def send_text(msisdn: str, text: str) -> dict:
     }
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=15)
-        return _message_result(r)
+        return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
         log.warning("wa_send_failed recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)
         return {"success": False, "message": "WhatsApp delivery failed"}
+
+
+def _log_if_rejected(response, msisdn: str) -> dict:
+    """Reduce the response AND, unlike a bare `_message_result` call, make a
+    non-2xx failure observable. It never raises, so `reply()` and the inbound job
+    both read "no exception" as success — without this log line, Meta refusing a
+    send (expired WHATSAPP_TOKEN, recipient not on the app's allowed-testers list,
+    etc.) leaves no trace anywhere: not in the logs, not in WaMessageLog, not in
+    any health counter."""
+    result = _message_result(response)
+    if not result["success"]:
+        log.warning("wa_send_rejected recipient=%s status=%s error_code=%s",
+                    mask_pii(msisdn), getattr(response, "status_code", 0),
+                    result.get("error_code"))
+    return result
 
 
 def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
@@ -138,7 +153,7 @@ def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
     try:
         r = requests.post(url, json={"messaging_product": "whatsapp", "to": msisdn, **payload},
                           headers=headers, timeout=15)
-        return _message_result(r)
+        return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
         log.warning("wa_send_failed recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)
@@ -212,7 +227,7 @@ def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
     }
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=15)
-        return _message_result(r)
+        return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
         log.warning("wa_image_send_failed recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)
