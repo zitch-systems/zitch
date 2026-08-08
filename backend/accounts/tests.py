@@ -320,6 +320,36 @@ class KycTierTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["tier"], 1)
 
+    def test_unverified_email_holds_the_tier_at_zero(self):
+        # BVN + NIN complete, email not confirmed: the ladder must not move —
+        # Tier 1 requires all three, however the account signed up.
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
+        self.assertEqual(body["tier"], 0)
+        with patch("accounts.views._otp_code", return_value="909090"):
+            self.post("/api/email/verify/start/", {"access_token": self.token})
+        body = self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})[1]
+        self.assertEqual(body["tier"], 1)
+
+    def test_email_can_be_set_while_unverified(self):
+        # A blank or mistyped address must not strand the account below Tier 1:
+        # start() accepts a replacement for as long as the email is unverified.
+        self.user.email, self.user.email_verified = "", False
+        self.user.save(update_fields=["email", "email_verified"])
+        res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 400)  # nothing on file, none supplied
+        with patch("accounts.views._otp_code", return_value="909090"):
+            res, body = self.post("/api/email/verify/start/",
+                                  {"access_token": self.token, "email": "Ada.New@Zitch.test"})
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "ada.new@zitch.test")
+        self.post("/api/email/verify/confirm/", {"access_token": self.token, "otp": "909090"})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
     def test_full_kyc_ladder_to_tier_3(self):
         # BVN+NIN -> Tier 1; + face + address -> Tier 2; + government ID -> Tier 3.
         self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
@@ -608,7 +638,13 @@ class FullJourneyE2ETests(TestCase):
 
         # --- KYC tiers + limits ---
         self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
-        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 1)  # BVN+NIN -> Tier 1
+        # BVN+NIN alone no longer promote: Tier 1 also requires the verified email.
+        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 0)
+        with patch("accounts.views._otp_code", return_value="909090"), \
+             patch("accounts.views._otp_on_cooldown", return_value=False):
+            self.post("/api/email/verify/start/", access_token=tok)
+        body = self.post("/api/email/verify/confirm/", access_token=tok, otp="909090")[1]
+        self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
         _credit(user_obj, Decimal("200000"), "Wallet top-up")
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,

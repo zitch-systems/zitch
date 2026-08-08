@@ -22,7 +22,8 @@ User = get_user_model()
 
 def make_user(phone, email, pin="1234", balance="0", tier=1):
     u = User.objects.create(username=phone, phone=phone, email=email,
-                            first_name="Ada", last_name="Eze", tier=tier)
+                            first_name="Ada", last_name="Eze", tier=tier,
+                            email_verified=True)  # Tier >= 1 requires it
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)

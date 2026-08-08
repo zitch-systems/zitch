@@ -114,6 +114,12 @@ on the way:
    codes: it was typed into a chat, one typo from someone else's inbox.
 3. BVN/NIN and above proceed as normal.
 
+The verified email is not only a chat-signup gate: **Tier 1 requires a verified
+email for every account** (BVN + NIN + verified email; the phone is proven by
+construction — app signup requires the SMS OTP, WhatsApp signup is possession
+of the number). App-signup accounts see the same "Confirm your email" row on
+the KYC screen and are held at the unverified floor until it's done.
+
 ## Activation sequence
 
 1. Merge only after CI is green and apply migrations before starting the worker.

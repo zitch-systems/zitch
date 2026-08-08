@@ -144,9 +144,17 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs BVN AND NIN; Tier 2 adds face AND address; Tier 3 adds a
-        verified government ID document. Anything less is Tier 0 (unverified)."""
-        if (self.bvn_verified and self.nin_verified and self.face_verified
+        Tier 1 needs a verified EMAIL plus BVN AND NIN; Tier 2 adds face AND
+        address; Tier 3 adds a verified government ID document. Anything less is
+        Tier 0 (unverified).
+
+        The email requirement applies to every account, however it signed up.
+        The phone needs no flag of its own: an app account only exists after the
+        signup SMS OTP, and a WhatsApp account authenticates by possessing the
+        number — both are proof of the phone by construction."""
+        if not self.email_verified:
+            self.tier = 0
+        elif (self.bvn_verified and self.nin_verified and self.face_verified
                 and self.address_verified and self.id_document_verified):
             self.tier = 3
         elif (self.bvn_verified and self.nin_verified and self.face_verified
