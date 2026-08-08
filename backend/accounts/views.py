@@ -287,7 +287,12 @@ def password_forgot(request):
         OTP.issue(phone=user.phone, code=code, email=user.email or "", purpose=OTP.RESET)
         message = f"Your Zitch password reset code is {code}"
         send_sms(user.phone, message)
-        send_email(user.email or "", "Your Zitch password reset code", message,
+        # A chat-onboarded account's email was typed into WhatsApp and never
+        # proven — one typo from being someone else's inbox. Until the in-app
+        # round-trip verifies it, the reset code goes to the phone alone, which
+        # is the identity these accounts actually authenticated with.
+        reset_email = "" if _email_verification_required(user) else (user.email or "")
+        send_email(reset_email, "Your Zitch password reset code", message,
                    html=_branded_email("Reset your password",
                                        "Use this code to reset your Zitch password.",
                                        code=code,
@@ -593,6 +598,73 @@ def _save_verified_identity(user, identity_type: str, raw: str) -> bool:
     return True
 
 
+def _email_verification_required(user) -> bool:
+    """Chat-onboarded accounts must confirm their email in the app before any
+    KYC step. The email was typed into a WhatsApp chat, unverified — one typo
+    from being someone else's inbox — and the phone re-proves itself on the way
+    in (no usable password, so the app entry runs the OTP password reset). The
+    email round-trip is the half the entry flow cannot cover."""
+    return bool(user.onboarded_via_whatsapp and not user.email_verified)
+
+
+def _email_gate(user):
+    if _email_verification_required(user):
+        return fail("Confirm your email address first — check Settings → Verify email.",
+                    status=403)
+    return None
+
+
+@ratelimit("otp_send", limit=5, window=60)
+@api
+@require_user
+def email_verify_start(request):
+    """POST /api/email/verify/start/ {access_token} — email a code to the address
+    on file. EMAIL ONLY, never SMS: this code proves control of the inbox, and
+    delivering it to the phone would verify nothing."""
+    user = request.user_obj
+    if not user.email:
+        return fail("No email address on this account")
+    if user.email_verified:
+        return ok(message="Email already verified", **_kyc_state(user))
+    if not _otp_on_cooldown(user.phone):
+        code = _otp_code()
+        OTP.issue(phone=user.phone, code=code, email=user.email, purpose=OTP.EMAIL)
+        send_email(user.email, "Confirm your email for Zitch",
+                   f"Your Zitch email confirmation code is {code}",
+                   html=_branded_email("Confirm your email",
+                                       "Enter this code in the Zitch app to confirm your email address.",
+                                       code=code,
+                                       note="If you didn't request this, you can ignore this email."))
+    return ok(message=f"We sent a code to {user.email}")
+
+
+@ratelimit("otp_verify", limit=20, window=60)
+@api
+@require_user
+def email_verify_confirm(request):
+    """POST /api/email/verify/confirm/ {access_token, otp} — mark the email
+    verified. Filtered to purpose=EMAIL so a signup or reset code can never
+    stand in for inbox control."""
+    user = request.user_obj
+    code = (request.data.get("otp") or "").strip()
+    if not code:
+        return fail("Enter the code from the email")
+    otp = OTP.objects.filter(phone=user.phone, used=False, purpose=OTP.EMAIL).order_by("-created").first()
+    if otp is None or otp.is_expired:
+        return fail("Invalid or expired code", status=400)
+    if otp.too_many_attempts:
+        return fail("Too many incorrect attempts. Request a new code.", status=429)
+    if not otp.verify_code(code):
+        otp.attempts += 1
+        otp.save(update_fields=["attempts"])
+        return fail("Invalid code", status=400)
+    otp.used = True
+    otp.save(update_fields=["used"])
+    user.email_verified = True
+    user.save(update_fields=["email_verified"])
+    return ok(message="Email verified", **_kyc_state(user))
+
+
 def _kyc_state(user) -> dict:
     wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
     bank_tier = wallet.bank_tier if wallet else 0
@@ -612,6 +684,11 @@ def _kyc_state(user) -> dict:
         "face_verified": user.face_verified,
         "address_verified": user.address_verified,
         "id_document_verified": user.id_document_verified,
+        "email": user.email or "",
+        "email_verified": user.email_verified,
+        # True only for chat-onboarded accounts that haven't confirmed their
+        # email in the app yet — the one state where the KYC ladder is closed.
+        "email_verification_required": _email_verification_required(user),
         "large_txn_threshold": str(User.LARGE_TXN_THRESHOLD),
         # Separate from Zitch's verification/spend ladder: these are enforced by
         # Wema on the dedicated NUBAN itself.
@@ -743,6 +820,9 @@ def kyc_bvn_start(request):
     (verify-before-live).
     """
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     bvn = (request.data.get("bvn") or "").strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -770,6 +850,9 @@ def kyc_bvn_confirm(request):
     """POST /api/kyc/bvn/confirm {access_token, otp} — confirm the BVN code and
     mark the BVN verified."""
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     otp = (request.data.get("otp") or "").strip()
     cache_key = f"kyc_bvn:{user.id}"
     pending = cache.get(cache_key)
@@ -801,6 +884,9 @@ def kyc_bvn_confirm(request):
 def kyc_bvn(request):
     """POST /api/kyc/bvn/ {access_token, bvn} -> verifies BVN, recomputes tier"""
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     bvn = (request.data.get("bvn") or "").strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -819,6 +905,9 @@ def kyc_bvn(request):
 def kyc_nin(request):
     """POST /api/kyc/nin/ {access_token, nin} -> verifies NIN, recomputes tier"""
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     nin = (request.data.get("nin") or "").strip()
     if _identity_owned_by_another_user(user, "nin", nin):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -852,6 +941,9 @@ def kyc_face(request):
     server-side flag, so it must never be a bare client claim.
     """
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     selfie = request.data.get("selfie") or request.data.get("image") or ""
     # Empty remains valid only insofar as the configured provider accepts it (the
     # offline test provider does; production providers fail closed). When a client
@@ -887,6 +979,9 @@ def kyc_address(request):
     verified flag survives — the image is never retained, as with the others.
     """
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     address = (request.data.get("address") or "").strip()
     if len(address) < 6:
         return fail("Enter your full residential address")
@@ -920,6 +1015,9 @@ def kyc_id_document(request):
     type are retained — never the raw image.
     """
     user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
     image = request.data.get("image") or request.data.get("document") or ""
     doc_type = (request.data.get("doc_type") or "").strip()[:32]
     image_error = _kyc_image_error(image)

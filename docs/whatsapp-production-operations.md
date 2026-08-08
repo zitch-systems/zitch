@@ -95,6 +95,25 @@ them set. What no boot check can verify is whether each holds the **correct valu
 which is why a wrong `APP_SECRET` or `PHONE_NUMBER_ID` is the residual failure mode
 once the service is up, and why both now have their own counter above.
 
+## Chat signup (onboarding new customers in WhatsApp)
+
+`WHATSAPP_ALLOW_CHAT_SIGNUP=true` lets a brand-new number open an account in the
+chat: first name, last name, email, 4-digit PIN. The account is created at the
+**unverified floor** (internal tier 0 — ₦20,000/txn, the regulatory Tier-1
+equivalent) with **no app password** and the email stored **unverified**.
+
+Raising limits is deliberately app-only, and both contact channels are re-proven
+on the way:
+
+1. The customer downloads the app and taps **Forgot password** — the account has
+   no usable password, so this is the only door in, and its SMS OTP re-verifies
+   the phone.
+2. The KYC screen requires confirming the chat-collected email (a code sent to
+   the inbox) before any identity step — every KYC endpoint returns 403 until
+   then. Until that confirmation, the address also never receives password-reset
+   codes: it was typed into a chat, one typo from someone else's inbox.
+3. BVN/NIN and above proceed as normal.
+
 ## Activation sequence
 
 1. Merge only after CI is green and apply migrations before starting the worker.

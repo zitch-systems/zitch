@@ -561,6 +561,17 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
         if len(val) < 2:
             return reply(msisdn, "Please enter your last name.")
         ob.payload["last_name"] = val[:40]
+        _onboard_to(ob, "email")
+        return reply(msisdn, "What's your *email address*? You'll confirm it in the Zitch app when you verify your identity.")
+    if ob.step == "email":
+        email = val.lower()
+        if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            return reply(msisdn, "That doesn't look like an email address. Please enter it like *name@example.com*.")
+        if User.objects.filter(email__iexact=email).exists():
+            # Recovery looks accounts up by email, so two accounts sharing one
+            # address would make reset codes ambiguous. Refuse here, at entry.
+            return reply(msisdn, "That email is already on a Zitch account. Enter a different email address.")
+        ob.payload["email"] = email
         _onboard_to(ob, "pin")
         return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
     if ob.step == "pin":
@@ -590,7 +601,12 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     # the app: only name + PIN are collected here (no BVN/NIN), and the app's tier
     # ladder (recompute_tier) requires BVN + NIN for Tier 1. The user raises their
     # tier by verifying their identity in the app.
-    user = User.objects.create(username=local, phone=local, first_name=fn, last_name=ln, tier=0)
+    user = User.objects.create(
+        username=local, phone=local, first_name=fn, last_name=ln, tier=0,
+        email=(ob.payload.get("email") or "").strip().lower(),
+        onboarded_via_whatsapp=True,   # gates KYC on in-app email re-verification
+        email_verified=False,          # chat-collected: unverified until the app OTP
+    )
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
     user.set_transaction_pin(pin)
     user.save()
@@ -603,9 +619,10 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         msisdn,
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
         f"Your current transfer limit is *₦{user.daily_transfer_limit:,.0f}/day*. "
-        "You can pay bills, buy airtime & data, and check your balance here. "
-        "Complete identity verification in the Zitch app to "
-        "raise your limits.\n\n" + MENU,
+        "You can pay bills, buy airtime & data, and check your balance here.\n\n"
+        "To raise your limits: download the *Zitch app*, tap *Forgot password* "
+        "with this phone number to set your password, then confirm your email "
+        "and verify your identity.\n\n" + MENU,
     )
 
 

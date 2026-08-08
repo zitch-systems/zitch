@@ -16,6 +16,7 @@ type Status = {
   daily_transfer_limit?: string; daily_bill_limit?: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
   address_verified?: boolean; id_document_verified?: boolean;
+  email?: string; email_verified?: boolean; email_verification_required?: boolean;
   bank_tier?: number;
   bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
 };
@@ -54,6 +55,8 @@ const Kyc = () => {
   const [stateName, setStateName] = useState('');
   const [addressDoc, setAddressDoc] = useState(''); // base64 proof of address
   const [idImage, setIdImage] = useState(''); // base64 of the government ID
+  const [emailOtp, setEmailOtp] = useState('');
+  const [emailOtpSent, setEmailOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -180,6 +183,34 @@ const Kyc = () => {
           )}
         </View>
       )}
+
+      {status?.email_verification_required ? (
+        <KycRow icon="mail" title="Confirm your email" sub={`We'll send a code to ${status.email || 'your email'} — required before identity verification`} done={false}>
+          {/* Chat-onboarded accounts typed this address into WhatsApp, unverified.
+              Every identity step below is closed server-side until it's confirmed,
+              so surfacing it first saves a confusing 403 later. */}
+          {!emailOtpSent ? (
+            <Btn label="Send code" size="md" disabled={busy}
+              onPress={async () => {
+                setBusy(true);
+                try {
+                  const res = await apiJson('/api/email/verify/start/', {});
+                  if (res.success) { setEmailOtpSent(true); notify('Code sent', res.message || 'Check your inbox.'); }
+                  else notify('Error', res.message || 'Could not send the code');
+                } catch { notify('Error', 'Something went wrong.'); }
+                finally { setBusy(false); }
+              }} />
+          ) : (
+            <>
+              <Field value={emailOtp} onChangeText={(v) => setEmailOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code from the email" />
+              <View style={{ height: 10 }} />
+              <Btn label="Confirm email" size="md" disabled={busy || emailOtp.length !== 6}
+                onPress={() => submit('/api/email/verify/confirm/', { otp: emailOtp }, 'Email')} />
+              <Text onPress={() => setEmailOtpSent(false)} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
+            </>
+          )}
+        </KycRow>
+      ) : null}
 
       <KycRow icon="bank" title="BVN" sub="We'll send a code to verify it's yours" done={!!status?.bvn_verified}>
         {!bvnSent ? (
