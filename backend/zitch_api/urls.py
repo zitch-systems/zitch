@@ -65,6 +65,12 @@ def health(_request):
         # invisible in every other reading: no call means no queue row, no log
         # line, nothing — which reads exactly like an idle, healthy channel.
         "whatsapp_webhook_reached": _whatsapp_webhook_reached(),
+        # The other half of the same question. `reached` covers the inbound leg;
+        # this covers the reply. A channel can receive perfectly and still be mute
+        # — an expired token fails only the send — and /whatsapp-diagnose reports
+        # that behind an admin login, which is exactly what an operator debugging
+        # from a phone does not have.
+        "whatsapp_outbound_failing": _whatsapp_outbound_failing(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
 
@@ -86,6 +92,23 @@ def _whatsapp_webhook_reached():
         # verified this read "true" for a channel refusing every single message.
         return WebhookEvent.objects.filter(source="whatsapp",
                                            outcome=WebhookEvent.ACCEPTED).exists()
+    except Exception:      # noqa: BLE001 — liveness outranks this datum
+        return None
+
+
+def _whatsapp_outbound_failing():
+    """True when Meta refused every one of the last few replies.
+
+    None when nothing has been sent yet — an empty outbound log is not evidence of
+    health, and False would read as one. Guarded like the probe above: /healthz is
+    the liveness endpoint and answers whether or not the database is reachable.
+    """
+    try:
+        from whatsapp.models import WaMessageLog
+
+        recent = list(WaMessageLog.objects.filter(direction=WaMessageLog.OUT)
+                      .order_by("-created").values_list("processing_error", flat=True)[:20])
+        return all(bool(e) for e in recent) if recent else None
     except Exception:      # noqa: BLE001 — liveness outranks this datum
         return None
 

@@ -75,7 +75,16 @@ callback is the classic silent misconfiguration: verification passes, and no mes
 is ever delivered.
 
 Confirm with `/healthz`: `whatsapp_mode: "live"` and, after sending one message,
-`whatsapp_webhook_reached: true`. That flag counts only calls we **accepted** — a
+`whatsapp_webhook_reached: true` with `whatsapp_outbound_failing: false`.
+
+Those answer different halves of the question and both are needed. `reached` covers
+the inbound leg; `outbound_failing` covers the reply. A channel can receive
+perfectly and still be mute — an expired token fails only the send — so a green
+`reached` on its own has never been proof the bot works.
+
+Use a **permanent System User token**, not the one on the API Setup page: that one
+expires after 24 hours, at which point every reply is refused while inbound carries
+on working normally. That flag counts only calls we **accepted** — a
 signed call naming the wrong phone-number id is refused with a 400 and does not
 count, which is the point: it is the one wrong value no boot check can catch.
 

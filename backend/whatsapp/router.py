@@ -118,10 +118,27 @@ def reply(msisdn: str, text: str) -> dict:
     *process*) can be found; without recording it here, `whatsapp_diagnostics`
     would have no failed sends to count."""
     result = send_text(msisdn, text)
-    error = "" if result.get("success") else str(result.get("error_code") or "send_failed")[:64]
+    _log_out(msisdn, text, result)
+    return result
+
+
+def _log_out(msisdn: str, text: str, result: dict | None) -> None:
+    """The OUT audit row, recording whether Meta ACCEPTED the send.
+
+    Shared by every sender, because the ones that fall back had the same gap
+    reply() did: they attempted a send, dropped the result, and wrote a row that
+    said "replied" either way. That mattered most on the paths a new user hits
+    first — the menu goes out through reply_list/reply_buttons, so a dead token
+    produced a clean outbound log for exactly the first reply anyone would miss.
+
+    `result` is whichever attempt decided the outcome: for the falling-back
+    senders that is the fallback, since it is the one that either reached the
+    user or did not. None means the caller never got that far.
+    """
+    ok = bool((result or {}).get("success"))
+    error = "" if ok else str((result or {}).get("error_code") or "send_failed")[:64]
     WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text,
                                 processing_error=error)
-    return result
 
 
 def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
@@ -129,9 +146,8 @@ def reply_image(msisdn: str, image_url: str | None, caption: str) -> None:
     row). With no image_url — or if the media send fails — it sends plain text, so
     a reply is never lost when a logo is missing or briefly unreachable."""
     sent = bool(image_url) and send_image(msisdn, image_url, caption).get("success", False)
-    if not sent:
-        send_text(msisdn, caption)
-    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=caption)
+    result = {"success": True} if sent else send_text(msisdn, caption)
+    _log_out(msisdn, caption, result)
 
 
 def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
@@ -169,11 +185,12 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str) -> str:
                     log.warning("wa_receipt_image_refused ref=%s fell_back=document", ref)
         except Exception:  # never let receipt rendering break a completed txn
             log.exception("wa_receipt_render_failed ref=%s", ref)
+    result = {"success": True} if delivered else None
     if not delivered:
         if wa_live():
             log.warning("wa_receipt_text_fallback ref=%s", ref)
-        send_text(msisdn, text)
-    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=text)
+        result = send_text(msisdn, text)
+    _log_out(msisdn, text, result)
     return text
 
 
@@ -184,26 +201,18 @@ def reply_list(msisdn: str, body: str, rows, button_label: str = "Choose") -> No
     fallback = body + "\n" + "\n".join(
         f"{rid}  {title}" + (f" — {desc}" if desc else "") for rid, title, desc in rows)
     from .providers import wa_live
-    if wa_live():
-        sent = send_list(msisdn, body, rows, button_label=button_label)
-        if not sent.get("success"):
-            send_text(msisdn, fallback)
-    else:
-        send_text(msisdn, fallback)
-    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=fallback)
+    sent = send_list(msisdn, body, rows, button_label=button_label) if wa_live() else {}
+    result = sent if sent.get("success") else send_text(msisdn, fallback)
+    _log_out(msisdn, fallback, result)
 
 
 def reply_buttons(msisdn: str, body: str, buttons) -> None:
     """Interactive reply buttons (max 3) with a text fallback, logged like reply()."""
     fallback = body + "\n" + " / ".join(f"\"{bid}\"" for bid, _ in buttons)
     from .providers import wa_live
-    if wa_live():
-        sent = send_buttons(msisdn, body, buttons)
-        if not sent.get("success"):
-            send_text(msisdn, fallback)
-    else:
-        send_text(msisdn, fallback)
-    WaMessageLog.objects.create(msisdn=msisdn, direction=WaMessageLog.OUT, text=fallback)
+    sent = send_buttons(msisdn, body, buttons) if wa_live() else {}
+    result = sent if sent.get("success") else send_text(msisdn, fallback)
+    _log_out(msisdn, fallback, result)
 
 
 def send_menu(msisdn: str) -> None:
