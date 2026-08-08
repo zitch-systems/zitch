@@ -23,6 +23,8 @@ from utility.models import CablePlan, DataPlan
 from utility.providers import (payout_resolve_account, send_sms, sms_live, vtu_purchase,
                                vtu_verify_customer)
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
+from utility import wema as wema_provider
+from wallet import views as wallet_views
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
 from wallet.services import (
     DuplicateTransaction,
@@ -50,7 +52,8 @@ MENU = (
     "3️⃣  📱 Airtime / Data\n"
     "4️⃣  💡 Pay a bill\n"
     "5️⃣  💱 Convert currency\n"
-    "6️⃣  🏦 Add money\n\n"
+    "6️⃣  🏦 Add money\n"
+    "7️⃣  🧾 My account details\n\n"
     "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
 )
 UNLINKED = (
@@ -444,6 +447,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _start_service_menu(user, msisdn, "bill")
     if low in ("5", "convert", "conversion"):
         return _start_convert(user, msisdn)
+    if low in ("7", "account", "my account", "account details", "my details", "details"):
+        return _do_account_details(user, msisdn)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
@@ -624,6 +629,11 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         "with this phone number to set your password, then confirm your email "
         "and verify your identity.\n\n" + MENU,
     )
+    # Roll straight into minting their funding NUBAN — a wallet you can't pay
+    # into isn't much of an account. Skipped quietly when the bank integration
+    # is off; option 6 offers the same setup any time.
+    if wallet_views._wema_funding_enabled():
+        _start_add_account(user, msisdn, after_signup=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -658,19 +668,119 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
 
 def _do_add_money(user, msisdn: str) -> None:
     """Show the user's dedicated Zitch account for bank-transfer funding (credited
-    automatically by the reconcile_wema poller). Setting up that account needs a
-    BVN/NIN + OTP round-trip with our licensed bank partner (Wema), which runs in the
-    Zitch app — so a user without an account yet is pointed there."""
+    automatically by the reconcile_wema poller) — or, if it hasn't been minted
+    yet, run the BVN/NIN + OTP round-trip with our licensed bank partner right
+    here in the chat."""
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
-    return reply(
-        msisdn,
-        "🏦 *Add money*\n\nTo fund by bank transfer you'll need your dedicated Zitch "
-        "account. Set it up in the *Zitch app* (Home → *Add money*): we verify your "
-        "BVN or NIN with our licensed bank partner and issue your account in a moment. "
-        'Once it\'s ready, come back here and reply "add money" to see it.',
+    return _start_add_account(user, msisdn)
+
+
+def _do_account_details(user, msisdn: str) -> None:
+    """Menu 7: who Zitch thinks you are, plus the funding account (or the way
+    to mint one)."""
+    wallet = get_or_create_wallet(user)
+    lines = [
+        "🧾 *My account details*\n",
+        f"👤 {user.get_full_name() or user.first_name or '—'}",
+        f"📱 {user.phone}",
+    ]
+    if user.email:
+        lines.append(f"📧 {user.email}" + ("" if user.email_verified else " (unconfirmed)"))
+    lines.append(f"⭐ Tier {user.tier} · up to ₦{user.transaction_limit:,.0f}/transaction")
+    reply(msisdn, "\n".join(lines))
+    if wallet.account_number:
+        return _send_account_details(msisdn, wallet, intro="🏦 *Your funding account*")
+    return reply(msisdn, "You don't have a funding account number yet — reply *6* (Add money) to set one up in a minute.")
+
+
+# --------------------------------------------------------------------------- #
+# add_account — mint the dedicated Wema NUBAN without leaving the chat.
+# Same two-step contract as the app (identity → bank OTP), driving the same
+# shared code: _start_wema_attempt / complete_wema_provisioning in wallet.views.
+# The BVN/NIN input state is masked out of the message log by is_awaiting_bvn.
+# --------------------------------------------------------------------------- #
+def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
+    if not wallet_views._wema_funding_enabled():
+        return reply(msisdn, "🏦 Account setup isn't available right now — please try again later.")
+    _clear_actions(msisdn)
+    PendingAction.objects.create(
+        user=user, msisdn=msisdn, action_type="add_account", state="id_type",
+        payload={}, expires_at=timezone.now() + FLOW_TTL,
     )
+    intro = ("🏦 Let's get you a *personal Zitch account number* so you can add money "
+             "by bank transfer.\n\n" if not after_signup else
+             "One more thing — let's mint your *personal Zitch account number* so you "
+             "can add money by bank transfer.\n\n")
+    reply(msisdn, intro +
+          "Our licensed bank partner needs one ID to open it:\n"
+          "1️⃣  BVN\n2️⃣  NIN\n\nReply *1* or *2* (or \"cancel\" to do this later).")
+
+
+def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    val = text.strip()
+    if pa.state == "id_type":
+        low = val.lower()
+        if low in ("1", "bvn"):
+            pa.payload["id_type"] = "bvn"
+        elif low in ("2", "nin"):
+            pa.payload["id_type"] = "nin"
+        else:
+            return reply(msisdn, "Reply *1* to use your BVN or *2* to use your NIN.")
+        pa.state = "bvn"  # the masked identity-entry state, whichever ID was picked
+        pa.expires_at = timezone.now() + FLOW_TTL
+        pa.save(update_fields=["payload", "state", "expires_at"])
+        which = pa.payload["id_type"].upper()
+        return reply(msisdn, f"Enter your 11-digit *{which}*. It goes only to our bank partner to open your account — it never appears in this chat's history.")
+    if pa.state == "bvn":
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) != 11:
+            return reply(msisdn, f"That should be exactly 11 digits. Enter your {pa.payload.get('id_type', 'BVN').upper()} again, or reply \"cancel\".")
+        using_bvn = pa.payload.get("id_type") == "bvn"
+        res, identity_error = wallet_views._start_wema_attempt(
+            user, digits if using_bvn else "", "" if using_bvn else digits)
+        if identity_error:
+            _clear_actions(msisdn)
+            return reply(msisdn, f"⚠️ {identity_error}")
+        if not res.get("success"):
+            # The bank may already hold an account for this customer — adopt it
+            # instead of dead-ending (same recovery the app performs).
+            recovered = wallet_views._adopt_existing_wema_account(
+                user, using_bvn=using_bvn, reason=res.get("message", ""))
+            if recovered is not None:
+                _clear_actions(msisdn)
+                return _send_account_details(msisdn, get_or_create_wallet(user),
+                                             intro="✅ *Found it!* Your Zitch account was already set up")
+            _clear_actions(msisdn)
+            return reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
+        pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
+        pa.payload["using_bvn"] = using_bvn
+        pa.state = "otp"
+        pa.expires_at = timezone.now() + FLOW_TTL
+        pa.save(update_fields=["payload", "state", "expires_at"])
+        return reply(msisdn, "📲 Our bank partner just sent a code to your phone by SMS. Enter it here to finish. (Reply *resend* if it doesn't arrive.)")
+    if pa.state == "otp":
+        if val.lower() == "resend":
+            res = wema_provider.resend_wallet_otp(user.phone or "", pa.payload.get("tracking_id", ""),
+                                                  bvn=bool(pa.payload.get("using_bvn")))
+            if res.get("success"):
+                return reply(msisdn, "📲 Code re-sent — enter it here.")
+            return reply(msisdn, "⚠️ " + (res.get("message") or "Couldn't resend the code — try again shortly."))
+        payload, status = wallet_views.complete_wema_provisioning(
+            user, val, pa.payload.get("tracking_id", ""))
+        if payload.get("success"):
+            _clear_actions(msisdn)
+            _send_account_details(msisdn, get_or_create_wallet(user),
+                                  intro="🎉 *Your Zitch account number is ready!*")
+            return
+        if status == 400:   # expired / mismatched attempt: retrying the same code can't help
+            _clear_actions(msisdn)
+            return reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
+        return reply(msisdn, "⚠️ " + (payload.get("message") or "That code didn't work.")
+                     + ' Try again, reply *resend* for a new code, or "cancel".')
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
 
 
 
@@ -701,6 +811,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "cable": _advance_cable,
         "convert": _advance_convert,
         "pick_service": _advance_pick_service,
+        "add_account": _advance_add_account,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)

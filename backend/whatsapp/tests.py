@@ -236,8 +236,10 @@ class ChannelTests(TestCase):
         self.assertFalse(u.email_verified)                    # chat-collected: unproven
         self.assertFalse(u.has_usable_password())             # app entry = OTP reset
         self.assertTrue(WhatsAppLink.objects.filter(wa_msisdn=m, user=u, status=WhatsAppLink.ACTIVE).exists())
-        self.assertIn("Welcome to Zitch", self.last_reply(m))
-        self.assertIn("Forgot password", self.last_reply(m))  # the upgrade path is named
+        welcome = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
+        self.assertIsNotNone(welcome)
+        self.assertIn("Forgot password", welcome.text)  # the upgrade path is named
 
     def test_onboarding_refuses_an_email_already_on_an_account(self):
         # Recovery looks accounts up by email; two accounts sharing one address
@@ -373,16 +375,25 @@ class ChannelTests(TestCase):
         self.inbound("6", "am2")
         self.assertIn(wallet.account_number, self.last_reply())
 
-    def test_add_money_without_account_points_to_app(self):
-        # Wema account setup needs a BVN/NIN + OTP round-trip (done in the Zitch app),
-        # so a user without an account is directed there — no in-chat BVN collection.
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_add_money_without_account_starts_setup_in_chat(self, _enabled):
+        # Account setup needs a BVN/NIN + bank OTP round-trip. It now runs here,
+        # driving the same shared wallet.views code the app uses.
         self.user.bvn_verified = False
         self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])
         self.link()
         self.inbound("fund", "am3")
         self.assertFalse(get_or_create_wallet(self.user).account_number)
-        self.assertIn("app", self.last_reply().lower())
+        self.assertIn("BVN", self.last_reply())
+        self.assertEqual(PendingAction.objects.get(
+            msisdn=MSISDN, action_type="add_account").state, "id_type")
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=False)
+    def test_add_money_is_unavailable_when_funding_is_off(self, _enabled):
+        self.link()
+        self.inbound("fund", "am4")
+        self.assertIn("isn't available", self.last_reply())
         self.assertFalse(PendingAction.objects.filter(
             msisdn=MSISDN, action_type="add_account").exists())
 
@@ -1672,3 +1683,106 @@ class InlineOverrideTests(TestCase):
         self.assertIsNone(row.processed_at)
         self.assertEqual(row.processing_attempts, 1)
         self.assertTrue(row.processing_error)
+
+
+class ChatAccountSetupTests(TestCase):
+    """Minting the funding NUBAN inside the chat: the flow drives the same
+    shared wallet.views code as the app (start attempt -> bank OTP -> provision),
+    so these tests mock at that boundary and check the conversation contract."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    def start_flow(self, m="2349090000021"):
+        self.inbound("1", f"s1-{m}", msisdn=m)
+        self.inbound("Ngozi", f"s2-{m}", msisdn=m)
+        self.inbound("Ade", f"s3-{m}", msisdn=m)
+        self.inbound(f"ngozi{m[-4:]}@zitch.test", f"s4-{m}", msisdn=m)
+        self.inbound("2468", f"s5-{m}", msisdn=m)
+        self.inbound("2468", f"s6-{m}", msisdn=m)
+        return m
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_signup_rolls_into_account_setup(self, _enabled):
+        m = self.start_flow()
+        # The welcome is followed by the NUBAN offer, ending at the ID choice.
+        self.assertIn("account number", self.last_reply(m))
+        self.assertIn("BVN", self.last_reply(m))
+        pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+        self.assertEqual(pa.state, "id_type")
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=False)
+    def test_signup_skips_setup_when_funding_is_off(self, _enabled):
+        m = self.start_flow(m="2349090000022")
+        self.assertIn("Welcome to Zitch", self.last_reply(m))
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_full_mint_happy_path(self, _enabled, start, complete):
+        start.return_value = ({"success": True, "tracking_id": "trk-1"}, None)
+        m = self.start_flow(m="2349090000023")
+        self.inbound("2", f"t1-{m}", msisdn=m)          # NIN
+        self.assertIn("NIN", self.last_reply(m))
+        self.inbound("12345678901", f"t2-{m}", msisdn=m)
+        start.assert_called_once()
+        args = start.call_args[0]
+        self.assertEqual(args[1:], ("", "12345678901"))  # routed as NIN, not BVN
+        self.assertIn("code", self.last_reply(m).lower())
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            self.assertEqual((otp, tracking_id), ("55555", "trk-1"))
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9912345678", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+        complete.side_effect = provision
+        self.inbound("55555", f"t3-{m}", msisdn=m)
+        r = self.last_reply(m)
+        self.assertIn("9912345678", r)
+        self.assertIn("ready", r.lower())
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+        # The message log never holds the NIN in clear (masked identity state).
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_wrong_otp_allows_retry_and_expiry_ends_the_flow(self, _enabled, start, complete):
+        start.return_value = ({"success": True, "tracking_id": "trk-2"}, None)
+        m = self.start_flow(m="2349090000024")
+        self.inbound("1", f"u1-{m}", msisdn=m)
+        self.inbound("11111111111", f"u2-{m}", msisdn=m)
+        complete.return_value = ({"success": False, "message": "OTP verification failed"}, 502)
+        self.inbound("00000", f"u3-{m}", msisdn=m)      # wrong code: flow survives
+        self.assertIn("resend", self.last_reply(m).lower())
+        self.assertTrue(PendingAction.objects.filter(msisdn=m, action_type="add_account", state="otp").exists())
+        complete.return_value = ({"success": False, "message": "This verification request has expired. Start account setup again."}, 400)
+        self.inbound("00001", f"u4-{m}", msisdn=m)      # expired: flow ends, restart hinted
+        self.assertIn("Reply *6*", self.last_reply(m))
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    def test_menu_lists_account_details_and_shows_them(self):
+        self.link()
+        w = get_or_create_wallet(self.user)
+        w.account_number, w.bank_name, w.account_name = "8800112233", "Wema Bank", "ADA EZE"
+        w.save(update_fields=["account_number", "bank_name", "account_name"])
+        self.inbound("menu", "d1")
+        self.assertIn("My account details", self.last_reply())
+        self.inbound("7", "d2")
+        r = self.last_reply()
+        self.assertIn("8800112233", r)
+        self.inbound("my account", "d3")
+        self.assertIn("8800112233", self.last_reply())
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_account_details_without_nuban_points_to_setup(self, _enabled):
+        self.link()
+        self.inbound("7", "d4")
+        self.assertIn("Add money", self.last_reply())

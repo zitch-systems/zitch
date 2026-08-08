@@ -114,6 +114,19 @@ on the way:
    codes: it was typed into a chat, one typo from someone else's inbox.
 3. BVN/NIN and above proceed as normal.
 
+### Funding account (NUBAN) from the chat
+
+Signup rolls straight into minting the customer's dedicated Wema account —
+choose BVN or NIN, enter it (masked out of the message log), then the bank's
+SMS OTP. Menu option **6 (Add money)** runs the same setup any time, and **7
+(My account details)** shows name, phone, email, tier and the funding account.
+
+It drives the same `wallet.views` code the app screen does
+(`_start_wema_attempt` → `complete_wema_provisioning`), so the identity checks,
+holder-name match, PND lift and tier binding are identical — there is no
+WhatsApp-specific provisioning path. When `WEMA_FUNDING` is off, signup skips
+the offer and option 6 says setup is unavailable.
+
 The verified email is not only a chat-signup gate: **Tier 1 requires a verified
 email for every account** (BVN + NIN + verified email; the phone is proven by
 construction — app signup requires the SMS OTP, WhatsApp signup is possession
