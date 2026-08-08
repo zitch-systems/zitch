@@ -531,10 +531,16 @@ WHATSAPP["MODE"] = _wa_mode
 WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool(
     "WHATSAPP_ALLOW_CHAT_SIGNUP", not _PROD and _wa_mode == "sandbox"
 )
-# Webhook commands are queued in production and run through the same worker path
-# inline only for local development/tests. The dedicated key encrypts queued command
-# text at rest and must be identical in the web and worker processes.
-WHATSAPP_PROCESS_INLINE = not _PROD
+# Webhook commands are queued in production and run through the same worker path —
+# inline by default only for local development/tests. The env override exists for
+# deployments where NO background execution can be trusted: on a hobby-tier host the
+# web-drain daemon thread is reaped when the instance recycles or spins down after the
+# response — silently, before it claims a row, leaving attempts=0 and no log line —
+# and there is no worker service. Inline runs the message through the same job
+# function inside the request, which is the one execution context such a host
+# guarantees. Costs webhook latency (the reply is sent before Meta gets its 200);
+# acceptable at chat volumes, and Meta tolerates slow acks far better than lost ones.
+WHATSAPP_PROCESS_INLINE = env_bool("WHATSAPP_PROCESS_INLINE", not _PROD)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

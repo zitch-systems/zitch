@@ -100,11 +100,13 @@ def webhook(request):
         _process(message)
     for status in statuses:
         _apply_status(status)
-    if messages:
+    if messages and not getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
         # Safety net for a worker that isn't running. Off the request thread, so
         # the acknowledgement below is not delayed by it, and a no-op whenever the
         # worker is healthy (it will already hold the row's lease). See
-        # jobs.drain_in_background.
+        # jobs.drain_in_background. Skipped in inline mode: the message was just
+        # handled in this request, and inline exists for hosts where a daemon
+        # thread is reaped before it runs — spawning one there is pure noise.
         from .jobs import drain_in_background
 
         drain_in_background()
@@ -326,7 +328,17 @@ def _process(msg: dict) -> None:
                        action=f"enqueue_failed:{type(exc).__name__}")
         raise
     if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
-        process_inbound_message(row.pk, raise_errors=True)
+        # raise_errors only outside production: in dev/tests a router bug should
+        # blow up the request loudly. In production inline mode the job function
+        # must swallow and RECORD the failure (attempts, processing_error, retry
+        # lease) instead — a raise here would 500 the webhook, Meta would redeliver
+        # for a row that is already queued and counted, and enough 500s get the
+        # callback throttled. The row is durable either way; nothing is lost.
+        process_inbound_message(
+            row.pk,
+            raise_errors=bool(getattr(settings, "DEBUG", False)
+                              or getattr(settings, "TESTING", False)),
+        )
 
 
 # --------------------------------------------------------------------------- #
