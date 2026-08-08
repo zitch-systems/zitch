@@ -63,6 +63,15 @@ window.ZAPI = (function () {
     kyc: async () => { D.KYCQ = (await call('kyc-queue')).rows; },
     recon: async () => { const r = await call('recon'); D.RECON = r; D.PROVIDERS = r.providers; },
     ai: async () => { D.AI = await call('ai'); },
+    aiConfig: async () => {
+      // Settings-capability only, and it may legitimately 403 for a support
+      // operator viewing the AI page — that must not blank the whole view.
+      try { D.AI_CFG = await call('ai-config'); } catch (e) { D.AI_CFG = { denied: true, message: e.message }; }
+    },
+    djangoAdmin: async () => {
+      try { D.DJANGO_ADMIN = await call('django-admin'); }
+      catch (e) { D.DJANGO_ADMIN = { available: false, message: e.message }; }
+    },
     settings: async () => {
       const r = await call('settings');
       D.SETTINGS = r.settings; D.TEAM = r.team; D.PERMS = r.perms; D.ROLES = r.roles;
@@ -73,7 +82,7 @@ window.ZAPI = (function () {
   const VIEW_LOADERS = {
     overview: ['summary'], users: ['users'], kyc: ['kyc'], txns: ['txns'],
     fx: ['fx'], products: ['products'], wa: ['inbox'], broadcasts: ['broadcasts'],
-    ai: ['ai'], recon: ['recon'], audit: ['audit'], settings: ['settings'],
+    ai: ['ai', 'aiConfig'], recon: ['recon'], audit: ['audit'], settings: ['settings', 'djangoAdmin'],
   };
   async function loadView(view, ...args) {
     await Promise.all((VIEW_LOADERS[view] || []).map((k) => load[k](...args)));
@@ -93,6 +102,8 @@ window.ZAPI = (function () {
     thread: (msisdn) => call('thread', { msisdn }),
     convAi: (msisdn, enabled) => call('conv-ai', { msisdn, enabled }),
     aiGlobal: (enabled) => call('ai-global', { enabled }),
+    aiConfigSave: (cfg) => call('ai-config-save', cfg),
+    aiTest: () => call('ai-test'),
     // the three conversation actions live on the WhatsApp app's ops routes
     handover: (msisdn) => opsCall('handover', { msisdn }),
     returnBot: (msisdn) => opsCall('return-to-bot', { msisdn }),

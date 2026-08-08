@@ -237,9 +237,101 @@ function AiControls({ toast, refresh }) {
               <div className="rule"><Icon name="check" size={15} /> Handover to a human auto-disables AI for that conversation.</div>
             </div>
           </Card>
+          <ModelProviderCard toast={toast} refresh={refresh} />
         </div>
       </div>
     </div>
+  );
+}
+
+// ---- model provider: which LLM reads the customer's sentence -------------- //
+function ModelProviderCard({ toast, refresh }) {
+  const { can } = useRole();
+  const cfg = DB.AI_CFG || {};
+  const [provider, setProvider] = useStateB(cfg.provider || 'anthropic');
+  const [model, setModel] = useStateB(cfg.model || '');
+  const [baseUrl, setBaseUrl] = useStateB(cfg.base_url || '');
+  const [apiKey, setApiKey] = useStateB('');
+  const [busy, setBusy] = useStateB(false);
+
+  if (cfg.denied) {
+    return (
+      <Card title="Model provider">
+        <p className="rbac-note"><Icon name="lock" size={13} /> Super admin only.</p>
+      </Card>
+    );
+  }
+  const spec = (cfg.providers || []).find((p) => p.id === provider) || {};
+  const pick = (id) => {
+    setProvider(id);
+    const s = (cfg.providers || []).find((p) => p.id === id) || {};
+    // Follow the provider's own default rather than carrying the previous
+    // provider's model name across, which would never be a valid id.
+    setModel(s.default_model || '');
+    setBaseUrl(s.base_url || '');
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      // api_key is sent only when the operator typed a new one — the server
+      // keeps the existing key otherwise, so editing a model never wipes it.
+      const body = { provider, model, base_url: baseUrl };
+      if (apiKey) body.api_key = apiKey;
+      await ZAPI.aiConfigSave(body);
+      setApiKey('');
+      toast('Model provider saved (audit logged)');
+      refresh();
+    } catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+  const test = async () => {
+    setBusy(true);
+    try { const r = await ZAPI.aiTest(); toast((r.success ? '✅ ' : '⚠ ') + r.message); }
+    catch (e) { toast('⚠ ' + e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <Card title="Model provider" sub="Which LLM reads the customer's sentence. Swapping it cannot change what the platform will do — the router still validates every intent.">
+      <div className="form-rows">
+        <label className="fr">
+          <span>Provider</span>
+          <select value={provider} disabled={!can.settings} onChange={(e) => pick(e.target.value)}>
+            {(cfg.providers || []).map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+          </select>
+        </label>
+        <label className="fr">
+          <span>Model</span>
+          <input value={model} disabled={!can.settings} placeholder={spec.default_model || 'model id'}
+                 onChange={(e) => setModel(e.target.value)} />
+        </label>
+        {spec.needs_base_url && (
+          <label className="fr">
+            <span>Base URL</span>
+            <input value={baseUrl} disabled={!can.settings} placeholder="https://…/v1"
+                   onChange={(e) => setBaseUrl(e.target.value)} />
+          </label>
+        )}
+        <label className="fr">
+          <span>API key</span>
+          <input type="password" value={apiKey} disabled={!can.settings} autoComplete="new-password"
+                 placeholder={cfg.api_key_masked ? `${cfg.api_key_masked} — leave blank to keep` : 'paste the provider key'}
+                 onChange={(e) => setApiKey(e.target.value)} />
+        </label>
+      </div>
+      <p className="dim sm" style={{ margin: '10px 0 0' }}>
+        Stored encrypted; never shown again after saving.
+        {spec.key_url ? <> <a href={spec.key_url} target="_blank" rel="noreferrer noopener">Get a key ↗</a></> : null}
+      </p>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button className="btn" disabled={!can.settings || busy} onClick={save}>Save</button>
+        <button className="btn ghost" disabled={!can.settings || busy} onClick={test}>Test connection</button>
+      </div>
+      {!cfg.configured && <p className="rbac-note" style={{ marginTop: 10 }}>
+        <Icon name="lock" size={13} /> Not configured — the channel is fully deterministic until a key is saved.
+      </p>}
+      {!can.settings && <p className="rbac-note"><Icon name="lock" size={13} /> Super admin only.</p>}
+    </Card>
   );
 }
 
@@ -300,9 +392,10 @@ function Settings({ toast }) {
               <Badge v={m.role === 'super_admin' ? 'success' : m.role === 'finance' ? 'human' : m.role === 'support' ? 'bot' : 'draft'}>{m.role}</Badge>
             </div>
           ))}
-          <div className="note" style={{ marginTop: 12 }}><Icon name="lock" size={14} /> Staff accounts and role groups are managed in Django admin (<span className="mono sm">/admin/</span>).</div>
+          <div className="note" style={{ marginTop: 12 }}><Icon name="lock" size={14} /> Staff accounts and role groups are managed in Django admin.</div>
         </Card>
       </div>
+      <DjangoAdminCard />
       <Card title="Role permissions" sub="Enforced server-side on every endpoint" pad={false}>
         <table className="tbl">
           <thead><tr><th>Permission</th>{DB.ROLES.map((r) => <th key={r} className="r">{r}</th>)}</tr></thead>
@@ -319,6 +412,25 @@ function Settings({ toast }) {
         </table>
       </Card>
     </div>
+  );
+}
+
+// ---- Django admin: the escape hatch for the long tail ------------------- //
+function DjangoAdminCard() {
+  const d = DB.DJANGO_ADMIN || {};
+  return (
+    <Card title="Django admin"
+          sub="The portal owns the daily workflows; this is the full model surface for everything else. Opens in a new tab.">
+      {d.available ? (
+        <div className="admin-links">
+          {(d.sections || []).map((sec) => (
+            <a key={sec.url} href={sec.url} target="_blank" rel="noreferrer noopener">{sec.label} ↗</a>
+          ))}
+        </div>
+      ) : (
+        <p className="rbac-note"><Icon name="lock" size={13} /> {d.message || 'Restricted to superusers.'}</p>
+      )}
+    </Card>
   );
 }
 

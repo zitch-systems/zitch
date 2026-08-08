@@ -89,7 +89,11 @@ TOOLS = [
 
 
 def llm_available() -> bool:
-    return bool(settings.LLM.get("API_KEY"))
+    """Configured well enough to make a call — which for an OpenAI-compatible
+    provider means a base URL and model too, not just a key."""
+    from . import llm
+
+    return llm.configured()
 
 
 _LONG_IDENTIFIER = re.compile(r"(?<!\d)\d{7,}(?!\d)")
@@ -108,34 +112,15 @@ def privacy_safe_text(text: str) -> str:
 
 def extract_intent(text: str) -> dict | None:
     """Map a message to one tool call -> {"name", "input"}, or None to fall back
-    to the deterministic router (no key, or any error — money never blocks on AI)."""
+    to the deterministic router (not configured, or any error — money never
+    blocks on AI).
+
+    The provider is whatever the console has configured (Claude, OpenAI, Gemini,
+    Grok, Groq, DeepSeek, Kimi, Qwen, or any OpenAI-compatible endpoint); llm.py
+    owns the wire formats. The message is redacted before it leaves the building
+    either way — see privacy_safe_text."""
     if not llm_available():
         return None
-    try:
-        import anthropic
+    from . import llm
 
-        # Bound the call: this runs INSIDE the synchronous Meta webhook, so an
-        # unbounded client (SDK default ~10 min with retries) would stall the handler
-        # and trigger Meta retries → webhook disablement. Fail fast; the caller already
-        # falls back to the deterministic router on any error (money never blocks on AI).
-        client = anthropic.Anthropic(
-            api_key=settings.LLM["API_KEY"],
-            timeout=settings.LLM.get("TIMEOUT", 8),
-            max_retries=0,
-        )
-        resp = client.messages.create(
-            model=settings.LLM.get("MODEL") or "claude-haiku-4-5-20251001",
-            max_tokens=512,
-            temperature=0,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            tool_choice={"type": "any"},  # force exactly one tool call
-            messages=[{"role": "user", "content": privacy_safe_text(text)}],
-        )
-        for block in resp.content:
-            if getattr(block, "type", None) == "tool_use":
-                return {"name": block.name, "input": dict(block.input or {})}
-        return None
-    except Exception as exc:  # noqa: BLE001 — never let the AI break the channel
-        log.warning("llm_intent_failed error_type=%s", type(exc).__name__)
-        return None
+    return llm.call_tools(SYSTEM_PROMPT, privacy_safe_text(text), TOOLS)

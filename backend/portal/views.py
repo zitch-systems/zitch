@@ -727,6 +727,123 @@ def ai_global(request):
     return ok(success=True, enabled=enabled)
 
 
+@api
+@require_cap("settings")
+def ai_config(request):
+    """GET-style: the provider catalogue plus what is configured right now.
+
+    The API key is returned MASKED and never in full. An operator needs to know
+    which key is installed, not what it is — and a console page that echoes live
+    provider credentials turns every screen-share into a leak."""
+    from whatsapp import llm
+
+    cfg = llm.active_config()
+    return ok(
+        providers=[
+            {"id": pid, "label": spec["label"], "default_model": spec["default_model"],
+             "needs_base_url": pid == "custom", "key_url": spec["key_url"],
+             "base_url": spec["base_url"]}
+            for pid, spec in llm.PROVIDERS.items()
+        ],
+        provider=cfg["provider"],
+        model=cfg["model"],
+        base_url=cfg["base_url"],
+        api_key_masked=llm.masked_key(cfg["api_key"]),
+        configured=llm.configured(),
+        enabled=SystemSetting.get("ai_enabled_global", "true") != "false",
+    )
+
+
+@api
+@require_cap("settings")
+def ai_config_save(request):
+    """Set provider / model / base URL / key. The key is stored encrypted and is
+    only replaced when a new one is supplied — so saving a model change does not
+    require re-pasting the credential (and does not silently wipe it)."""
+    from whatsapp import llm
+
+    provider = (request.data.get("provider") or "").strip()
+    if provider not in llm.PROVIDERS:
+        return fail("Unknown provider")
+    spec = llm.PROVIDERS[provider]
+    model = (request.data.get("model") or "").strip() or spec["default_model"]
+    base_url = (request.data.get("base_url") or "").strip().rstrip("/")
+    if provider == "custom" and not base_url:
+        return fail("A custom provider needs its OpenAI-compatible base URL")
+    # Only a custom endpoint is operator-supplied; the built-in providers carry
+    # their own vetted URLs and must not be re-validated (or blocked) here.
+    if provider == "custom":
+        err = llm.base_url_error(base_url)
+        if err:
+            return fail(err)
+    if not model:
+        return fail("Choose a model")
+
+    before = llm.active_config()
+    SystemSetting.set(llm.K_PROVIDER, provider)
+    SystemSetting.set(llm.K_MODEL, model)
+    SystemSetting.set(llm.K_BASE_URL, base_url)
+    raw_key = (request.data.get("api_key") or "").strip()
+    key_changed = bool(raw_key)
+    if key_changed:
+        llm.set_api_key(raw_key)
+
+    # Audited WITHOUT the key, before or after — an audit trail is read by more
+    # people than the settings page is.
+    record_audit("ai.config", actor=request.user_obj, target=provider,
+                 before={"provider": before["provider"], "model": before["model"],
+                         "base_url": before["base_url"]},
+                 after={"provider": provider, "model": model, "base_url": base_url,
+                        "key_changed": key_changed})
+    cfg = llm.active_config()
+    return ok(success=True, provider=cfg["provider"], model=cfg["model"],
+              base_url=cfg["base_url"], api_key_masked=llm.masked_key(cfg["api_key"]),
+              configured=llm.configured())
+
+
+@api
+@require_cap("settings")
+def ai_test(request):
+    """Live round-trip against the configured provider. An operator should learn
+    a key is wrong here, not from customers getting nonsense."""
+    from whatsapp import llm
+
+    res = llm.test_connection()
+    record_audit("ai.test", actor=request.user_obj, target=llm.active_config()["provider"],
+                 after={"ok": res["ok"]})
+    return ok(success=res["ok"], message=res["message"])
+
+
+@api
+@require_cap("settings")
+def django_admin(request):
+    """Deep links into the Django admin for the models operators actually need.
+
+    The portal owns the daily workflows; the Django admin is the escape hatch for
+    the long tail. Surfacing it here means an operator does not have to be told a
+    secret URL — and the link only appears for a superuser, since that is what
+    the admin itself requires. Anyone else is told plainly rather than sent to a
+    login they cannot pass.
+    """
+    if not request.user_obj.is_superuser:
+        return ok(available=False,
+                  message="The Django admin is restricted to superusers. Ask an owner to make the change.")
+    base = "/admin/"
+    return ok(
+        available=True,
+        base=base,
+        sections=[
+            {"label": "Users", "url": f"{base}accounts/user/"},
+            {"label": "Wallets", "url": f"{base}wallet/wallet/"},
+            {"label": "Transactions", "url": f"{base}wallet/transaction/"},
+            {"label": "WhatsApp links", "url": f"{base}whatsapp/whatsapplink/"},
+            {"label": "WhatsApp message log", "url": f"{base}whatsapp/wamessagelog/"},
+            {"label": "System settings", "url": f"{base}whatsapp/systemsetting/"},
+            {"label": "Audit log", "url": f"{base}whatsapp/auditlog/"},
+        ],
+    )
+
+
 # --------------------------------------------------------------------------- #
 # audit / recon / settings
 # --------------------------------------------------------------------------- #
