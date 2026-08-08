@@ -1691,7 +1691,12 @@ def _record_intent(msisdn: str, intent: dict) -> None:
 
     row = WaMessageLog.objects.filter(msisdn=msisdn, direction=WaMessageLog.IN).order_by("-created").first()
     if row is not None:
-        row.intent_json = WebhookEvent.redact(intent)
+        # Store the MASKED input (tokens, not identifiers): intent_json feeds the
+        # ops console's intent list, and a re-hydrated copy would put customer
+        # account numbers on a screen that only needs to show routing quality.
+        logged = {"name": intent.get("name"),
+                  "input": intent.get("masked_input", intent.get("input", {}))}
+        row.intent_json = WebhookEvent.redact(logged)
         row.save(update_fields=["intent_json"])
 
 
