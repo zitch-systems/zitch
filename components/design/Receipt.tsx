@@ -6,6 +6,7 @@ import { Btn } from '@/components/design/ui';
 import { NText } from '@/components/design/Naira';
 import { flash } from '@/components/design/Notify';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
+import Watermark from '@/components/design/Watermark';
 import { ReceiptRow, receiptHtml, receiptStamp, senderRows } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -93,7 +94,7 @@ const Receipt = ({
         {/* Everything inside this view is what gets captured as the JPEG. An
             explicit background matters: capturing a transparent tree renders
             black on Android. */}
-        <View ref={card} collapsable={false} style={{ backgroundColor: c.bg, paddingBottom: 4 }}>
+        <View ref={card} collapsable={false} style={{ backgroundColor: c.bg, paddingBottom: 4, position: 'relative' }}>
           <View style={{ alignItems: 'center', paddingTop: 40 }}>
             <View style={{ width: 110, height: 110, borderRadius: 55, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
               <View style={{ width: 78, height: 78, borderRadius: 39, backgroundColor: c.lime, alignItems: 'center', justifyContent: 'center' }}>
@@ -112,6 +113,19 @@ const Receipt = ({
               </View>
             ))}
           </View>
+
+          {/* Inside the captured view: the saved JPEG is forwarded on its own, with
+              no app around it, so without this the artifact carried no indication
+              of where it came from — the PDF had a wordmark and footer, the image
+              had neither. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 16 }}>
+            <Text style={{ fontSize: 15, fontFamily: font.extrabold, color: c.brand, letterSpacing: -0.3 }}>zitch</Text>
+            <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3 }}>· zitch.ng</Text>
+          </View>
+
+          {/* Last child so it lies over the rows — see Watermark for why that is
+              deliberate. Inside the captured view, so it rides along on the JPEG. */}
+          <Watermark />
         </View>
 
         <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
