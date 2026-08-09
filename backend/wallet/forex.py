@@ -7,7 +7,9 @@ Wallet; other currencies in CurrencyWallet. Conversion is atomic and the quote
 is time-boxed, so a stale rate is never settled.
 """
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+
+from common.http import daily_limit_error, send_limit_error, velocity_exceeded
 
 from django.db import transaction as db_transaction
 from django.utils import timezone
@@ -79,9 +81,15 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     # Every other money-out flow calls this; FX must too. Scoped to NGN-source:
     # the tier limit is denominated in NGN and the control concern is value
     # leaving naira (NGN -> foreign currency).
-    if frm == "NGN":
-        from common.http import daily_limit_error, send_limit_error
+    # The compromised-account brake applies to EVERY conversion, including
+    # foreign->foreign. It is about the rate of money-out attempts, not the
+    # currency: without it, someone holding a stolen PIN could drain a foreign
+    # balance through back-to-back USD->GBP->CAD hops, the one money-out path
+    # that never tripped the brake every other flow enforces.
+    if velocity_exceeded(user):
+        raise FxError("Too many transactions in a short time. Please wait a few minutes and try again.")
 
+    if frm == "NGN":
         reason = send_limit_error(user, sell)
         if reason:
             raise FxError(reason)
@@ -89,6 +97,21 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
         # daily "transfer" ceiling as a bank transfer (both move value out of the
         # NGN ledger), so FX can't be used to move more per day than that cap.
         daily = daily_limit_error(user, sell, "transfer")
+        if daily:
+            raise FxError(daily)
+    else:
+        # Foreign->foreign still moves value and still deserves a ceiling. The
+        # tier limit is denominated in NGN, so compare the NGN equivalent of the
+        # sale rather than the raw foreign figure — otherwise "1000" of a strong
+        # currency slips under a cap written for naira. A rate we cannot price
+        # fails CLOSED: an uncapped conversion is exactly what this guards.
+        ngn_equiv = _ngn_equivalent(frm, sell)
+        if ngn_equiv is None:
+            raise FxError("Couldn't price that conversion right now. Try again shortly.")
+        reason = send_limit_error(user, ngn_equiv)
+        if reason:
+            raise FxError(reason)
+        daily = daily_limit_error(user, ngn_equiv, "transfer")
         if daily:
             raise FxError(daily)
 
@@ -126,6 +149,21 @@ def _move(user, ccy: str, delta: Decimal) -> None:
 
 
 @db_transaction.atomic
+def _ngn_equivalent(currency: str, amount: Decimal):
+    """`amount` of `currency` expressed in NGN, or None if it cannot be priced.
+    Used to apply NGN-denominated tier/daily ceilings to a foreign-source
+    conversion; None means the caller must refuse rather than skip the cap."""
+    if currency == "NGN":
+        return amount
+    q = fx_quote(currency, "NGN", amount)
+    if not q.get("success"):
+        return None
+    try:
+        return (amount * Decimal(str(q["rate"]))).quantize(Decimal("0.01"))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+
+
 def execute_fx(user, quote_ref: str, idempotency_key: str = "") -> FxQuote:
     """Settle a quote within its TTL: debit source, credit target, write the
     ledger pair. The quote is locked + single-use, so a retry/race can't convert

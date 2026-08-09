@@ -165,7 +165,7 @@ const LinkWhatsApp = () => {
               <Text style={{ fontFamily: font.semibold, fontSize: 12.5, color: c.brandDeep }}>Copy “LINK {code}”</Text>
             </Pressable>
             <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3, textAlign: 'center', marginTop: 14, lineHeight: 19 }}>
-              Send <Text style={{ fontFamily: font.semibold, color: c.ink2 }}>LINK {code}</Text> to the Zitch WhatsApp number from this phone. The code expires in 10 minutes.
+              Send <Text style={{ fontFamily: font.semibold, color: c.ink2 }}>LINK {code}</Text> to the Zitch WhatsApp number from this phone. The code expires in 30 minutes and can only be used once.
             </Text>
           </Card>
           <View style={{ height: 16 }} />

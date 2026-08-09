@@ -13,8 +13,8 @@ from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import hash_identifier
 from common.http import (
-    api, check_daily_limit, check_send_limits, fail, idempotent_replay, mask_pii, ok,
-    parse_amount, require_user, spend_key, verify_transaction_pin,
+    MIN_TRANSFER, api, check_daily_limit, check_send_limits, fail, idempotent_replay,
+    mask_pii, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
 from utility.providers import funding_initialize, funding_verify, payment_provider
@@ -728,8 +728,8 @@ def transfer_send(request):
     amount = parse_amount(data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
-    if amount < 50:
-        return fail("Minimum transfer is ₦50")
+    if amount < MIN_TRANSFER:
+        return fail(f"Minimum transfer is ₦{MIN_TRANSFER:,.0f}")
 
     limit_err = check_send_limits(sender, amount)
     if limit_err:

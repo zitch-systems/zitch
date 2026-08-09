@@ -9,8 +9,8 @@ reconcile_wema poller (utility/management/commands/reconcile_wema.py).
 import re
 
 from common.http import (
-    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
-    require_user, spend_key, verify_transaction_pin,
+    MIN_TRANSFER, api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok,
+    parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
 from utility.providers import payout_charge, payout_resolve_account
@@ -144,8 +144,8 @@ def bank_transfer(request):
     amount = parse_amount(data.get("amount"))
     if amount is None:
         return fail("Enter a valid amount")
-    if amount < 50:
-        return fail("Minimum transfer is ₦50")
+    if amount < MIN_TRANSFER:
+        return fail(f"Minimum transfer is ₦{MIN_TRANSFER:,.0f}")
 
     limit_err = check_send_limits(user, amount)
     if limit_err:

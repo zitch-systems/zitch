@@ -1,0 +1,150 @@
+# End-to-end security audit — WhatsApp banking + mobile app
+
+Audit date: August 2026. Scope: the WhatsApp channel (`backend/whatsapp/`), the
+money rails it drives (`backend/wallet/`, `backend/transfers/`,
+`backend/utility/`), the Expo app (`app/`, `lib/`, `components/`), and the
+consistency between the two surfaces.
+
+Findings were traced through real code paths and each fix landed with a
+regression test. Findings that turned out to be wrong on inspection are recorded
+too — a rejected finding is worth as much as a fixed one, and re-litigating it
+later is waste.
+
+## Fixed
+
+### Separated identifiers escaped the model boundary (high)
+
+`0123 456 789` and `0123-456-789` are how a Nigerian customer types an account
+number. The de-identification pattern matched only *contiguous* runs of 7+
+digits, so both forms went to the configured LLM provider verbatim and were
+stored un-redacted in `WaMessageLog.text` — a space defeating the whole design.
+Both the sanitizer and the log redactor now tolerate single spaces and dashes
+between digits; the mapping stores digits only, since the bank validates the
+bare number and re-hydrating the customer's spacing would push it into a field
+that rejects it.
+
+### FX skipped the velocity brake, and foreign→foreign skipped every cap (high)
+
+`execute_fx`/`_move` change balances directly rather than through
+`wallet.services.debit()`, so currency conversion was the one money-out path
+that never called `velocity_exceeded` — the compromised-account brake every
+other flow enforces. Worse, the tier and daily ceilings were applied only when
+the SOURCE was NGN, so a foreign→foreign conversion had no amount ceiling at
+all. Someone holding a stolen PIN could drain a foreign balance through
+back-to-back USD→GBP→CAD hops without tripping anything.
+
+The brake now applies to every conversion. Foreign-source conversions are
+compared against the NGN equivalent of the sale, because the tier limit is
+denominated in naira and "1000" of a strong currency otherwise slips under a cap
+written for NGN. A pair we cannot price **fails closed** — an uncapped
+conversion is precisely what the check exists to prevent.
+
+### `setthumbprint` was reachable by deep link without a guard (high)
+
+The app registers the `zitch://` scheme, and every other post-login screen in
+the unguarded `(auth)` group is explicitly wrapped in `AuthGuard` (`resetpin`,
+`securitysetup`, `kyc`, `accountdetails`). `setthumbprint` — which turns
+biometric sign-in ON after a purely local scan, with no backend call — was not.
+Since an idle-locked session deliberately keeps its token on the device for fast
+biometric resume, anyone with an OS-unlocked device could open
+`zitch://setthumbprint`, enable biometric sign-in with one scan, and thereafter
+enter the account without a password. Now wrapped like its siblings.
+
+### Bank payout could double-debit on a connectivity failure (high)
+
+Every money screen in the app keeps its idempotency key when a request fails
+with `offline` (delivery unknown), so a retry replays server-side rather than
+paying twice — `spend_key()` uses the client key verbatim as the dedup key.
+`banklink.tsx`'s wallet→bank payout was the exception: both the definitive
+rejection and the ambiguous failure called `closeAll()`, which cleared the key,
+and reopening the sheet minted a new one. A timeout on a payout that HAD
+executed, followed by a natural retry, disbursed a second payout. It now keeps
+the sheet and the key on an ambiguous outcome and says so.
+
+### WhatsApp paid against a stale recipient name (medium)
+
+The app re-runs the name enquiry in the same request as the payout and blocks on
+mismatch, because routing is purely by `{account_number, bank_code}` — a stale
+name means money reaching a different real person. WhatsApp resolved the name
+once at the "bank" step and reused it minutes later at PIN-confirm. It now
+re-resolves immediately before `execute_payout` and aborts on mismatch, matching
+the app.
+
+### Daily-limit pre-checks used the wrong bucket (medium)
+
+Airtime and electricity pre-checked the **transfer** cap; data and cable
+pre-checked no daily cap at all. The authoritative check inside `_run_vtu` and
+`debit()` always used the correct **bill** bucket, so nothing could execute past
+the real cap — but customers were refused purchases the app allows (transfer
+spend blocking a bill purchase), and data/cable customers were sent an SMS OTP
+before being told they were over. All four now pre-check the bill bucket.
+
+### Per-transaction minimums differed by surface (medium)
+
+WhatsApp accepted ₦10 transfers the app refused at ₦50, and ₦100 electricity the
+app refused at ₦500 — the same account behaving differently depending on where
+the customer stood. The electricity guard was also inconsistent with its own
+error message. `MIN_TRANSFER`, `MIN_AIRTIME` and `MIN_ELECTRICITY` now live in
+`common/http.py` and both surfaces read them.
+
+### Link-code copy contradicted the code (low)
+
+The app told users the code expires in 10 minutes; it is 30 and single-use.
+
+## Accepted risks (deliberate, documented)
+
+**WhatsApp cannot enforce the new-device step-up.** The device fingerprint
+arrives in an HTTP header, so `device_for()` returns empty for the router and
+`new_device_step_up_error` short-circuits to "allowed". The channel that
+authenticates purely by phone possession is therefore the one where the
+SIM-swap-oriented step-up cannot fire. Residual controls: PIN + lockout, tier
+caps, daily caps, velocity. This is a real asymmetry and should be a decision
+rather than an accident — a WhatsApp-native signal (e.g. step up on a large
+transfer from a link created in the last N hours) would close it.
+
+**Screen capture is allowed app-wide**, including on the card PAN/CVV reveal.
+The product reason (receipts, support screenshots) is sound; the card screen is
+the one place the policy costs something, and `preventScreenCaptureAsync()`
+scoped to the reveal window would fix it without touching the wider policy.
+
+**`OPS_REQUIRE_MFA` is off by default.** Operator TOTP is fully built and
+tested, with replay protection; enforcement is off so a rollout cannot lock
+every operator out at once. Turning it on — after the team enrols — is the
+single highest-value control still available.
+
+## Verified clean (checked, not assumed)
+
+- **Webhook auth/replay**: HMAC-SHA256 over the raw body, fails closed in live
+  mode without a secret, dedupes on Meta's message id via a DB unique
+  constraint, per-sender throttle independent of Meta's shared source IP.
+- **Flow crypto**: RSA-OAEP + AES-GCM per Meta's spec; flow tokens bind action
+  id AND msisdn under HMAC, compared with `compare_digest`, and require the
+  action still be in the PIN state and unexpired. The data-exchange endpoint
+  re-verifies Meta's signature on top of envelope encryption.
+- **PIN and lockout**: one implementation (`evaluate_transaction_pin`), row-locked
+  on the user, 5 attempts / 15 minutes, shared by chat, Flow and app — a lockout
+  on one surface is a lockout on all.
+- **Idempotency / double-spend**: wallet row `select_for_update()` plus a DB
+  unique constraint on `(user, idempotency_key)`; every WhatsApp execution path
+  passes a stable key derived from the pending action, so duplicate PIN
+  submissions collapse to one debit.
+- **Payout failure modes**: the debit is flagged for reconciliation atomically
+  before the provider call, so a crash mid-payout leaves a discoverable PENDING
+  row rather than an orphan; ambiguous outcomes stay PENDING rather than being
+  auto-settled or auto-refunded.
+- **Freeze**: checked on every inbound message AND re-checked inside Flow
+  execution, closing the window where an action armed before a freeze could
+  still run.
+- **Tier ladder**: `recompute_tier()` is the single source of truth, so the
+  chat-onboarding email gate holds even when BVN/NIN provisioning is driven from
+  WhatsApp.
+- **The AI layer cannot move money**: intents route into the same deterministic,
+  PIN-gated flows; a mis-parsed or adversarial response can at worst pick the
+  wrong flow.
+- **App transaction PIN storage**: OS keychain only
+  (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`, excluded from backups), never
+  `AsyncStorage`, cleared on sign-out and on disabling biometric payments.
+- **No `console.*` anywhere** in `app/`, `lib/` or `components/` — no PIN, token
+  or PII leaking into device logs or a crash reporter.
+- **API contract**: all 67 API paths referenced by the app resolve to real
+  backend routes; no dead or misspelled endpoints.

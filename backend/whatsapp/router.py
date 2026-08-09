@@ -16,8 +16,10 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
 
-from common.http import daily_limit_error, evaluate_transaction_pin, send_limit_error, velocity_exceeded
+from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
+                         evaluate_transaction_pin, send_limit_error, velocity_exceeded)
 from transfers.models import Bank
+from transfers.views import _names_match
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
 from utility.providers import (payout_resolve_account, send_sms, sms_live, vtu_purchase,
@@ -989,8 +991,8 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
     if state == "amount":
         amount = parse_amount(text)
-        if amount is None or amount < 10:
-            return reply(msisdn, "Please enter a valid amount, at least ₦10 (e.g. 5000 or 5k).")
+        if amount is None or amount < MIN_TRANSFER:
+            return reply(msisdn, f"Please enter a valid amount, at least ₦{MIN_TRANSFER:,.0f} (e.g. 5000 or 5k).")
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
             _clear_actions(msisdn)
@@ -1149,10 +1151,28 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         _clear_actions(msisdn)
         reply(msisdn, "Something went wrong. Reply \"menu\" to start over.")
         return "Transfer could not be completed."
+    # Re-run the name enquiry immediately before paying, exactly as the app does
+    # (transfers.views.bank_transfer). The name shown at the "bank" step can be
+    # minutes old by the time the PIN comes back, and routing is purely by
+    # {account_number, bank_code} — if the account now resolves to someone else,
+    # paying against the stale name sends money to the wrong real person.
+    confirmed_name = pa.payload["name"]
+    fresh = payout_resolve_account(pa.payload["account"], bank.bank_code)
+    if fresh.get("success"):
+        fresh_name = (fresh.get("name") or "").strip()
+        # Only enforce on a LIVE enquiry: the mock returns a fixed stub, which
+        # would false-block every sandbox transfer.
+        if not fresh.get("mock") and fresh_name and not _names_match(confirmed_name, fresh_name):
+            _clear_actions(msisdn)
+            msg = (f"This account now belongs to {fresh_name}, not {confirmed_name.upper()}. "
+                   "Nothing was sent — please check the account number and start again.")
+            reply(msisdn, msg)
+            return msg
+        confirmed_name = fresh_name or confirmed_name
     try:
         # Stable key per flow: a re-sent "pin" message can't double-pay.
         txn = execute_payout(
-            user, amount, pa.payload["account"], bank, pa.payload["name"],
+            user, amount, pa.payload["account"], bank, confirmed_name,
             idempotency_key=f"wa-{pa.id}",
         )
     except PayoutError as exc:
@@ -1201,8 +1221,8 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
     matches = _match_banks(bank_query)
     if not matches:
         return False
-    if amount < 10:
-        reply(msisdn, "Minimum transfer is ₦10.")
+    if amount < MIN_TRANSFER:
+        reply(msisdn, f"Minimum transfer is ₦{MIN_TRANSFER:,.0f}.")
         return True
     limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
     if limit_msg:
@@ -1386,11 +1406,14 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
     if st == "amount":
         amount = parse_amount(text)
-        if amount is None or amount < 50:
-            return reply(msisdn, "Enter a valid amount, at least ₦50.")
+        if amount is None or amount < MIN_AIRTIME:
+            return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_AIRTIME:,.0f}.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
+        # "bill", not "transfer" — airtime accrues against the bill cap, and
+        # checking the wrong bucket both refused purchases the app allows and
+        # let through ones it blocks (caught only later, after the OTP).
+        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)
@@ -1460,7 +1483,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if _insufficient(user, price):
             _clear_actions(msisdn)
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, price)
+        limit_msg = send_limit_error(user, price) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)
@@ -1531,11 +1554,11 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
         return reply(msisdn, f"Meter verified{who}. How much do you want to buy? (e.g. 5000)")
     if st == "amount":
         amount = parse_amount(text)
-        if amount is None or amount < 100:
-            return reply(msisdn, "Enter a valid amount, at least ₦100.")
+        if amount is None or amount < MIN_ELECTRICITY:
+            return reply(msisdn, f"Enter a valid amount, at least ₦{MIN_ELECTRICITY:,.0f}.")
         if _insufficient(user, amount):
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
+        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)
@@ -1621,7 +1644,7 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if _insufficient(user, price):
             _clear_actions(msisdn)
             return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
-        limit_msg = send_limit_error(user, price)
+        limit_msg = send_limit_error(user, price) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
             return reply(msisdn, limit_msg)

@@ -6,8 +6,9 @@ aggregator -> mark the row Successful, or refund on failure.
 from decimal import Decimal, InvalidOperation
 
 from common.http import (
-    api, check_daily_limit, check_send_limits, fail, idempotent_replay, ok, parse_amount,
-    provider_purchase_response, require_user, spend_key, verify_transaction_pin,
+    MIN_AIRTIME, MIN_ELECTRICITY, api, check_daily_limit, check_send_limits, fail,
+    idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
+    spend_key, verify_transaction_pin,
 )
 from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
@@ -212,8 +213,8 @@ def buyelectricity(request):
     if err:
         return err
     amount = _amount(data.get("amount"))
-    if amount is None or amount < 500:
-        return fail("Minimum amount is ₦500")
+    if amount is None or amount < MIN_ELECTRICITY:
+        return fail(f"Minimum amount is ₦{MIN_ELECTRICITY:,.0f}")
     disco = str(data.get("disco", ""))
     meter = data.get("meter", "")
     meter_type = data.get("meter_type", "prepaid")
