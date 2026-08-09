@@ -164,3 +164,29 @@ describe('receiptHtml typography', () => {
     expect(html).toContain('word-break: break-word');
   });
 });
+
+describe('receiptHtml watermark', () => {
+  const html = receiptHtml({ title: 'T', message: 'm', rows: [['k', 'v']] });
+
+  it('marks the page so a forwarded copy still carries provenance', () => {
+    expect(html).toContain('class="wm"');
+    expect(html).toContain('ZITCH');
+  });
+
+  it('repeats on every printed page, not just the first', () => {
+    // A statically positioned layer would render once and leave page two bare.
+    expect(/\.wm\s*\{[^}]*position:\s*fixed/.test(html)).toBe(true);
+  });
+
+  it('is faint enough not to fight the amount', () => {
+    const opacity = /\.wm\s*\{[^}]*opacity:\s*([\d.]+)/.exec(html);
+    expect(opacity).not.toBeNull();
+    expect(Number(opacity![1])).toBeLessThanOrEqual(0.08);
+  });
+
+  it('does not push the rows down — it marks the document, it does not change it', () => {
+    // `position: fixed` takes it out of flow; an in-flow watermark would move
+    // every row below it and alter the artifact it exists to mark.
+    expect(/\.wm\s*\{[^}]*inset:/.test(html)).toBe(true);
+  });
+});

@@ -1143,6 +1143,40 @@ class WhatsAppReceiptTests(TestCase):
         self.assertGreater(len(b), 1000)
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_render_receipt_is_rasterised_well_above_display_size(self):
+        """A receipt gets screenshotted, zoomed and forwarded, so it is rendered
+        far above the size it is first seen at. The long edge clears 2160 — 4K
+        UHD's short edge — which is what keeps type crisp when someone pinches in."""
+        import io
+
+        from PIL import Image
+
+        from whatsapp.receipt import render_receipt
+        img = Image.open(io.BytesIO(render_receipt(
+            "Transfer receipt", [("To", "ADA"), ("Amount", "₦500.00")], "ZTC-1")))
+        self.assertGreaterEqual(max(img.size), 2160)
+        self.assertGreaterEqual(img.width, 2000)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_the_receipt_does_not_print_the_same_field_twice(self):
+        """Amount, reference and date each have a home — the hero and the footer.
+        Left in the table as well they read as a rendering fault, and the date did
+        worse than that: the footer stamped render time, so a receipt re-sent later
+        contradicted its own Date row."""
+        import io
+
+        from PIL import Image
+
+        from whatsapp.receipt import render_receipt
+        rows = [("To", "ADA"), ("Amount", "₦500.00"),
+                ("Reference", "ZTC-1"), ("Date", "01 Jan 2026, 09:00")]
+        full = Image.open(io.BytesIO(render_receipt("Transfer receipt", rows, "ZTC-1")))
+        lean = Image.open(io.BytesIO(render_receipt("Transfer receipt", rows[:2], "ZTC-1")))
+        # Both sheets tabulate exactly one row ("To") and both carry the amount
+        # hero, so they are the same height — reference and date added no rows.
+        self.assertEqual(full.height, lean.height)
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
     def test_reply_receipt_sends_an_inline_image_when_live(self):
         """An image renders in the thread and can be forwarded or saved to the
         gallery in one gesture; a document arrives as a file card that has to be

@@ -143,7 +143,20 @@ export const receiptHtml = ({
   .foot { padding: 26px 44px; color: #7c878c; font-size: 13px; line-height: 1.5; }
   .badge { display: inline-block; background: ${badgeTone(status).bg}; color: ${badgeTone(status).fg};
            border-radius: 20px; padding: 7px 16px; font-size: 14px; font-weight: 700; float: right; }
+  /* Tiled diagonal watermark. position:fixed so it repeats on every printed page
+     rather than only the first, and it must not add to the flow — a watermark
+     that pushed the rows down would change the document it is marking. It sits
+     ABOVE the content (pointer-events are irrelevant in print) so a crop cannot
+     lift a clean region out of the middle, and is faint enough not to fight the
+     amount. */
+  .wm { position: fixed; inset: -30%; z-index: 2; transform: rotate(-30deg);
+        opacity: .05; pointer-events: none; overflow: hidden; }
+  .wm div { font-size: 22px; font-weight: 800; letter-spacing: 2px; color: #0FA295;
+            white-space: nowrap; line-height: 2.6; }
+  .wm div:nth-child(even) { text-indent: 46px; }
 </style></head><body>
+<div class="wm">${Array.from({ length: 26 }, (_, i) =>
+  `<div>${'ZITCH &nbsp;&bull;&nbsp; '.repeat(14)}</div>`).join('')}</div>
 <div class="band"><div class="mark">zitch</div><div class="kicker">Transaction receipt</div></div>
 <div class="body">
   <span class="badge">${esc(status)}</span>
