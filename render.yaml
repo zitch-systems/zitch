@@ -227,6 +227,12 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         value: "Zitch <no-reply@send.zitch.ng>"
+      # Credit/debit alerts. Email is on by default (effectively free, and
+      # expected on every movement). SMS is off by default: at Nigerian
+      # per-message rates one alert per transaction is a real recurring cost, so
+      # turning it on is a deliberate decision.
+      - key: TXN_ALERTS_SMS
+        value: "false"
       # KYC — Prembly (IdentityPass); also gates the large-transfer face check.
       - key: PREMBLY_API_KEY
         sync: false
@@ -415,6 +421,10 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
       - key: RESEND_FROM_EMAIL
         fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+      # The worker settles funding and reconciles VTU, so ledger rows reach
+      # Successful in this process too — it has to alert on the same terms.
+      - key: TXN_ALERTS_SMS
+        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_SMS}
       - key: PREMBLY_API_KEY
         fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_API_KEY}
       - key: PREMBLY_APP_ID

@@ -106,7 +106,7 @@ class MutationTests(PortalTestCase):
         self.admin = AccessToken.issue(make_staff("amara", superuser=True), scope=AccessToken.ADMIN).key
         self.user = User.objects.create(username="08010000009", phone="08010000009",
                                         first_name="Kemi", tier=1,
-                                        email_verified=True, phone_verified=True)  # Tier >= 1 requires both
+                                        email_verified=True, phone_verified=True)
         get_or_create_wallet(self.user)
 
     def test_kyc_queue_lists_pending_item_without_crashing(self):
@@ -161,6 +161,11 @@ class MutationTests(PortalTestCase):
         self.assertEqual(row.after, {"bps": 75})
 
     def test_corridor_pause_blocks_quotes(self):
+        # This class's user is deliberately left unverified for the KYC-review
+        # tests. Conversion is money-out, so it needs identity on file — and the
+        # subject here is the corridor switch, not the identity gate.
+        self.user.bvn_verified = self.user.nin_verified = True
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
         credit(self.user, Decimal("100000"), "Seed")
         self.post("fx-corridor", {"currency": "USD", "enabled": False}, token=self.admin)
         with self.assertRaises(FxError):

@@ -35,7 +35,9 @@ def _tx(ref, amount, credit=True, **extra):
 class WemaWalletProvisioningTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08030000123", "w@zitch.app")
+        # Provisioning is what verifies the identity here, so it must start unset.
+        self.user, self.token = make_user("08030000123", "w@zitch.app",
+                                          identity_verified=False)
 
     def _post(self, path, payload):
         return self.client.post(path, data=json.dumps({**payload, "access_token": self.token}),
@@ -478,7 +480,8 @@ class AdoptExistingWemaAccountTests(TestCase):
 
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08030000555", "adopt@zitch.app")
+        self.user, self.token = make_user("08030000555", "adopt@zitch.app",
+                                          identity_verified=False)
 
     def _create(self, **payload):
         return self.client.post(

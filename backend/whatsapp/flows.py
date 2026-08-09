@@ -20,9 +20,12 @@ from django.conf import settings
 log = logging.getLogger("whatsapp")
 
 PIN_SCREEN = "PIN_SCREEN"
+IDENTITY_SCREEN = "IDENTITY_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
 FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
+FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
+_ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +70,33 @@ def resolve_onboarding_token(token: str):
     return ob
 
 
+def sign_identity_token(pa) -> str:
+    """Signed handle for a KYC action sitting in its identity step. Prefixed like
+    the onboarding token so the three token kinds can never be confused: each
+    resolves through its own lookup and rejects the others' prefixes."""
+    return f"{_ID_PREFIX}{pa.id}.{_sig(f'{_ID_PREFIX}{pa.id}:{pa.msisdn}')}"
+
+
+def resolve_identity_token(token: str):
+    """Return the live PendingAction for a signed identity flow_token, or None if
+    it is malformed, forged, expired, or no longer in the identity Flow state."""
+    from .models import PendingAction
+
+    raw = (token or "").strip()
+    if not raw.startswith(_ID_PREFIX) or "." not in raw:
+        return None
+    head, _, sig = raw.partition(".")
+    pid = head[len(_ID_PREFIX):]
+    if not pid.isdigit():
+        return None
+    pa = PendingAction.objects.filter(id=int(pid)).first()
+    if pa is None or pa.state != FLOW_ID_STATE or pa.expired:
+        return None
+    if not hmac.compare_digest(sig, _sig(f"{_ID_PREFIX}{pa.id}:{pa.msisdn}")):
+        return None
+    return pa
+
+
 def resolve_flow_token(token: str):
     """Return the live PendingAction for a signed flow_token, or None if the token
     is malformed, forged, expired, or no longer in the Flow-PIN state."""
@@ -91,6 +121,13 @@ def resolve_flow_token(token: str):
 # --------------------------------------------------------------------------- #
 def _pin_screen(summary: str, error: str = "") -> dict:
     return {"screen": PIN_SCREEN, "data": {"summary": summary or "Confirm your payment", "error": error or ""}}
+
+
+def _identity_screen(kind: str, error: str = "") -> dict:
+    which = (kind or "BVN").upper()
+    return {"screen": IDENTITY_SCREEN,
+            "data": {"summary": f"Enter your 11-digit {which}", "label": which,
+                     "error": error or ""}}
 
 
 def _success_screen(message: str) -> dict:
@@ -131,6 +168,19 @@ def handle_flow_request(payload: dict) -> dict:
         if action == "data_exchange":
             return _submit_onboarding_pin(ob, data)
         return _pin_screen(_ob_summary(ob))
+
+    # A KYC identity step. Same reasoning as the PIN: a BVN or NIN typed into the
+    # chat stays in the customer's own history forever — WhatsApp has no
+    # view-once for text and lets only the sender delete — so it is collected in
+    # the encrypted Flow instead.
+    if str(token).startswith(_ID_PREFIX):
+        pa = resolve_identity_token(token)
+        if pa is None:
+            return _success_screen("This verification expired. Reply 8 in the chat to start again.")
+        kind = pa.payload.get("id_kind", "BVN")
+        if action == "data_exchange":
+            return _submit_identity(pa, data)
+        return _identity_screen(kind)
 
     if action == "INIT":
         pa = resolve_flow_token(token)
@@ -182,6 +232,32 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
         log.exception("onboarding flow completion failed for ob=%s", ob.id)
         return _success_screen("Something went wrong finishing your signup. Send us a message to try again.")
     return _success_screen(message)
+
+
+def _submit_identity(pa, data: dict) -> dict:
+    """Take a BVN/NIN from the encrypted Flow and hand it to the same verification
+    the chat path uses — one implementation, so the two entry points cannot drift
+    on what counts as valid, what gets hashed, or what is queued for review.
+
+    The number is never echoed back into a screen, and never reaches the chat.
+    """
+    import re
+
+    from .router import _kyc_submit_identity
+
+    kind = pa.payload.get("id_kind", "bvn")
+    number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
+    if not re.fullmatch(r"\d{11}", number):
+        return _identity_screen(kind, error="That should be exactly 11 digits.")
+
+    try:
+        _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+        log.exception("identity flow submission failed for pa=%s", pa.id)
+        return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
+    # The chat carries the detailed outcome (verified, or queued for review), so
+    # this screen only has to close cleanly.
+    return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
 
 
 def _submit_pin(token: str, data: dict) -> dict:

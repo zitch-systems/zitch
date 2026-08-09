@@ -21,8 +21,9 @@ from django.utils import timezone
 from transfers.models import Bank
 from wallet.services import credit, get_or_create_wallet
 
-from .flows import FLOW_PIN_STATE, resolve_flow_token, sign_flow_token
-from .models import PendingAction, WhatsAppLink
+from .flows import (FLOW_ID_STATE, FLOW_PIN_STATE, resolve_flow_token,
+                    sign_flow_token)
+from .models import PendingAction, WaMessageLog, WhatsAppLink
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
@@ -45,7 +46,8 @@ def _b64(b: bytes) -> str:
 def _make_user(balance="50000"):
     u = User.objects.create(username="08010000001", phone="08010000001",
                             email="ada@zitch.test", first_name="Ada", last_name="Eze",
-                            tier=1, bvn_verified=True)
+                            tier=1, bvn_verified=True, nin_verified=True,
+                            email_verified=True, phone_verified=True)
     u.set_transaction_pin("1234")
     u.save()
     get_or_create_wallet(u)
@@ -305,3 +307,120 @@ class FlowEndpointTests(TestCase):
                                    content_type="application/json",
                                    HTTP_X_HUB_SIGNATURE_256=f"sha256={good_sig}")
             self.assertEqual(signed.status_code, 200)  # signature passes; ping served
+
+
+# --------------------------------------------------------------------------- #
+# identity (BVN/NIN) collected in the Flow, not the chat
+# --------------------------------------------------------------------------- #
+class IdentityFlowTests(TestCase):
+    """WhatsApp has no view-once for text and lets only the SENDER delete, so a
+    BVN typed into the thread stays in the customer's own history indefinitely.
+    It is collected in the encrypted Flow for the same reason the PIN is."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+
+    def _action(self, kind="bvn"):
+        return PendingAction.objects.create(
+            msisdn=MSISDN, user=self.user, action_type="kyc",
+            state=FLOW_ID_STATE, payload={"id_kind": kind},
+            expires_at=timezone.now() + timedelta(minutes=10))
+
+    def test_init_opens_the_identity_screen_for_the_right_number(self):
+        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+
+        pa = self._action("nin")
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
+        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertEqual(resp["data"]["label"], "NIN")
+
+    def test_a_wrong_length_number_is_rejected_without_leaving_the_screen(self):
+        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+
+        pa = self._action()
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "123"}})
+        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertIn("11 digits", resp["data"]["error"])
+
+    def test_a_valid_number_is_stored_hashed_and_never_echoed(self):
+        from .flows import handle_flow_request, sign_identity_token
+
+        pa = self._action()
+        with patch("whatsapp.router.verify_bvn", return_value={"success": True}):
+            resp = handle_flow_request({"action": "data_exchange",
+                                        "flow_token": sign_identity_token(pa),
+                                        "data": {"number": "12345678901"}})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertTrue(self.user.bvn_hash)
+        # The number reaches neither the screen nor the chat transcript.
+        self.assertNotIn("12345678901", str(resp))
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
+
+    def test_a_forged_or_stale_token_resolves_to_nothing(self):
+        from .flows import handle_flow_request, sign_identity_token
+
+        pa = self._action()
+        good = sign_identity_token(pa)
+        forged = good[:-1] + ("a" if good[-1] != "a" else "b")
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": forged,
+                                    "data": {"number": "12345678901"}})
+        self.assertIn("expired", resp["data"]["message"].lower())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+
+    def test_an_identity_token_is_not_a_money_token(self):
+        """The three token kinds resolve through different lookups; one must never
+        be accepted where another is expected."""
+        from .flows import resolve_flow_token, resolve_onboarding_token, sign_identity_token
+
+        pa = self._action()
+        token = sign_identity_token(pa)
+        self.assertIsNone(resolve_flow_token(token))
+        self.assertIsNone(resolve_onboarding_token(token))
+
+    def test_typing_the_number_into_the_chat_is_refused_while_the_flow_is_open(self):
+        """Accepting it here would put in the transcript exactly what the Flow
+        exists to keep out of it."""
+        from . import router
+
+        self._action()
+        with patch.object(router, "reply") as mock_reply:
+            router._advance(  # noqa: SLF001
+                PendingAction.objects.get(action_type="kyc"), self.user,
+                MSISDN, "12345678901")
+        said = " ".join(str(c) for c in mock_reply.call_args_list)
+        self.assertIn("secure screen", said)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+
+    def test_the_router_sends_the_flow_instead_of_asking_in_the_chat(self):
+        from . import router
+
+        pa = self._action()
+        pa.state = "kyc_start"
+        pa.save(update_fields=["state"])
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": True}) as sent:
+            self.assertTrue(router._send_identity_flow(pa, "nin"))  # noqa: SLF001
+        sent.assert_called_once()
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], "nin")
+
+    def test_a_failed_flow_send_leaves_the_action_where_the_chat_expects_it(self):
+        """Otherwise the action sits in a Flow state with no Flow open, and the
+        customer's next message is refused by a guard pointing at a screen that
+        was never delivered."""
+        from . import router
+
+        pa = self._action()
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": False}):
+            self.assertFalse(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "bvn")

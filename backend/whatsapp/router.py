@@ -39,7 +39,8 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import FLOW_PIN_STATE, PIN_SCREEN, sign_flow_token, sign_onboarding_token
+from .flows import (FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN, PIN_SCREEN,
+                    sign_flow_token, sign_identity_token, sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
 
@@ -79,6 +80,41 @@ def _more_info_block() -> str:
     if L.get("SUPPORT_EMAIL"):
         lines.append(f"✉️ {L['SUPPORT_EMAIL']}")
     return "\n".join(lines)
+
+
+def _upgrade_block(user) -> str:
+    """What to do about a cap you just hit, appended to every limit refusal.
+
+    Which advice is right depends on where the customer already is:
+
+    * Below Tier 1 — the ladder is not the problem, unfinished verification is.
+      Reply 8 walks the same phone/email/BVN/NIN steps right here in the chat.
+    * Tier 1 or 2 — the next rungs need document and liveness capture, which a
+      chat cannot do. That referral goes to the app, with the links to get it.
+    * Tier 3 — there is no higher tier to sell. Saying "upgrade in the app" to
+      someone already at the top is the kind of advice that sends a customer to
+      do something that cannot work, so they get support instead.
+    """
+    if user.tier >= 3:
+        tail = ("You're on our highest tier. For a larger one-off payment, "
+                "talk to us.")
+    elif _kyc_outstanding(user):
+        tail = ("Reply *8* to finish verifying your identity — it raises your "
+                "limit straight away, right here.")
+    else:
+        top = user.TIER_LIMITS[3]
+        tail = (f"To send more, upgrade in the Zitch app. *Tier 3* takes you up to "
+                f"₦{top:,.0f} per transaction — it needs a document and selfie "
+                f"check, which we can't do over chat.")
+    block = _more_info_block()
+    return tail + (f"\n\n{block}" if block else "")
+
+
+def _limit_reply(msisdn: str, user, msg: str) -> None:
+    """Send a limit refusal together with the way out of it. A bare "you've hit
+    your limit" leaves the customer with nowhere to go, which is how a cap reads
+    as a dead end rather than a step."""
+    reply(msisdn, f"{msg}\n\n{_upgrade_block(user)}")
 
 
 MENU_BODY = (
@@ -350,6 +386,41 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
         screen=PIN_SCREEN, screen_data={"summary": summary, "error": ""},
     )
     return bool(res.get("success"))
+
+
+def _send_identity_flow(pa: PendingAction, kind: str) -> bool:
+    """Collect a BVN/NIN in the encrypted Flow rather than the chat. True if the
+    Flow was dispatched; False to fall back to asking in the thread.
+
+    Same reasoning as the PIN: WhatsApp has no view-once for text and lets only
+    the SENDER delete a message, so anything typed into the thread stays in the
+    customer's own history indefinitely. An identity number is exactly what
+    should not sit there.
+
+    Unlike the PIN this does NOT fail closed. A PIN in a chat is catastrophic and
+    worth refusing service over; a BVN in the customer's own thread is bad but is
+    what happens today, and failing closed would block every signup on any deploy
+    where Flows are not configured. The fallback says how to remove it instead.
+    """
+    if not flows_live():
+        return False
+    pa.payload["id_kind"] = kind
+    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
+    which = kind.upper()
+    res = send_flow(
+        pa.msisdn, sign_identity_token(pa),
+        header="Verify your identity", body=f"Enter your {which} privately — it never appears in this chat.",
+        screen=IDENTITY_SCREEN,
+        screen_data={"summary": f"Enter your 11-digit {which}", "label": which, "error": ""},
+        cta="Enter securely",
+    )
+    if res.get("success"):
+        return True
+    # Dispatch failed: put the action back where the chat fallback expects it,
+    # otherwise it would sit in a Flow state with no Flow open.
+    _touch(pa, state=kind, payload=pa.payload)
+    log.warning("wa_identity_flow_send_failed kind=%s pa=%s", kind, pa.id)
+    return False
 
 
 def _arm_confirm(pa: PendingAction, user) -> bool:
@@ -966,10 +1037,16 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_phone_code(pa, user, msisdn)
     if step == "email":
         return _kyc_send_email_code(pa, user, msisdn)
+    if _send_identity_flow(pa, step):
+        return None
     which = step.upper()
     _touch(pa, state=step, payload=pa.payload)
-    return reply(msisdn, f"Enter your 11-digit *{which}*. It is stored only as a secure "
-                         "hash — the number itself never appears in this chat's history.")
+    # Fallback only — see _send_identity_flow. We store a hash, but the customer's
+    # own copy of what they typed stays in their history, so the one thing that
+    # can still remove it is named explicitly.
+    return reply(msisdn, f"Enter your 11-digit *{which}*. We store it only as a secure hash.\n\n"
+                         "_Delete your message afterwards (press and hold → Delete → "
+                         "Delete for everyone) — WhatsApp only lets the sender do this._")
 
 
 def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
@@ -1285,6 +1362,13 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         cta = (getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("CTA", "Confirm with PIN")
         return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN — "
                              "it stays private and never appears in this chat. Or reply \"cancel\".")
+    if pa.state == FLOW_ID_STATE:
+        # Identity Flow open. Refusing to read a number typed here is the point:
+        # accepting it would put in the transcript exactly what the Flow exists to
+        # keep out of it.
+        which = str(pa.payload.get("id_kind", "BVN")).upper()
+        return reply(msisdn, f"🪪 Please enter your {which} on the secure screen I sent — "
+                             "it stays private and never appears in this chat. Or reply \"cancel\".")
     handler = {
         "transfer": _advance_transfer,
         "airtime": _advance_airtime,
@@ -1312,7 +1396,7 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
         if limit_msg:
             _clear_actions(msisdn)
-            return reply(msisdn, limit_msg)
+            return _limit_reply(msisdn, user, limit_msg)
         if get_or_create_wallet(user).balance < amount:
             return reply(msisdn, f"Insufficient balance. You have {_money(get_or_create_wallet(user).balance)}. "
                                  "Enter a lower amount, or \"cancel\".")
@@ -1542,7 +1626,7 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
         return True
     limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
     if limit_msg:
-        reply(msisdn, limit_msg)
+        _limit_reply(msisdn, user, limit_msg)
         return True
     if _insufficient(user, amount):
         reply(msisdn, f"Insufficient balance. You have {_money(get_or_create_wallet(user).balance)}.")
@@ -1600,12 +1684,12 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     send_msg = send_limit_error(user, amount)
     if send_msg:
         _clear_actions(msisdn)
-        reply(msisdn, send_msg)
+        _limit_reply(msisdn, user, send_msg)
         return send_msg
     bill_limit_msg = daily_limit_error(user, amount, "bill")
     if bill_limit_msg:
         _clear_actions(msisdn)
-        reply(msisdn, bill_limit_msg)
+        _limit_reply(msisdn, user, bill_limit_msg)
         return bill_limit_msg
     if velocity_exceeded(user):  # same fraud brake the app enforces (parity)
         _clear_actions(msisdn)
@@ -1732,7 +1816,7 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
-            return reply(msisdn, limit_msg)
+            return _limit_reply(msisdn, user, limit_msg)
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
@@ -1802,7 +1886,7 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         limit_msg = send_limit_error(user, price) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
-            return reply(msisdn, limit_msg)
+            return _limit_reply(msisdn, user, limit_msg)
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["phone"] = phone
         pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
@@ -1877,7 +1961,7 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
         limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
         if limit_msg:
             _clear_actions(msisdn)
-            return reply(msisdn, limit_msg)
+            return _limit_reply(msisdn, user, limit_msg)
         disco_name = DISCO_NAMES[pa.payload["disco"]]
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"meter": pa.payload["meter"], "disco": pa.payload["disco"],
@@ -1963,7 +2047,7 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         limit_msg = send_limit_error(user, price) or daily_limit_error(user, price, "bill")
         if limit_msg:
             _clear_actions(msisdn)
-            return reply(msisdn, limit_msg)
+            return _limit_reply(msisdn, user, limit_msg)
         prov_name = CABLE_NAMES[pa.payload["prov"]]
         cust = res.get("customer_name", "")
         pa.payload.update({"iuc": iuc, "customer": cust})

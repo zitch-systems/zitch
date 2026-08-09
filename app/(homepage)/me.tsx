@@ -160,7 +160,10 @@ const Me = () => {
   const account: Row[] = [
     { icon: 'user', title: 'Personal details', sub: 'Name, photo, email & phone', go: () => router.push('/accountdetails') },
     { icon: 'history', title: 'Transaction History', go: () => router.push('/history') },
-    { icon: 'chart', title: 'Account Limits', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
+    // Named for the thing people come here to DO. A refused spend now tells the
+    // customer to "open Me → Verify identity"; sending them to a row called
+    // "Account Limits" makes them hunt for a screen they were just pointed at.
+    { icon: 'chart', title: 'Verify identity', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
     { icon: 'card', title: 'Cards', sub: 'Your virtual cards', go: () => router.push('/cards') },
   ];
   const preferences: Row[] = [

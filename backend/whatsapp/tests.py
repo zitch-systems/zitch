@@ -37,8 +37,9 @@ def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="
     # App-linked users have completed KYC (BVN verified), so they can send on
     # WhatsApp. WhatsApp-onboarded accounts start unverified (tested separately).
     u = User.objects.create(username=phone, phone=phone, email=email,
-                            first_name="Ada", last_name="Eze", tier=1, bvn_verified=True,
-                            email_verified=True, phone_verified=True)  # Tier >= 1 requires both
+                            first_name="Ada", last_name="Eze", tier=1,
+                            email_verified=True, phone_verified=True,
+                            bvn_verified=True, nin_verified=True)
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)
@@ -2559,3 +2560,63 @@ class AiConsentTests(TestCase):
         self.link_row.save(update_fields=["ai_enabled"])
         SystemSetting.set("ai_enabled_global", "false")
         self.assertFalse(ai_active(self.link_row, ConversationState.for_msisdn(MSISDN)))
+
+
+class LimitReferralTests(TestCase):
+    """A bare "you've hit your limit" leaves the customer with nowhere to go,
+    which is how a cap reads as a dead end rather than a step. Which way out is
+    right depends on where they already are."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    LINKS = {"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
+             "SUPPORT_WA": "2349012345678", "SUPPORT_EMAIL": "support@zitch.ng"}
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_a_verified_customer_over_the_cap_is_sent_to_the_app_for_tier_3(self):
+        from whatsapp.router import _upgrade_block
+
+        block = _upgrade_block(self.user)          # tier 1, all four checks done
+        self.assertIn("Tier 3", block)
+        self.assertIn("https://zitch.ng/app", block)
+        self.assertIn("https://zitch.ng", block)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_an_unverified_customer_is_sent_to_verification_not_the_app_store(self):
+        """The ladder is not their problem — unfinished verification is, and that
+        is done right here in the chat."""
+        from whatsapp.router import _upgrade_block
+
+        self.user.nin_verified = False
+        self.user.save(update_fields=["nin_verified"])
+        block = _upgrade_block(self.user)
+        self.assertIn("*8*", block)
+        self.assertNotIn("Tier 3", block)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_a_top_tier_customer_is_not_told_to_upgrade(self):
+        """Telling someone already at the top to "upgrade in the app" sends them
+        to do something that cannot work."""
+        from whatsapp.router import _upgrade_block
+
+        self.user.tier = 3
+        self.user.save(update_fields=["tier"])
+        block = _upgrade_block(self.user)
+        self.assertIn("highest tier", block)
+        self.assertNotIn("Tier 3 takes you", block)
+
+    @override_settings(ZITCH_LINKS=LINKS)
+    def test_a_transfer_over_the_cap_carries_the_way_out(self):
+        self.link()
+        self.inbound("2", "R1")
+        self.inbound("0123456789", "R2")
+        self.inbound("gtb", "R3")
+        self.inbound("999999999", "R4")            # far over any tier cap
+        r = self.last_reply()
+        self.assertIn("https://zitch.ng/app", r)

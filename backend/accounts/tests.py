@@ -306,7 +306,10 @@ class CredentialSecurityTests(TestCase):
 class KycTierTests(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user, self.token = make_user("08010000001", "a@zitch.test")
+        # Starts where a real account does — the point of these tests is the
+        # ladder being climbed, so nothing may be pre-granted.
+        self.user, self.token = make_user("08010000001", "a@zitch.test",
+                                         identity_verified=False)
 
     def post(self, path, payload):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
@@ -595,7 +598,7 @@ class RateLimitTests(TestCase):
 
 class FullJourneyE2ETests(TestCase):
     """One chained journey through the whole stack — onboarding -> sign in ->
-    fund -> spend -> history -> transfer -> KYC + large-transfer face gate ->
+    fund -> KYC -> spend -> history -> transfer -> tier + face gate ->
     loan -> savings -> card -> betting/exams -> auth-gated lookups. Guards the
     cross-app integration that per-app unit tests don't. (Rate limiting is off
     under tests, so creating users via the API isn't throttled.)"""
@@ -637,6 +640,19 @@ class FullJourneyE2ETests(TestCase):
         self.assertEqual(b["wallet"], "50000.00")
         self.assertIn("user_first_name", b)  # the app reads this
 
+        # --- verify before spending ---
+        # Email, phone, BVN and NIN are now a floor beneath the tier ceilings:
+        # money cannot leave an account that has not proved who owns it, so this
+        # step comes before the first spend rather than after it.
+        self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
+        # BVN+NIN alone no longer promote: Tier 1 also requires the verified email.
+        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 0)
+        with patch("accounts.views._otp_code", return_value="909090"), \
+             patch("accounts.views._otp_on_cooldown", return_value=False):
+            self.post("/api/email/verify/start/", access_token=tok)
+        body = self.post("/api/email/verify/confirm/", access_token=tok, otp="909090")[1]
+        self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
+
         # --- spend + history shape the app depends on ---
         self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
                                    network="1", phone=P, transaction_pin="1234")[0], 200)
@@ -652,15 +668,7 @@ class FullJourneyE2ETests(TestCase):
                                    amount="5000", transaction_pin="1234")[0], 200)
         self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
 
-        # --- KYC tiers + limits ---
-        self.post("/api/kyc/bvn/", access_token=tok, bvn="12345678901")
-        # BVN+NIN alone no longer promote: Tier 1 also requires the verified email.
-        self.assertEqual(self.post("/api/kyc/nin/", access_token=tok, nin="10987654321")[1]["tier"], 0)
-        with patch("accounts.views._otp_code", return_value="909090"), \
-             patch("accounts.views._otp_on_cooldown", return_value=False):
-            self.post("/api/email/verify/start/", access_token=tok)
-        body = self.post("/api/email/verify/confirm/", access_token=tok, otp="909090")[1]
-        self.assertEqual(body["tier"], 1)  # email was the last piece; confirm recomputes
+        # --- tier limits ---
         _credit(user_obj, Decimal("200000"), "Wallet top-up")
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
