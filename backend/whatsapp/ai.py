@@ -160,14 +160,10 @@ def sanitize_for_model(text: str) -> tuple[str, dict]:
 
     def _tokenize(m):
         token = f"{TOKEN_PREFIX}{len(mapping) + 1}"
-<<<<<<< HEAD
         # Store digits only: every consumer (account, meter, smartcard, phone)
         # wants the bare number, and re-hydrating "0123 456 789" would push the
         # customer's spacing into a field the bank validates strictly.
         mapping[token] = re.sub(r"\D", "", m.group(0))
-=======
-        mapping[token] = m.group(0)
->>>>>>> origin/main
         return token
 
     safe = _LONG_IDENTIFIER.sub(_tokenize, safe)
