@@ -216,6 +216,15 @@ def sms_live() -> bool:
     return bool(settings.TERMII["API_KEY"])
 
 
+def email_live() -> bool:
+    """Whether the email rail has a key (i.e. a real send will be attempted).
+
+    The mirror of sms_live(), and needed for the same reason: send_email returns
+    a silent-success dict when unkeyed, so a caller that only checks `success`
+    will report a code it never delivered."""
+    return bool(settings.RESEND["API_KEY"])
+
+
 def _send_sms_termii(phone: str, message: str) -> dict:
     """Termii `POST /api/sms/send`.
 

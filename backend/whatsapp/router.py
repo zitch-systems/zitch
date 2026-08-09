@@ -22,8 +22,9 @@ from transfers.models import Bank
 from transfers.views import _names_match
 from transfers.services import PayoutError, execute_payout
 from utility.models import CablePlan, DataPlan
-from utility.providers import (payout_resolve_account, send_email, send_sms, sms_live,
-                               verify_bvn, verify_nin, vtu_purchase, vtu_verify_customer)
+from utility.providers import (email_live, payout_resolve_account, send_email, send_sms,
+                               sms_live, verify_bvn, verify_nin, vtu_purchase,
+                               vtu_verify_customer)
 from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from utility import wema as wema_provider
 from wallet import views as wallet_views
@@ -889,6 +890,19 @@ def _do_support(msisdn: str) -> None:
 _KYC_STEPS = ("phone", "email", "bvn", "nin")
 
 
+def _kyc_test_code() -> str:
+    """The fixed TEST_OTP code, when that pre-launch bypass is configured.
+
+    A demo deploy usually has no SMS or email rail, which would otherwise make
+    verification impossible to walk through. This reuses the SAME switch the app
+    signup already honours (TEST_OTP_PHONE + TEST_OTP_CODE, additionally gated by
+    ALLOW_PRODUCTION_TEST_OTP off DEBUG), so there is one place to look for "is a
+    fixed code accepted anywhere", and the existing preflight check already
+    hard-fails while it is set."""
+    test = getattr(settings, "TEST_OTP", {}) or {}
+    return (test.get("CODE") or "") if (test.get("PHONE") and test.get("CODE")) else ""
+
+
 def _kyc_outstanding(user) -> list:
     """Which steps this customer still owes, in order."""
     done = {
@@ -964,8 +978,18 @@ def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
 def _kyc_send_phone_code(pa: PendingAction, user, msisdn: str) -> None:
     """SMS round-trip. Possession of this WhatsApp chat is NOT possession of the
     SIM — a messenger session outlives a SIM swap — so the code goes to the
-    number itself and must come back here."""
-    code = f"{secrets.randbelow(10**6):06d}"
+    number itself and must come back here.
+
+    The rail is checked BEFORE sending, not after: send_sms returns a
+    silent-success dict when it has no key, so trusting its `success` would
+    announce a code that never left the building and leave the customer staring
+    at a phone that will never buzz."""
+    if not sms_live() and not _kyc_test_code():
+        _clear_actions(msisdn)
+        log.warning("wa_kyc_sms_not_configured — TERMII_API_KEY is unset")
+        return reply(msisdn, "⚠️ We can't send SMS codes at the moment, so phone verification "
+                             "is unavailable. Please contact support — this is on our side, not yours.")
+    code = _kyc_test_code() or f"{secrets.randbelow(10**6):06d}"
     sent = send_sms(user.phone or "", f"Zitch: {code} is your verification code. It expires in 10 minutes.")
     if not sent.get("success"):
         _clear_actions(msisdn)
@@ -982,7 +1006,12 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
     if not user.email:
         _touch(pa, state="email_address", payload=pa.payload)
         return reply(msisdn, "What's your *email address*?")
-    code = f"{secrets.randbelow(10**6):06d}"
+    if not email_live() and not _kyc_test_code():
+        _clear_actions(msisdn)
+        log.warning("wa_kyc_email_not_configured — RESEND_API_KEY is unset")
+        return reply(msisdn, "⚠️ We can't send emails at the moment, so email verification "
+                             "is unavailable. Please contact support — this is on our side, not yours.")
+    code = _kyc_test_code() or f"{secrets.randbelow(10**6):06d}"
     send_email(user.email, "Confirm your email for Zitch",
                f"Your Zitch email confirmation code is {code}")
     pa.payload["code_hash"] = make_password(code)

@@ -2294,8 +2294,9 @@ class ChatKycTests(TestCase):
         self.inbound("menu", "k0")
         self.assertIn("Verify my identity", self.last_reply())
 
+    @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_phone_step_requires_the_sms_code(self, sms):
+    def test_phone_step_requires_the_sms_code(self, sms, _live):
         self.inbound("8", "k1")
         self.assertIn("sent a 6-digit code by SMS", self.last_reply())
         sms.assert_called_once()
@@ -2310,9 +2311,11 @@ class ChatKycTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.phone_verified)
 
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_email_step_sends_to_the_inbox_not_the_phone(self, sms, email):
+    def test_email_step_sends_to_the_inbox_not_the_phone(self, sms, email, _sl, _el):
         self.inbound("8", "e1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "e2")
         # Now on email: the code went to the ADDRESS, never by SMS.
@@ -2326,11 +2329,13 @@ class ChatKycTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.email_verified)
 
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.verify_nin", return_value={"success": True})
     @patch("whatsapp.router.verify_bvn", return_value={"success": True})
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_full_run_reaches_tier_1(self, sms, email, bvn, nin):
+    def test_full_run_reaches_tier_1(self, sms, email, bvn, nin, _sl, _el):
         self.inbound("8", "f1")
         self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "f2")
         self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "f3")
@@ -2346,12 +2351,14 @@ class ChatKycTests(TestCase):
         self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
         self.assertFalse(WaMessageLog.objects.filter(text__contains="10987654321").exists())
 
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.verify_nin",
            return_value={"success": False, "otp_required": True, "message": "not standalone"})
     @patch("whatsapp.router.verify_bvn", return_value={"success": True})
     @patch("whatsapp.router.send_email")
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_an_unverifiable_identity_is_queued_not_dead_ended(self, sms, email, bvn, nin):
+    def test_an_unverifiable_identity_is_queued_not_dead_ended(self, sms, email, bvn, nin, _sl, _el):
         """Our bank verifies exactly one identity, during account creation. The
         second is stored hashed and queued for the portal's KYC review rather
         than blocking the customer forever."""
@@ -2369,6 +2376,41 @@ class ChatKycTests(TestCase):
         # And the flow ended rather than asking for the same number again.
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
 
+    @patch("whatsapp.router.sms_live", return_value=False)
+    def test_an_unconfigured_sms_rail_says_so_instead_of_lying(self, _live):
+        """send_sms returns a silent-success dict when it has no key, so
+        trusting its `success` announced a code that never left the building.
+        The rail is checked BEFORE sending."""
+        with patch("whatsapp.router.send_sms") as sms:
+            self.inbound("8", "n1")
+        sms.assert_not_called()
+        r = self.last_reply()
+        self.assertIn("can't send SMS codes", r)
+        self.assertNotIn("sent", r.lower().split("can't send")[0])
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    @patch("whatsapp.router.email_live", return_value=False)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    def test_an_unconfigured_email_rail_says_so_instead_of_lying(self, _sms_live, _mail_live):
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        with patch("whatsapp.router.send_email") as email:
+            self.inbound("8", "n2")
+        email.assert_not_called()
+        self.assertIn("can't send emails", self.last_reply())
+
+    @override_settings(TEST_OTP={"PHONE": "08011112222", "CODE": "123456"})
+    @patch("whatsapp.router.sms_live", return_value=False)
+    def test_the_existing_test_otp_bypass_keeps_a_demo_deploy_usable(self, _live):
+        """A demo deploy usually has no rails. The SAME switch app signup already
+        honours makes the walkthrough possible, rather than a second mechanism."""
+        with patch("whatsapp.router.send_sms", return_value={"success": True}):
+            self.inbound("8", "t1")
+        self.assertIn("sent a 6-digit code", self.last_reply())
+        self.inbound("123456", "t2")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
     def test_a_fully_verified_user_is_told_so(self):
         for f in ("phone_verified", "email_verified", "bvn_verified", "nin_verified"):
             setattr(self.user, f, True)
@@ -2378,8 +2420,9 @@ class ChatKycTests(TestCase):
         self.assertIn("fully verified", self.last_reply())
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
 
+    @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.send_sms", return_value={"success": True})
-    def test_an_identity_owned_by_someone_else_is_refused(self, sms):
+    def test_an_identity_owned_by_someone_else_is_refused(self, sms, _live):
         other = User.objects.create(username="08099998888", phone="08099998888",
                                     email="other@zitch.test")
         other.set_bvn("12345678901")

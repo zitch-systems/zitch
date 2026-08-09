@@ -130,6 +130,19 @@ on the way:
 Codes are single-use, expire in 10 minutes, and burn the flow after 3 wrong
 attempts.
 
+**Both rails must be configured or the step refuses honestly.** `send_sms` and
+`send_email` each return a silent-success dict when they have no API key, so a
+caller that trusts `success` announces a code it never delivered. The step
+therefore checks `sms_live()` / `email_live()` BEFORE sending and tells the
+customer the channel is unavailable rather than pointing them at a phone that
+will never buzz. In practice: no `TERMII_API_KEY` means no phone verification,
+no `RESEND_API_KEY` means no email verification.
+
+For a demo deploy with no rails, the existing `TEST_OTP_PHONE` + `TEST_OTP_CODE`
+pair (the same switch app signup honours, gated by `ALLOW_PRODUCTION_TEST_OTP`
+off DEBUG) makes the walkthrough possible with a fixed code. `wema_preflight`
+already hard-fails while it is set, so it cannot quietly survive to go-live.
+
 **The one-identity limit.** Our bank has no standalone BVN/NIN lookup — the
 real, name-matched check happens during NUBAN creation, and it verifies exactly
 ONE identity. The second is therefore stored (hashed) and queued for the
