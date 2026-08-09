@@ -87,6 +87,15 @@ the customer stood. The electricity guard was also inconsistent with its own
 error message. `MIN_TRANSFER`, `MIN_AIRTIME` and `MIN_ELECTRICITY` now live in
 `common/http.py` and both surfaces read them.
 
+### Card PAN/CVV was exposed to app-wide screen capture (medium)
+
+Screenshots are allowed app-wide on purpose (receipts, support), but a full PAN
+plus CVV on screen is the one place that policy costs something: an
+in-foreground recorder catches it inside the 60-second reveal window, which the
+auto-hide and background-clear cannot reach. Capture is now blocked for exactly
+as long as the details are visible, then the app-wide policy is handed straight
+back.
+
 ### Link-code copy contradicted the code (low)
 
 The app told users the code expires in 10 minutes; it is 30 and single-use.
@@ -101,11 +110,6 @@ SIM-swap-oriented step-up cannot fire. Residual controls: PIN + lockout, tier
 caps, daily caps, velocity. This is a real asymmetry and should be a decision
 rather than an accident — a WhatsApp-native signal (e.g. step up on a large
 transfer from a link created in the last N hours) would close it.
-
-**Screen capture is allowed app-wide**, including on the card PAN/CVV reveal.
-The product reason (receipts, support screenshots) is sound; the card screen is
-the one place the policy costs something, and `preventScreenCaptureAsync()`
-scoped to the reveal window would fix it without touching the wider policy.
 
 **`OPS_REQUIRE_MFA` is off by default.** Operator TOTP is fully built and
 tested, with replay protection; enforcement is off so a rollout cannot lock
