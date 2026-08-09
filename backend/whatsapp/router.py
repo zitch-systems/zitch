@@ -5,6 +5,7 @@ services the app uses (balance, NGN bank transfer with name-enquiry, confirm,
 PIN, idempotency). The LLM intent layer (later) sits *in front* of this and
 hands it the same structured actions, so money never depends on the AI being up.
 """
+import hashlib
 import logging
 import re
 import secrets
@@ -890,17 +891,26 @@ def _do_support(msisdn: str) -> None:
 _KYC_STEPS = ("phone", "email", "bvn", "nin")
 
 
-def _kyc_test_code() -> str:
-    """The fixed TEST_OTP code, when that pre-launch bypass is configured.
+def _kyc_test_code(user) -> str:
+    """The fixed TEST_OTP code, but ONLY for the one nominated test number.
 
-    A demo deploy usually has no SMS or email rail, which would otherwise make
-    verification impossible to walk through. This reuses the SAME switch the app
-    signup already honours (TEST_OTP_PHONE + TEST_OTP_CODE, additionally gated by
-    ALLOW_PRODUCTION_TEST_OTP off DEBUG), so there is one place to look for "is a
-    fixed code accepted anywhere", and the existing preflight check already
-    hard-fails while it is set."""
+    Scoped to `user.phone == TEST_OTP["PHONE"]`, exactly as the app's OTP model
+    scopes it. An earlier version keyed only off "is TEST_OTP configured", which
+    handed the same fixed code to EVERY customer's phone and email verification
+    on any deploy where the pair was set — a far wider bypass than the switch is
+    meant to be, and one that silently followed the pair into production.
+
+    Reuses the app's switch rather than inventing a second one, so there is a
+    single answer to "is a fixed code accepted anywhere", and wema_preflight
+    already hard-fails while it is set."""
     test = getattr(settings, "TEST_OTP", {}) or {}
-    return (test.get("CODE") or "") if (test.get("PHONE") and test.get("CODE")) else ""
+    phone, code = (test.get("PHONE") or "").strip(), (test.get("CODE") or "").strip()
+    if not (phone and code) or (user.phone or "").strip() != phone:
+        return ""
+    fingerprint = hashlib.sha256((user.phone or "").encode()).hexdigest()[:12]
+    log.warning("wa_test_otp_used phone_sha256=%s — TEST_OTP is set; "
+                "REMOVE TEST_OTP_PHONE/TEST_OTP_CODE before go-live", fingerprint)
+    return code
 
 
 def _kyc_outstanding(user) -> list:
@@ -984,12 +994,12 @@ def _kyc_send_phone_code(pa: PendingAction, user, msisdn: str) -> None:
     silent-success dict when it has no key, so trusting its `success` would
     announce a code that never left the building and leave the customer staring
     at a phone that will never buzz."""
-    if not sms_live() and not _kyc_test_code():
+    if not sms_live() and not _kyc_test_code(user):
         _clear_actions(msisdn)
         log.warning("wa_kyc_sms_not_configured — TERMII_API_KEY is unset")
         return reply(msisdn, "⚠️ We can't send SMS codes at the moment, so phone verification "
                              "is unavailable. Please contact support — this is on our side, not yours.")
-    code = _kyc_test_code() or f"{secrets.randbelow(10**6):06d}"
+    code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
     sent = send_sms(user.phone or "", f"Zitch: {code} is your verification code. It expires in 10 minutes.")
     if not sent.get("success"):
         _clear_actions(msisdn)
@@ -1006,12 +1016,12 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
     if not user.email:
         _touch(pa, state="email_address", payload=pa.payload)
         return reply(msisdn, "What's your *email address*?")
-    if not email_live() and not _kyc_test_code():
+    if not email_live() and not _kyc_test_code(user):
         _clear_actions(msisdn)
         log.warning("wa_kyc_email_not_configured — RESEND_API_KEY is unset")
         return reply(msisdn, "⚠️ We can't send emails at the moment, so email verification "
                              "is unavailable. Please contact support — this is on our side, not yours.")
-    code = _kyc_test_code() or f"{secrets.randbelow(10**6):06d}"
+    code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
     send_email(user.email, "Confirm your email for Zitch",
                f"Your Zitch email confirmation code is {code}")
     pa.payload["code_hash"] = make_password(code)
