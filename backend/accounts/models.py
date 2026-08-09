@@ -92,6 +92,13 @@ class User(AbstractUser):
     # have no usable password, so entering the app at all runs the OTP-backed
     # password-reset flow against the same number.
     onboarded_via_whatsapp = models.BooleanField(default=False)
+    # Proof the customer controls the SIM, not merely a signed-in messenger.
+    # App signup sets it (the signup OTP is exactly this proof). A WhatsApp
+    # signup does NOT: a WhatsApp session survives a SIM swap, so possession of
+    # the chat is weaker than possession of the number, and the chat KYC flow
+    # runs its own SMS round-trip to earn it. Existing accounts are backfilled
+    # True by the migration — every one of them came through the app OTP.
+    phone_verified = models.BooleanField(default=False)
     # Set by the in-app email OTP round-trip. Deliberately consulted by recovery:
     # an UNVERIFIED chat-collected email is one typo away from being someone
     # else's inbox, so it must never receive a password-reset code.
@@ -144,15 +151,17 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs a verified EMAIL plus BVN AND NIN; Tier 2 adds face AND
-        address; Tier 3 adds a verified government ID document. Anything less is
-        Tier 0 (unverified).
+        Tier 1 needs a verified EMAIL and PHONE plus BVN AND NIN; Tier 2 adds
+        face AND address; Tier 3 adds a verified government ID document. Anything
+        less is Tier 0 (unverified).
 
-        The email requirement applies to every account, however it signed up.
-        The phone needs no flag of its own: an app account only exists after the
-        signup SMS OTP, and a WhatsApp account authenticates by possessing the
-        number — both are proof of the phone by construction."""
-        if not self.email_verified:
+        Both contact requirements apply to every account, however it signed up.
+        The app earns `phone_verified` at signup (that IS the signup OTP); a
+        WhatsApp signup earns it in the chat KYC flow, because a messenger
+        session outlives a SIM swap and so is not by itself proof of the
+        number."""
+        # Both contact channels must be proven before any tier above the floor.
+        if not (self.email_verified and self.phone_verified):
             self.tier = 0
         elif (self.bvn_verified and self.nin_verified and self.face_verified
                 and self.address_verified and self.id_document_verified):

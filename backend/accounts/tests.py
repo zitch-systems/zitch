@@ -320,6 +320,22 @@ class KycTierTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["tier"], 1)
 
+    def test_an_unverified_phone_holds_the_tier_at_zero(self):
+        """Both contact channels are required. A WhatsApp signup does not earn
+        phone_verified from possession of the chat — a messenger session outlives
+        a SIM swap — so this can genuinely be the missing piece."""
+        self.user.phone_verified = False
+        self.user.save(update_fields=["phone_verified"])
+        self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
+        body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})[1]
+        self.assertEqual(body["tier"], 0)
+        self.assertFalse(body["phone_verified"])
+        # Re-read: BVN/NIN were set server-side, so the local copy is stale.
+        self.user.refresh_from_db()
+        self.user.phone_verified = True
+        self.user.recompute_tier()
+        self.assertEqual(self.user.tier, 1)
+
     def test_unverified_email_holds_the_tier_at_zero(self):
         # BVN + NIN complete, email not confirmed: the ladder must not move —
         # Tier 1 requires all three, however the account signed up.

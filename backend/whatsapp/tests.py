@@ -38,7 +38,7 @@ def make_user(phone="08010000001", email="ada@zitch.test", pin="1234", balance="
     # WhatsApp. WhatsApp-onboarded accounts start unverified (tested separately).
     u = User.objects.create(username=phone, phone=phone, email=email,
                             first_name="Ada", last_name="Eze", tier=1, bvn_verified=True,
-                            email_verified=True)  # Tier >= 1 requires it
+                            email_verified=True, phone_verified=True)  # Tier >= 1 requires both
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)
@@ -250,7 +250,7 @@ class ChannelTests(TestCase):
         welcome = WaMessageLog.objects.filter(
             msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
         self.assertIsNotNone(welcome)
-        self.assertIn("Forgot password", welcome.text)  # the upgrade path is named
+        self.assertIn("reply *8*", welcome.text)  # the upgrade path is named, and it's in-chat
 
     def test_onboarding_refuses_an_email_already_on_an_account(self):
         # Recovery looks accounts up by email; two accounts sharing one address
@@ -2265,3 +2265,130 @@ class ChatLogSecretRedactionTests(TestCase):
         from whatsapp.views import _redact_chat_log
 
         self.assertIn("5000", _redact_chat_log("send 5000 to mama"))
+
+
+class ChatKycTests(TestCase):
+    """Verifying phone, email, BVN and NIN without leaving the chat. Every step
+    drives the same server-side checks the app uses, and the tier is DERIVED at
+    the end — this flow never grants one."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(phone="08011112222", email="k@zitch.test")
+        self.user.email_verified = False
+        self.user.phone_verified = False
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.tier = 0
+        self.user.save()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def replies(self):
+        return [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("created")]
+
+    def test_menu_offers_verification(self):
+        self.inbound("menu", "k0")
+        self.assertIn("Verify my identity", self.last_reply())
+
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_phone_step_requires_the_sms_code(self, sms):
+        self.inbound("8", "k1")
+        self.assertIn("sent a 6-digit code by SMS", self.last_reply())
+        sms.assert_called_once()
+        code = re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1)
+
+        self.inbound("000000", "k2")           # wrong code
+        self.assertIn("isn't right", self.last_reply())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.phone_verified)
+
+        self.inbound(code, "k3")               # correct
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
+    @patch("whatsapp.router.send_email")
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_email_step_sends_to_the_inbox_not_the_phone(self, sms, email):
+        self.inbound("8", "e1")
+        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "e2")
+        # Now on email: the code went to the ADDRESS, never by SMS.
+        self.assertIn("k@zitch.test", self.last_reply())
+        email.assert_called_once()
+        self.assertEqual(email.call_args[0][0], "k@zitch.test")
+        code = re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1)
+        self.assertEqual(sms.call_count, 1)     # no second SMS
+
+        self.inbound(code, "e3")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
+    @patch("whatsapp.router.verify_nin", return_value={"success": True})
+    @patch("whatsapp.router.verify_bvn", return_value={"success": True})
+    @patch("whatsapp.router.send_email")
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_full_run_reaches_tier_1(self, sms, email, bvn, nin):
+        self.inbound("8", "f1")
+        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "f2")
+        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "f3")
+        self.assertIn("BVN", self.last_reply())
+        self.inbound("12345678901", "f4")
+        self.assertIn("NIN", self.last_reply())
+        self.inbound("10987654321", "f5")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)      # derived, not granted
+        self.assertIn("Tier 1", self.last_reply())
+        # Neither identity number is readable in the log.
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="10987654321").exists())
+
+    @patch("whatsapp.router.verify_nin",
+           return_value={"success": False, "otp_required": True, "message": "not standalone"})
+    @patch("whatsapp.router.verify_bvn", return_value={"success": True})
+    @patch("whatsapp.router.send_email")
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_an_unverifiable_identity_is_queued_not_dead_ended(self, sms, email, bvn, nin):
+        """Our bank verifies exactly one identity, during account creation. The
+        second is stored hashed and queued for the portal's KYC review rather
+        than blocking the customer forever."""
+        self.inbound("8", "q1")
+        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "q2")
+        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "q3")
+        self.inbound("12345678901", "q4")     # BVN verifies
+        self.inbound("10987654321", "q5")     # NIN cannot be checked standalone
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
+        self.assertTrue(self.user.nin_hash)   # submitted for review, hashed
+        self.assertEqual(self.user.tier, 0)   # NOT granted on a pending identity
+        self.assertIn("review", self.last_reply().lower())
+        # And the flow ended rather than asking for the same number again.
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    def test_a_fully_verified_user_is_told_so(self):
+        for f in ("phone_verified", "email_verified", "bvn_verified", "nin_verified"):
+            setattr(self.user, f, True)
+        self.user.recompute_tier()
+        self.user.save()
+        self.inbound("verify", "v1")
+        self.assertIn("fully verified", self.last_reply())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    @patch("whatsapp.router.send_sms", return_value={"success": True})
+    def test_an_identity_owned_by_someone_else_is_refused(self, sms):
+        other = User.objects.create(username="08099998888", phone="08099998888",
+                                    email="other@zitch.test")
+        other.set_bvn("12345678901")
+        other.save()
+        self.user.phone_verified = True
+        self.user.email_verified = True
+        self.user.save()
+        self.inbound("8", "o1")
+        self.inbound("12345678901", "o2")
+        self.assertIn("already linked to another", self.last_reply())
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
