@@ -96,6 +96,44 @@ auto-hide and background-clear cannot reach. Capture is now blocked for exactly
 as long as the details are visible, then the app-wide policy is handed straight
 back.
 
+### Identity numbers lived in the chat transcript forever (high)
+
+BVN and NIN were typed into the thread during chat KYC. The message log redacts
+them and the numbers are stored hashed, but neither fact touches the artifact
+that matters: the customer's own copy of what they sent. WhatsApp has no
+view-once for text and lets only the **sender** delete a message, so an 11-digit
+identity number sat in the conversation indefinitely — recoverable from any
+backup or any handset that later opens that chat.
+
+They are now collected on an `IDENTITY_SCREEN` in the encrypted Flow, exactly as
+the PIN is, and a number typed into the chat while that Flow is open is refused
+rather than read — accepting it would put in the transcript precisely what the
+Flow exists to keep out. Unlike the PIN this does **not** fail closed: refusing
+service would block every signup on a deploy where Flows are unconfigured, so the
+fallback asks in chat and names the one removal that works. Meta serves the
+published Flow version, so `pin_flow.json` must be re-published for this to take
+effect.
+
+### Any account could spend before proving who owned it (high)
+
+`recompute_tier` required verified email, phone, BVN and NIN for Tier 1 — but
+Tier 0 still carried a ₦20,000 per-transaction and daily allowance, so an
+unverified account could move money. The four checks are now a floor beneath the
+ceilings rather than only an input to them: `unverified_error` refuses any
+outbound movement until all four pass, and the refusal names the missing step
+rather than a tier number.
+
+It is enforced in `spend_limit_error` — which `debit()` re-runs under the wallet
+row lock, so it holds on every surface at once — and separately in `execute_fx`,
+because conversion reaches the ledger through `_move` rather than `debit()` and
+would otherwise have stayed open. Funding is deliberately still allowed while
+unverified: blocking a deposit strands money in a NUBAN its owner cannot then
+use.
+
+**Operational note:** this takes effect for existing customers the moment it
+deploys. Anyone currently sitting at Tier 0 is refused their next spend until
+they finish verification.
+
 ### A refused email still told the customer a code was on its way (high)
 
 Traced from a live report that WhatsApp email verification "wasn't working" while
@@ -136,6 +174,16 @@ SIM-swap-oriented step-up cannot fire. Residual controls: PIN + lockout, tier
 caps, daily caps, velocity. This is a real asymmetry and should be a decision
 rather than an accident — a WhatsApp-native signal (e.g. step up on a large
 transfer from a link created in the last N hours) would close it.
+
+**WhatsApp cannot take a biometric.** The Cloud API exposes no biometric
+capability to a business, and Flows have no such component — there is no way to
+require a fingerprint or face scan for a payment authorised inside WhatsApp. The
+PIN is the strongest factor available in-channel, and it is already collected in
+the encrypted Flow rather than the chat. The only route to biometric
+authorisation from WhatsApp is a deep link that hands the confirmation to the
+app, where biometric payments already exist; that is a new surface (a signed
+hand-off token, an app route, and a return path) rather than a setting, and is
+not built.
 
 **`OPS_REQUIRE_MFA` is off by default.** Operator TOTP is fully built and
 tested, with replay protection; enforcement is off so a rollout cannot lock

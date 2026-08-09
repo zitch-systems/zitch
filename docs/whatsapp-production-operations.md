@@ -124,8 +124,20 @@ on the way:
 2. **Email** — a 6-digit code to the address itself (never by SMS; a code
    delivered to the phone proves nothing about the inbox). `change` corrects a
    mistyped address mid-flow.
-3. **BVN**, then **NIN** — both required. The numbers are stored hashed and are
-   masked out of the message log by the same rule that masks PINs.
+3. **BVN**, then **NIN** — both required, and both collected on the Flow's
+   `IDENTITY_SCREEN` rather than in the thread. Storing a hash and masking the
+   message log does nothing about the artifact that matters: the customer's own
+   copy of what they typed. WhatsApp has no view-once for text and lets only the
+   **sender** delete, so a number typed into the chat sits there indefinitely.
+   While that Flow is open a number typed into the chat is refused rather than
+   read — accepting it would put in the transcript exactly what the Flow exists
+   to keep out.
+
+   Unlike the PIN this does **not** fail closed: if Flows are unconfigured (or
+   `pin_flow.json` has not been re-published since `IDENTITY_SCREEN` was added)
+   the step falls back to asking in the chat, and tells the customer to delete
+   their message. Refusing service would block every signup on such a deploy,
+   which is worse.
 
 Codes are single-use, expire in 10 minutes, and burn the flow after 3 wrong
 attempts.
@@ -207,6 +219,30 @@ The balance is never a receipt row. It is sent as a **separate message after**
 the receipt, so the customer can forward the receipt to whoever they paid
 without handing over their account balance, and can delete the balance message
 independently.
+
+The image itself is rendered server-side by `whatsapp/receipt.py` at ~2200px
+wide (the long edge clears 4K UHD's short edge) with the Z mark, `zitch.ng` and
+a tiled diagonal watermark. Everything is laid out in design units and scaled
+through one `SCALE` constant, so changing the output resolution is a one-line
+change and no coordinate needs to know.
+
+### Credit and debit alerts
+
+Every settled ledger row triggers an alert — wired to a `post_save` signal on
+`Transaction` rather than to each money path, because a debit is marked
+Successful in a dozen places and the one someone forgets is a customer who never
+hears that their money moved.
+
+- `TXN_ALERTS_EMAIL` defaults **on**. Effectively free, and customers expect it.
+- `TXN_ALERTS_SMS` defaults **off**. At Nigerian per-message rates one SMS per
+  transaction is a real recurring cost — set it to `true` deliberately.
+
+Alerts fire only on `Successful` (a PENDING debit that later fails is never
+announced), exactly once per row, and only after the database transaction
+commits. A settled debit that is later reversed sends a reversal notice, because
+`refund` flips the existing row rather than writing a new one — without it the
+customer would be told money left and never told it came back. A provider outage
+is logged and swallowed: an alert must never fail a payment that succeeded.
 
 ### Linking is PIN-gated, single use, 30 minutes
 

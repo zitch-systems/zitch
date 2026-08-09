@@ -12,18 +12,32 @@ from django.db import IntegrityError, transaction as db_transaction
 from django.test import Client, TestCase
 
 from accounts.models import AccessToken
+from common.http import unverified_error
 
 from .forex import FxError, create_fx_quote
 from .models import CurrencyWallet, FundingIntent, Transaction, Wallet
-from .services import credit, get_or_create_wallet, settle_reserved_funding
+from .services import (LimitExceeded, credit, debit, get_or_create_wallet,
+                       settle_reserved_funding)
 
 User = get_user_model()
 
 
-def make_user(phone, email, pin="1234", balance="0", tier=1):
+def make_user(phone, email, pin="1234", balance="0", tier=1, identity_verified=True):
+    """Contact channels are always verified — the app earns `phone_verified` at
+    signup and email is a precondition for anything above the floor, so a test
+    account without them is not a state worth modelling.
+
+    `identity_verified` covers BVN/NIN, which a first spend now also requires. It
+    defaults on because most tests are about something else and would otherwise
+    be refused before reaching it; tests that exercise *earning* identity — the
+    KYC ladder, bank provisioning, the portal review queue — pass False so the
+    user starts where a real one does.
+    """
     u = User.objects.create(username=phone, phone=phone, email=email,
                             first_name="Ada", last_name="Eze", tier=tier,
-                            email_verified=True, phone_verified=True)  # Tier >= 1 requires both
+                            email_verified=True, phone_verified=True,
+                            bvn_verified=identity_verified,
+                            nin_verified=identity_verified)
     u.set_transaction_pin(pin)
     u.save()
     get_or_create_wallet(u)
@@ -405,3 +419,53 @@ class FxLimitParityTests(TestCase):
                 create_fx_quote(self.user, "USD", "GBP", Decimal("100"))
         # Refused, not silently uncapped.
         self.assertIn("price", str(ctx.exception.message).lower())
+
+
+class FirstSpendVerificationTests(TestCase):
+    """Email, phone, BVN and NIN must all be proved before ANY money leaves an
+    account. Together they are exactly Tier 1, but the refusal names the missing
+    step rather than a tier number — "you are Tier 0" tells a customer nothing
+    about what to do next."""
+
+    def setUp(self):
+        self.user, self.token = make_user("08044440001", "gate@zitch.test", balance="50000")
+
+    def _unverify(self, *fields):
+        for f in fields:
+            setattr(self.user, f, False)
+        self.user.save(update_fields=list(fields))
+
+    def test_a_debit_is_refused_until_every_check_passes(self):
+        self._unverify("nin_verified")
+        with self.assertRaises(LimitExceeded) as ctx:
+            debit(self.user, Decimal("1000"), "transfer")
+        self.assertIn("NIN", str(ctx.exception))
+        # And the refusal is actionable on both surfaces.
+        self.assertIn("8", str(ctx.exception))
+        self.assertIn("app", str(ctx.exception).lower())
+
+    def test_the_refusal_names_every_missing_check_not_just_the_first(self):
+        self._unverify("bvn_verified", "nin_verified")
+        msg = unverified_error(self.user) or ""
+        self.assertIn("BVN", msg)
+        self.assertIn("NIN", msg)
+
+    def test_a_fully_verified_account_is_untouched(self):
+        self.assertIsNone(unverified_error(self.user))
+        debit(self.user, Decimal("1000"), "transfer")   # does not raise
+
+    def test_funding_is_still_allowed_while_unverified(self):
+        """Blocking a deposit would strand money in a NUBAN its owner cannot then
+        use — and money arriving is how a customer gets to the point of verifying."""
+        self._unverify("bvn_verified", "nin_verified")
+        credit(self.user, Decimal("5000"), "Deposit")           # does not raise
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("55000"))
+
+    def test_conversion_is_gated_too(self):
+        """FX reaches the ledger through _move, not debit(), so it does not
+        inherit spend_limit_error's gate and has to state it — otherwise an
+        unverified account could still move value by converting it."""
+        self._unverify("nin_verified")
+        with self.assertRaises(FxError) as ctx:
+            create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
+        self.assertIn("NIN", str(ctx.exception.message))

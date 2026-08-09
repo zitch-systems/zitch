@@ -195,6 +195,42 @@ def daily_kind_for(service: str) -> str:
     return ""
 
 
+#: The four checks that must pass before ANY money may leave an account, in the
+#: order a customer completes them. Together they are exactly Tier 1, so this is
+#: the same bar `recompute_tier` already derives — spelled out here because the
+#: refusal has to name the specific step that is missing, not a tier number.
+_FIRST_SPEND_CHECKS = (
+    ("email_verified", "email address"),
+    ("phone_verified", "phone number"),
+    ("bvn_verified", "BVN"),
+    ("nin_verified", "NIN"),
+)
+
+
+def unverified_error(user) -> "str | None":
+    """Refusal naming the identity checks still outstanding, or None if the
+    account may spend.
+
+    Applied to money LEAVING an account only. Funding is deliberately still
+    allowed while unverified: money arriving is how a customer gets to the point
+    of caring, and blocking a deposit would strand funds in a NUBAN the owner
+    cannot then use.
+
+    This is a floor beneath the tier ceilings, not a replacement for them. The
+    ceilings answer "how much"; this answers "at all".
+    """
+    missing = [label for field, label in _FIRST_SPEND_CHECKS
+               if not getattr(user, field, False)]
+    if not missing:
+        return None
+    if len(missing) > 1:
+        listed = ", ".join(missing[:-1]) + " and " + missing[-1]
+    else:
+        listed = missing[0]
+    return (f"Before you can send money we need to verify your {listed}. "
+            "On WhatsApp reply *8*; in the Zitch app, open Me → Verify identity.")
+
+
 def spend_limit_error(user, amount, service: str) -> "str | None":
     """EVERY cap that applies to an outbound debit of `amount` labelled `service`,
     as one user-facing message — or None when the spend is allowed.
@@ -208,6 +244,12 @@ def spend_limit_error(user, amount, service: str) -> "str | None":
     code and a helpful message is a better experience than an exception — but that
     call is now an optimisation, not the guarantee.
     """
+    # Identity first: an account that has not proved who owns it should be
+    # refused before we start discussing amounts, and this is the gate `debit`
+    # re-runs under the row lock — so it holds for every surface at once.
+    unverified = unverified_error(user)
+    if unverified:
+        return unverified
     if velocity_exceeded(user):
         return "Too many transactions in a short time. Please wait a few minutes and try again."
     msg = send_limit_error(user, amount)

@@ -142,7 +142,7 @@ const Kyc = () => {
 
   return (
     <Screen>
-      <Header title="Account Limits & KYC" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
+      <Header title="Verify identity" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
 
       {status && (
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginBottom: 4 }}>

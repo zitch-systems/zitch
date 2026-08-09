@@ -47,7 +47,20 @@ public key.
 
 - `PIN_SCREEN` — masked `password` PIN input; its footer submit does the
   `data_exchange` to our endpoint. Re-rendered with an `error` on a wrong PIN.
+- `IDENTITY_SCREEN` — masked input for a BVN or NIN during chat KYC. Same
+  reasoning as the PIN: WhatsApp has no view-once for text and lets only the
+  **sender** delete a message, so anything typed into the thread stays in the
+  customer's own history indefinitely. `label` and `summary` are supplied per
+  request, so one screen serves both numbers.
 - `SUCCESS` — terminal screen showing the outcome (`message`).
 
 The endpoint drives these dynamically from `whatsapp/flows.py`; keep the screen
 ids and field names in sync if you edit the JSON.
+
+> **Re-publish after updating.** `IDENTITY_SCREEN` was added after the first
+> release. Meta serves the version published in WhatsApp Manager, not this file
+> — until you paste the current JSON and publish again, the identity Flow send
+> fails and the channel falls back to asking in the chat. Unlike the PIN this
+> fallback is deliberate rather than fail-closed: refusing service would block
+> every signup on a deploy without Flows, which is worse than the number sitting
+> in the customer's own thread with instructions to delete it.

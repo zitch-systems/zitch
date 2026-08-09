@@ -412,6 +412,15 @@ RESEND = {
 # selectable from a session that might be stolen. Unset => the admin export refuses,
 # rather than falling back to showing the record in a browser.
 COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
+# Credit/debit alerts, per channel (see wallet/alerts.py). Email defaults ON —
+# it is effectively free and customers expect an alert on every movement. SMS
+# defaults OFF: at Nigerian per-message rates, one alert per transaction is a
+# real recurring cost, and that is a business decision rather than something to
+# switch on silently. Set TXN_ALERTS_SMS=true to enable it.
+TXN_ALERTS = {
+    "EMAIL": os.environ.get("TXN_ALERTS_EMAIL", "true").strip().lower() != "false",
+    "SMS": os.environ.get("TXN_ALERTS_SMS", "").strip().lower() == "true",
+}
 # KYC — selfie/liveness + address + ID-document (image/biometric) — Prembly
 # (IdentityPass). Blank => mock mode.
 PREMBLY = {

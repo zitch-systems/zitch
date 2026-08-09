@@ -2,9 +2,65 @@
   "version": "5.1",
   "data_api_version": "3.0",
   "routing_model": {
-    "PIN_SCREEN": ["SUCCESS"]
+    "PIN_SCREEN": ["SUCCESS"],
+    "IDENTITY_SCREEN": ["SUCCESS"]
   },
   "screens": [
+    {
+      "id": "IDENTITY_SCREEN",
+      "title": "Verify your identity",
+      "data": {
+        "summary": {
+          "type": "string",
+          "__example__": "Enter your 11-digit BVN"
+        },
+        "label": {
+          "type": "string",
+          "__example__": "BVN"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "${data.summary}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.error}"
+          },
+          {
+            "type": "Form",
+            "name": "identity_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "number",
+                "label": "${data.label}",
+                "input-type": "password",
+                "required": true,
+                "helper-text": "Entered privately — this number never appears in your chat"
+              },
+              {
+                "type": "Footer",
+                "label": "Submit",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "number": "${form.number}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
     {
       "id": "PIN_SCREEN",
       "title": "Confirm payment",

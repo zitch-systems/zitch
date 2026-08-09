@@ -9,7 +9,8 @@ is time-boxed, so a stale rate is never settled.
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
-from common.http import daily_limit_error, send_limit_error, velocity_exceeded
+from common.http import (daily_limit_error, send_limit_error, unverified_error,
+                         velocity_exceeded)
 
 from django.db import transaction as db_transaction
 from django.utils import timezone
@@ -76,11 +77,14 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     if currency_balance(user, frm) < sell:
         raise FxError(f"Insufficient {frm} balance.")
 
-    # Tier / large-transfer (AML face) ceiling — converting NGN out of the
-    # regulated ledger must respect the same limit as a transfer or bill spend.
-    # Every other money-out flow calls this; FX must too. Scoped to NGN-source:
-    # the tier limit is denominated in NGN and the control concern is value
-    # leaving naira (NGN -> foreign currency).
+    # Conversion is money-out, and it reaches the ledger through _move rather
+    # than debit() — so it inherits none of spend_limit_error's gates and has to
+    # state each one. Identity first: without this an unverified account could
+    # still move value by converting it.
+    unverified = unverified_error(user)
+    if unverified:
+        raise FxError(unverified)
+
     # The compromised-account brake applies to EVERY conversion, including
     # foreign->foreign. It is about the rate of money-out attempts, not the
     # currency: without it, someone holding a stolen PIN could drain a foreign
@@ -89,6 +93,11 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     if velocity_exceeded(user):
         raise FxError("Too many transactions in a short time. Please wait a few minutes and try again.")
 
+    # Tier / large-transfer (AML face) ceiling — converting NGN out of the
+    # regulated ledger must respect the same limit as a transfer or bill spend.
+    # Every other money-out flow calls this; FX must too. Scoped to NGN-source:
+    # the tier limit is denominated in NGN and the control concern is value
+    # leaving naira (NGN -> foreign currency).
     if frm == "NGN":
         reason = send_limit_error(user, sell)
         if reason:
