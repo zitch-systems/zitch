@@ -40,7 +40,8 @@ from wallet.services import (
 
 from . import ai
 from .flows import (FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN, PIN_SCREEN,
-                    sign_flow_token, sign_identity_token, sign_onboarding_token)
+                    sign_approve_token, sign_flow_token, sign_identity_token,
+                    sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
 
@@ -382,7 +383,7 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)  # persist so the token resolves
     res = send_flow(
         pa.msisdn, sign_flow_token(pa),
-        header="Confirm payment", body=summary,
+        header="Confirm payment", body=summary + _approve_link_line(pa),
         screen=PIN_SCREEN, screen_data={"summary": summary, "error": ""},
     )
     return bool(res.get("success"))
@@ -423,6 +424,27 @@ def _send_identity_flow(pa: PendingAction, kind: str) -> bool:
     return False
 
 
+def _approve_link_line(pa: PendingAction) -> str:
+    """The "approve in the app" line offered alongside every confirm.
+
+    The link is https (WhatsApp renders only http(s) as tappable); the page at
+    the other end bounces into `zitch://waapprove`, where the app authenticates
+    the customer's biometric on-device and submits the SAME transaction PIN the
+    other channels verify. It is an addition to the armed channel, never a
+    replacement: a WhatsApp-only customer without the app still confirms via the
+    Flow or SMS code exactly as before.
+
+    The token binds the action to its owner, so a forwarded link redeems for
+    nobody else — but it still names an approval, which is why the bounce page
+    shows nothing about the action itself.
+    """
+    base = (_links().get("API_BASE") or "").rstrip("/")
+    if not base:
+        return ""
+    return ("\n\n📲 Have the Zitch app? Approve with your fingerprint or Face ID: "
+            f"{base}/wa/approve/{sign_approve_token(pa)}")
+
+
 def _arm_confirm(pa: PendingAction, user) -> bool:
     """Move a money flow to its confirm step. Preference, most-secure first:
 
@@ -432,7 +454,10 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
     2. A single-use 6-digit SMS code (live SMS, no Flow) — the chat carries a code
        that's worthless after one use / 5 minutes, never the PIN.
     3. The PIN in chat only in explicit dev/test mode. Production fails closed
-       when neither secure channel is available."""
+       when neither secure channel is available.
+
+    Whichever rung is armed, the deep-link approval (biometric in the app) is
+    offered alongside it — see _approve_link_line."""
     if flows_live() and _send_pin_flow(pa, user):
         return True
     # Checked before sending, not after: unkeyed, send_sms succeeds in mock mode, which
@@ -460,13 +485,15 @@ def _confirm_prompt(pa: PendingAction) -> str:
     if pa.state == "blocked":
         return "Secure confirmation is unavailable right now. Please complete this payment in the Zitch app."
     if pa.payload.get("otp_hash"):
-        return "🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". (Never type your PIN here.)"
+        return ("🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". "
+                "(Never type your PIN here.)" + _approve_link_line(pa))
     # Only reachable in dev/test — production arms a Flow or an SMS code and
     # fails closed rather than ask for a PIN here. The delete advice rides along
     # anyway, so the one prompt that can put a PIN in a thread also says how to
     # get it out: WhatsApp lets the sender delete, and nobody else.
     return ("Reply with your PIN to confirm, or \"cancel\".\n"
-            "_Delete your PIN message afterwards (press and hold → Delete → Delete for everyone)._")
+            "_Delete your PIN message afterwards (press and hold → Delete → Delete for everyone)._"
+            + _approve_link_line(pa))
 
 
 def active_link_for(msisdn: str) -> WhatsAppLink | None:
@@ -585,10 +612,22 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # typed out of habit. It is already masked in our log, but it is still in
     # the customer's own thread and only they can remove it — WhatsApp gives a
     # business no way to delete or expire a message it received.
-    if re.fullmatch(r"\d{4}|\d{6}", low):
+    # \d{4,6}, the same shape the webhook masks as [PIN] — it was \d{4}|\d{6},
+    # which let a stray 5-digit code fall past this branch into the AI layer
+    # while the log called it a PIN. The two rules should not disagree on what
+    # a PIN looks like.
+    if re.fullmatch(r"\d{4,6}", low):
+        # The disappearing-messages tip is WhatsApp's ONE real expiry lever, and
+        # it is the customer's to pull, not ours: a business cannot enable it by
+        # API, delete a received message, or send view-once text. Everything
+        # else we do (Flows, masking) keeps secrets out of the thread — this
+        # tip is for the ones the customer puts there themselves.
         return reply(msisdn, "⚠️ That looks like a *PIN or code*, and nothing here was waiting for one.\n\n"
                              "We never ask for your PIN in this chat — please delete that message "
                              "(press and hold → Delete → *Delete for everyone*).\n\n"
+                             "💡 Tip: turn on *disappearing messages* for this chat (tap our name "
+                             "→ Disappearing messages → 24 hours) so anything sent here expires "
+                             "on its own.\n\n"
                              "Reply \"menu\" for options.")
 
     # Fresh command (keyword or menu number).
@@ -1511,6 +1550,17 @@ def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
         pa.payload["pin_attempts"] = attempts
         _touch(pa, payload=pa.payload)
         reply(msisdn, "That code isn't right. Check the SMS we sent and try again, or \"cancel\".")
+        return False
+    # The PIN-from-chat fallback is re-gated HERE, not only where the rung was
+    # armed: _arm_confirm never arms it in production, but this function is the
+    # point of acceptance, and an action that reaches "pin" without an armed
+    # code on a production host (a stale row from a config flip, a future
+    # arming bug) must fail closed rather than quietly start reading PINs out
+    # of a chat that keeps them forever.
+    if not _pin_in_chat_allowed():
+        _clear_actions(msisdn)
+        reply(msisdn, "For your security this needs to be confirmed in the Zitch app. "
+                      "Nothing was sent — please start again.")
         return False
     ok, code, message = evaluate_transaction_pin(user, text)
     if ok:

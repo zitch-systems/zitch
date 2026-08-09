@@ -26,6 +26,12 @@ FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) whil
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
+_AP_PREFIX = "ap"             # marks an app hand-off token (deep-link biometric approval)
+
+#: Confirm states an app hand-off may resolve in. Both mean "armed, awaiting the
+#: customer's authorisation" — which secure channel was offered first (Flow or
+#: SMS code) doesn't change what approving in the app means.
+_APPROVABLE_STATES = (FLOW_PIN_STATE, "pin")
 
 
 # --------------------------------------------------------------------------- #
@@ -75,6 +81,42 @@ def sign_identity_token(pa) -> str:
     the onboarding token so the three token kinds can never be confused: each
     resolves through its own lookup and rejects the others' prefixes."""
     return f"{_ID_PREFIX}{pa.id}.{_sig(f'{_ID_PREFIX}{pa.id}:{pa.msisdn}')}"
+
+
+def sign_approve_token(pa) -> str:
+    """Signed hand-off for approving a pending WhatsApp money action in the app.
+
+    The signature binds action id, number AND the owning user id: the token
+    travels through a chat message and an OS deep link — surfaces we do not
+    control — so even a token lifted whole must still fail unless it is redeemed
+    from a session belonging to that exact user (the endpoint enforces the
+    match; the binding here makes the check tamper-evident rather than
+    row-lookup-dependent).
+    """
+    return (f"{_AP_PREFIX}{pa.id}."
+            f"{_sig(f'{_AP_PREFIX}{pa.id}:{pa.msisdn}:{pa.user_id}')}")
+
+
+def resolve_approve_token(token: str):
+    """Return the live PendingAction for an app hand-off token, or None if it is
+    malformed, forged, expired, or not sitting at a confirm step. Single-use is
+    a property of execution, not of this lookup: completing (or cancelling) the
+    action leaves no state this resolves in."""
+    from .models import PendingAction
+
+    raw = (token or "").strip()
+    if not raw.startswith(_AP_PREFIX) or "." not in raw:
+        return None
+    head, _, sig = raw.partition(".")
+    pid = head[len(_AP_PREFIX):]
+    if not pid.isdigit():
+        return None
+    pa = PendingAction.objects.filter(id=int(pid)).first()
+    if pa is None or pa.state not in _APPROVABLE_STATES or pa.expired:
+        return None
+    if not hmac.compare_digest(sig, _sig(f"{_AP_PREFIX}{pa.id}:{pa.msisdn}:{pa.user_id}")):
+        return None
+    return pa
 
 
 def resolve_identity_token(token: str):

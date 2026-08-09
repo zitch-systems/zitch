@@ -244,6 +244,29 @@ commits. A settled debit that is later reversed sends a reversal notice, because
 customer would be told money left and never told it came back. A provider outage
 is logged and swallowed: an alert must never fail a payment that succeeded.
 
+### Approving with a fingerprint — the deep-link hand-off
+
+Every money confirm (Flow or SMS-code rung alike) also offers *"Have the Zitch
+app? Approve with your fingerprint or Face ID"* with an https link. WhatsApp
+renders only http(s) links as tappable, so the link goes to
+`/wa/approve/<token>` on this service, which immediately bounces into
+`zitch://waapprove` (store links as the no-app fallback). In the app, the
+customer sees the SAME summary the Flow PIN screen shows, scans their
+fingerprint/Face ID, and the scan releases the cached transaction PIN from the
+OS keychain — which is then verified server-side like every other PIN. The
+receipt still arrives in the WhatsApp thread.
+
+Security shape, in one breath: token HMAC-bound to action + number + owner;
+wrong-user sessions get the same "expired" as a dead token; PIN check shares
+the row-locked lockout; execution runs through `run_flow_execution` (freeze
+re-check, idempotent executors); completing the action burns the token; the
+unauthenticated bounce page shows nothing about the action. This is an
+*addition* to the armed channel, never a replacement — a customer without the
+app confirms exactly as before.
+
+`ZITCH_API_BASE` (default `https://api.zitch.ng`) is the origin minted into the
+links; set it if the API moves.
+
 ### Linking is PIN-gated, single use, 30 minutes
 
 A link binds a channel that can move money, so `/api/whatsapp/link/start/`
@@ -256,6 +279,38 @@ number that is not the one on the account is **refused and burned**: that is the
 shape of a leaked code being tried from an attacker's WhatsApp, and leaving it
 live would let them keep trying from other numbers. The owner mints a fresh one
 in the app.
+
+### The PIN, end to end (audited)
+
+Every place a PIN can exist in this channel, and what holds there:
+
+1. **Money confirm** — the encrypted Flow first; a single-use SMS code second;
+   production **fails closed** rather than ask for a PIN in chat. The
+   PIN-from-chat fallback is now re-gated at the point of *acceptance* too
+   (`_flow_pin_ok`), so a stale action reaching the "pin" state on a production
+   host is cancelled, not read.
+2. **Deep-link approval** — the PIN travels once, TLS to `approve/execute/`,
+   after the biometric releases it from the OS keychain. Same verification,
+   same lockout.
+3. **Webhook** — the raw Meta body can contain a typed PIN, so the stored
+   webhook descriptor keeps ids and types only, never text. The message log
+   masks `[PIN]` by flow state AND by shape (`\d{4,6}`, aligned with the chat
+   branch); the worker queue holds command text encrypted and erases it after
+   processing.
+4. **The AI layer** — structurally unreachable while any flow is open (pending
+   actions consume the message first), a stray 4–6-digit message is intercepted
+   before it, and the sanitizer masks secret-context codes as a last line.
+5. **The customer's own thread** — the one copy we cannot touch. WhatsApp has
+   no view-once for text, no business-side delete, and no API to enable
+   disappearing messages. So: production never *asks* for a PIN there; a stray
+   PIN gets the delete-for-everyone instruction plus a nudge to enable
+   WhatsApp's **disappearing messages** on the chat — the customer's own
+   setting, and the only true expiry that exists.
+
+"Make the PIN a disappearing message" therefore lands as: *the PIN is never a
+chat message at all* — which is strictly stronger — and where a customer types
+one unprompted, the channel tells them how to remove it and how to make the
+chat self-expiring.
 
 ### The signup PIN never enters the chat
 

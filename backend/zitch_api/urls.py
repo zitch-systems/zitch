@@ -11,6 +11,7 @@ from django.views.decorators.http import require_http_methods
 
 from portal.diagnostics import diagnostics_view
 from portal.pages import admin_portal, landing, prototype
+from whatsapp.views import approve_handoff as whatsapp_approve_handoff
 from whatsapp.views import flow_endpoint as whatsapp_flow_endpoint
 from whatsapp.views import webhook as whatsapp_webhook
 
@@ -509,6 +510,10 @@ urlpatterns = [
     path("webhooks/whatsapp", whatsapp_webhook),
     # WhatsApp Flows data-exchange endpoint (encrypted secure PIN submit).
     path("webhooks/whatsapp/flow", whatsapp_flow_endpoint),
+    # The https bounce for deep-link approval — WhatsApp only renders http(s)
+    # links as tappable, so the chat carries this URL and it forwards into the
+    # app scheme (store links as the no-app fallback).
+    path("wa/approve/<str:token>", whatsapp_approve_handoff),
     # Wema/ALAT bank-called callbacks. The bank PROFILES these exact URLs, and the
     # rails do not work until it has: account creation is refused without a profiled
     # Account Creation URL, and transactions fail authentication without the
