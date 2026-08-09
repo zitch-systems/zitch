@@ -114,6 +114,29 @@ on the way:
    codes: it was typed into a chat, one typo from someone else's inbox.
 3. BVN/NIN and above proceed as normal.
 
+### Verifying identity in the chat (menu 8)
+
+`8` / `verify` runs the whole KYC ladder without the app:
+
+1. **Phone** — a 6-digit SMS code to the number on the account. Possession of
+   the WhatsApp chat is deliberately NOT accepted as proof: a messenger session
+   outlives a SIM swap, so the code goes to the SIM and must come back.
+2. **Email** — a 6-digit code to the address itself (never by SMS; a code
+   delivered to the phone proves nothing about the inbox). `change` corrects a
+   mistyped address mid-flow.
+3. **BVN**, then **NIN** — both required. The numbers are stored hashed and are
+   masked out of the message log by the same rule that masks PINs.
+
+Codes are single-use, expire in 10 minutes, and burn the flow after 3 wrong
+attempts.
+
+**The one-identity limit.** Our bank has no standalone BVN/NIN lookup — the
+real, name-matched check happens during NUBAN creation, and it verifies exactly
+ONE identity. The second is therefore stored (hashed) and queued for the
+operator KYC review in the portal, which is what lifts the flag; `recompute_tier`
+picks it up from there. The customer is told it is under review rather than
+being dead-ended, and the tier is NOT granted while it is pending.
+
 ### Choosing the model provider
 
 The console (**AI controls → Model provider**) picks which LLM reads a

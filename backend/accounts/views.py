@@ -205,7 +205,10 @@ def verify_otp(request):
     user, created = User.objects.get_or_create(
         phone=phone,
         defaults={"username": phone, "email": otp.email or "",
-                  "first_name": first_name, "last_name": last_name},
+                  "first_name": first_name, "last_name": last_name,
+                  # Reaching this line means the SMS code was correct, which is
+                  # precisely the proof phone_verified records.
+                  "phone_verified": True},
     )
     # Defense in depth: a SIGNUP OTP must never sign anyone into an already
     # established account. A genuine new signup has no usable password at this
@@ -697,6 +700,7 @@ def _kyc_state(user) -> dict:
         "id_document_verified": user.id_document_verified,
         "email": user.email or "",
         "email_verified": user.email_verified,
+        "phone_verified": user.phone_verified,
         # True only for chat-onboarded accounts that haven't confirmed their
         # email in the app yet — the one state where the KYC ladder is closed.
         "email_verification_required": _email_verification_required(user),
@@ -797,7 +801,9 @@ def simulate_kyc(request):
     user.bvn_last4 = f"{user.id:04d}"[-4:]
     user.nin_hash = hash_identifier(f"simulation:nin:{user.id}")
     user.nin_last4 = f"{user.id:04d}"[-4:]
-    user.email_verified = True   # every tier >= 1 requires it; simulated like the rest
+    # Every tier >= 1 requires both contact channels; simulate them like the rest.
+    user.email_verified = True
+    user.phone_verified = True
     user.bvn_verified = True
     user.nin_verified = True
     user.face_verified = tier >= 2
