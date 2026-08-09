@@ -461,6 +461,10 @@ WHATSAPP = {
 ZITCH_LINKS = {
     "WEBSITE": os.environ.get("ZITCH_WEBSITE_URL", "https://zitch.ng"),
     "APP": os.environ.get("ZITCH_APP_URL", "https://zitch.ng/app"),
+    # This service's own public origin — used to mint absolute links back to
+    # ourselves (the deep-link approval bounce page). Separate from WEBSITE,
+    # which is the marketing site.
+    "API_BASE": os.environ.get("ZITCH_API_BASE", "https://api.zitch.ng").rstrip("/"),
     # Support handle as a bare MSISDN (2348…); rendered as a wa.me deep link.
     # Defaults to the business number so "chat support" always resolves.
     "SUPPORT_WA": os.environ.get("ZITCH_SUPPORT_WHATSAPP", ""),

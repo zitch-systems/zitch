@@ -1956,8 +1956,50 @@ class SignupPinPrivacyTests(TestCase):
         self.inbound("1234", "stray1", msisdn="2349090000033")
         r = self.last_reply("2349090000033")
         self.assertIn("Delete for everyone", r)
+        # And the one expiry lever WhatsApp actually offers — the customer's own
+        # per-chat disappearing-messages setting — is suggested alongside.
+        self.assertIn("disappearing messages", r)
         self.assertFalse(WaMessageLog.objects.filter(
             msisdn="2349090000033", text__contains="1234").exists())
+
+    def test_a_stray_five_digit_code_is_caught_like_the_others(self):
+        """The webhook masks \\d{4,6} as [PIN]; the chat branch used to catch only
+        4 or 6, so a 5-digit code fell past the warning into the AI layer while
+        the log called it a PIN. The two rules must not disagree."""
+        user, _ = make_user(phone="08010000078", email="stray5@zitch.test")
+        WhatsAppLink.objects.create(user=user, wa_msisdn="2349090000034",
+                                    status=WhatsAppLink.ACTIVE)
+        self.inbound("12345", "stray5", msisdn="2349090000034")
+        r = self.last_reply("2349090000034")
+        self.assertIn("Delete for everyone", r)
+        self.assertFalse(WaMessageLog.objects.filter(
+            msisdn="2349090000034", text__contains="12345").exists())
+
+    def test_a_production_action_stuck_at_pin_without_a_code_fails_closed(self):
+        """_arm_confirm never arms the PIN-in-chat rung in production, but the
+        point of ACCEPTANCE must refuse too: a stale row from a config flip (or
+        a future arming bug) reaching "pin" with no otp_hash would otherwise
+        quietly start reading PINs out of a chat that keeps them forever."""
+        from unittest import mock
+
+        from django.utils import timezone as tz
+
+        user, _ = make_user(phone="08010000079", email="stuck@zitch.test")
+        WhatsAppLink.objects.create(user=user, wa_msisdn="2349090000035",
+                                    status=WhatsAppLink.ACTIVE)
+        PendingAction.objects.create(
+            user=user, msisdn="2349090000035", action_type="transfer", state="pin",
+            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+                     "bank_name": "GTBank", "name": "JOHN DOE"},
+            expires_at=tz.now() + timedelta(minutes=5))
+        before = get_or_create_wallet(user).balance
+        with mock.patch("whatsapp.router._pin_in_chat_allowed", return_value=False):
+            self.inbound("1234", "stuck1", msisdn="2349090000035")
+        r = self.last_reply("2349090000035")
+        self.assertIn("Zitch app", r)
+        self.assertEqual(get_or_create_wallet(user).balance, before)   # nothing moved
+        # Failed CLOSED: the action is gone, not waiting for another try.
+        self.assertFalse(PendingAction.objects.filter(msisdn="2349090000035").exists())
 
 
 class MenuLinksTests(TestCase):

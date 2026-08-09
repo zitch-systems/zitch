@@ -175,15 +175,24 @@ caps, daily caps, velocity. This is a real asymmetry and should be a decision
 rather than an accident — a WhatsApp-native signal (e.g. step up on a large
 transfer from a link created in the last N hours) would close it.
 
-**WhatsApp cannot take a biometric.** The Cloud API exposes no biometric
-capability to a business, and Flows have no such component — there is no way to
-require a fingerprint or face scan for a payment authorised inside WhatsApp. The
-PIN is the strongest factor available in-channel, and it is already collected in
-the encrypted Flow rather than the chat. The only route to biometric
-authorisation from WhatsApp is a deep link that hands the confirmation to the
-app, where biometric payments already exist; that is a new surface (a signed
-hand-off token, an app route, and a return path) rather than a setting, and is
-not built.
+**WhatsApp cannot take a biometric in-channel — so the confirmation can hand
+off to the app, where one exists.** The Cloud API exposes no biometric
+capability to a business and Flows have no such component; the PIN (collected in
+the encrypted Flow, never the chat) remains the strongest factor available
+inside WhatsApp itself. What is now built is the deep-link hand-off: every
+confirm message carries an https link that bounces into `zitch://waapprove`,
+where the app authenticates the customer's fingerprint/Face ID on-device and
+submits the SAME transaction PIN every other surface verifies (the biometric
+releases the cached PIN from the OS keychain; the server never accepts "a
+biometric happened" as an argument).
+
+The hand-off is deliberately no weaker than the Flow beside it: the token is
+HMAC-bound to action + number + owning user; a session belonging to anyone else
+gets the same "expired" answer as a dead token; the PIN check shares the
+row-locked lockout; execution goes through `run_flow_execution`, so the freeze
+re-check and idempotent executors are shared; and completing the action burns
+the token. The unauthenticated bounce page renders nothing about the action —
+a forwarded link shows a stranger only a bounce.
 
 **`OPS_REQUIRE_MFA` is off by default.** Operator TOTP is fully built and
 tested, with replay protection; enforcement is off so a rollout cannot lock

@@ -20,6 +20,7 @@ from django.views.decorators.csrf import csrf_exempt
 from common.http import api, evaluate_transaction_pin, fail, ok, require_user
 from common.ratelimit import ratelimit
 
+from .flows import resolve_approve_token
 from .models import Broadcast, BroadcastRecipient, ConversationState, WhatsAppLink
 from .ops import record_audit, validate_broadcast_spec
 from .providers import verify_signature, wa_enabled, wa_live
@@ -507,3 +508,133 @@ def ops_broadcast(request):
     )
     response.status_code = 202
     return response
+
+
+# --------------------------------------------------------------------------- #
+# Deep-link approval: authorise a pending WhatsApp action in the app
+# --------------------------------------------------------------------------- #
+def _resolve_approvable(request):
+    """(pa, error_response). Shared by preview and execute so the two cannot
+    drift on what a valid hand-off is.
+
+    The cross-user check is the load-bearing line: the token rode through a chat
+    message and an OS deep link, so possession proves nothing. Only a session
+    belonging to the action's owner may see or approve it. The mismatch response
+    is indistinguishable from "expired" — a wrong-user probe learns nothing
+    about whether the token was real.
+    """
+    pa = resolve_approve_token((request.data.get("token") or "").strip())
+    if pa is None or pa.user_id != request.user_obj.id:
+        return None, fail("This request has expired or was already completed.", status=410)
+    return pa, None
+
+
+@api
+@ratelimit("whatsapp_approve", limit=30, window=300)
+@require_user
+def approve_preview(request):
+    """POST /api/whatsapp/approve/preview/ {access_token, token}
+    -> {success, summary, action_type} — what the customer is about to authorise.
+
+    The summary is the SAME text the Flow PIN screen shows, so what the person
+    approves in the app is verbatim what the chat armed — no re-derivation that
+    could disagree with it.
+    """
+    if not wa_enabled():
+        return fail("WhatsApp banking is currently unavailable", status=503)
+    pa, err = _resolve_approvable(request)
+    if err:
+        return err
+    from .router import _flow_summary
+
+    return ok(success=True, action_type=pa.action_type,
+              summary=pa.payload.get("flow_summary") or _flow_summary(pa))
+
+
+@api
+@ratelimit("whatsapp_approve", limit=30, window=300)
+@require_user
+def approve_execute(request):
+    """POST /api/whatsapp/approve/execute/ {access_token, token, transaction_pin}
+    -> {success, message} — verifies the PIN and runs the armed action.
+
+    The biometric happens on the DEVICE: a successful scan releases the cached
+    transaction PIN from the OS keychain, exactly as in-app payments work. The
+    server never trusts "a biometric happened" — it verifies the same PIN, with
+    the same row-locked lockout, that every other surface verifies. This
+    endpoint is therefore no weaker than the Flow it stands beside.
+
+    Execution goes through run_flow_execution, so the freeze re-check and the
+    idempotent executors are shared with the Flow path, and completing the
+    action clears it — a hand-off token cannot be redeemed twice.
+    """
+    if not wa_enabled():
+        return fail("WhatsApp banking is currently unavailable", status=503)
+    pa, err = _resolve_approvable(request)
+    if err:
+        return err
+    user = request.user_obj
+    pin_ok, pin_code, pin_message = evaluate_transaction_pin(
+        user, (request.data.get("transaction_pin") or "").strip())
+    if not pin_ok:
+        return fail(pin_message, status=429 if pin_code == "pin_locked" else 400)
+    from .router import run_flow_execution
+
+    try:
+        outcome = run_flow_execution(pa, user)
+    except Exception:  # noqa: BLE001 — money paths are idempotent; never leak a stack
+        import logging
+
+        logging.getLogger("whatsapp").exception("approve_execute failed for pa=%s", pa.id)
+        return fail("Something went wrong completing that. If you were charged it will auto-reverse.",
+                    status=502)
+    return ok(success=True, message=outcome)
+
+
+def approve_handoff(request, token: str):
+    """GET /wa/approve/<token> — the https bounce into the app.
+
+    WhatsApp renders only http(s) links as tappable, so the chat cannot carry
+    `zitch://` directly; this page immediately forwards into the app scheme and
+    falls back to the store links for someone without the app.
+
+    Deliberately unauthenticated and deliberately blank about the action: it
+    renders no amount, no recipient, no state — anyone opening the link off a
+    forwarded chat sees only a bounce page. The token is opaque here; every
+    check (signature, expiry, session-user binding, PIN) happens in the
+    authenticated API the app calls next.
+    """
+    import html
+
+    if request.method != "GET":
+        return HttpResponse(status=405)
+    # The token is path material we reflect into a URL and into markup — keep
+    # only the alphabet our tokens are made of so this page cannot be used to
+    # smuggle arbitrary content into an app link.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "", token or "")[:128]
+    app_url = f"zitch://waapprove?token={safe}"
+    links = getattr(settings, "ZITCH_LINKS", {}) or {}
+    store = html.escape(links.get("APP") or "https://zitch.ng/app")
+    body = f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Open Zitch</title>
+<style>
+  body{{margin:0;font-family:-apple-system,'Helvetica Neue',Roboto,sans-serif;
+       background:#0b1416;color:#e7eef0;display:flex;min-height:100vh;
+       align-items:center;justify-content:center;text-align:center}}
+  .card{{padding:40px 28px;max-width:340px}}
+  .mark{{font-size:34px;font-weight:800;color:#0FA295;letter-spacing:-.5px}}
+  p{{color:#93a5aa;font-size:15px;line-height:1.55}}
+  a.btn{{display:inline-block;margin-top:14px;background:#0FA295;color:#fff;
+       text-decoration:none;font-weight:700;padding:14px 26px;border-radius:14px}}
+  a.store{{display:block;margin-top:18px;color:#0FA295;font-size:14px}}
+</style></head><body><div class="card">
+<div class="mark">zitch</div>
+<p>Opening the Zitch app to approve your payment…</p>
+<a class="btn" href="{app_url}">Open the app</a>
+<a class="store" href="{store}">Don't have the app? Get Zitch</a>
+</div>
+<script>window.location.href={json.dumps(app_url)};</script>
+</body></html>"""
+    return HttpResponse(body, content_type="text/html; charset=utf-8")
