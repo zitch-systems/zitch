@@ -133,10 +133,26 @@ class Command(BaseCommand):
             else:
                 checks.append((False, "VTU.ng rail", PASS, f"auth ok, balance {bal.get('balance')}"))
 
-        checks.append((False, "Email (Resend)",
-                       PASS if settings.RESEND["API_KEY"] else WARN,
-                       "keyed" if settings.RESEND["API_KEY"]
-                       else "RESEND_API_KEY unset — no transactional email"))
+        # "Keyed" was the whole check here once, and it passed throughout an
+        # incident where every email OTP was being refused: the key was set, but
+        # its account had never verified the sender domain. A present key says
+        # nothing about whether a send is allowed, so ask Resend.
+        if not settings.RESEND["API_KEY"]:
+            checks.append((False, "Email (Resend)", WARN,
+                           "RESEND_API_KEY unset — no transactional email"))
+        else:
+            from utility.providers import email_probe
+            try:
+                probe = email_probe()
+            except Exception as exc:                          # noqa: BLE001
+                checks.append((False, "Email (Resend)", WARN,
+                               f"keyed, but the rail could not be checked: {exc}"))
+            else:
+                checks.append((False, "Email (Resend)",
+                               PASS if probe.get("ok") else WARN,
+                               f"sending as {probe.get('config', {}).get('sender_domain') or '?'} — verified"
+                               if probe.get("ok")
+                               else probe.get("hint", "sender domain not verified")))
         from utility.providers import sms_live
         checks.append((False, "SMS (termii)",
                        PASS if sms_live() else WARN,

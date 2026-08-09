@@ -96,6 +96,32 @@ auto-hide and background-clear cannot reach. Capture is now blocked for exactly
 as long as the details are visible, then the app-wide policy is handed straight
 back.
 
+### A refused email still told the customer a code was on its way (high)
+
+Traced from a live report that WhatsApp email verification "wasn't working" while
+`RESEND_API_KEY` was demonstrably set. Two defects compounded:
+
+`_kyc_send_email_code` never looked at `send_email`'s return. The SMS branch
+beside it has always checked `sent["success"]` — email did not, so a provider
+rejection still printed *"📧 We sent a 6-digit code to …"* and armed a pending
+action waiting for a code that had been refused at the API. The customer sees a
+working flow and a mailbox that never fills.
+
+Neither `send_email` nor `_send_sms_termii` logged its rejection reason. Both
+return it in the dict, and almost every caller drops the dict by design
+(anti-enumeration) — so the reason reached nobody and the operator's logs were
+silent during the whole incident. Both now log `email_rejected` / `sms_rejected`
+with the provider's own message. The recipient is not logged: for the email case
+the fault concerns the *sender*, which is what the log records.
+
+The trigger is worth stating plainly, because the shape recurs: **a key being
+present is not the same as the rail working.** Resend refuses a send whose
+`FROM_EMAIL` sits on a domain not verified on the account that key belongs to.
+`RESEND_API_KEY` was set, the health endpoint reported `email_resend: true`, and
+`wema_preflight` passed it — all three check only that the string is non-empty.
+`send.zitch.ng` must be a verified domain on the same Resend account as the key,
+and no code change can substitute for that.
+
 ### Link-code copy contradicted the code (low)
 
 The app told users the code expires in 10 minutes; it is 30 and single-use.
