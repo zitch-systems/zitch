@@ -2392,3 +2392,56 @@ class ChatKycTests(TestCase):
         self.assertIn("already linked to another", self.last_reply())
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
+
+
+class AiConsentTests(TestCase):
+    """The AI layer needs per-customer consent, and nothing could grant it —
+    WhatsAppLink.ai_enabled defaulted False and was never written anywhere, so
+    the intent layer was unreachable no matter how the operator configured it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+        self.link_row = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def test_customer_can_turn_smart_replies_on_and_off(self):
+        self.assertFalse(self.link_row.ai_enabled)
+        self.inbound("ai", "a0")
+        self.assertIn("currently *off*", self.last_reply())
+
+        self.inbound("ai on", "a1")
+        self.link_row.refresh_from_db()
+        self.assertTrue(self.link_row.ai_enabled)
+        r = self.last_reply()
+        self.assertIn("Smart replies are on", r)
+        self.assertIn("PIN", r)          # the disclosure names what is protected
+
+        self.inbound("ai off", "a2")
+        self.link_row.refresh_from_db()
+        self.assertFalse(self.link_row.ai_enabled)
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_consent_is_what_actually_gates_the_intent_layer(self, _avail):
+        from whatsapp.router import ai_active
+        from whatsapp.models import ConversationState
+
+        convo = ConversationState.for_msisdn(MSISDN)
+        self.assertFalse(ai_active(self.link_row, convo))   # consent missing
+        self.link_row.ai_enabled = True
+        self.link_row.save(update_fields=["ai_enabled"])
+        self.assertTrue(ai_active(self.link_row, convo))
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_the_global_kill_switch_still_wins(self, _avail):
+        from whatsapp.router import ai_active
+        from whatsapp.models import ConversationState
+
+        self.link_row.ai_enabled = True
+        self.link_row.save(update_fields=["ai_enabled"])
+        SystemSetting.set("ai_enabled_global", "false")
+        self.assertFalse(ai_active(self.link_row, ConversationState.for_msisdn(MSISDN)))

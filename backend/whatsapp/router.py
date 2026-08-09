@@ -546,6 +546,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _do_support(msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
         return _start_kyc(user, msisdn)
+    if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
+        return _do_ai_consent(link, msisdn, low)
 
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
@@ -840,6 +842,34 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
     return _start_add_account(user, msisdn)
+
+
+def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:
+    """Turn the AI intent layer on or off for THIS customer.
+
+    The consent is the customer's — their free-form messages are what would be
+    sent to a third-party model — so they grant it themselves. It defaults off
+    and previously had no way to be turned on at all, which left the whole AI
+    layer unreachable however the operator configured it.
+    """
+    if low in ("ai on", "enable ai"):
+        if not link.ai_enabled:
+            link.ai_enabled = True
+            link.save(update_fields=["ai_enabled"])
+        return reply(msisdn, "🤖 *Smart replies are on.* You can now type naturally — "
+                             "\"send 5k to my brother\", \"buy 1000 airtime\".\n\n"
+                             "Your messages are read by an AI assistant to work out what you want. "
+                             "Account numbers and PINs are never sent to it, and every payment still "
+                             "needs your confirmation and PIN.\n\nReply *ai off* to turn this off.")
+    if low in ("ai off", "disable ai"):
+        if link.ai_enabled:
+            link.ai_enabled = False
+            link.save(update_fields=["ai_enabled"])
+        return reply(msisdn, "🤖 *Smart replies are off.* The menu and keywords work as always.")
+    state = "on" if link.ai_enabled else "off"
+    return reply(msisdn, f"🤖 Smart replies are currently *{state}*.\n\n"
+                         "With them on you can type naturally instead of using the menu. "
+                         "Reply *ai on* or *ai off*.")
 
 
 def _do_support(msisdn: str) -> None:
