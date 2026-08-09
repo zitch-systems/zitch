@@ -2411,6 +2411,23 @@ class ChatKycTests(TestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.phone_verified)
 
+    @override_settings(TEST_OTP={"PHONE": "08099990000", "CODE": "123456"})
+    @patch("whatsapp.router.sms_live", return_value=True)
+    def test_the_test_otp_applies_only_to_the_nominated_number(self, _live):
+        """Scoped exactly as the app's OTP model scopes it. Keying only off "is
+        TEST_OTP configured" handed the same fixed code to EVERY customer, on any
+        deploy where the pair was set."""
+        with patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            self.inbound("8", "s1")           # this user is NOT the test number
+        code = re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1)
+        self.assertNotEqual(code, "123456")   # a real random code, not the fixture
+        self.inbound("123456", "s2")          # the fixed code must not be accepted
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.phone_verified)
+        self.inbound(code, "s3")
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+
     def test_a_fully_verified_user_is_told_so(self):
         for f in ("phone_verified", "email_verified", "bvn_verified", "nin_verified"):
             setattr(self.user, f, True)
