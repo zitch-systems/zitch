@@ -293,6 +293,17 @@ def user_action(request):
         user.pin_locked_until = None
         user.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
         record_audit("user.pin_unlock", actor=request.user_obj, target=f"user:{user.id}", before=before)
+    elif action in ("ai_on", "ai_off"):
+        # Per-customer AI consent. Customers can set this themselves in chat
+        # ("ai on"); support needs it too, for anyone who asks on a call.
+        link = user.whatsapp_links.filter(status="active").first()
+        if link is None:
+            return fail("This user has no linked WhatsApp number", status=404)
+        before = {"ai_enabled": link.ai_enabled}
+        link.ai_enabled = action == "ai_on"
+        link.save(update_fields=["ai_enabled"])
+        record_audit("user.wa_ai", actor=request.user_obj, target=f"user:{user.id}",
+                     before=before, after={"ai_enabled": link.ai_enabled})
     else:
         return fail("Unknown action")
     return ok(success=True)
@@ -711,7 +722,10 @@ def ai_state(request):
         for m in WaMessageLog.objects.exclude(intent_json={}).order_by("-created")[:25]
     ]
     return ok(
-        enabled=SystemSetting.get("ai_enabled_global", "true") != "false",
+        # Match the router exactly (ai_active -> get_bool(..., False)). Reading a
+        # missing row as "true" here made the console report the AI as live while
+        # the channel had it switched off.
+        enabled=SystemSetting.get_bool("ai_enabled_global", False),
         intents=intents,
     )
 

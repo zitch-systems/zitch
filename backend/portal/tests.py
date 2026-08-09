@@ -702,3 +702,42 @@ class AiProviderConfigTests(PortalTestCase):
         body = self.post("django-admin", token=grouped).json()
         self.assertFalse(body["available"])
         self.assertIn("superuser", body["message"])
+
+
+class AiStateHonestyTests(PortalTestCase):
+    """The console must report the AI state the ROUTER enforces. It read a
+    missing setting row as "on" while the router read it as "off", so the
+    console showed the AI live on a channel that had it switched off."""
+
+    def setUp(self):
+        super().setUp()
+        self.admin = AccessToken.issue(make_staff("amara", superuser=True),
+                                       scope=AccessToken.ADMIN).key
+
+    def test_absent_setting_reads_off_like_the_router(self):
+        from whatsapp.models import SystemSetting
+
+        SystemSetting.objects.filter(key="ai_enabled_global").delete()
+        self.assertFalse(self.post("ai", token=self.admin).json()["enabled"])
+        self.assertFalse(SystemSetting.get_bool("ai_enabled_global", False))
+
+    def test_toggling_on_is_reflected(self):
+        self.post("ai-global", {"enabled": True}, token=self.admin)
+        self.assertTrue(self.post("ai", token=self.admin).json()["enabled"])
+
+    def test_operator_can_grant_a_customer_ai_consent(self):
+        from whatsapp.models import WhatsAppLink
+
+        user = User.objects.create(username="08012340000", phone="08012340000")
+        link = WhatsAppLink.objects.create(user=user, wa_msisdn="2348012340000",
+                                           status=WhatsAppLink.ACTIVE)
+        res = self.post("user-action", {"user_id": user.id, "action": "ai_on"}, token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        link.refresh_from_db()
+        self.assertTrue(link.ai_enabled)
+        self.assertTrue(AuditLog.objects.filter(action="user.wa_ai").exists())
+
+    def test_granting_consent_needs_a_linked_number(self):
+        user = User.objects.create(username="08012341111", phone="08012341111")
+        self.assertEqual(self.post("user-action", {"user_id": user.id, "action": "ai_on"},
+                                   token=self.admin).status_code, 404)
