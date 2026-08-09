@@ -2159,6 +2159,24 @@ class ModelDataBoundaryTests(TestCase):
         # it as missing and ask.
         self.assertEqual(rehydrate_value("num_ref_9", {"num_ref_1": "0123456789"}), "num_ref_9")
 
+    def test_separated_identifiers_are_caught(self):
+        """A Nigerian customer types "0123 456 789" or "0123-456-789". A
+        contiguous-digits-only rule missed both, so the account number reached
+        the model and the support log in clear — a space defeating the whole
+        de-identification design."""
+        from whatsapp.ai import sanitize_for_model
+        from whatsapp.views import _redact_chat_log
+
+        for raw in ("send 5k to 0123 456 789 gtb", "my account is 0123-456-789"):
+            masked, mapping = sanitize_for_model(raw)
+            self.assertNotIn("0123", masked, raw)
+            self.assertIn("num_ref_1", masked)
+            # Stored digits-only: the bank validates the bare number, so the
+            # customer's spacing must not be re-hydrated into the field.
+            self.assertEqual(mapping["num_ref_1"], "0123456789")
+            self.assertNotIn("0123 456", _redact_chat_log(raw))
+            self.assertIn("[identifier …6789]", _redact_chat_log(raw))
+
     def test_a_meter_number_is_not_mistaken_for_a_card(self):
         from whatsapp.ai import sanitize_for_model
 

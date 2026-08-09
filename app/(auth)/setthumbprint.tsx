@@ -5,6 +5,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Btn, Card, ZItem, PinSheet, Toggle } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import AuthGuard from '@/components/AuthGuard';
 import {
   isBiometricAvailable, biometricLabel, authenticate,
   isBiometricEnabled, setBiometricEnabled,
@@ -116,4 +117,17 @@ const SetThumbprint = () => {
   );
 };
 
-export default SetThumbprint;
+// Enabling biometric sign-in is a security setting, and this screen is reachable
+// by deep link (`zitch://setthumbprint`) because the (auth) group is unguarded.
+// Without this, anyone holding an OS-unlocked device with a locked-but-live Zitch
+// session could turn biometric sign-in on with one local scan and thereafter
+// enter the account without a password. Same wrapper the other post-login
+// screens in this group already carry (resetpin, securitysetup, kyc,
+// accountdetails).
+const GuardedSetThumbprint = () => (
+  <AuthGuard>
+    <SetThumbprint />
+  </AuthGuard>
+);
+
+export default GuardedSetThumbprint;

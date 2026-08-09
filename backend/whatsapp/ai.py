@@ -98,7 +98,11 @@ def llm_available() -> bool:
     return llm.configured()
 
 
-_LONG_IDENTIFIER = re.compile(r"(?<!\d)\d{7,}(?!\d)")
+# 7+ digits, tolerating the single spaces and dashes people actually type:
+# "0123 456 789" and "0123-456-789" are how a Nigerian customer writes an
+# account number, and a contiguous-run-only pattern misses both — which meant
+# the identifier reached the provider and the support log in clear.
+_LONG_IDENTIFIER = re.compile(r"(?<![\d])\d(?:[ -]?\d){6,}(?![\d])")
 _EMAIL = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
 # A payment card typed the way people type them: 13-19 digits in groups joined
 # by spaces or dashes. Confirmed by Luhn before removal, so an 11-digit meter
@@ -156,7 +160,10 @@ def sanitize_for_model(text: str) -> tuple[str, dict]:
 
     def _tokenize(m):
         token = f"{TOKEN_PREFIX}{len(mapping) + 1}"
-        mapping[token] = m.group(0)
+        # Store digits only: every consumer (account, meter, smartcard, phone)
+        # wants the bare number, and re-hydrating "0123 456 789" would push the
+        # customer's spacing into a field the bank validates strictly.
+        mapping[token] = re.sub(r"\D", "", m.group(0))
         return token
 
     safe = _LONG_IDENTIFIER.sub(_tokenize, safe)

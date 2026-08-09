@@ -14,7 +14,7 @@ from django.test import Client, TestCase
 from accounts.models import AccessToken
 
 from .forex import FxError, create_fx_quote
-from .models import FundingIntent, Transaction, Wallet
+from .models import CurrencyWallet, FundingIntent, Transaction, Wallet
 from .services import credit, get_or_create_wallet, settle_reserved_funding
 
 User = get_user_model()
@@ -373,3 +373,35 @@ class FundVerifyOwnershipTests(TestCase):
             data=json.dumps({"access_token": tok_b, "reference": "ZPAYOWN0001"}),
             content_type="application/json")
         self.assertEqual(res.status_code, 404)
+
+
+class FxLimitParityTests(TestCase):
+    """FX was the one money-out path that skipped the compromised-account brake,
+    and foreign->foreign conversions skipped every amount ceiling as well."""
+
+    def setUp(self):
+        self.user, self.token = make_user("08033330001", "fx@zitch.test", tier=1)
+        credit(self.user, Decimal("500000"), "Seed")
+
+    def test_velocity_brake_applies_to_conversion(self):
+        with patch("wallet.forex.velocity_exceeded", return_value=True):
+            with self.assertRaises(FxError) as ctx:
+                create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
+        self.assertIn("Too many transactions", str(ctx.exception.message))
+
+    def test_foreign_to_foreign_is_capped_in_ngn_equivalent(self):
+        # A tier-1 user's per-txn ceiling is denominated in NGN, so the foreign
+        # sale is converted before comparison — otherwise "1000" of a strong
+        # currency slips under a cap written for naira.
+        CurrencyWallet.objects.create(user=self.user, currency="USD", balance=Decimal("9000"))
+        with patch("wallet.forex._ngn_equivalent", return_value=Decimal("9000000")):
+            with self.assertRaises(FxError):
+                create_fx_quote(self.user, "USD", "GBP", Decimal("9000"))
+
+    def test_an_unpriceable_foreign_pair_fails_closed(self):
+        CurrencyWallet.objects.create(user=self.user, currency="USD", balance=Decimal("100"))
+        with patch("wallet.forex._ngn_equivalent", return_value=None):
+            with self.assertRaises(FxError) as ctx:
+                create_fx_quote(self.user, "USD", "GBP", Decimal("100"))
+        # Refused, not silently uncapped.
+        self.assertIn("price", str(ctx.exception.message).lower())

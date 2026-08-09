@@ -153,6 +153,16 @@ def _daily_spent(user, prefixes) -> Decimal:
     return agg["s"] or Decimal("0")
 
 
+# Per-transaction minimums. One definition for both surfaces: these were
+# duplicated as literals in the app views and the WhatsApp router and had
+# drifted (WhatsApp accepted ₦10 transfers the app refused at ₦50, and ₦100
+# electricity the app refused at ₦500), so the same account behaved differently
+# depending on where the customer stood.
+MIN_TRANSFER = Decimal("50")
+MIN_AIRTIME = Decimal("50")
+MIN_ELECTRICITY = Decimal("500")
+
+
 def daily_limit_error(user, amount, kind) -> "str | None":
     """User-facing reason `amount` breaks the per-day cap for `kind`
     ('transfer' or 'bill'), or None. Non-HTTP, so the WhatsApp router shares it."""

@@ -233,7 +233,8 @@ def _apply_status(st: dict) -> None:
 # from the log regardless of flow state (an out-of-band or mistimed PIN would
 # otherwise be persisted in clear and shown in the agent monitor).
 _PIN_RE = re.compile(r"^\s*\d{4,6}\s*$")
-_LOG_IDENTIFIER_RE = re.compile(r"(?<!\d)\d{7,}(?!\d)")
+# Same separator tolerance as the model sanitizer — see whatsapp/ai.py.
+_LOG_IDENTIFIER_RE = re.compile(r"(?<![\d])\d(?:[ -]?\d){6,}(?![\d])")
 _LOG_EMAIL_RE = re.compile(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
 _LOG_SECRET_CONTEXT_RE = re.compile(r"(?i)\b(pin|otp|password|passcode|passwd|cvv|cvc|secret)\b")
 _LOG_SHORT_CODE_RE = re.compile(r"(?<!\d)\d{3,6}(?!\d)")
@@ -260,7 +261,11 @@ def _redact_chat_log(text: str) -> str:
 
     safe = _CARD_SHAPE.sub(_card, safe)
     safe = _LOG_EMAIL_RE.sub("[email redacted]", safe)
-    safe = _LOG_IDENTIFIER_RE.sub(lambda m: f"[identifier …{m.group(0)[-4:]}]", safe)
+    def _ident(m):
+        digits = re.sub(r"\D", "", m.group(0))
+        return f"[identifier …{digits[-4:]}]"
+
+    safe = _LOG_IDENTIFIER_RE.sub(_ident, safe)
     if _LOG_SECRET_CONTEXT_RE.search(safe):
         safe = _LOG_SHORT_CODE_RE.sub("[code redacted]", safe)
     return safe

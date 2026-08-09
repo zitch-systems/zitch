@@ -153,12 +153,22 @@ export const ConnectedAccounts = () => {
     const amt = Number(amount);
     setBusy(true);
     try {
-      const r = await apiJson<{ success?: boolean; code?: string; message?: string }>(
+      const r = await apiJson<{ success?: boolean; code?: string; message?: string; offline?: boolean }>(
         '/api/banklink/payout/', { linked_id: target.id, amount: String(amt), pin, idempotency_key: idem.current });
       if (r?.success) { closeAll(); reload(); reloadLinked(); notify('On its way', `${money(amt)} sent to ${target.bank_name}.`); }
       else if (r?.code === 'pin_incorrect' || r?.code === 'pin_locked') { setPinErr(r.message || 'Incorrect PIN'); }
+      else if (r?.offline) {
+        // The request may already have reached the server. closeAll() would mint
+        // a fresh idempotency key on reopen, so a retry would look like a NEW
+        // payout and could disburse a second time. Keep the sheet and the key —
+        // this is the same rule every other money screen follows.
+        notify('Not confirmed', 'We could not confirm that payout. Check your connection and tap Send again — it will not send twice.');
+      }
       else { closeAll(); notify('Error', r?.message || 'Could not complete the payout.'); }
-    } catch { closeAll(); notify('Error', 'Something went wrong. Please try again later.'); }
+    } catch {
+      // A thrown error is equally ambiguous about whether the server acted.
+      notify('Not confirmed', 'We could not confirm that payout. Check your connection and tap Send again — it will not send twice.');
+    }
     finally { setBusy(false); }
   };
 

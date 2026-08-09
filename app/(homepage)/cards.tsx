@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Image, AppState } from 'react-native';
+import { View, Text, Pressable, Image, AppState, Platform } from 'react-native';
+import * as ScreenCapture from 'expo-screen-capture';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -49,7 +50,18 @@ const Cards = () => {
     if (!reveal) return;
     const sub = AppState.addEventListener('change', (s) => { if (s !== 'active') setReveal(null); });
     const t = setTimeout(() => setReveal(null), 60 * 1000);
-    return () => { sub.remove(); clearTimeout(t); };
+    // Screenshots are allowed app-wide on purpose (receipts, support), but a
+    // full PAN + CVV on screen is the one place that policy costs something:
+    // an in-foreground recorder captures it inside the 60s window, which the
+    // timeout and the background-clear above cannot reach. Block capture for
+    // exactly as long as the details are visible, then hand the app-wide
+    // policy straight back.
+    if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
+    return () => {
+      sub.remove();
+      clearTimeout(t);
+      if (Platform.OS !== 'web') ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+    };
   }, [reveal]);
 
   const createCard = async () => {
