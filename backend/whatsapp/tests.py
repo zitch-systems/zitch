@@ -2399,6 +2399,26 @@ class ChatKycTests(TestCase):
         email.assert_not_called()
         self.assertIn("can't send emails", self.last_reply())
 
+    @patch("whatsapp.router.email_live", return_value=True)
+    @patch("whatsapp.router.sms_live", return_value=True)
+    @patch("whatsapp.router.send_email", return_value={"success": False, "raw": {
+        "statusCode": 403, "message": "The send.zitch.ng domain is not verified"}})
+    def test_a_rejected_email_says_so_instead_of_lying(self, email, _sms_live, _mail_live):
+        """A KEYED rail can still refuse the send — an unverified sender domain is
+        the usual reason, and RESEND_API_KEY being set says nothing about it. The
+        SMS branch has always checked its result; email announced "we sent a
+        6-digit code" no matter what came back, so the customer waited on mail
+        that Resend had refused outright."""
+        self.user.phone_verified = True
+        self.user.save(update_fields=["phone_verified"])
+        self.inbound("8", "r1")
+        email.assert_called_once()
+        r = self.last_reply()
+        self.assertIn("couldn't send the email", r)
+        self.assertNotIn("6-digit code", r)
+        # No half-open flow left behind waiting for a code that cannot arrive.
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
     @override_settings(TEST_OTP={"PHONE": "08011112222", "CODE": "123456"})
     @patch("whatsapp.router.sms_live", return_value=False)
     def test_the_existing_test_otp_bypass_keeps_a_demo_deploy_usable(self, _live):

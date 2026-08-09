@@ -255,7 +255,15 @@ def _send_sms_termii(phone: str, message: str) -> dict:
         # Accepted == a message_id came back. Termii also returns
         # message="Successfully Sent", but the id is the load-bearing field: it is what
         # a delivery report later refers to.
-        return {"success": bool(resp.ok and data.get("message_id")),
+        ok = bool(resp.ok and data.get("message_id"))
+        if not ok:
+            # Most callers deliberately drop this dict (anti-enumeration), so without
+            # a log here a rejected SMS is invisible: the customer waits for a code
+            # that was never accepted and the operator sees nothing at all. An
+            # unapproved Sender ID is the usual cause and says so in `message`.
+            log.warning("sms_rejected status=%s reason=%s",
+                        resp.status_code, str(data.get("message") or data)[:200])
+        return {"success": ok,
                 "message_id": str(data.get("message_id") or ""), "raw": data}
     except requests.RequestException as exc:
         return {"success": False, "message": f"SMS provider unreachable: {exc}"}
@@ -313,8 +321,20 @@ def send_email(to: str, subject: str, message: str, html: str | None = None,
             timeout=REQUEST_TIMEOUT,
         )
         data = resp.json() if resp.content else {}
-        return {"success": resp.ok and "id" in data, "raw": data}
+        ok = bool(resp.ok and "id" in data)
+        if not ok:
+            # Same reasoning as sms_rejected: the reason is thrown away by most
+            # callers, so it has to reach the log here or nowhere. Resend's usual
+            # rejection is FROM_EMAIL sitting on a domain that is not verified on
+            # the account the API key belongs to — "configured" is not "working",
+            # and that distinction is exactly what goes unnoticed otherwise. The
+            # recipient is not logged; the reason concerns the sender.
+            log.warning("email_rejected status=%s from=%s reason=%s",
+                        resp.status_code, cfg["FROM_EMAIL"],
+                        str(data.get("message") or data.get("error") or data)[:200])
+        return {"success": ok, "raw": data}
     except requests.RequestException as exc:
+        log.warning("email_unreachable error=%s", str(exc)[:200])
         return {"success": False, "message": f"Email provider unreachable: {exc}"}
 
 
@@ -358,6 +378,78 @@ def sms_probe(phone: str = "") -> dict:
     # sees anything, and an unapproved sender ID fails at exactly that later step.
     out["note"] = ("ok=true means the provider ACCEPTED the message, not that it was "
                    "delivered. Confirm the handset actually received it.")
+    return out
+
+
+def sender_domain() -> str:
+    """The bare domain Resend will be asked to send from.
+
+    FROM_EMAIL is a display-name form ("Zitch <no-reply@send.zitch.ng>"), so the
+    domain has to be parsed out rather than string-matched.
+    """
+    from email.utils import parseaddr
+
+    _, addr = parseaddr(settings.RESEND["FROM_EMAIL"] or "")
+    local, at, domain = addr.rpartition("@")
+    # rpartition puts the whole string in the tail when the separator is absent,
+    # so an address-less value would otherwise come back looking like a domain.
+    return domain.strip().lower() if (at and local) else ""
+
+
+def email_probe() -> dict:
+    """Live self-test for the email rail — returns NO secrets.
+
+    Answers the question a key check cannot: is FROM_EMAIL's domain actually
+    verified on the account this key belongs to? Resend refuses a send from an
+    unverified sender domain, and because every OTP caller drops the result by
+    design, that refusal looks exactly like a working rail from the outside —
+    the customer is told a code is on its way and simply never receives one.
+
+    Read-only: it lists domains, it does not send.
+    """
+    cfg = settings.RESEND
+    domain = sender_domain()
+    out = {"config": {"provider": "resend", "base_url": cfg["BASE_URL"],
+                      "api_key_set": bool(cfg["API_KEY"]),
+                      "from_email": cfg["FROM_EMAIL"], "sender_domain": domain}}
+    if not cfg["API_KEY"]:
+        out["hint"] = "RESEND_API_KEY unset — no transactional email, so email OTP won't deliver."
+        return out
+    if not domain:
+        out["ok"] = False
+        out["hint"] = "RESEND_FROM_EMAIL has no parseable address — expected 'Name <user@domain>'."
+        return out
+    try:
+        resp = requests.get(f"{cfg['BASE_URL']}/domains",
+                            headers={"Authorization": f"Bearer {cfg['API_KEY']}"},
+                            timeout=REQUEST_TIMEOUT)
+    except requests.RequestException as exc:
+        out["ok"] = False
+        out["hint"] = f"Resend unreachable: {exc}"
+        return out
+    if resp.status_code in (401, 403):
+        out["ok"] = False
+        out["hint"] = ("Resend rejected the key itself (%s). It is set but not valid for any "
+                       "account — check it was copied whole and has not been revoked."
+                       % resp.status_code)
+        return out
+    try:
+        rows = (resp.json() or {}).get("data") or []
+    except ValueError:
+        rows = []
+    verified = sorted({str(r.get("name", "")).lower() for r in rows
+                       if str(r.get("status", "")).lower() == "verified"})
+    out["verified_domains"] = verified
+    out["ok"] = domain in verified
+    if not out["ok"]:
+        out["hint"] = (
+            f"'{domain}' is not a verified domain on the account this API key belongs to, so "
+            f"Resend will refuse every send and no email OTP can arrive. "
+            + (f"Verified on this account: {', '.join(verified)}. "
+               "Either add and verify the sender domain there, or point RESEND_FROM_EMAIL at "
+               "one of these / RESEND_API_KEY at the account that owns it."
+               if verified else
+               "This account has no verified domain at all — add and verify one."))
     return out
 
 

@@ -1022,8 +1022,16 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
         return reply(msisdn, "⚠️ We can't send emails at the moment, so email verification "
                              "is unavailable. Please contact support — this is on our side, not yours.")
     code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
-    send_email(user.email, "Confirm your email for Zitch",
-               f"Your Zitch email confirmation code is {code}")
+    sent = send_email(user.email, "Confirm your email for Zitch",
+                      f"Your Zitch email confirmation code is {code}")
+    if not sent.get("success"):
+        # The SMS branch above has always checked this; email did not, so a
+        # provider rejection (typically FROM_EMAIL on an unverified domain) still
+        # printed "We sent a 6-digit code" and left the customer waiting on mail
+        # that was refused at the API. Checking the key is not enough: a key can
+        # be present and still be refused for this sender.
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
     pa.payload["code_hash"] = make_password(code)
     pa.payload["code_exp"] = (timezone.now() + timedelta(minutes=10)).isoformat()
     pa.payload["code_attempts"] = 0
