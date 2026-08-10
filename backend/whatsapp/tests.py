@@ -276,8 +276,8 @@ class ChannelTests(TestCase):
         self.inbound("Ada", "p2", msisdn=m)
         self.inbound("Okafor", "p3", msisdn=m)
         self.inbound("ada.okafor@example.com", "p3e", msisdn=m)
-        self.inbound("1111", "p4", msisdn=m)
-        self.inbound("2222", "p5", msisdn=m)  # mismatch
+        self.inbound("111111", "p4", msisdn=m)
+        self.inbound("222222", "p5", msisdn=m)  # mismatch
         self.assertIn("match", self.last_reply(m).lower())
         self.assertFalse(User.objects.filter(phone="09090000003").exists())
 
@@ -1769,8 +1769,8 @@ class ChatAccountSetupTests(TestCase):
         self.inbound("Ngozi", f"s2-{m}", msisdn=m)
         self.inbound("Ade", f"s3-{m}", msisdn=m)
         self.inbound(f"ngozi{m[-4:]}@zitch.test", f"s4-{m}", msisdn=m)
-        self.inbound("2468", f"s5-{m}", msisdn=m)
-        self.inbound("2468", f"s6-{m}", msisdn=m)
+        self.inbound("246810", f"s5-{m}", msisdn=m)
+        self.inbound("246810", f"s6-{m}", msisdn=m)
         return m
 
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
@@ -2018,10 +2018,10 @@ class SignupPinPrivacyTests(TestCase):
     @patch("whatsapp.router.flows_live", return_value=True)
     def test_a_pin_typed_in_chat_is_masked_and_the_user_is_told_to_delete_it(self, _live, _flow):
         m = self.to_pin_step()
-        self.inbound("4321", f"p5-{m}", msisdn=m)
+        self.inbound("432100", f"p5-{m}", msisdn=m)
         self.assertIn("Delete for everyone", self.last_reply(m))
         # Masked in our log, and the account is NOT created from a chat-typed PIN.
-        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="4321").exists())
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="432100").exists())
         self.assertTrue(WaMessageLog.objects.filter(msisdn=m, text="[PIN]").exists())
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
@@ -2033,26 +2033,26 @@ class SignupPinPrivacyTests(TestCase):
         token = sign_onboarding_token(ob)
 
         # First submit holds only a hash and re-renders the same screen.
-        r1 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
+        r1 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
         self.assertEqual(r1["screen"], PIN_SCREEN)
         self.assertIn("Re-enter", r1["data"]["amount"])   # the heading line
         ob.refresh_from_db()
         self.assertTrue(ob.payload["flow_pin_hash"])
-        self.assertNotIn("2468", json.dumps(ob.payload))     # never the raw PIN
+        self.assertNotIn("246810", json.dumps(ob.payload))     # never the raw PIN
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
         # A mismatch restarts the pair rather than setting the wrong PIN.
-        r2 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "1111"}})
+        r2 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "111111"}})
         self.assertEqual(r2["screen"], PIN_SCREEN)
         self.assertIn("didn't match", r2["data"]["error"])
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
         # Set again, then confirm: the account is created with that PIN.
-        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
-        r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
+        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
         self.assertEqual(r3["screen"], "SUCCESS")
         u = User.objects.get(phone=_local_phone(m))
-        self.assertTrue(u.check_transaction_pin("2468"))
+        self.assertTrue(u.check_transaction_pin("246810"))
         self.assertIn("Welcome to Zitch", WaMessageLog.objects.filter(
             msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome").first().text)
 
@@ -2914,3 +2914,240 @@ class AiGlobalSwitchTests(TestCase):
             SystemSetting.set("ai_enabled_global", stored)
             self.assertEqual(ai.global_enabled(), expected)
             self.assertEqual(SystemSetting.get_bool("ai_enabled_global", False), expected)
+
+
+class IdleReauthTests(TestCase):
+    """WhatsApp's Chat Lock guards the chat WINDOW, is user-side, and cannot be
+    required or verified — so it can never be a control. What the bot will
+    REVEAL is ours to gate, and this is that gate."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("wa_reauth_idle_minutes", "15")   # off by default under TESTING
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_cold_conversation_must_confirm_before_showing_a_balance(self):
+        out = self._say("balance")
+        self.assertIn("confirm it's you", out.lower())
+        self.assertNotIn("₦", out)          # the balance itself is withheld
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+    def test_confirming_reveals_it_and_resumes_what_was_asked(self):
+        from whatsapp.router import run_flow_execution
+
+        self._say("balance")
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="unlock")
+        run_flow_execution(pa, self.user)   # what a correct PIN or a biometric reaches
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        self.assertIn("₦", out)             # the original request ran
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+    def test_a_warm_conversation_is_not_challenged_again(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now()})
+        self.assertIn("₦", self._say("balance"))
+
+    def test_the_window_expires(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now() - timedelta(minutes=16)})
+        self.assertIn("confirm it's you", self._say("balance").lower())
+
+    def test_authorising_a_payment_also_starts_the_window(self):
+        """Someone who just proved who they are to move money must not be asked
+        again to read their own balance."""
+        from whatsapp.router import _mark_verified
+
+        _mark_verified(MSISDN)              # what run_flow_execution does
+        self.assertIn("₦", self._say("balance"))
+
+    def test_actions_are_not_gated_because_they_authenticate_at_the_confirm(self):
+        """Prompting before a transfer AND at its confirm is friction, not
+        security — the money movement is already behind PIN or biometrics."""
+        out = self._say("2")
+        self.assertNotIn("confirm it's you", out.lower())
+
+    def test_zero_minutes_disables_the_gate(self):
+        SystemSetting.set("wa_reauth_idle_minutes", "0")
+        self.assertIn("₦", self._say("balance"))
+
+    def test_an_unreadable_window_falls_back_to_the_deploy_default(self):
+        SystemSetting.set("wa_reauth_idle_minutes", "not-a-number")
+        with override_settings(WA_REAUTH_IDLE_MINUTES=15):
+            self.assertIn("confirm it's you", self._say("balance").lower())
+
+
+class ChatLockPromptTests(TestCase):
+    def test_signup_tells_new_customers_how_to_lock_the_thread(self):
+        """The only thing that guards the transcript itself, so it is offered
+        rather than waiting to be asked for."""
+        from whatsapp.router import _chat_lock_tip
+
+        self.assertIn("Chat lock", _chat_lock_tip())
+
+
+class ConfirmPromptDoesNotContradictTheFlowTests(TestCase):
+    """With the secure Flow open, the chat line beneath it used to read "Reply
+    with your PIN to confirm" — the dev/test fallback, reached in production
+    because _confirm_prompt had no branch for an armed Flow. Two prompts, and the
+    louder one invited into the thread precisely what the Flow keeps out."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _armed_action(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "transfer", FLOW_PIN_STATE,
+                         {"pin_attempts": 0, "amount": "3000", "account": "0228565772",
+                          "bank_code": "035", "bank_name": "Wema Bank", "name": "ADEYEMI WILLIAM"})
+
+    def test_an_open_flow_never_asks_for_the_pin_in_the_chat(self):
+        from whatsapp.router import _confirm_prompt
+
+        line = _confirm_prompt(self._armed_action())
+        self.assertNotIn("Reply with your PIN", line)
+        self.assertIn("secure card", line)
+
+    def test_it_still_asks_plainly_when_no_flow_is_open(self):
+        """The dev/test rung must keep working — and keep its delete advice."""
+        from whatsapp.router import _confirm_prompt, _new_flow
+
+        pa = _new_flow(self.user, MSISDN, "transfer", "pin", {"pin_attempts": 0})
+        line = _confirm_prompt(pa)
+        self.assertIn("Reply with your PIN", line)
+        self.assertIn("Delete", line)
+
+
+class PinResetTests(TestCase):
+    """A PIN reset hands over the one credential that moves money, and anyone
+    holding the phone can reach this chat — so the bar is verified identity, not
+    possession of the thread."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_an_unverified_account_is_sent_to_verification_first(self):
+        self.user.email_verified = self.user.bvn_verified = False
+        self.user.save(update_fields=["email_verified", "bvn_verified"])
+        out = self._say("reset pin")
+        self.assertIn("email address", out)
+        self.assertIn("BVN", out)
+        self.assertNotIn("phone number", out)   # that one IS verified
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="setpin").exists())
+
+    def test_a_verified_account_gets_the_secure_screen(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}) as sent:
+            self._say("reset pin")
+        sent.assert_called_once()
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="setpin")
+        self.assertEqual(pa.state, FLOW_PIN_STATE)
+
+    def test_it_fails_closed_rather_than_asking_in_the_chat(self):
+        """Unlike a BVN, a PIN typed into a thread IS the credential, sitting in
+        the customer's history forever."""
+        with patch("whatsapp.router.flows_live", return_value=False):
+            out = self._say("reset pin")
+        self.assertIn("Zitch app", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="setpin").exists())
+
+    def _armed(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "setpin", FLOW_PIN_STATE, {"pin_attempts": 0})
+
+    def test_set_then_confirm_and_the_raw_pin_is_never_stored_or_echoed(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        first = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                     "data": {"pin": "246810"}})
+        self.assertIn("Re-enter", first["data"]["amount"])
+        pa.refresh_from_db()
+        self.assertTrue(pa.payload["new_pin_hash"])
+        self.assertNotIn("246810", json.dumps(pa.payload))
+        self.assertNotIn("246810", str(first))
+
+        second = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                      "data": {"pin": "246810"}})
+        self.assertNotIn("246810", str(second))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("246810"))
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=MSISDN, text__contains="246810").exists())
+
+    def test_a_mismatch_starts_the_pair_over_without_setting_anything(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "111111"}})
+        self.assertIn("didn't match", resp["data"]["error"])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged
+
+    def test_four_digits_are_refused(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_flow_token(self._armed()),
+                                    "data": {"pin": "2468"}})
+        self.assertIn("6 digits", resp["data"]["error"])
+
+    def test_setting_a_pin_clears_the_reset_demand(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        self.user.pin_reset_required = True
+        self.user.save(update_fields=["pin_reset_required"])
+        pa = self._armed()
+        token = sign_flow_token(pa)
+        for _ in range(2):
+            handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.pin_reset_required)
+
+
+class StalePinBlocksSpendingTests(TestCase):
+    """A hash cannot be measured, so nothing can tell an old 4-digit PIN from a
+    new 6-digit one after the fact. The migration flags them; this is the gate."""
+
+    def test_a_flagged_account_cannot_send_but_is_told_exactly_what_to_do(self):
+        from common.http import stale_pin_error, unverified_error
+
+        user, _ = make_user()
+        self.assertIsNone(stale_pin_error(user))
+        user.pin_reset_required = True
+        msg = stale_pin_error(user) or ""
+        self.assertIn("6 digits", msg)
+        self.assertIn("reset pin", msg)
+        self.assertEqual(unverified_error(user), msg)   # it fronts the identity checks
+
+    def test_setting_a_new_pin_clears_it(self):
+        user, _ = make_user()
+        user.pin_reset_required = True
+        user.set_transaction_pin("246810")
+        self.assertFalse(user.pin_reset_required)
+        from common.http import stale_pin_error as _err
+
+        self.assertIsNone(_err(user))

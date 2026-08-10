@@ -188,6 +188,14 @@ class ConversationState(models.Model):
     # WhatsAppLink.ai_enabled; a new bot conversation may run AI only when that
     # explicit consent and the global kill switch are also on.
     ai_enabled = models.BooleanField(default=True)
+    #: When this conversation last proved who it was — a correct PIN in the
+    #: encrypted Flow, or a verified biometric through the app hand-off. Read by
+    #: the idle re-auth gate; null means "never", which reads as expired.
+    #:
+    #: WhatsApp's own Chat Lock is the only thing that can gate the chat WINDOW,
+    #: and it is user-side and unverifiable, so it can never be a control. What
+    #: the bot is willing to REVEAL is ours to gate, and this is how.
+    last_verified = models.DateTimeField(null=True, blank=True)
     updated = models.DateTimeField(auto_now=True)
 
     @classmethod

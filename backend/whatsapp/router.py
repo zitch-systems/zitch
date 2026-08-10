@@ -151,7 +151,11 @@ MENU_BODY = (
     "6️⃣  🏦 Add money\n"
     "7️⃣  🧾 My account details\n"
     "8️⃣  ✅ Verify my identity\n\n"
-    "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
+    # "just type it" was a promise the channel could not keep: free-form routing
+    # needs the customer's own AI consent, which defaults off and which nobody
+    # guesses the phrase for. Name the phrase where the promise is made.
+    "Or type naturally — reply *ai on* first to switch on smart replies.\n"
+    "Reply \"cancel\" anytime."
 )
 
 
@@ -636,6 +640,15 @@ def _confirm_prompt(pa: PendingAction) -> str:
         if has_app:
             return f"{_approve_link_line(pa, primary=True)}\n\n{code_line}"
         return code_line + _approve_link_line(pa, primary=False)
+    if pa.state == FLOW_PIN_STATE:
+        # The secure Flow is already open and carries its own confirm button, so
+        # this line must NOT restate the ask. It used to fall through to the
+        # dev/test text below, which put "Reply with your PIN to confirm" in a
+        # production thread — a second, contradictory prompt inviting exactly
+        # what the Flow exists to keep out, right beneath the Flow itself.
+        cta = (getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("CTA", "Confirm with PIN")
+        return (f"🔐 Tap *{cta}* on the secure card above — your PIN stays private "
+                "and never appears in this chat. Or reply \"cancel\".")
     # Only reachable in dev/test — production arms a Flow or an SMS code and
     # fails closed rather than ask for a PIN here. The delete advice rides along
     # anyway, so the one prompt that can put a PIN in a thread also says how to
@@ -757,6 +770,13 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if pa is not None:
         return _advance(pa, user, msisdn, text)
 
+    # Idle re-auth. WhatsApp's Chat Lock guards the window and we can neither
+    # require nor verify it, so this guards the thing we can: what the bot will
+    # reveal. Only reads are gated — every action already authenticates at the
+    # point money moves, and prompting twice would be friction, not security.
+    if _needs_reauth(convo) and _is_sensitive_read(low):
+        return _send_unlock(user, msisdn, text)
+
     # A bare 4-6 digit message with nothing expecting one is very often a PIN
     # typed out of habit. It is already masked in our log, but it is still in
     # the customer's own thread and only they can remove it — WhatsApp gives a
@@ -808,6 +828,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
+    if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
+        return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
         return _start_kyc(user, msisdn)
     if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
@@ -830,6 +852,69 @@ def handle_inbound(msisdn: str, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # linking
 # --------------------------------------------------------------------------- #
+#: Commands that reveal money or identity to whoever is holding the phone.
+#: Deliberately reads only: a transfer already needs biometrics or the PIN to
+#: complete, so gating its FIRST message would prompt twice for one movement.
+_SENSITIVE_READS = {
+    "1", "balance", "bal", "my balance", "check balance",
+    "7", "account", "account details", "my account", "account number",
+    "statement", "history", "transactions", "my transactions",
+}
+_REAUTH_SETTING = "wa_reauth_idle_minutes"
+
+
+def _reauth_window() -> timedelta:
+    """How long a proven identity stays good for. 0 disables the gate."""
+    fallback = getattr(settings, "WA_REAUTH_IDLE_MINUTES", 15)
+    try:
+        minutes = int(SystemSetting.get(_REAUTH_SETTING, "") or fallback)
+    except (TypeError, ValueError):
+        minutes = fallback
+    return timedelta(minutes=max(0, minutes))
+
+
+def _is_sensitive_read(low: str) -> bool:
+    return low.strip() in _SENSITIVE_READS
+
+
+def _needs_reauth(convo: ConversationState) -> bool:
+    window = _reauth_window()
+    if not window:
+        return False
+    return convo.last_verified is None or timezone.now() - convo.last_verified > window
+
+
+def _mark_verified(msisdn: str) -> None:
+    """Called the moment an identity is proven, whichever way it was proven."""
+    convo = ConversationState.for_msisdn(msisdn)
+    convo.last_verified = timezone.now()
+    convo.save(update_fields=["last_verified"])
+
+
+def _send_unlock(user, msisdn: str, resume: str) -> None:
+    """Ask the customer to prove it is them before revealing anything, then run
+    what they originally asked for.
+
+    Reuses the confirm machinery unchanged, so unlocking offers the same
+    biometric-first hand-off into the app with the encrypted PIN Flow behind it —
+    the two things we can actually prove happened.
+    """
+    pa = _new_flow(user, msisdn, "unlock", "pin", {"pin_attempts": 0, "resume": resume[:64]})
+    _arm_confirm(pa, user)
+    reply(msisdn, "🔒 *Welcome back.* It's been a while, so confirm it's you before "
+                  "I show your account.\n\n" + _confirm_prompt(pa))
+
+
+def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
+    """Identity proven: start the window and run the command that triggered it."""
+    resume = str(pa.payload.get("resume") or "").strip()
+    _clear_actions(msisdn)
+    _mark_verified(msisdn)
+    if resume:
+        handle_inbound(msisdn, resume)
+    return "Unlocked ✅ — see the chat."
+
+
 def _current_onboarding(msisdn: str) -> WaOnboarding | None:
     WaOnboarding.objects.filter(msisdn=msisdn, expires_at__lt=timezone.now()).delete()
     return WaOnboarding.objects.filter(msisdn=msisdn).first()
@@ -942,17 +1027,17 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
         _onboard_to(ob, FLOW_PIN_STATE)
         res = send_flow(
             msisdn, sign_onboarding_token(ob),
-            header="Set your PIN", body="Choose the 4-digit PIN you'll use to authorise payments.",
+            header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
             screen=PIN_SCREEN,
-            screen_data={"summary": "Create a 4-digit PIN to authorise payments", "error": ""},
+            screen_data={"summary": "Create a 6-digit PIN to authorise payments", "error": ""},
         )
         if res.get("success"):
-            return reply(msisdn, "🔐 Tap the secure screen above to set your *4-digit PIN*. "
+            return reply(msisdn, "🔐 Tap the secure screen above to set your *6-digit PIN*. "
                                  "It's typed privately and never appears in this chat.")
         log.warning("wa_onboarding_pin_flow_failed msisdn=%s", msisdn)
     if _pin_in_chat_allowed():
         _onboard_to(ob, "pin")
-        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+        return reply(msisdn, "Create a *6-digit PIN* to authorise payments (any 6 digits — keep it secret).")
     # No secure channel: finish the signup without a PIN rather than ask for one
     # in a chat that keeps it forever. Everything that spends money already
     # requires a PIN, so the account is simply not spendable until it is set.
@@ -1005,16 +1090,16 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
         ob.payload["email"] = email
         return _arm_onboarding_pin(ob, msisdn)
     if ob.step == "pin":
-        if not re.fullmatch(r"\d{4}", val):
-            return reply(msisdn, "Your PIN must be exactly 4 digits. Try again.")
+        if not re.fullmatch(r"\d{6}", val):
+            return reply(msisdn, "Your PIN must be exactly 6 digits. Try again.")
         ob.payload["pin_hash"] = make_password(val)  # never store the raw PIN
         _onboard_to(ob, "pin_confirm")
-        return reply(msisdn, "Great — re-enter your *4-digit PIN* to confirm.")
+        return reply(msisdn, "Great — re-enter your *6-digit PIN* to confirm.")
     if ob.step == "pin_confirm":
-        if not re.fullmatch(r"\d{4}", val) or not check_password(val, ob.payload.get("pin_hash", "")):
+        if not re.fullmatch(r"\d{6}", val) or not check_password(val, ob.payload.get("pin_hash", "")):
             ob.payload["pin_hash"] = ""
             _onboard_to(ob, "pin")
-            return reply(msisdn, "Those didn't match. Let's set it again — create your *4-digit PIN*.")
+            return reply(msisdn, "Those didn't match. Let's set it again — create your *6-digit PIN*.")
         return _finish_onboarding(ob, msisdn, val)
     _clear_onboarding(msisdn)
     return reply(msisdn, UNLINKED)
@@ -1061,6 +1146,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         + ("" if wallet_views._wema_funding_enabled() else
            "To verify your identity, reply *8* — we'll do your phone, email, BVN "
            "and NIN right here.\n\n")
+        + "🔒 *Tip:* lock this chat with your fingerprint — tap our name above → "
+          "*Chat lock*. Reply *lock* for the steps.\n\n"
         + menu_text(),
     )
     # Roll straight into minting their funding NUBAN — a wallet you can't pay
@@ -1117,6 +1204,48 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
     return _start_add_account(user, msisdn)
+
+
+#: Proving who you are before replacing the credential that authorises payments.
+#: Deliberately the contact channels AND an identity number: a SIM swap defeats
+#: the phone alone, and a mailbox breach defeats the email alone.
+_PIN_RESET_CHECKS = (("email_verified", "email address"),
+                     ("phone_verified", "phone number"),
+                     ("bvn_verified", "BVN"))
+
+
+def _start_pin_reset(user, msisdn: str) -> None:
+    """Set or replace the transaction PIN, in the encrypted Flow.
+
+    Anyone holding this chat can reach this, and a PIN reset hands over the one
+    credential that moves money — so the bar is the verified identity itself,
+    not possession of the thread. An unverified account is sent to verification
+    rather than being told to contact support, because that is the actual next
+    step.
+    """
+    missing = [label for field, label in _PIN_RESET_CHECKS if not getattr(user, field, False)]
+    if missing:
+        listed = ", ".join(missing[:-1]) + " and " + missing[-1] if len(missing) > 1 else missing[0]
+        _clear_actions(msisdn)
+        return reply(msisdn, f"🔐 To set a new PIN we first need to verify your {listed} — "
+                             "your PIN authorises payments, so we confirm it's really you.\n\n"
+                             "Reply *8* to verify now.")
+    _clear_actions(msisdn)
+    pa = _new_flow(user, msisdn, "setpin", FLOW_PIN_STATE, {"pin_attempts": 0})
+    if flows_live() and send_flow(
+            msisdn, sign_flow_token(pa),
+            header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
+            screen=PIN_SCREEN,
+            screen_data={"amount": "Create a 6-digit PIN", "recipient": "",
+                         "details": "You'll enter it again to confirm", "error": ""},
+            cta="Set PIN").get("success"):
+        return reply(msisdn, "🔐 Tap the secure screen above to set your new *6-digit PIN*. "
+                             "It never appears in this chat.")
+    # No fail-open here: unlike a BVN, a PIN typed into a thread is the
+    # credential itself sitting in the customer's history forever.
+    _clear_actions(msisdn)
+    return reply(msisdn, "🔐 Secure PIN entry isn't available right now. "
+                         "Please set your PIN in the Zitch app (Me → Security).")
 
 
 def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:
@@ -2741,9 +2870,14 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     if not user.is_active:
         _clear_actions(pa.msisdn)
         return "Your Zitch account is currently suspended. Please contact support."
+    # Getting here means the PIN or a verified biometric just passed, so it
+    # starts the re-auth window: someone who just authorised a payment should
+    # not be challenged again to read their own balance.
+    _mark_verified(pa.msisdn)
     executors = {
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
+        "unlock": _exec_unlock,
     }
     fn = executors.get(pa.action_type)
     if fn is None:

@@ -724,6 +724,11 @@ def ai_state(request):
     ]
     return ok(
         enabled=ai.global_enabled(),
+        # Per-user consent is the scope operators cannot set and cannot see, so
+        # it is the one that silently explains "the AI is on and does nothing".
+        # The customer grants it themselves by replying "ai on".
+        linked=WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).count(),
+        consented=WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE, ai_enabled=True).count(),
         intents=intents,
     )
 
@@ -903,6 +908,9 @@ def recon(request):
 
 SETTING_DESCRIPTIONS = {
     "ai_enabled_global": "Master switch for the WhatsApp AI intent layer. Off ⇒ channel is fully menu-driven.",
+    "wa_reauth_idle_minutes": ("Minutes of silence before WhatsApp asks a customer to re-confirm "
+                               "(biometric in the app, or PIN) before revealing balance or account "
+                               "details. 0 disables the gate."),
     "fx_margin_bps": "Margin added over the provider rate on every conversion quote.",
     "fx_corridor_usd_enabled": "NGN/USD settlement corridor.",
     "fx_corridor_gbp_enabled": "NGN/GBP settlement corridor.",
