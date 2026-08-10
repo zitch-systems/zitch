@@ -22,7 +22,8 @@ from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
 
-from .flows import PIN_SCREEN, FLOW_PIN_STATE, handle_flow_request, resolve_onboarding_token, sign_onboarding_token
+from .flows import (PIN_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, handle_flow_request,
+                    resolve_onboarding_token, sign_onboarding_token)
 from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
     PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink,
@@ -251,7 +252,10 @@ class ChannelTests(TestCase):
         welcome = WaMessageLog.objects.filter(
             msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
         self.assertIsNotNone(welcome)
-        self.assertIn("reply *8*", welcome.text)  # the upgrade path is named, and it's in-chat
+        # Verification is no longer deferred to a "reply 8" the customer never
+        # sends — account setup runs it — but the path stays named in the menu
+        # for anyone who cancels out of it.
+        self.assertIn("Verify my identity", welcome.text)
 
     def test_onboarding_refuses_an_email_already_on_an_account(self):
         # Recovery looks accounts up by email; two accounts sharing one address
@@ -1806,10 +1810,79 @@ class ChatAccountSetupTests(TestCase):
             return {"success": True}, 200
         complete.side_effect = provision
         self.inbound("55555", f"t3-{m}", msisdn=m)
-        r = self.last_reply(m)
-        self.assertIn("9912345678", r)
-        self.assertIn("ready", r.lower())
+        details = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT, text__contains="9912345678").first()
+        self.assertIsNotNone(details)
+        self.assertIn("ready", details.text.lower())
         self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_a_dead_rail_never_follows_a_successful_mint_with_an_error(self, _en, start, complete):
+        """The ladder ends on "we can't send SMS codes" when the rail is down.
+        That is a fine answer to someone who asked to verify, and a terrible last
+        line for someone whose account number was just minted successfully."""
+        start.return_value = ({"success": True, "tracking_id": "trk-2"}, None)
+        m = self.start_flow(m="2349090000024")
+        self.inbound("1", f"d1-{m}", msisdn=m)
+        self.inbound("12345678901", f"d2-{m}", msisdn=m)
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9900000001", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+        complete.side_effect = provision
+        with patch("whatsapp.router.sms_live", return_value=False):
+            self.inbound("55555", f"d3-{m}", msisdn=m)
+        last = self.last_reply(m)
+        self.assertIn("9900000001", last)
+        self.assertNotIn("can't send", last)
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="kyc").exists())
+
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_the_account_id_is_collected_in_the_flow_not_the_chat(self, _enabled, start):
+        """Every signup passes through account setup, so asking for the BVN here
+        in plain text was the channel's widest remaining exposure — the number
+        stays in the customer's own history, and only they can delete it."""
+        start.return_value = ({"success": True, "tracking_id": "trk-3"}, None)
+        m = self.start_flow(m="2349090000025")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}) as sent:
+            self.inbound("1", f"f1-{m}", msisdn=m)      # BVN
+        sent.assert_called_once()
+        pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], "bvn")
+
+        # And a number typed into the chat while it is open is refused, not used.
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("12345678901", f"f2-{m}", msisdn=m)
+        start.assert_not_called()
+        self.assertIn("secure screen", self.last_reply(m))
+
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_the_flow_submission_opens_the_account(self, _enabled, start):
+        from .flows import handle_flow_request, sign_identity_token
+
+        start.return_value = ({"success": True, "tracking_id": "trk-4"}, None)
+        m = self.start_flow(m="2349090000026")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("2", f"g1-{m}", msisdn=m)      # NIN
+        pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "12345678901"}})
+        self.assertEqual(start.call_args[0][1:], ("", "12345678901"))   # routed as NIN
+        self.assertNotIn("12345678901", str(resp))
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="12345678901").exists())
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "otp")
         # The message log never holds the NIN in clear (masked identity state).
         self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
 

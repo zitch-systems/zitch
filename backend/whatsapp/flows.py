@@ -315,7 +315,7 @@ def _submit_identity(pa, data: dict) -> dict:
     """
     import re
 
-    from .router import _kyc_submit_identity
+    from .router import _account_submit_identity, _kyc_submit_identity
 
     kind = pa.payload.get("id_kind", "bvn")
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
@@ -323,7 +323,12 @@ def _submit_identity(pa, data: dict) -> dict:
         return _identity_screen(kind, error="That should be exactly 11 digits.")
 
     try:
-        _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+        # Both entry points collect the same number on the same screen; what
+        # happens next is the action's business, not this module's.
+        if pa.action_type == "add_account":
+            _account_submit_identity(pa, pa.user, pa.msisdn, number)
+        else:
+            _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
     except Exception:  # noqa: BLE001 — never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
