@@ -30,14 +30,11 @@ catalogue nesting, VAS status-requery codes, the real card-management endpoints,
 model (no standalone lookup), and the Post-No-Debit (PND) lift a new NUBAN needs.
 
 **⚠️ Still blocked on Wema before real money can move (VERIFY-BEFORE-LIVE):**
-1. ~~**Webhook profiling**~~ — **DEV DONE, production scheduled, not a blocker.** ALAT's
-   Getting Started guide requires the bank to profile our callback URLs before the rails
-   work. The four URLs were sent on 2026-07-28 and Wema confirmed *"this has been profiled
-   on dev"* the same day; production profiling was explicitly deferred to cutover by mutual
-   agreement. Note that dev is a **simulator** ("purely simulated… a sample response of what
-   you should be expecting on production", Wema 2026-07-02), so this proves routing and
-   authentication and nothing about payload shapes. See `docs/wema-callback-profiling.md`
-   for the current state, the two config changes it implies, and the follow-up still owed.
+1. **Production webhook profiling** — **BLOCKER FOR LIVE.** Wema confirmed the
+   development callbacks were profiled on 2026-07-28, but dev is a simulator and proves
+   routing only. Production profiling was deliberately deferred to cutover. Rotate the
+   callback token, generate the four production URLs, have Wema profile them, and receive
+   a real callback before disabling simulation. See `docs/wema-callback-profiling.md`.
 2. ~~**`securityInfo`**~~ — **RESOLVED, not a blocker.** Wema confirmed (2026-07-27) it is
    "a private key best known to you" which the bank simply echoes back to our Authentication
    Callback. We choose the value; nothing is issued and nothing is owed. See the
@@ -93,9 +90,11 @@ The ALAT OpenAPI bundle let us fix code that had been built on guessed shapes:
 - **Post-No-Debit (PND) lift** — a new Tier-1 NUBAN is provisioned under a PND hold (can
   receive, can't be debited). `lift_debit_restriction` (`PartnerDebitRestrictionManagement`)
   is now called right after provisioning so the per-user-balance payout/VAS debit works.
-- **Available but not wired** — `get_kyc_status` (`/account-upgrade` tier/PND/address read),
-  and the Remita, BNPL, account-upgrade (tier2/tier3) and NIP-charges products exist in the
-  bundle but aren't consumed yet.
+- **Current optional-product coverage** — Remita validation/payment, read-only BNPL
+  offers, NIP charge enquiry, and Tier-3 address-verified upgrade/status sync are wired
+  behind dedicated keys. Tier-2 bank sync remains unavailable because Zitch does not
+  retain the required BVN/NIN pair, and BNPL consent/disbursement stays gated pending
+  product and compliance sign-off.
 
 ---
 
@@ -212,8 +211,8 @@ new Remita / pay-with-bank / BNPL products). Summary:
 | Credit wallet / FundWallet | ✅ correct | Status poll is bound to the `debit` suffix; a credit-rail poll is optional. |
 | Airtime & Data | ⚠️ mostly correct | On the right (Client/SingleAccount) endpoints. **Requery bug:** `CheckTransactionStatus` returns `result.transactionStatus` as an **integer** enum (1–11), not a string — legend needed (below). |
 | Bills payment | ⚠️ mostly correct | Same integer-status requery gap (`checktransactionstatus`, enum 1–9). `packageId` is int32 in the spec. |
-| **Virtual cards** | ❌ **paths wrong** | `/api/VirtualCard/*` do not exist — see Card rail below. Rail is gated off, so this blocks cards only, not core launch. |
-| **KYC (BVN/NIN/vNIN)** | ❌ **endpoints don't exist** | Wema has no standalone identity lookup — see KYC rail below. |
+| **Virtual cards** | ⚠️ wired, live-shape check required | The real card-management issue/reveal/block paths are wired; Wema must supply `cardKey` and confirm the opaque response shape before production. |
+| **KYC (BVN/NIN/vNIN)** | ✅ corrected model | Wema has no standalone identity lookup; Zitch verifies and name-matches identity through the wallet-provisioning OTP flow. |
 
 **Funding-correctness fix (landed):** `normalize_transaction` now treats an inbound
 `creditType=='Credit'` row as fundable only when its `status` is settled. The ALAT
