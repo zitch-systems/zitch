@@ -618,6 +618,58 @@ class EmailFlowTests(TestCase):
         mail.assert_called_once()
 
 
+class PublishedFlowJsonTests(unittest.TestCase):
+    """`pin_flow.json` is validated by Meta at publish time, not by us at import
+    time, so a change that parses perfectly here can still be rejected in
+    WhatsApp Manager — and until it is published, every Flow send falls back to
+    the chat. These assert the parts of Meta's contract we have actually been
+    caught by."""
+
+    @classmethod
+    def setUpClass(cls):
+        import pathlib
+
+        path = pathlib.Path(__file__).parent / "flow_assets" / "pin_flow.json"
+        cls.doc = json.loads(path.read_text())
+        cls.order = [s["id"] for s in cls.doc["screens"]]
+
+    def test_every_route_points_at_a_screen_that_exists(self):
+        for source, targets in self.doc["routing_model"].items():
+            self.assertIn(source, self.order)
+            for target in targets:
+                self.assertIn(target, self.order, f"{source} routes to unknown {target}")
+
+    def test_routes_only_ever_go_forward(self):
+        """Meta rejects a backward route outright: declaring both directions of
+        a pair fails the whole document, which is how EMAIL_SCREEN ->
+        IDENTITY_SCREEN first shipped broken. Forward means later in `screens`."""
+        for source, targets in self.doc["routing_model"].items():
+            for target in targets:
+                self.assertLess(
+                    self.order.index(source), self.order.index(target),
+                    f"{source} -> {target} is a backward route; Meta will reject the Flow")
+
+    def test_the_screens_the_endpoint_returns_are_all_published(self):
+        from .flows import EMAIL_SCREEN, IDENTITY_SCREEN, PIN_SCREEN, SUCCESS_SCREEN
+
+        for screen in (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_SCREEN, SUCCESS_SCREEN):
+            self.assertIn(screen, self.order)
+
+    def test_every_field_the_endpoint_sends_is_declared_on_its_screen(self):
+        """A screen renders only what it declares. An undeclared key is not a
+        blank line — it fails the exchange, mid-payment."""
+        from .flows import (_email_screen, _identity_screen,  # noqa: SLF001
+                            _pin_screen, _success_screen)
+
+        declared = {s["id"]: set(s["data"]) for s in self.doc["screens"]}
+        for built in (_pin_screen({"amount": "a", "recipient": "b", "details": "c"}, "e"),
+                      _identity_screen("bvn", error="e"),
+                      _email_screen(error="e"),
+                      _success_screen("done")):
+            self.assertEqual(set(built["data"]), declared[built["screen"]],
+                             f"{built['screen']} data keys drifted from the published JSON")
+
+
 class PemNormalisationTests(unittest.TestCase):
     """A PEM is only valid with real line breaks, and secret-management UIs mangle
     them in several different ways. Each variant below looks correct in the
