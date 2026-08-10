@@ -7,6 +7,7 @@
 import json
 import os
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -75,6 +76,27 @@ class WemaSimulationTests(SimpleTestCase):
             self.assertTrue(wema.wema_simulation())
             self.assertTrue(wema.get_account_details("080")["account_number"])
             self.assertEqual(wema.wema_diagnostics()["status"], "simulation")
+
+
+class WemaRenderBlueprintTests(SimpleTestCase):
+    def test_wema_crons_share_the_web_simulation_safety_switches(self):
+        blueprint = (Path(__file__).resolve().parents[2] / "render.yaml").read_text(encoding="utf-8")
+        for service in (
+            "zitch-reconcile-vtu",
+            "zitch-reconcile-wema",
+            "zitch-reconcile-balances",
+            "zitch-settlement-report",
+        ):
+            marker = f"name: {service}\n"
+            self.assertIn(marker, blueprint)
+            block = blueprint.split(marker, 1)[1].split("\n  - type:", 1)[0]
+            for key in ("WEMA_SIMULATION", "ALLOW_PRODUCTION_SIMULATION"):
+                self.assertIn(f"- key: {key}", block, f"{service} is missing {key}")
+                self.assertIn(
+                    f"envVarKey: {key}",
+                    block,
+                    f"{service} must source {key} from the web service",
+                )
 
 
 @override_settings(WEMA=WEMA_LIVE)
