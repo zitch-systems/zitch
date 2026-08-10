@@ -436,19 +436,27 @@ class FirstSpendVerificationTests(TestCase):
         self.user.save(update_fields=list(fields))
 
     def test_a_debit_is_refused_until_every_check_passes(self):
-        self._unverify("nin_verified")
+        self._unverify("bvn_verified")
         with self.assertRaises(LimitExceeded) as ctx:
             debit(self.user, Decimal("1000"), "transfer")
-        self.assertIn("NIN", str(ctx.exception))
+        self.assertIn("BVN", str(ctx.exception))
         # And the refusal is actionable on both surfaces.
         self.assertIn("8", str(ctx.exception))
         self.assertIn("app", str(ctx.exception).lower())
 
     def test_the_refusal_names_every_missing_check_not_just_the_first(self):
-        self._unverify("bvn_verified", "nin_verified")
+        self._unverify("bvn_verified", "email_verified")
         msg = unverified_error(self.user) or ""
         self.assertIn("BVN", msg)
-        self.assertIn("NIN", msg)
+        self.assertIn("email", msg)
+
+    def test_an_unverified_nin_does_not_block_spending(self):
+        """NIN has no unattended verification path until the Prembly lookup is
+        confirmed live, so gating every first spend on it would strand every new
+        customer behind a review queue. It still caps the tier."""
+        self._unverify("nin_verified")
+        self.assertIsNone(unverified_error(self.user))
+        debit(self.user, Decimal("1000"), "transfer")   # does not raise
 
     def test_a_fully_verified_account_is_untouched(self):
         self.assertIsNone(unverified_error(self.user))
@@ -465,7 +473,7 @@ class FirstSpendVerificationTests(TestCase):
         """FX reaches the ledger through _move, not debit(), so it does not
         inherit spend_limit_error's gate and has to state it — otherwise an
         unverified account could still move value by converting it."""
-        self._unverify("nin_verified")
+        self._unverify("bvn_verified")
         with self.assertRaises(FxError) as ctx:
             create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
-        self.assertIn("NIN", str(ctx.exception.message))
+        self.assertIn("BVN", str(ctx.exception.message))
