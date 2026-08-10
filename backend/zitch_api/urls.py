@@ -27,6 +27,7 @@ def health(_request):
                                     payout_live, payout_provider, sms_live,
                                     vas_provider, vtu_live)
     from utility import wema
+    from whatsapp.providers import flows_live as _flows_live
     from whatsapp.providers import wa_live, wa_mode
 
     integrations = {
@@ -61,6 +62,13 @@ def health(_request):
         # returns 404 to Meta and no message is ever seen.
         "whatsapp_mode": wa_mode(),               # disabled | sandbox | live
         "whatsapp_live": wa_live(),
+        # Is the secure PIN Flow actually armed? This is the difference between
+        # a PIN typed into a masked field and submitted encrypted, and the
+        # channel quietly falling back to an SMS code — and nothing else
+        # reports it. False here with whatsapp_live true means WHATSAPP_FLOW_ID
+        # or WHATSAPP_FLOW_PRIVATE_KEY is missing: the fallback is deliberate
+        # and safe, but it is not the PIN screen anyone thinks they configured.
+        "whatsapp_flow_ready": _flows_live(),
         # Has Meta ever SUCCESSFULLY called the webhook? Nothing downstream can
         # explain silence when the callback never arrives, and that case is
         # invisible in every other reading: no call means no queue row, no log
