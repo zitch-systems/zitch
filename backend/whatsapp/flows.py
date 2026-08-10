@@ -27,6 +27,10 @@ FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) whil
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
+#: id_kind for the bank's SMS code that completes account creation. It rides the
+#: identity token because it is the second half of one step: the BVN goes in on
+#: the masked screen and the code that name-matches it comes back on the same.
+ACCOUNT_OTP = "account_otp"
 _AP_PREFIX = "ap"             # marks an app hand-off token (deep-link biometric approval)
 
 #: Confirm states an app hand-off may resolve in. Both mean "armed, awaiting the
@@ -251,8 +255,16 @@ def handle_flow_request(payload: dict) -> dict:
             return _success_screen("This verification expired. Reply 8 in the chat to start again.")
         kind = pa.payload.get("id_kind", "BVN")
         if action == "data_exchange":
-            return _submit_email(pa, data) if kind == "email" else _submit_identity(pa, data)
-        return _email_step_screen(pa) if kind == "email" else _identity_screen(kind)
+            if kind == "email":
+                return _submit_email(pa, data)
+            if kind == ACCOUNT_OTP:
+                return _submit_account_otp(pa, data)
+            return _submit_identity(pa, data)
+        if kind == "email":
+            return _email_step_screen(pa)
+        if kind == ACCOUNT_OTP:
+            return _account_otp_screen(pa)
+        return _identity_screen(kind)
 
     if action == "INIT":
         pa = resolve_flow_token(token)
@@ -335,6 +347,32 @@ def _submit_identity(pa, data: dict) -> dict:
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
     return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
+
+
+def _account_otp_screen(pa, error: str = "") -> dict:
+    return _identity_screen(ACCOUNT_OTP, error=error, label="SMS code",
+                            summary="Enter the code we sent to your phone")
+
+
+def _submit_account_otp(pa, data: dict) -> dict:
+    """The bank's SMS code, entered here rather than in the chat.
+
+    It completes account creation and is what name-matches the BVN, so it is a
+    bearer credential for as long as it lives — the same reason the email code
+    moved off the thread. Collecting the BVN privately and then asking for the
+    code that unlocks it in clear would have been half a fix.
+    """
+    from .router import account_flow_otp
+
+    code = str(data.get("number", "")).strip()
+    try:
+        status, message = account_flow_otp(pa, code)
+    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+        log.exception("account otp flow submission failed for pa=%s", pa.id)
+        return _success_screen("Something went wrong. Reply 6 in the chat to try again.")
+    if status == "retry":
+        return _account_otp_screen(pa, error=message)
+    return _success_screen(message)
 
 
 def _email_code_screen(pa, error: str = "") -> dict:

@@ -195,15 +195,25 @@ def daily_kind_for(service: str) -> str:
     return ""
 
 
-#: The four checks that must pass before ANY money may leave an account, in the
-#: order a customer completes them. Together they are exactly Tier 1, so this is
-#: the same bar `recompute_tier` already derives — spelled out here because the
-#: refusal has to name the specific step that is missing, not a tier number.
+#: The checks that must pass before ANY money may leave an account, in the order
+#: a customer completes them. Spelled out rather than expressed as a tier so the
+#: refusal can name the specific step that is missing, not a tier number.
+#:
+#: NIN is deliberately NOT here. It is still collected, still hashed, still
+#: reviewed, and still required for Tier 1 by `recompute_tier` — so it governs
+#: how MUCH a customer may move. It just no longer decides whether they may move
+#: anything at all. Until the Prembly NIN lookup is confirmed against a live
+#: dashboard (see utility.providers.prembly_verify_nin), the only route to
+#: nin_verified is an operator clearing the review queue by hand, and gating
+#: every first spend on that means one unattended day strands every new customer
+#: with a funded wallet they cannot spend from.
+#:
+#: BVN stays: the bank name-matches it while opening the account, so it is
+#: verified in the ordinary course of signup with nobody in the loop.
 _FIRST_SPEND_CHECKS = (
     ("email_verified", "email address"),
     ("phone_verified", "phone number"),
     ("bvn_verified", "BVN"),
-    ("nin_verified", "NIN"),
 )
 
 
