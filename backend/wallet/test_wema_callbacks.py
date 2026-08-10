@@ -13,6 +13,7 @@ from unittest.mock import patch
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
+from utility import wema
 from wallet.models import Transaction, Wallet
 from wallet.services import debit, get_or_create_wallet
 from wallet.tests import make_user
@@ -223,12 +224,15 @@ class WemaAuthenticateCallbackTests(TestCase):
 
     @override_settings(WEMA={**WEMA_CB, "AUTH_REQUIRE_SECURITY_INFO": True,
                              "SECURITY_INFO": "expected-value"})
-    def test_security_info_enforced_when_configured(self):
+    def test_security_info_enforced_per_transaction(self):
         txn = self._pending_payout()
+        expected = wema.security_info_for_reference(txn.reference)
+        self.assertNotEqual(expected, "expected-value")  # private seed never crosses the wire
+        self.assertNotEqual(expected, wema.security_info_for_reference("ZTRF-other"))
         self.assertFalse(self._post({"transactionReference": txn.reference,
                                      "securityInfo": "wrong"}).json()["authorized"])
         self.assertTrue(self._post({"transactionReference": txn.reference,
-                                    "securityInfo": "expected-value"}).json()["authorized"])
+                                    "securityInfo": expected}).json()["authorized"])
 
     @override_settings(WEMA={**WEMA_CB, "AUTH_REQUIRE_SECURITY_INFO": True,
                              "SECURITY_INFO": ""})
