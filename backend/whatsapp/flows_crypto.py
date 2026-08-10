@@ -100,7 +100,15 @@ def decrypt_request(body: dict):
                          algorithm=hashes.SHA256(), label=None),
         )
     except ValueError as exc:
-        # Wrong/rotated key pair — Meta refetches our public key on a 421.
+        # The key loaded but cannot open Meta's envelope: the private key on this
+        # host is not the pair of the public key Meta holds. Logged explicitly
+        # because it is the one failure that looks like every other — the key is
+        # present and valid PEM, so neither of the checks above fires, and the
+        # endpoint still answers a bare 421. Meta refetches our public key on a
+        # 421, so a genuinely rotated key self-heals; a mismatched one does not.
+        log.warning("wa_flow_key_mismatch — the private key on this host does not "
+                    "match the public key uploaded to Meta (re-upload flow_public.pem "
+                    "for this phone number, or set the matching private key)")
         raise FlowDecryptError(f"Could not unwrap AES key: {exc}") from exc
 
     try:
