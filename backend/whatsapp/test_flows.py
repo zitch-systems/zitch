@@ -655,6 +655,17 @@ class PublishedFlowJsonTests(unittest.TestCase):
         for screen in (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_SCREEN, SUCCESS_SCREEN):
             self.assertIn(screen, self.order)
 
+    def test_every_screen_opens_with_the_zitch_mark(self):
+        """Flows cannot fetch a remote image, so the logo is base64 inlined and a
+        careless edit drops it silently. It is also the only brand anchor on the
+        screen where someone types their PIN — worth asserting, not assuming."""
+        for screen in self.doc["screens"]:
+            first = screen["layout"]["children"][0]
+            self.assertEqual(first["type"], "Image", f"{screen['id']} has no logo")
+            self.assertEqual(first["alt-text"], "Zitch")
+            decoded = base64.b64decode(first["src"], validate=True)
+            self.assertTrue(decoded.startswith(b"\x89PNG"), f"{screen['id']} logo is not a PNG")
+
     def test_every_field_the_endpoint_sends_is_declared_on_its_screen(self):
         """A screen renders only what it declares. An undeclared key is not a
         blank line — it fails the exchange, mid-payment."""

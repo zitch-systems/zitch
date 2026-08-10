@@ -50,6 +50,15 @@ jobs:
       # where a syntax error hides until an operator runs it during an incident.
       - name: Compile every module
         run: python -m compileall -q . -x '(__pycache__|\.venv)'
+      # The Flow JSON carries the logo as inlined base64, because WhatsApp Flows
+      # cannot fetch a remote image. That makes the JSON a build output as much
+      # as a source file: change the mark and the published Flow keeps the old
+      # bytes until someone remembers to re-run the script.
+      - name: WhatsApp Flow JSON is built from the current logo
+        working-directory: .
+        run: |
+          pip install --quiet pillow
+          python scripts/build-flow-logo.py --check
       - name: System check
         run: python manage.py check
       - name: Deploy checks
