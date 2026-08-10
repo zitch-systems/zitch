@@ -541,6 +541,12 @@ services:
         sync: false
       - key: WEMA_BASE_URL
         sync: false
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: WEMA_VAS_STATUS_LEGEND
         sync: false
       - key: WEMA_BILLS_STATUS_LEGEND
@@ -582,6 +588,12 @@ services:
         sync: false
       - key: WEMA_BASE_URL
         sync: false
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       # Paging: reconcile_wema calls utility.alerts.alert on a crashed run or a
       # systemic gateway outage. That reaches Sentry only when SENTRY_DSN is set
       # in THIS cron's env (crons are separate processes from the web service).
@@ -650,6 +662,12 @@ services:
         sync: false
       - key: WEMA_BASE_URL
         sync: false
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: SENTRY_DSN
         sync: false
 
@@ -689,6 +707,12 @@ services:
         sync: false
       - key: WEMA_BASE_URL
         sync: false
+      # Rail safety mode is sourced from the web service so a cron cannot call
+      # ALAT while customer-facing requests are deliberately simulated.
+      - key: WEMA_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
+      - key: ALLOW_PRODUCTION_SIMULATION
+        fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: WEMA_SOURCE_ACCOUNT
         sync: false
       # The VAS asset rail. Without these the provider wallet reads as UNREADABLE
