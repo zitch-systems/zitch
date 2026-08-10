@@ -16,7 +16,8 @@ from django.test import Client, SimpleTestCase, TestCase, override_settings
 from utility import wema
 
 WEMA_LIVE = {"BASE_URL": "https://apiplayground.alat.ng", "CHANNEL_ID": "chan-1",
-             "KEYS": {"wallet": "subkey", "card": "", "airtime": "", "bills": "", "kyc": ""},
+             "KEYS": {"wallet": "subkey", "card": "", "airtime": "", "bills": "",
+                      "upgrade": "upgradekey", "kyc": "", "remita": "", "bnpl": ""},
              "SECURITY_INFO": "sec", "SIMULATION": False}
 WEMA_NOKEY = {**WEMA_LIVE, "CHANNEL_ID": "", "KEYS": {"wallet": ""}, "SECURITY_INFO": ""}
 WEMA_VAS = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "airtime": "airkey", "bills": "billkey"},
@@ -168,7 +169,10 @@ class WemaLiveTests(SimpleTestCase):
         self.assertTrue(r["success"])
         self.assertEqual(r["platform_reference"], "WEMA-9")
         body = mock_post.call_args[1]["json"]
-        self.assertEqual(body["securityInfo"], "sec")       # from WEMA_SECURITY_INFO
+        self.assertEqual(
+            body["securityInfo"], wema.security_info_for_reference("REF-1")
+        )
+        self.assertNotEqual(body["securityInfo"], "sec")  # the private seed is never sent
         self.assertEqual(body["transactionReference"], "REF-1")
         self.assertEqual(body["destinationAccountNumber"], "02")
 
@@ -184,8 +188,11 @@ class WemaLiveTests(SimpleTestCase):
                       destination_bank_code="035", destination_bank_name="Wema", destination_name="ADA")
         sent = mock_post.call_args[1]["json"]["securityInfo"]
         self.assertTrue(sent)
-        # Stable across calls, and the same value the auth callback compares against.
-        self.assertEqual(sent, wema.security_info_value())
+        # Stable for one reference, unique across references, and identical to what
+        # the authorization callback recomputes.
+        self.assertEqual(sent, wema.security_info_for_reference("REF-2"))
+        self.assertNotEqual(sent, wema.security_info_for_reference("REF-OTHER"))
+        self.assertNotEqual(sent, wema.security_info_value())
 
     @override_settings(WEMA={**WEMA_LIVE, "SECURITY_INFO": "  sec  "})
     def test_configured_security_info_wins_and_is_trimmed(self):
@@ -419,7 +426,7 @@ class WemaVasLiveTests(SimpleTestCase):
         self.assertTrue(r["success"])
         body = mock_post.call_args[1]["json"]
         self.assertEqual(body["accountNumber"], "0155500011")   # debits the user's own NUBAN
-        self.assertEqual(body["securityInfo"], "sec")
+        self.assertEqual(body["securityInfo"], wema.security_info_for_reference("R"))
         self.assertEqual(mock_post.call_args[1]["headers"]["access"], "chan-1")   # VAS uses `access`
         self.assertEqual(mock_post.call_args[1]["headers"]["Ocp-Apim-Subscription-Key"], "airkey")
         self.assertTrue(mock_post.call_args[0][0].endswith("/airtime-data/api/Airtime/Client/PurchaseAirtime"))
@@ -536,6 +543,13 @@ class WemaCardTests(SimpleTestCase):
 
     def test_issue_requires_account_number(self):
         self.assertFalse(wema.card_issue("ADA EZE", "42")["success"])   # no NUBAN -> fail closed
+
+    @patch("utility.wema.requests.post")
+    def test_issue_requires_card_product_id(self, mock_post):
+        with override_settings(WEMA={**WEMA_CARD, "CARD_PRODUCT_KEY": ""}):
+            result = wema.card_issue("ADA EZE", "42", account_number="0155500011")
+        self.assertFalse(result["success"])
+        mock_post.assert_not_called()
 
     @patch("utility.wema.requests.get")
     def test_reveal_uses_account_details_endpoint(self, mock_get):
@@ -654,7 +668,7 @@ class WemaRemitaTests(SimpleTestCase):
         body = mock_post.call_args[1]["json"]
         self.assertEqual(body["rrr"], "120000000001")
         self.assertEqual(body["customerAccount"], "0155500011")   # debits the user's NUBAN
-        self.assertEqual(body["securityInfo"], "sec")
+        self.assertEqual(body["securityInfo"], wema.security_info_for_reference("R"))
         self.assertEqual(mock_post.call_args[1]["headers"]["access"], "chan-1")   # remita uses `access`
         self.assertTrue(mock_post.call_args[0][0].endswith(
             "/remita-payment/api/RemitaPayment/ProcessRemitaPayment"))
@@ -698,56 +712,60 @@ class WemaBnplTests(SimpleTestCase):
         self.assertEqual(body["tenor"], 30)
         self.assertTrue(mock_post.call_args[0][0].endswith("/alat-bnpl/api/Eligibility/ConsentRequest"))
 
-    def test_bnpl_live_requires_merchant_creds(self):
+    def test_bnpl_live_requires_every_credential(self):
         self.assertTrue(wema._bnpl_live())
-        with override_settings(WEMA={**WEMA_BNPL, "BNPL_MERCHANT_ID": ""}):
-            self.assertFalse(wema._bnpl_live())
+        for override in (
+            {"BNPL_MERCHANT_ID": ""},
+            {"BNPL_AUTH_KEY": ""},
+            {"KEYS": {**WEMA_BNPL["KEYS"], "bnpl": ""}},
+        ):
+            with self.subTest(override=next(iter(override))):
+                with override_settings(WEMA={**WEMA_BNPL, **override}):
+                    self.assertFalse(wema._bnpl_live())
+
+    @patch("utility.wema.requests.get")
+    def test_simulation_blocks_real_bnpl_calls(self, mock_get):
+        with override_settings(WEMA={**WEMA_BNPL, "SIMULATION": True}):
+            result = wema.bnpl_offers()
+        self.assertTrue(result["mock"])
+        mock_get.assert_not_called()
 
 
 class WemaSubscriptionKeyTests(SimpleTestCase):
-    """The ALAT Wallet Services subscription bundles 13 APIs — including Airtime and
-    Data, Bills Payment, Remita-Payment and Partnership Account KYC — so none of those
-    needs its own key. A dedicated per-product key still wins if Wema issues one, and
-    products that ARE their own subscription never borrow the wallet key."""
+    """Wallet Services covers only its documented wallet APIs.
 
-    @override_settings(WEMA=WEMA_LIVE)  # wallet keyed; the rest blank
-    def test_bundled_products_fall_back_to_wallet_key(self):
-        # `card` is included: the portal has one Card Management API and the
-        # virtual-card operations are part of it, so the wallet key authenticates it.
-        for product in ("airtime", "bills", "remita", "kyc", "card"):
+    Products sold separately in the ALAT portal must never borrow the wallet key.
+    """
+
+    @override_settings(WEMA=WEMA_LIVE)
+    def test_wallet_services_coverage_is_narrow(self):
+        for product in ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit", "bills"):
             self.assertEqual(wema._sub_key(product), "subkey", product)
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_wallet_covered_products_unchanged(self):
-        for product in ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit"):
-            self.assertEqual(wema._sub_key(product), "subkey", product)
+    def test_separate_products_never_borrow_wallet_key(self):
+        keys = {**WEMA_LIVE["KEYS"], "upgrade": ""}
+        with override_settings(WEMA={**WEMA_LIVE, "KEYS": keys}):
+            for product in ("airtime", "upgrade", "remita", "kyc", "card", "bnpl"):
+                self.assertEqual(wema._sub_key(product), "", product)
 
-    @override_settings(WEMA=WEMA_LIVE)
-    def test_own_subscription_products_never_borrow_wallet_key(self):
-        # BNPL is genuinely its own APIM subscription with its own merchant auth.
-        # Unkeyed it must resolve empty so the rail stays disabled rather than
-        # silently authenticating on a key that does not cover it.
-        self.assertEqual(wema._sub_key("bnpl"), "")
-
-    @override_settings(WEMA=WEMA_VAS)  # dedicated airtime/bills keys present
-    def test_dedicated_key_wins_over_wallet_fallback(self):
+    @override_settings(WEMA=WEMA_VAS)
+    def test_dedicated_key_wins_and_bills_can_override_wallet(self):
         self.assertEqual(wema._sub_key("airtime"), "airkey")
         self.assertEqual(wema._sub_key("bills"), "billkey")
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_vas_live_on_wallet_key_alone(self):
-        for product in ("airtime", "bills", "remita"):
-            self.assertTrue(wema._vas_live(product), product)
+    def test_wallet_key_alone_enables_bills_not_airtime_or_remita(self):
+        self.assertTrue(wema._vas_live("bills"))
+        self.assertFalse(wema._vas_live("airtime"))
+        self.assertFalse(wema._vas_live("remita"))
 
     @override_settings(WEMA=WEMA_LIVE)
-    def test_card_authenticates_on_wallet_key_but_is_not_auto_selected(self):
-        # The wallet key DOES authenticate Card-Management (the product is bundled),
-        # but that alone must not move the card backend onto the Wema rail, which has
-        # no reversible freeze and no top-up. Auto-selection needs a dedicated key.
-        self.assertTrue(wema._card_live())
+    def test_wallet_key_does_not_enable_cards(self):
+        self.assertFalse(wema._card_live())
         self.assertFalse(wema.card_opted_in())
 
-    @override_settings(WEMA=WEMA_CARD)  # dedicated WEMA_CARD_KEY present
+    @override_settings(WEMA=WEMA_CARD)
     def test_dedicated_card_key_opts_in(self):
         self.assertTrue(wema._card_live())
         self.assertTrue(wema.card_opted_in())
