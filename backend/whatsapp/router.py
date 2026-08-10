@@ -636,6 +636,15 @@ def _confirm_prompt(pa: PendingAction) -> str:
         if has_app:
             return f"{_approve_link_line(pa, primary=True)}\n\n{code_line}"
         return code_line + _approve_link_line(pa, primary=False)
+    if pa.state == FLOW_PIN_STATE:
+        # The secure Flow is already open and carries its own confirm button, so
+        # this line must NOT restate the ask. It used to fall through to the
+        # dev/test text below, which put "Reply with your PIN to confirm" in a
+        # production thread — a second, contradictory prompt inviting exactly
+        # what the Flow exists to keep out, right beneath the Flow itself.
+        cta = (getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("CTA", "Confirm with PIN")
+        return (f"🔐 Tap *{cta}* on the secure card above — your PIN stays private "
+                "and never appears in this chat. Or reply \"cancel\".")
     # Only reachable in dev/test — production arms a Flow or an SMS code and
     # fails closed rather than ask for a PIN here. The delete advice rides along
     # anyway, so the one prompt that can put a PIN in a thread also says how to

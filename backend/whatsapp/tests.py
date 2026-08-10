@@ -2991,3 +2991,38 @@ class ChatLockPromptTests(TestCase):
         from whatsapp.router import _chat_lock_tip
 
         self.assertIn("Chat lock", _chat_lock_tip())
+
+
+class ConfirmPromptDoesNotContradictTheFlowTests(TestCase):
+    """With the secure Flow open, the chat line beneath it used to read "Reply
+    with your PIN to confirm" — the dev/test fallback, reached in production
+    because _confirm_prompt had no branch for an armed Flow. Two prompts, and the
+    louder one invited into the thread precisely what the Flow keeps out."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _armed_action(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "transfer", FLOW_PIN_STATE,
+                         {"pin_attempts": 0, "amount": "3000", "account": "0228565772",
+                          "bank_code": "035", "bank_name": "Wema Bank", "name": "ADEYEMI WILLIAM"})
+
+    def test_an_open_flow_never_asks_for_the_pin_in_the_chat(self):
+        from whatsapp.router import _confirm_prompt
+
+        line = _confirm_prompt(self._armed_action())
+        self.assertNotIn("Reply with your PIN", line)
+        self.assertIn("secure card", line)
+
+    def test_it_still_asks_plainly_when_no_flow_is_open(self):
+        """The dev/test rung must keep working — and keep its delete advice."""
+        from whatsapp.router import _confirm_prompt, _new_flow
+
+        pa = _new_flow(self.user, MSISDN, "transfer", "pin", {"pin_attempts": 0})
+        line = _confirm_prompt(pa)
+        self.assertIn("Reply with your PIN", line)
+        self.assertIn("Delete", line)
