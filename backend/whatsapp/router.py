@@ -381,10 +381,21 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     summary = _flow_summary(pa)
     pa.payload["flow_summary"] = summary
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)  # persist so the token resolves
+    # Hierarchy, not availability: a customer with the app is led to the
+    # biometric approval and the Flow's own button becomes the fallback ("Use
+    # PIN instead"). Both remain live either way — this only decides which one
+    # the message presents as the way to confirm.
+    if _has_app_session(user):
+        body = f"{summary}\n\n{_approve_link_line(pa, primary=True)}"
+        cta = "Use PIN instead"
+    else:
+        body = summary + _approve_link_line(pa, primary=False)
+        cta = ""   # provider default: "Confirm with PIN"
     res = send_flow(
         pa.msisdn, sign_flow_token(pa),
-        header="Confirm payment", body=summary + _approve_link_line(pa),
+        header="Confirm payment", body=body,
         screen=PIN_SCREEN, screen_data={"summary": summary, "error": ""},
+        cta=cta,
     )
     return bool(res.get("success"))
 
@@ -424,15 +435,12 @@ def _send_identity_flow(pa: PendingAction, kind: str) -> bool:
     return False
 
 
-def _approve_link_line(pa: PendingAction) -> str:
-    """The "approve in the app" line offered alongside every confirm.
-
-    The link is https (WhatsApp renders only http(s) as tappable); the page at
-    the other end bounces into `zitch://waapprove`, where the app authenticates
-    the customer's biometric on-device and submits the SAME transaction PIN the
-    other channels verify. It is an addition to the armed channel, never a
-    replacement: a WhatsApp-only customer without the app still confirms via the
-    Flow or SMS code exactly as before.
+def _approve_url(pa: PendingAction) -> str:
+    """The https hand-off for approving this action in the app, or "" when no
+    public origin is configured. https because WhatsApp renders only http(s) as
+    tappable; the page at the other end bounces into `zitch://waapprove`, where
+    the app authenticates the customer's biometric on-device and submits the
+    SAME transaction PIN the other channels verify.
 
     The token binds the action to its owner, so a forwarded link redeems for
     nobody else — but it still names an approval, which is why the bounce page
@@ -441,8 +449,35 @@ def _approve_link_line(pa: PendingAction) -> str:
     base = (_links().get("API_BASE") or "").rstrip("/")
     if not base:
         return ""
-    return ("\n\n📲 Have the Zitch app? Approve with your fingerprint or Face ID: "
-            f"{base}/wa/approve/{sign_approve_token(pa)}")
+    return f"{base}/wa/approve/{sign_approve_token(pa)}"
+
+
+def _has_app_session(user) -> bool:
+    """Has this account ever authenticated from the app? KnownDevice rows are
+    written on app sign-in and nowhere else, so their existence separates "has
+    the app" from a WhatsApp-only customer. Used ONLY to pick which confirmation
+    to lead with — it grants nothing."""
+    return user.known_devices.exists()
+
+
+def _approve_link_line(pa: PendingAction, *, primary: bool) -> str:
+    """The biometric-approval line for a confirm message.
+
+    `primary` flips the framing, not the mechanics. Biometric approval is the
+    PREFERRED confirmation for anyone who has the app — it proves the account
+    owner's finger or face, which a shoulder-surfed PIN cannot — so for them the
+    line leads the message and the PIN is offered as the fallback. A customer
+    who has never signed into the app is not led to a door they can't open: for
+    them the line stays an offer under the PIN instructions, and the bounce
+    page's store links do the recruiting.
+    """
+    url = _approve_url(pa)
+    if not url:
+        return ""
+    if primary:
+        return ("📲 *Approve with your fingerprint or Face ID* — fastest and most "
+                f"secure:\n{url}")
+    return f"\n\n📲 Have the Zitch app? Approve with your fingerprint or Face ID: {url}"
 
 
 def _arm_confirm(pa: PendingAction, user) -> bool:
@@ -484,16 +519,22 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
 def _confirm_prompt(pa: PendingAction) -> str:
     if pa.state == "blocked":
         return "Secure confirmation is unavailable right now. Please complete this payment in the Zitch app."
+    has_app = _has_app_session(pa.user)
     if pa.payload.get("otp_hash"):
-        return ("🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". "
-                "(Never type your PIN here.)" + _approve_link_line(pa))
+        code_line = ("🔐 Or enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". "
+                     "(Never type your PIN here.)") if has_app else \
+                    ("🔐 Enter the *6-digit code* we just sent you by SMS, or reply \"cancel\". "
+                     "(Never type your PIN here.)")
+        if has_app:
+            return f"{_approve_link_line(pa, primary=True)}\n\n{code_line}"
+        return code_line + _approve_link_line(pa, primary=False)
     # Only reachable in dev/test — production arms a Flow or an SMS code and
     # fails closed rather than ask for a PIN here. The delete advice rides along
     # anyway, so the one prompt that can put a PIN in a thread also says how to
     # get it out: WhatsApp lets the sender delete, and nobody else.
     return ("Reply with your PIN to confirm, or \"cancel\".\n"
             "_Delete your PIN message afterwards (press and hold → Delete → Delete for everyone)._"
-            + _approve_link_line(pa))
+            + _approve_link_line(pa, primary=False))
 
 
 def active_link_for(msisdn: str) -> WhatsAppLink | None:

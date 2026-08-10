@@ -238,3 +238,75 @@ class HandoffSurfaceTests(TestCase):
         html = res.content.decode()
         self.assertNotIn("<script>alert", html)
         self.assertNotIn('token=ab">', html)
+
+
+@override_settings(WHATSAPP=_WA_ON,
+                   ZITCH_LINKS={"WEBSITE": "https://zitch.ng", "APP": "https://zitch.ng/app",
+                                "SUPPORT_WA": "", "SUPPORT_EMAIL": "",
+                                "API_BASE": "https://api.zitch.test"})
+class BiometricPrimaryTests(TestCase):
+    """Biometric approval is the PREFERRED confirmation for anyone who has the
+    app — it proves the owner's finger or face, which a shoulder-surfed PIN
+    cannot. `known_devices` (written only on app sign-in) picks the framing; a
+    WhatsApp-only customer is not led to a door they can't open."""
+
+    def setUp(self):
+        self.user, _ = _user()
+
+    def _give_app(self):
+        from accounts.models import KnownDevice
+
+        KnownDevice.objects.create(user=self.user, device_id="dev-1", model="Pixel 7")
+
+    def test_an_app_customer_gets_biometric_first_and_pin_as_fallback(self):
+        from unittest.mock import patch
+
+        from whatsapp import router
+
+        self._give_app()
+        pa = _armed_transfer(self.user, state="bank")
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": True}) as sent:
+            router._arm_confirm(pa, self.user)  # noqa: SLF001
+        kwargs = sent.call_args.kwargs
+        body = kwargs.get("body") or sent.call_args.args[3]
+        # The message LEADS with the biometric approval…
+        self.assertLess(body.find("fingerprint or Face ID"), body.find("api.zitch.test"))
+        self.assertIn("Approve with your fingerprint", body)
+        # …and the Flow button is demoted to the fallback.
+        self.assertEqual(kwargs.get("cta"), "Use PIN instead")
+
+    def test_a_whatsapp_only_customer_keeps_pin_first(self):
+        from unittest.mock import patch
+
+        from whatsapp import router
+
+        pa = _armed_transfer(self.user, state="bank")   # no KnownDevice rows
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": True}) as sent:
+            router._arm_confirm(pa, self.user)  # noqa: SLF001
+        kwargs = sent.call_args.kwargs
+        body = kwargs.get("body") or sent.call_args.args[3]
+        # Summary first, the app offer second — and the default PIN CTA stands.
+        self.assertTrue(body.startswith("Send ₦5,000.00"))
+        self.assertIn("Have the Zitch app?", body)
+        self.assertEqual(kwargs.get("cta"), "")
+
+    def test_the_sms_rung_leads_with_biometric_for_an_app_customer(self):
+        from whatsapp.router import _confirm_prompt
+
+        self._give_app()
+        pa = _armed_transfer(self.user, state="pin")
+        pa.payload["otp_hash"] = "x"
+        prompt = _confirm_prompt(pa)
+        self.assertLess(prompt.find("fingerprint or Face ID"), prompt.find("6-digit code"))
+        self.assertIn("Or enter the *6-digit code*", prompt)
+
+    def test_the_sms_rung_stays_code_first_without_the_app(self):
+        from whatsapp.router import _confirm_prompt
+
+        pa = _armed_transfer(self.user, state="pin")
+        pa.payload["otp_hash"] = "x"
+        prompt = _confirm_prompt(pa)
+        self.assertTrue(prompt.startswith("🔐 Enter the *6-digit code*"))
+        self.assertIn("Have the Zitch app?", prompt)
