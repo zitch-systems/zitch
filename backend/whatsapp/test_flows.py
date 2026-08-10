@@ -681,6 +681,92 @@ class PublishedFlowJsonTests(unittest.TestCase):
                              f"{built['screen']} data keys drifted from the published JSON")
 
 
+class SendPayloadsMatchThePublishedScreensTests(TestCase):
+    """The endpoint's RESPONSES are already pinned to the published schema; these
+    pin the SENDS. The signup PIN send kept the retired "summary" key after
+    PIN_SCREEN moved to {amount, recipient, details, error} — an undeclared
+    property, which Meta rejects — so every signup PIN send failed from the
+    moment the new Flow was published, and signup silently fell down its
+    fallback rungs. Nothing server-side could see it: the schema lives at Meta.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import json as jsonlib
+        import pathlib as pl
+
+        super().setUpClass()
+        doc = jsonlib.loads((pl.Path(__file__).parent / "flow_assets" / "pin_flow.json").read_text())
+        cls.declared = {sc["id"]: set(sc["data"]) for sc in doc["screens"]}
+
+    def setUp(self):
+        self.user = _make_user()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="transfer", state="amount",
+            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+                     "bank_name": "GTBank", "name": "JOHN DOE", "pin_attempts": 0},
+            expires_at=timezone.now() + timedelta(minutes=5))
+
+    def _sent(self, fn, *args, **kwargs):
+        from whatsapp import router
+
+        calls = []
+
+        def capture(msisdn, token, **kw):
+            calls.append(kw)
+            return {"success": True}
+
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", side_effect=capture), \
+             patch.object(router, "reply"):
+            fn(*args, **kwargs)
+        self.assertTrue(calls, "no Flow message was sent")
+        return calls[-1]
+
+    def _assert_matches(self, kw):
+        screen, data = kw["screen"], kw["screen_data"]
+        self.assertEqual(set(data), self.declared[screen],
+                         f"{screen} send keys drifted from the published JSON")
+
+    def test_the_transfer_confirm(self):
+        from whatsapp import router
+
+        self._assert_matches(self._sent(router._send_pin_flow, self.pa, self.user))  # noqa: SLF001
+
+    def test_the_signup_pin(self):
+        from whatsapp import router
+        from whatsapp.models import WaOnboarding
+
+        ob = WaOnboarding.objects.create(
+            msisdn="2348099990000", step="pin",
+            payload={"first_name": "Ada", "last_name": "Eze", "email": "a@b.test"},
+            expires_at=timezone.now() + timedelta(minutes=15))
+        self._assert_matches(self._sent(router._arm_onboarding_pin, ob, ob.msisdn))  # noqa: SLF001
+
+    def test_the_pin_reset(self):
+        from whatsapp import router
+
+        self._assert_matches(self._sent(router._start_pin_reset, self.user, MSISDN))  # noqa: SLF001
+
+    def test_the_identity_and_account_otp_screens(self):
+        from whatsapp import router
+
+        self.pa.action_type = "kyc"
+        self.pa.save(update_fields=["action_type"])
+        self._assert_matches(self._sent(router._send_identity_flow, self.pa, "bvn"))  # noqa: SLF001
+        self._assert_matches(self._sent(router._send_account_otp_flow, self.pa))      # noqa: SLF001
+
+    def test_the_email_screens(self):
+        from whatsapp import router
+
+        self.pa.action_type = "kyc"
+        self.pa.save(update_fields=["action_type"])
+        self._assert_matches(self._sent(router._send_email_flow, self.pa, "address"))  # noqa: SLF001
+        self.user.email = "ada@example.com"
+        self.user.save(update_fields=["email"])
+        self._assert_matches(self._sent(router._send_email_flow, self.pa, "code"))     # noqa: SLF001
+
+
 class PemNormalisationTests(unittest.TestCase):
     """A PEM is only valid with real line breaks, and secret-management UIs mangle
     them in several different ways. Each variant below looks correct in the
