@@ -285,3 +285,71 @@ class WemaVasRoutingTests(TestCase):
             P.vtu_requery("NO-SUCH-REF")
         mv.assert_called_once()
         mw.assert_not_called()
+
+
+PREMBLY_LIVE = {"BASE_URL": "https://api.prembly.com", "API_KEY": "k", "APP_ID": "a"}
+PREMBLY_OFF = {"BASE_URL": "https://api.prembly.com", "API_KEY": "", "APP_ID": ""}
+
+
+class NinIdentityRailTests(SimpleTestCase):
+    """NIN is the one identity the NUBAN flow cannot verify — it name-matches
+    exactly ONE, in practice the BVN that opened the account. Without a second
+    rail every NIN falls to the operator review queue and nobody can spend until
+    a human clears them. Prembly has the standalone lookup; these pin down that
+    it is used, and that it fails CLOSED, because this result lifts a tier."""
+
+    def _resp(self, payload, status=200):
+        class R:
+            status_code = status
+
+            def json(self):
+                return payload
+        return R()
+
+    @override_settings(PREMBLY=PREMBLY_OFF)
+    def test_without_prembly_it_falls_back_to_the_previous_behaviour(self):
+        with patch("utility.wema.verify_nin", return_value={"success": True, "mock": True}) as wema:
+            self.assertTrue(P.verify_nin("12345678901", name="ADA EZE")["success"])
+        wema.assert_called_once()
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_matching_record_verifies(self):
+        payload = {"status": True, "data": {"firstname": "ADA", "surname": "EZE"}}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)):
+            result = P.verify_nin("12345678901", name="Ada Eze")
+        self.assertTrue(result["success"])
+        self.assertEqual((result["first_name"], result["last_name"]), ("ADA", "EZE"))
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_different_person_is_refused_without_naming_them(self):
+        """The resolved name belongs to whoever owns the NIN, who may not be the
+        person asking — refusing must not tell the asker who they hit."""
+        payload = {"status": True, "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)):
+            result = P.verify_nin("12345678901", name="Ada Eze")
+        self.assertFalse(result["success"])
+        self.assertNotIn("CHINEDU", result["message"])
+        self.assertNotIn("OKAFOR", result["message"])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_record_with_no_name_is_not_a_pass(self):
+        payload = {"status": True, "data": {"dob": "1990-01-01"}}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)):
+            self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_an_unreachable_or_malformed_provider_fails_closed(self):
+        import requests as R
+
+        for effect in (R.RequestException("down"), ValueError("not json")):
+            with patch("utility.providers.requests.post", side_effect=effect):
+                self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
+        with patch("utility.providers.requests.post",
+                   return_value=self._resp({"status": False, "message": "not found"})):
+            self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_malformed_nin_never_reaches_the_provider(self):
+        with patch("utility.providers.requests.post") as post:
+            self.assertFalse(P.verify_nin("123", name="Ada Eze")["success"])
+        post.assert_not_called()
