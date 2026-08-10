@@ -321,7 +321,11 @@ class ChannelTests(TestCase):
         link = WhatsAppLink.objects.get(wa_msisdn=MSISDN)
         self.assertEqual(link.status, WhatsAppLink.ACTIVE)
         self.assertEqual(link.user_id, self.user.id)
-        self.assertIn("Linked", self.last_reply())
+        # Asserted across the conversation, not on the last message: linking now
+        # sends the confirmation and then the menu, so the confirmation is not
+        # last. What matters is that it was said.
+        self.assertIn("Linked", " ".join(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).values_list("text", flat=True)))
 
     def test_link_rejected_from_unregistered_number(self):
         # Default user phone (08010000001) does NOT match MSISDN — a leaked code
@@ -2162,7 +2166,8 @@ class LinkCodeTests(TestCase):
         _, body = self.start()
         code = body["code"]
         self.inbound(f"LINK {code}", "lk1")
-        self.assertIn("Linked!", self.last_reply())
+        self.assertIn("Linked!", " ".join(WaMessageLog.objects.filter(
+            direction=WaMessageLog.OUT).values_list("text", flat=True)))
         # Replaying it links nothing — it was consumed.
         self.inbound(f"LINK {code}", "lk2", msisdn="2349099999999")
         self.assertFalse(WhatsAppLink.objects.filter(
@@ -2662,3 +2667,53 @@ class LimitReferralTests(TestCase):
         self.inbound("999999999", "R4")            # far over any tier cap
         r = self.last_reply()
         self.assertIn("https://zitch.ng/app", r)
+
+
+class ChatLockTipTests(TestCase):
+    """WhatsApp Flows has no biometric component and the Cloud API cannot request
+    or verify a scan — Meta keeps biometrics on-device. Chat Lock is the one real
+    WhatsApp biometric available, and it is the customer's own setting: we can
+    teach it, never require or check it, and nothing in the money path depends
+    on it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+    link = ChannelTests.link
+
+    def test_asking_for_biometrics_explains_whatsapps_own_chat_lock(self):
+        self.link()
+        for word in ("biometrics", "fingerprint", "chat lock", "face id"):
+            self.inbound(word, f"cl-{word}")
+            r = self.last_reply()
+            self.assertIn("Chat lock", r)
+            self.assertIn("fingerprint", r.lower())
+
+    def test_the_tip_does_not_claim_it_secures_payments(self):
+        """It protects the thread, not the money. Implying otherwise would sell a
+        control we cannot enforce as though it gated a transaction."""
+        self.link()
+        self.inbound("biometric", "cl-1")
+        r = self.last_reply()
+        self.assertIn("Payments still need your PIN", r)
+
+    def test_linking_surfaces_the_tip_then_the_menu(self):
+        """The moment the thread becomes a banking channel is when this is worth
+        reading — not whenever someone goes looking for it."""
+        user, _ = make_user(phone="08010000088", email="lock@zitch.test")
+        WhatsAppLink.objects.create(user=user, status=WhatsAppLink.PENDING,
+                                    link_code="ABC123",
+                                    expires_at=timezone.now() + timedelta(minutes=30))
+        # Must arrive from the account's own number — the router refuses a code
+        # sent from anywhere else.
+        self.inbound("LINK ABC123", "cl-link", msisdn="2348010000088")
+        said = " ".join(
+            WaMessageLog.objects.filter(msisdn="2348010000088",
+                                        direction=WaMessageLog.OUT)
+            .values_list("text", flat=True))
+        self.assertIn("Linked!", said)
+        self.assertIn("Chat lock", said)
+        self.assertIn("what would you like to do", said.lower())   # menu still sent
