@@ -848,7 +848,9 @@ def credit_wallet(amount_naira, reference: str, narration: str, *, destination_a
     """FundWallet — push a credit into a wallet from the channel funding account.
 
     Requires ``securityInfo``. Used to credit a user's wallet from our settlement
-    balance (NOT for detecting third-party deposits — that's polling)."""
+    balance (NOT for detecting third-party deposits — that's polling). Poll
+    confirm_credit_status(reference) when the initial result is ambiguous.
+    """
     if not wema_live():
         if _mock_blocked():
             return {"success": False, "message": "Wallet crediting is not configured"}
@@ -864,8 +866,26 @@ def credit_wallet(amount_naira, reference: str, narration: str, *, destination_a
         }
         data = _post("credit", "/api/IntraBankTransfer/FundWallet", body).json()
         return _parse_transfer(data, reference)
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+    except (requests.RequestException, ValueError) as exc:
+        # FundWallet is non-idempotent.  A transport failure or invalid response
+        # may happen after ALAT accepted the credit, so never report a retryable
+        # terminal failure until the authenticated credit status endpoint resolves it.
+        return _unreachable(exc, pending=True)
+
+
+def confirm_credit_status(reference: str) -> dict:
+    """Poll terminal status of a FundWallet credit by our transactionReference."""
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
+    try:
+        data = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}").json()
+        outer = data.get("result", {}) or {}
+        result = outer.get("data", {}) or {} if isinstance(outer, dict) else {}
+        return _transfer_result(data, reference, result if isinstance(result, dict) else {})
+    except (requests.RequestException, ValueError) as exc:
+        # A failed status lookup cannot disprove the credit; retain PENDING and
+        # reconcile again rather than issuing a duplicate FundWallet request.
+        return _unreachable(exc, pending=True)
 
 
 # ---------------------------------------------------------------------------
