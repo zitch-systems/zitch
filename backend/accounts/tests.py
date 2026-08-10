@@ -626,7 +626,7 @@ class FullJourneyE2ETests(TestCase):
         tok = b["access_token"]
         self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123")[0], 200)
         self.assertEqual(self.post("/api/set-password/", email=P, password="hacked12345")[0], 401)  # no token
-        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="1234")[0], 200)
+        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="123456")[0], 200)
         s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123")
         self.assertEqual(s, 200)
         tok = b["access_token"]
@@ -655,7 +655,7 @@ class FullJourneyE2ETests(TestCase):
 
         # --- spend + history shape the app depends on ---
         self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
-                                   network="1", phone=P, transaction_pin="1234")[0], 200)
+                                   network="1", phone=P, transaction_pin="123456")[0], 200)
         self.assertEqual(self.post("/api/wallet_balance/", access_token=tok)[1]["wallet"], "49000.00")
         txns = self.post("/api/user-transaction-history/", access_token=tok)[1]["all_site_transactions"]
         self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(txns[0]))
@@ -665,14 +665,14 @@ class FullJourneyE2ETests(TestCase):
         get_or_create_wallet(recip)
         self.assertEqual(self.post("/api/transfer/resolve/", access_token=tok, identifier=R)[0], 200)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="5000", transaction_pin="1234")[0], 200)
+                                   amount="5000", transaction_pin="123456")[0], 200)
         self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
 
         # --- tier limits ---
         _credit(user_obj, Decimal("200000"), "Wallet top-up")
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="1234")[0], 403)
+                                   amount="150000", transaction_pin="123456")[0], 403)
         # ...face + address raise the user to Tier 2 (₦200k), which also satisfies
         # the >=₦100k face step-up, so the same transfer now goes through.
         self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
@@ -680,24 +680,24 @@ class FullJourneyE2ETests(TestCase):
                                    address="12 Allen Avenue", city="Ikeja", state="Lagos",
                                    document="ZmFrZQ==")[1]["tier"], 2)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="1234")[0], 200)
+                                   amount="150000", transaction_pin="123456")[0], 200)
 
         # --- loan, savings, card, betting, exam ---
         self.assertEqual(self.post("/api/loans/request/", access_token=tok, amount="100000",
-                                   tenure_days=30, transaction_pin="1234")[0], 200)
+                                   tenure_days=30, transaction_pin="123456")[0], 200)
         self.assertEqual(self.post("/api/loans/repay/", access_token=tok, amount="200000",
-                                   transaction_pin="1234")[1]["loan"]["status"], "repaid")
+                                   transaction_pin="123456")[1]["loan"]["status"], "repaid")
         self.assertEqual(self.post("/api/savings/create/", access_token=tok, amount="10000",
-                                   days=90, transaction_pin="1234")[0], 200)
+                                   days=90, transaction_pin="123456")[0], 200)
         self.assertGreaterEqual(len(self.post("/api/savings/list/", access_token=tok)[1]["plans"]), 1)
         self.assertEqual(self.post("/api/cards/create/", access_token=tok)[0], 200)
         self.assertEqual(self.post("/api/cards/fund/", access_token=tok, amount="5000",
-                                   transaction_pin="1234")[1]["card"]["balance"], "5000.00")
-        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="1234")[0], 200)
+                                   transaction_pin="123456")[1]["card"]["balance"], "5000.00")
+        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="123456")[0], 200)
         self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
-                                   user_id="ZB99999", amount="1000", transaction_pin="1234")[0], 200)
+                                   user_id="ZB99999", amount="1000", transaction_pin="123456")[0], 200)
         self.assertEqual(self.post("/api/exams/buy/", access_token=tok, exam="waec",
-                                   quantity=1, phone=P, transaction_pin="1234")[0], 200)
+                                   quantity=1, phone=P, transaction_pin="123456")[0], 200)
 
         # --- name lookups require auth ---
         self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)

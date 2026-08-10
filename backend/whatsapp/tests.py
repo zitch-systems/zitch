@@ -2048,11 +2048,11 @@ class SignupPinPrivacyTests(TestCase):
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
         # Set again, then confirm: the account is created with that PIN.
-        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
-        r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
+        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
         self.assertEqual(r3["screen"], "SUCCESS")
         u = User.objects.get(phone=_local_phone(m))
-        self.assertTrue(u.check_transaction_pin("2468"))
+        self.assertTrue(u.check_transaction_pin("246810"))
         self.assertIn("Welcome to Zitch", WaMessageLog.objects.filter(
             msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome").first().text)
 
