@@ -95,8 +95,7 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
             log.exception("txn_alert_email_failed ref=%s", txn.reference)
     if _alerts_on("sms") and getattr(user, "phone", ""):
         try:
-            # One segment where possible — a multi-part alert costs multiples.
-            send_sms(user.phone, f"Zitch: {subject}. Ref {txn.reference}.")
+            send_sms(user.phone, _sms_alert(txn, reversal=reversal))
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_sms_failed ref=%s", txn.reference)
     _whatsapp_alert(txn, subject, body)
@@ -198,3 +197,60 @@ def _defer(txn, flag: str, *, reversal: bool, requires: str = "") -> None:
             log.exception("txn_alert_failed ref=%s flag=%s", txn.reference, flag)
 
     db_transaction.on_commit(_fire)
+
+
+#: Nigerian bank alerts all follow one shape, and customers read them by
+#: position rather than by reading them: direction and amount on line one, the
+#: masked account, the description, the balance, the timestamp. Matching it
+#: means a Zitch alert is scanned the same way as the one from their bank
+#: sitting directly above it, instead of asking them to learn a second format.
+_SMS_MAX = 160          # one GSM-7 segment; a multi-part alert costs multiples
+
+
+def _sms_money(amount, currency: str = "NGN") -> str:
+    """Amounts for SMS, written the way the bank writes them: "NGN 4,300.00".
+
+    Not cosmetic. "₦" is outside GSM-7, and one character outside it forces the
+    ENTIRE message into UCS-2, where a segment is 70 characters rather than 160
+    — so a single naira sign turns every alert into two billable messages. This
+    is very likely why the bank's own alerts spell out NGN.
+    """
+    return f"{currency} {amount:,.2f}"
+
+
+def _mask_account(number: str) -> str:
+    """0228565772 -> 0228****72, the masking the bank's own alerts use."""
+    digits = "".join(ch for ch in str(number or "") if ch.isdigit())
+    if len(digits) < 6:
+        return digits or "—"
+    return f"{digits[:4]}****{digits[-2:]}"
+
+
+def _sms_alert(txn, *, reversal: bool = False) -> str:
+    """The alert in the bank's own format.
+
+    A reversal is a CR whatever the row's direction says — the customer is being
+    given money back, and calling it a debit because the original was one would
+    be the single most alarming way to phrase good news.
+    """
+    from .services import get_or_create_wallet
+
+    credit = reversal or txn.direction == txn.IN
+    try:
+        wallet = get_or_create_wallet(txn.user)
+        account, balance = wallet.account_number, _sms_money(wallet.balance)
+    except Exception:  # noqa: BLE001 — an alert must never depend on reading a wallet
+        account, balance = "", ""
+
+    desc = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
+            or (txn.service or "").strip() or ("Credit" if credit else "Debit"))
+    if reversal:
+        desc = f"REVERSAL-{desc}"
+
+    head = (f"{'CR' if credit else 'DR'}:{_sms_money(txn.amount, txn.currency)}\n"
+            f"Acct No:{_mask_account(account)}\n")
+    tail = f"\nBal :{balance}\n{txn.created:%d-%m-%Y %H:%M:%S}"
+    # Trim the description rather than the balance or the timestamp: those are
+    # what the customer checks, and a second segment costs a second message.
+    room = _SMS_MAX - len(head) - len(tail) - len("Desc :")
+    return head + "Desc :" + desc[:max(room, 0)].strip() + tail
