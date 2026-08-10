@@ -78,6 +78,29 @@ class PreflightGateTests(TestCase):
         self.assertIn("securityInfo", out)
         self.assertEqual(code, 1)
 
+    def test_short_security_info_blocks_go_live(self):
+        diag = dict(_LIVE_DIAG, security_info_strong=False)
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("at least 32 characters", out)
+        self.assertEqual(code, 1)
+
+    @override_settings(VAS_PROVIDER="wema")
+    def test_explicit_wema_vas_requires_airtime_product_key(self):
+        diag = dict(_LIVE_DIAG, product_keys_set={"wallet": True, "airtime": False})
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("WEMA_AIRTIME_KEY", out)
+        self.assertEqual(code, 1)
+
+    @override_settings(CARD_PROVIDER="wema", WEMA={**_SAFE_CALLBACKS, "CARD_PRODUCT_KEY": ""})
+    def test_wema_cards_require_subscription_and_product_id(self):
+        diag = dict(_LIVE_DIAG, product_keys_set={"wallet": True, "card": True})
+        with mock.patch(_DIAG, return_value=diag), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("WEMA_CARD_PRODUCT_KEY", out)
+        self.assertEqual(code, 1)
+
     @override_settings(WEMA={**_SAFE_CALLBACKS, "CALLBACK_ENFORCE_IPS": False})
     def test_callback_ip_allowlist_is_a_hard_gate(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
