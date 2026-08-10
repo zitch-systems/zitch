@@ -2704,6 +2704,11 @@ class AiConsentTests(TestCase):
     last_reply = ChannelTests.last_reply
 
     def test_customer_can_turn_smart_replies_on_and_off(self):
+        # On by default now: a consent nobody could discover was an off switch
+        # nobody could find. Turning it OFF is the customer's live choice.
+        self.assertTrue(self.link_row.ai_enabled)
+        self.inbound("ai off", "a-pre")
+        self.link_row.refresh_from_db()
         self.assertFalse(self.link_row.ai_enabled)
         self.inbound("ai", "a0")
         self.assertIn("currently *off*", self.last_reply())
@@ -2725,10 +2730,11 @@ class AiConsentTests(TestCase):
         from whatsapp.models import ConversationState
 
         convo = ConversationState.for_msisdn(MSISDN)
-        self.assertFalse(ai_active(self.link_row, convo))   # consent missing
-        self.link_row.ai_enabled = True
+        self.assertTrue(ai_active(self.link_row, convo))    # on by default
+        # Opting OUT is still honoured, and still the customer's to make.
+        self.link_row.ai_enabled = False
         self.link_row.save(update_fields=["ai_enabled"])
-        self.assertTrue(ai_active(self.link_row, convo))
+        self.assertFalse(ai_active(self.link_row, convo))
 
     @patch("whatsapp.ai.llm_available", return_value=True)
     def test_the_global_kill_switch_still_wins(self, _avail):
@@ -3209,3 +3215,65 @@ class HistoryAndCreditAlertTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 credit(self.user, Decimal("100"), "Deposit")
         self.assertEqual(get_or_create_wallet(self.user).balance, before + Decimal("100"))
+
+
+class ArmedConfirmDoesNotTrapTests(TestCase):
+    """Asking for a balance, then an account number, then a different transfer,
+    each answered with "tap the secure screen" and no way forward but a word the
+    customer was never told first — an unconfirmed payment has moved no money,
+    so a clear new instruction simply replaces it."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _armed(self):
+        from whatsapp.flows import FLOW_PIN_STATE
+        from whatsapp.router import _new_flow
+
+        return _new_flow(self.user, MSISDN, "airtime", FLOW_PIN_STATE,
+                         {"pin_attempts": 0, "net": "1", "phone": "08031234567", "amount": "200.00"})
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_new_command_replaces_the_unconfirmed_payment(self):
+        self._armed()
+        out = self._say("balance")
+        self.assertIn("₦", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    def test_a_second_transfer_instruction_also_gets_through(self):
+        self._armed()
+        self._say("send 3k to 7066737466")
+        self.assertNotIn("secure screen", self._say("menu"))
+
+    def test_a_stray_number_is_not_treated_as_a_new_command(self):
+        """A mistyped confirmation code must not cancel the payment it was for."""
+        self._armed()
+        self.assertIn("secure screen", self._say("123456"))
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+
+class NoPinIsSentToSetOneTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user()
+        self.user.transaction_pin = ""
+        self.user.save(update_fields=["transaction_pin"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def test_an_account_without_a_pin_is_told_how_to_set_one(self):
+        """Arming a confirm produced a screen the customer could never satisfy —
+        which is exactly what "No transaction PIN set on this account" was."""
+        from whatsapp.router import _arm_confirm, _new_flow
+
+        pa = _new_flow(self.user, MSISDN, "airtime", "pin", {"pin_attempts": 0})
+        self.assertFalse(_arm_confirm(pa, self.user))
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        self.assertIn("reset pin", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())

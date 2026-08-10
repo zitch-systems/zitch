@@ -778,13 +778,13 @@ class PerUserAiToggleTests(TestCase):
                                 HTTP_AUTHORIZATION="Bearer " + self._token())
 
     def test_support_can_grant_and_revoke_it(self):
-        self.assertFalse(self.link.ai_enabled)          # off by default: it is the customer's consent
-        self.assertEqual(self._act("ai_on").status_code, 200)
-        self.link.refresh_from_db()
-        self.assertTrue(self.link.ai_enabled)
+        self.assertTrue(self.link.ai_enabled)           # on by default
         self.assertEqual(self._act("ai_off").status_code, 200)
         self.link.refresh_from_db()
         self.assertFalse(self.link.ai_enabled)
+        self.assertEqual(self._act("ai_on").status_code, 200)
+        self.link.refresh_from_db()
+        self.assertTrue(self.link.ai_enabled)
 
     def test_it_is_audited_both_ways(self):
         from whatsapp.models import AuditLog
@@ -793,6 +793,9 @@ class PerUserAiToggleTests(TestCase):
         entry = AuditLog.objects.filter(action="user.wa_ai").order_by("-created").first()
         self.assertIsNotNone(entry)
         self.assertEqual(entry.after.get("ai_enabled"), True)
+        self._act("ai_off")
+        off = AuditLog.objects.filter(action="user.wa_ai").order_by("-created").first()
+        self.assertEqual(off.after.get("ai_enabled"), False)
 
     def test_an_unlinked_customer_is_refused_rather_than_silently_ignored(self):
         self.link.delete()

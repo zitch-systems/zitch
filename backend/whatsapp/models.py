@@ -27,7 +27,13 @@ class WhatsAppLink(models.Model):
     link_code = models.CharField(max_length=64, blank=True, default="", db_index=True)
     # Explicit opt-in: configuring an LLM key must not silently export every
     # customer's free-form chat to a third party.
-    ai_enabled = models.BooleanField(default=False)           # per-user AI scope (§8)
+    # On by default. It began as opt-in consent, but the effect in practice was
+    # that every customer got "Sorry, I didn't get that" for natural language
+    # while the console reported the AI as live — a consent nobody could discover
+    # is not a choice, it is an off switch nobody can find. The customer can
+    # still turn it off ("ai off"), and the global kill switch still governs
+    # everyone at once.
+    ai_enabled = models.BooleanField(default=True)            # per-user AI scope (§8)
     marketing_opt_in = models.BooleanField(default=False)     # broadcasts (§9)
     expires_at = models.DateTimeField(null=True, blank=True)  # link_code TTL
     linked_at = models.DateTimeField(null=True, blank=True)
