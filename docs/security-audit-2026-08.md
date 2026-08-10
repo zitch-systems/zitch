@@ -175,6 +175,26 @@ caps, daily caps, velocity. This is a real asymmetry and should be a decision
 rather than an accident — a WhatsApp-native signal (e.g. step up on a large
 transfer from a link created in the last N hours) would close it.
 
+**WhatsApp's own biometrics exist, but not for us.** Verified against the
+current Flow JSON component set (Text, Input, Selection, Display, Navigation,
+Logic): there is no biometric, fingerprint or device-authentication component,
+and the Cloud API has no endpoint to request or verify a scan. WhatsApp's
+consumer biometrics — app lock, **chat lock**, passkey sign-in — run entirely
+on-device against the OS API; Meta never receives the biometric and a business
+is never told one happened. So there is nothing to require, verify, or treat as
+a control.
+
+What that leaves is a split worth stating precisely:
+
+- **Chat Lock** — the customer can put their fingerprint/Face ID on the Zitch
+  conversation itself (chat → *Chat lock*). Real WhatsApp biometrics, and the
+  channel now teaches it on linking and on `lock` / `biometrics`. It protects
+  the thread from someone holding an unlocked phone. It is **advisory only**:
+  unrequireable, unverifiable, and nothing in the money path may depend on it.
+- **The payment** — authorised by the PIN in the encrypted Flow, or by a
+  verified biometric through the app hand-off below. Both are things we can
+  actually prove.
+
 **WhatsApp cannot take a biometric in-channel — so the confirmation can hand
 off to the app, where one exists.** The Cloud API exposes no biometric
 capability to a business and Flows have no such component; the PIN (collected in

@@ -83,6 +83,28 @@ def _more_info_block() -> str:
     return "\n".join(lines)
 
 
+def _chat_lock_tip() -> str:
+    """How to put WhatsApp's OWN fingerprint/Face ID lock on this conversation.
+
+    This is the only real "biometric on WhatsApp" that exists. Flows has no
+    biometric component and the Cloud API has no way to request or verify a
+    scan — Meta keeps biometrics entirely on-device, so a business never learns
+    that one happened. Chat Lock is therefore something we can TEACH but never
+    require, check, or treat as a control: it protects the thread from someone
+    holding an unlocked phone, and nothing in the money path may depend on it.
+
+    The payment itself is still authorised by the PIN (in the encrypted Flow) or
+    by a verified biometric through the app hand-off, both of which we can prove.
+    """
+    return ("🔒 *Lock this chat with your fingerprint*\n"
+            "WhatsApp can require your fingerprint or Face ID before this "
+            "conversation will even open:\n"
+            "• Tap our name at the top → *Chat lock* → turn it on.\n\n"
+            "That protects your Zitch chat if someone gets hold of your unlocked "
+            "phone. Payments still need your PIN or a fingerprint check in the "
+            "Zitch app.")
+
+
 def _upgrade_block(user) -> str:
     """What to do about a cap you just hit, appended to every limit refusal.
 
@@ -697,6 +719,9 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _do_account_details(user, msisdn)
     if low in ("support", "customer care", "care", "contact", "contact us", "info", "more info"):
         return _do_support(msisdn)
+    if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
+               "biometrics", "secure chat"):
+        return reply(msisdn, _chat_lock_tip())
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
         return _start_kyc(user, msisdn)
     if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
@@ -771,7 +796,12 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         link.linked_at = timezone.now()
         link.save(update_fields=["wa_msisdn", "status", "link_code", "linked_at"])
         name = (link.user.first_name or "there").strip()
-        return reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n" + menu_text())
+        # The moment this thread becomes a banking channel is the moment the
+        # chat-lock tip is worth reading, so it rides on the link confirmation
+        # rather than waiting for someone to go looking for it.
+        reply(msisdn, f"✅ *Linked!* Hi {name}, your WhatsApp is now connected to Zitch.\n\n"
+                      + _chat_lock_tip())
+        return send_menu(msisdn)
 
     # 3. Brand-new number: offer to create an account or link an existing one.
     if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started"):
