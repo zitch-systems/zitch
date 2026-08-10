@@ -246,8 +246,16 @@ is logged and swallowed: an alert must never fail a payment that succeeded.
 
 ### Approving with a fingerprint — the deep-link hand-off
 
-Every money confirm (Flow or SMS-code rung alike) also offers *"Have the Zitch
-app? Approve with your fingerprint or Face ID"* with an https link. WhatsApp
+Biometric approval is the **primary** confirmation for any customer who has the
+app: their confirm message *leads* with *"Approve with your fingerprint or Face
+ID"* and the Flow's own button is demoted to *"Use PIN instead"*. Whether an
+account has the app is read from `KnownDevice` rows (written only on app
+sign-in), and it picks the framing only — both channels stay live on every
+confirm. A WhatsApp-only customer is not led to a door they can't open: for
+them the message stays PIN-first with the app offer underneath (the bounce
+page's store links do the recruiting).
+
+Every money confirm (Flow or SMS-code rung alike) carries the https link. WhatsApp
 renders only http(s) links as tappable, so the link goes to
 `/wa/approve/<token>` on this service, which immediately bounces into
 `zitch://waapprove` (store links as the no-app fallback). In the app, the
