@@ -25,7 +25,10 @@ SYSTEM_PROMPT = (
     "meter number, or smartcard number. If a transfer names a person without an "
     "account number, set beneficiary_ref and leave account fields null. If "
     "airtime/data has no target phone, leave phone null. If the message isn't a "
-    "supported action, call clarify."
+    "supported action, call clarify — and put the reason in plain words the "
+    "customer will read, saying what you need from them. Zitch cannot read the "
+    "phone's contacts, so a name only works if it is a saved Zitch beneficiary; "
+    "otherwise ask for the number."
 )
 
 # Anthropic tool schemas (the spec's §6 input_schemas verbatim).
@@ -85,8 +88,10 @@ TOOLS = [
                           "amount_side": {"type": "string", "enum": ["sell", "buy"], "default": "sell"}},
                       "required": ["from_currency", "to_currency", "amount"]}},
     {"name": "clarify",
-     "description": "The message isn't a supported action or is ambiguous.",
-     "input_schema": {"type": "object", "properties": {"reason": {"type": "string"}}}},
+     "description": ("The message isn't a supported action or is ambiguous. `reason` is "
+                     "shown to the customer verbatim, so write it to them, not about them."),
+     "input_schema": {"type": "object", "properties": {"reason": {"type": "string"}},
+                      "required": ["reason"]}},
 ]
 
 

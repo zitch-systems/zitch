@@ -156,8 +156,8 @@ MENU_BODY = (
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
-    "Or type naturally — reply *ai on* first to switch on smart replies.\n"
-    "Reply \"cancel\" anytime."
+    "Or just type what you want — \"send 5k to Ada\", \"2k airtime\".\n"
+    "Reply \"cancel\" anytime, or *ai off* to stick to the menu."
 )
 
 
@@ -860,6 +860,13 @@ def handle_inbound(msisdn: str, text: str) -> None:
             _record_intent(msisdn, intent)
             if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent):
                 return
+            # The model knowing WHY it could not act is the useful part, and we
+            # were discarding it for a generic menu. "Sorry, I didn't get that"
+            # under a request the assistant understood perfectly well — and could
+            # explain — reads as broken rather than as a limit.
+            reason = str((intent.get("input") or {}).get("reason") or "").strip()
+            if reason:
+                return reply(msisdn, f"🤔 {reason}\n\n" + menu_text())
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
 
 
