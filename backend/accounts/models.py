@@ -113,8 +113,24 @@ class User(AbstractUser):
     # to an absolute URL via MEDIA_URL when returned to the app.
     avatar = models.CharField(max_length=255, blank=True, default="")
 
+    #: True for accounts still holding a 4-digit PIN from before the 6-digit
+    #: rule. They may still sign in and receive money; they must set a new PIN
+    #: before money can leave. Set by data migration, cleared by
+    #: set_transaction_pin.
+    pin_reset_required = models.BooleanField(default=False)
+
+    #: Transaction PINs are 6 digits. Enforced at the entry points rather than
+    #: here, so existing 4-digit hashes stay verifiable — an account keeps
+    #: working right up until it is asked to set a new one.
+    PIN_LENGTH = 6
+
     def set_transaction_pin(self, raw_pin: str) -> None:
         self.transaction_pin = make_password(raw_pin)
+        # Setting a PIN is what clears the reset demand, whichever surface set
+        # it. The flag is the only thing that knows a hash is a short old one:
+        # a hash cannot be measured, so the length has to be recorded when it
+        # changes rather than inferred later.
+        self.pin_reset_required = False
 
     def check_transaction_pin(self, raw_pin: str) -> bool:
         if not self.transaction_pin:

@@ -282,7 +282,7 @@ def handle_flow_request(payload: dict) -> dict:
 
 def _ob_summary(ob) -> str:
     return ("Re-enter your new PIN to confirm" if ob.payload.get("flow_pin_hash")
-            else "Create a 4-digit PIN to authorise payments")
+            else "Create a 6-digit PIN to authorise payments")
 
 
 def _submit_onboarding_pin(ob, data: dict) -> dict:
@@ -296,8 +296,8 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
     from .router import finish_onboarding_from_flow
 
     pin = str(data.get("pin", "")).strip()
-    if not re.fullmatch(r"\d{4}", pin):
-        return _pin_screen(_ob_summary(ob), error="Your PIN must be exactly 4 digits.")
+    if not re.fullmatch(r"\d{6}", pin):
+        return _pin_screen(_ob_summary(ob), error="Your PIN must be exactly 6 digits.")
 
     held = ob.payload.get("flow_pin_hash") or ""
     if not held:
@@ -431,6 +431,9 @@ def _submit_pin(token: str, data: dict) -> dict:
     pin = str(data.get("pin", "")).strip()
     summary = _pa_screen_fields(pa)
 
+    if pa.action_type == "setpin":
+        return _submit_new_pin(pa, user, pin)
+
     ok, code, message = evaluate_transaction_pin(user, pin)
     if not ok:
         # Lockout is enforced inside evaluate_transaction_pin (row-locked, shared
@@ -447,3 +450,49 @@ def _submit_pin(token: str, data: dict) -> dict:
         _clear_actions(pa.msisdn)
         return _success_screen("Something went wrong completing that. If you were charged it will auto-reverse.")
     return _success_screen(outcome)
+
+
+def _set_pin_screen(pa, error: str = "") -> dict:
+    holding = bool(pa.payload.get("new_pin_hash"))
+    return _pin_screen({"amount": "Re-enter to confirm" if holding else "Create a 6-digit PIN",
+                        "recipient": "",
+                        "details": "Both entries must match" if holding
+                                   else "You'll enter it again to confirm"},
+                       error=error)
+
+
+def _submit_new_pin(pa, user, pin: str) -> dict:
+    """Set-then-confirm across two round-trips on the same published screen, so a
+    new PIN is typed into the encrypted Flow and never becomes a chat message.
+    The first submit holds only a hash; the second must match it.
+
+    Mirrors the signup PIN deliberately — one shape for "choose a PIN", whether
+    it is the first one or a replacement.
+    """
+    import re
+
+    from django.contrib.auth.hashers import make_password
+
+    from .router import _clear_actions, reply
+
+    if not re.fullmatch(r"\d{6}", pin):
+        return _set_pin_screen(pa, error="Your PIN must be exactly 6 digits.")
+
+    held = pa.payload.get("new_pin_hash") or ""
+    if not held:
+        pa.payload["new_pin_hash"] = make_password(pin)   # never the raw PIN
+        pa.save(update_fields=["payload"])
+        return _set_pin_screen(pa)
+
+    from django.contrib.auth.hashers import check_password
+    if not check_password(pin, held):
+        pa.payload["new_pin_hash"] = ""                   # start the pair over
+        pa.save(update_fields=["payload"])
+        return _set_pin_screen(pa, error="Those didn't match — choose your PIN again.")
+
+    user.set_transaction_pin(pin)                         # also clears pin_reset_required
+    user.save(update_fields=["transaction_pin", "pin_reset_required"])
+    _clear_actions(pa.msisdn)
+    reply(pa.msisdn, "✅ *Your new 6-digit PIN is set.* Use it to authorise payments here "
+                     "and in the Zitch app — it's one PIN for both.")
+    return _success_screen("PIN set ✅ — see the chat.")

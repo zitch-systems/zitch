@@ -828,6 +828,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
+    if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
+        return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
         return _start_kyc(user, msisdn)
     if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
@@ -1025,17 +1027,17 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
         _onboard_to(ob, FLOW_PIN_STATE)
         res = send_flow(
             msisdn, sign_onboarding_token(ob),
-            header="Set your PIN", body="Choose the 4-digit PIN you'll use to authorise payments.",
+            header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
             screen=PIN_SCREEN,
-            screen_data={"summary": "Create a 4-digit PIN to authorise payments", "error": ""},
+            screen_data={"summary": "Create a 6-digit PIN to authorise payments", "error": ""},
         )
         if res.get("success"):
-            return reply(msisdn, "🔐 Tap the secure screen above to set your *4-digit PIN*. "
+            return reply(msisdn, "🔐 Tap the secure screen above to set your *6-digit PIN*. "
                                  "It's typed privately and never appears in this chat.")
         log.warning("wa_onboarding_pin_flow_failed msisdn=%s", msisdn)
     if _pin_in_chat_allowed():
         _onboard_to(ob, "pin")
-        return reply(msisdn, "Create a *4-digit PIN* to authorise payments (any 4 digits — keep it secret).")
+        return reply(msisdn, "Create a *6-digit PIN* to authorise payments (any 6 digits — keep it secret).")
     # No secure channel: finish the signup without a PIN rather than ask for one
     # in a chat that keeps it forever. Everything that spends money already
     # requires a PIN, so the account is simply not spendable until it is set.
@@ -1088,16 +1090,16 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
         ob.payload["email"] = email
         return _arm_onboarding_pin(ob, msisdn)
     if ob.step == "pin":
-        if not re.fullmatch(r"\d{4}", val):
-            return reply(msisdn, "Your PIN must be exactly 4 digits. Try again.")
+        if not re.fullmatch(r"\d{6}", val):
+            return reply(msisdn, "Your PIN must be exactly 6 digits. Try again.")
         ob.payload["pin_hash"] = make_password(val)  # never store the raw PIN
         _onboard_to(ob, "pin_confirm")
-        return reply(msisdn, "Great — re-enter your *4-digit PIN* to confirm.")
+        return reply(msisdn, "Great — re-enter your *6-digit PIN* to confirm.")
     if ob.step == "pin_confirm":
-        if not re.fullmatch(r"\d{4}", val) or not check_password(val, ob.payload.get("pin_hash", "")):
+        if not re.fullmatch(r"\d{6}", val) or not check_password(val, ob.payload.get("pin_hash", "")):
             ob.payload["pin_hash"] = ""
             _onboard_to(ob, "pin")
-            return reply(msisdn, "Those didn't match. Let's set it again — create your *4-digit PIN*.")
+            return reply(msisdn, "Those didn't match. Let's set it again — create your *6-digit PIN*.")
         return _finish_onboarding(ob, msisdn, val)
     _clear_onboarding(msisdn)
     return reply(msisdn, UNLINKED)
@@ -1202,6 +1204,48 @@ def _do_add_money(user, msisdn: str) -> None:
     if wallet.account_number:
         return _send_account_details(msisdn, wallet)
     return _start_add_account(user, msisdn)
+
+
+#: Proving who you are before replacing the credential that authorises payments.
+#: Deliberately the contact channels AND an identity number: a SIM swap defeats
+#: the phone alone, and a mailbox breach defeats the email alone.
+_PIN_RESET_CHECKS = (("email_verified", "email address"),
+                     ("phone_verified", "phone number"),
+                     ("bvn_verified", "BVN"))
+
+
+def _start_pin_reset(user, msisdn: str) -> None:
+    """Set or replace the transaction PIN, in the encrypted Flow.
+
+    Anyone holding this chat can reach this, and a PIN reset hands over the one
+    credential that moves money — so the bar is the verified identity itself,
+    not possession of the thread. An unverified account is sent to verification
+    rather than being told to contact support, because that is the actual next
+    step.
+    """
+    missing = [label for field, label in _PIN_RESET_CHECKS if not getattr(user, field, False)]
+    if missing:
+        listed = ", ".join(missing[:-1]) + " and " + missing[-1] if len(missing) > 1 else missing[0]
+        _clear_actions(msisdn)
+        return reply(msisdn, f"🔐 To set a new PIN we first need to verify your {listed} — "
+                             "your PIN authorises payments, so we confirm it's really you.\n\n"
+                             "Reply *8* to verify now.")
+    _clear_actions(msisdn)
+    pa = _new_flow(user, msisdn, "setpin", FLOW_PIN_STATE, {"pin_attempts": 0})
+    if flows_live() and send_flow(
+            msisdn, sign_flow_token(pa),
+            header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
+            screen=PIN_SCREEN,
+            screen_data={"amount": "Create a 6-digit PIN", "recipient": "",
+                         "details": "You'll enter it again to confirm", "error": ""},
+            cta="Set PIN").get("success"):
+        return reply(msisdn, "🔐 Tap the secure screen above to set your new *6-digit PIN*. "
+                             "It never appears in this chat.")
+    # No fail-open here: unlike a BVN, a PIN typed into a thread is the
+    # credential itself sitting in the customer's history forever.
+    _clear_actions(msisdn)
+    return reply(msisdn, "🔐 Secure PIN entry isn't available right now. "
+                         "Please set your PIN in the Zitch app (Me → Security).")
 
 
 def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:

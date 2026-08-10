@@ -230,14 +230,14 @@ class CredentialSecurityTests(TestCase):
         self.assertTrue(User.objects.get(pk=user.pk).check_password("Newpass456"))
 
     def test_set_pin_requires_auth_and_sets_owner(self):
-        res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "1357"})
+        res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "135790"})
         self.assertEqual(res.status_code, 401)
         # First-time PIN set (no existing PIN) needs only the session token.
         user = User.objects.create(username="08040000004", phone="08040000004", email="d@zitch.test")
         token = AccessToken.issue(user).key
-        res, _ = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "1357"})
+        res, _ = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "135790"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1357"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("135790"))
 
     def test_changing_existing_pin_requires_current_pin_or_password(self):
         # A token alone must not be enough to OVERWRITE an existing PIN (else the
@@ -248,24 +248,24 @@ class CredentialSecurityTests(TestCase):
         user.save()
         token = AccessToken.issue(user).key
         # No proof at all -> rejected.
-        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "9999"})
+        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "999999"})
         self.assertEqual((res.status_code, body.get("code")), (403, "current_pin_required"))
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
         # A WRONG current PIN is rejected too.
         res, body = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "9999", "old_pin": "0000"})
+            "access_token": token, "pin": "999999", "old_pin": "0000"})
         self.assertEqual(res.status_code, 403)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
         # With the CURRENT PIN, the change goes through.
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "9999", "old_pin": "1234"})
+            "access_token": token, "pin": "999999", "old_pin": "1234"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("9999"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("999999"))
         # The account password remains a valid fallback (forgot-PIN recovery).
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "4321", "password": "Passw0rd123"})
+            "access_token": token, "pin": "432100", "password": "Passw0rd123"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("4321"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("432100"))
 
     def test_setting_new_pin_clears_brute_force_lockout(self):
         # A user who locked their PIN and then legitimately changes it (which
@@ -278,12 +278,12 @@ class CredentialSecurityTests(TestCase):
         user.save()
         token = AccessToken.issue(user).key
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "5678", "password": "Passw0rd123"})
+            "access_token": token, "pin": "567890", "password": "Passw0rd123"})
         self.assertEqual(res.status_code, 200)
         u = User.objects.get(pk=user.pk)
         self.assertEqual(u.pin_failed_attempts, 0)
         self.assertIsNone(u.pin_locked_until)
-        self.assertTrue(u.check_transaction_pin("5678"))
+        self.assertTrue(u.check_transaction_pin("567890"))
 
     def test_update_info_rejects_phone_collision_cleanly(self):
         make_user("08010000001", "a@zitch.test")

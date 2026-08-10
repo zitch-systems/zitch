@@ -217,6 +217,20 @@ _FIRST_SPEND_CHECKS = (
 )
 
 
+def stale_pin_error(user) -> "str | None":
+    """Refusal for an account still holding a pre-6-digit PIN, or None.
+
+    Applied to money LEAVING only, like the identity checks: the account keeps
+    working, keeps receiving, and keeps signing in — it just cannot authorise a
+    payment with a PIN we have decided is too short. There is no way to measure
+    an existing hash, so this rests on the flag the migration set.
+    """
+    if not getattr(user, "pin_reset_required", False):
+        return None
+    return ("For your security, transaction PINs are now 6 digits. Set a new one before "
+            "sending money — on WhatsApp reply *reset pin*; in the Zitch app, Me → Security.")
+
+
 def unverified_error(user) -> "str | None":
     """Refusal naming the identity checks still outstanding, or None if the
     account may spend.
@@ -229,6 +243,9 @@ def unverified_error(user) -> "str | None":
     This is a floor beneath the tier ceilings, not a replacement for them. The
     ceilings answer "how much"; this answers "at all".
     """
+    stale = stale_pin_error(user)
+    if stale:
+        return stale
     missing = [label for field, label in _FIRST_SPEND_CHECKS
                if not getattr(user, field, False)]
     if not missing:

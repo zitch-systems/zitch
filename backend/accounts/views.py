@@ -406,12 +406,14 @@ def set_transaction_pin(request):
     account ``password`` — so a stolen session token alone can't overwrite the
     PIN that gates money movement.
     """
+    import re
+
     from common.http import evaluate_transaction_pin
 
     user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
-    if len(pin) < 4:
-        return fail("PIN must be at least 4 digits")
+    if not re.fullmatch(r"\d{6}", pin):
+        return fail("Your PIN must be exactly 6 digits")
     if user.transaction_pin:
         old_pin = (request.data.get("old_pin") or "").strip()
         password = request.data.get("password") or ""
