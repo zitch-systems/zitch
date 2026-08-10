@@ -746,3 +746,54 @@ class AiStateHonestyTests(PortalTestCase):
         user = User.objects.create(username="08012341111", phone="08012341111")
         self.assertEqual(self.post("user-action", {"user_id": user.id, "action": "ai_on"},
                                    token=self.admin).status_code, 404)
+
+
+class PerUserAiToggleTests(TestCase):
+    """The user panel showed "Linked · AI off" with no way to act on it, which
+    reads as a broken integration rather than a consent that is simply off."""
+
+    def setUp(self):
+        from accounts.models import User as U
+        from whatsapp.models import WhatsAppLink
+
+        self.staff = U.objects.create(username="ops@zitch.test", email="ops@zitch.test",
+                                      is_staff=True, is_superuser=True)
+        self.staff.set_password("Passw0rd123")
+        self.staff.save()
+        self.customer = U.objects.create(username="08012345678", phone="08012345678")
+        self.link = WhatsAppLink.objects.create(user=self.customer, wa_msisdn="2348012345678",
+                                                status=WhatsAppLink.ACTIVE)
+
+    def _token(self):
+        res = self.client.post("/api/ops/login/",
+                               data=json.dumps({"identifier": "ops@zitch.test",
+                                                "password": "Passw0rd123"}),
+                               content_type="application/json")
+        return res.json()["token"]
+
+    def _act(self, action):
+        return self.client.post("/api/ops/user-action/",
+                                data=json.dumps({"user_id": self.customer.id, "action": action}),
+                                content_type="application/json",
+                                HTTP_AUTHORIZATION="Bearer " + self._token())
+
+    def test_support_can_grant_and_revoke_it(self):
+        self.assertFalse(self.link.ai_enabled)          # off by default: it is the customer's consent
+        self.assertEqual(self._act("ai_on").status_code, 200)
+        self.link.refresh_from_db()
+        self.assertTrue(self.link.ai_enabled)
+        self.assertEqual(self._act("ai_off").status_code, 200)
+        self.link.refresh_from_db()
+        self.assertFalse(self.link.ai_enabled)
+
+    def test_it_is_audited_both_ways(self):
+        from whatsapp.models import AuditLog
+
+        self._act("ai_on")
+        entry = AuditLog.objects.filter(action="user.wa_ai").order_by("-created").first()
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.after.get("ai_enabled"), True)
+
+    def test_an_unlinked_customer_is_refused_rather_than_silently_ignored(self):
+        self.link.delete()
+        self.assertEqual(self._act("ai_on").status_code, 404)
