@@ -90,7 +90,8 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
     subject, body = _describe(txn, reversal=reversal)
     if _alerts_on("email") and getattr(user, "email", ""):
         try:
-            send_email(user.email, subject, body)
+            send_email(user.email, subject, body,
+                       html=_email_alert_html(txn, reversal=reversal))
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_email_failed ref=%s", txn.reference)
     if _alerts_on("sms") and getattr(user, "phone", ""):
@@ -254,3 +255,83 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
     # what the customer checks, and a second segment costs a second message.
     room = _SMS_MAX - len(head) - len(tail) - len("Desc :")
     return head + "Desc :" + desc[:max(room, 0)].strip() + tail
+
+
+def _email_alert_html(txn, *, reversal: bool = False) -> str:
+    """The alert as a bank-standard branded card. The plain-text body stays as
+    the fallback, so clients that refuse HTML lose the layout and nothing else.
+
+    Email HTML is written for the mail clients that exist, not the web: tables
+    for layout, inline styles only, absolute image URL (Gmail proxies it), and
+    every colour restated locally because clients strip <style> blocks. The logo
+    is referenced from the API host rather than inlined — unlike WhatsApp Flows,
+    mail clients fetch remote images, and a hosted reference keeps the message
+    small enough to dodge Gmail's clipping threshold.
+    """
+    from django.conf import settings as dj
+
+    from .services import get_or_create_wallet
+
+    credit = reversal or txn.direction == txn.IN
+    word = "Reversal" if reversal else ("Credit" if credit else "Debit")
+    colour = "#0f9c93" if credit else "#b8402f"
+    sign = "+" if credit else "\u2212"
+    base = getattr(dj, "WHATSAPP", {}).get("API_BASE", "https://api.zitch.ng")
+    logo = f"{base}/static/portal/assets/brand/zitch-mark.png"
+
+    try:
+        wallet = get_or_create_wallet(txn.user)
+        account = _mask_account(wallet.account_number)
+        balance = _money(wallet.balance)
+    except Exception:  # noqa: BLE001 — an alert must never depend on reading a wallet
+        account, balance = "\u2014", "\u2014"
+
+    counterparty = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
+                    or (txn.service or "").strip() or word)
+    first = (txn.user.first_name or "").strip().title() or "there"
+
+    def row(label, value, bold=False):
+        weight = "600" if bold else "400"
+        return (f'<tr><td style="padding:7px 0;color:#778886;font-size:13px">{label}</td>'
+                f'<td align="right" style="padding:7px 0;color:#12201f;font-size:13px;'
+                f'font-weight:{weight}">{value}</td></tr>')
+
+    return f"""<!doctype html><html><body style="margin:0;padding:0;background:#f2f5f4">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f5f4;padding:28px 12px">
+<tr><td align="center">
+<table role="presentation" width="440" cellpadding="0" cellspacing="0"
+       style="max-width:440px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden">
+  <tr><td style="background:#12201f;padding:22px 28px">
+    <img src="{logo}" alt="Zitch" height="30" style="display:block;height:30px">
+  </td></tr>
+  <tr><td style="padding:28px 28px 6px;font-family:Arial,Helvetica,sans-serif">
+    <p style="margin:0 0 4px;color:#778886;font-size:12px;letter-spacing:.12em;
+              text-transform:uppercase">{word} alert</p>
+    <p style="margin:0;color:{colour};font-size:32px;font-weight:700">
+      {sign}{_money(txn.amount, txn.currency)}</p>
+    <p style="margin:10px 0 0;color:#4a5c5a;font-size:14px">Hi {first}, here are the details:</p>
+  </td></tr>
+  <tr><td style="padding:14px 28px 4px;font-family:Arial,Helvetica,sans-serif">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+           style="border-top:1px solid #e8eded">
+      {row("Description", counterparty)}
+      {row("Account", account)}
+      {row("Reference", txn.reference)}
+      {row("Date", f"{txn.created:%d %b %Y, %I:%M %p}")}
+      {row("Available balance", balance, bold=True)}
+    </table>
+  </td></tr>
+  <tr><td style="padding:16px 28px 26px;font-family:Arial,Helvetica,sans-serif">
+    <p style="margin:0;padding:12px 14px;background:#f2f5f4;border-radius:8px;
+              color:#4a5c5a;font-size:12px;line-height:1.5">
+      Didn\u2019t make this transaction? Contact
+      <a href="mailto:support@zitch.ng" style="color:#0a6b65">support@zitch.ng</a> immediately.
+    </p>
+  </td></tr>
+  <tr><td style="padding:0 28px 24px;font-family:Arial,Helvetica,sans-serif">
+    <p style="margin:0;color:#a3b0ae;font-size:11px">
+      Zitch \u00b7 <a href="https://zitch.ng" style="color:#a3b0ae">zitch.ng</a>
+      \u00b7 Banking on WhatsApp</p>
+  </td></tr>
+</table>
+</td></tr></table></body></html>"""

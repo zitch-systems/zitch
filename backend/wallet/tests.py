@@ -560,3 +560,54 @@ class SmsAlertFormatTests(TestCase):
 
         self.assertEqual(_mask_account(""), "—")
         self.assertEqual(_mask_account("0228565772"), "0228****72")
+
+
+class EmailAlertBrandingTests(TestCase):
+    """The alert arrived as five lines of bare text under a green "N" avatar —
+    indistinguishable from phishing, which for a money alert is disqualifying.
+    The HTML card carries the brand; the plain text stays as the fallback."""
+
+    def setUp(self):
+        self.user, _ = make_user("08060000011", "brand@zitch.test", balance="50000")
+        w = get_or_create_wallet(self.user)
+        w.account_number = "0228565772"
+        w.save(update_fields=["account_number"])
+
+    def _send(self):
+        with patch("utility.providers.send_email",
+                   return_value={"success": True}) as mail, \
+             self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("4300"), "Transfer from YUSUFF")
+        return mail.call_args
+
+    def test_the_html_body_rides_alongside_the_text_fallback(self):
+        call = self._send()
+        self.assertTrue(call.args[2])                        # plain text intact
+        html = call.kwargs.get("html") or ""
+        self.assertIn("zitch-mark.png", html)                # the logo
+        self.assertIn("+₦4,300.00", html)                    # signed amount
+        self.assertIn("0228****72", html)                    # masked, never full
+        self.assertNotIn("0228565772", html)
+        self.assertIn("support@zitch.ng", html)
+
+    def test_a_debit_renders_in_the_debit_colour_and_sign(self):
+        from wallet.alerts import _email_alert_html
+
+        with self.captureOnCommitCallbacks(execute=True):
+            debit(self.user, Decimal("2300"), "transfer", meta={"recipient_name": "ADEYEMI WILLIAM"})
+        txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
+        html = _email_alert_html(txn)
+        self.assertIn("#b8402f", html)
+        self.assertIn("−₦2,300.00", html)
+        self.assertIn("ADEYEMI WILLIAM", html)
+
+    def test_an_unreadable_wallet_still_renders(self):
+        from wallet.alerts import _email_alert_html
+
+        with self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("100"), "Deposit")
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        with patch("wallet.services.get_or_create_wallet", side_effect=RuntimeError("db")):
+            html = _email_alert_html(txn)
+        self.assertIn("—", html)
+        self.assertIn("₦100.00", html)

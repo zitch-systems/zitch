@@ -1478,8 +1478,20 @@ def _kyc_mail_code(pa: PendingAction, user) -> bool:
     to print "We sent a 6-digit code" over mail that never left the building.
     """
     code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
+    # Same branded template the app's OTP emails use — one design, so a customer
+    # never has to judge whether a bare-text code email is really from us.
+    from accounts.views import _branded_email
+
     sent = send_email(user.email, "Confirm your email for Zitch",
-                      f"Your Zitch email confirmation code is {code}")
+                      f"Your Zitch email confirmation code is {code}",
+                      html=_branded_email(
+                          "Confirm your email",
+                          "Enter this code on the secure WhatsApp screen to confirm "
+                          "your email address.",
+                          code=code,
+                          note="This code expires in 10 minutes. If you didn't request "
+                               "it, you can ignore this email — nothing changes without "
+                               "the code."))
     if not sent.get("success"):
         return False
     pa.payload["code_hash"] = make_password(code)
@@ -1922,22 +1934,24 @@ def _start_transfer(user, msisdn: str) -> None:
     reply(msisdn, "How much would you like to send? (e.g. 5000 or 5k)")
 
 
-#: Words and digits that plainly start something else. A PIN or a confirmation
-#: code is NOT here — those belong to the flow that is open, and treating a
-#: mistyped code as a new command would cancel the payment it was meant for.
-_NEW_COMMAND_WORDS = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "menu", "hi", "hello", "start", "help", "balance", "bal", "account",
-    "account details", "history", "statement", "transactions", "verify", "kyc",
-    "reset pin", "support", "airtime", "data",
-}
-
-
 def _is_new_command(text: str) -> bool:
+    """Whether this message plainly starts something else.
+
+    A keyword list was too narrow: "i want to create a new pin" is unmistakably a
+    new request and matched nothing, so the customer was answered with "tap the
+    secure screen" — the very stonewalling the escape hatch exists to prevent.
+
+    While a Flow is open the customer has nothing to type in chat: the PIN goes
+    in the Flow. So anything that is not digits is a new instruction. Digits stay
+    excluded because a mistyped confirmation code must not cancel the payment it
+    was meant for.
+    """
     low = (text or "").strip().lower()
-    if not low or low.isdigit() and len(low) > 1:
-        return False        # a bare number is far more likely a code than a menu pick
-    return low in _NEW_COMMAND_WORDS or low.startswith(("send ", "transfer ", "pay ", "buy "))
+    if not low:
+        return False
+    if any(ch.isdigit() for ch in low) and not any(ch.isalpha() for ch in low):
+        return False        # digits only — far more likely a code than a request
+    return True
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
