@@ -606,6 +606,15 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
 
     Whichever rung is armed, the deep-link approval (biometric in the app) is
     offered alongside it — see _approve_link_line."""
+    # No PIN on the account: arming a confirm produces a screen the customer can
+    # never satisfy — which is what "No transaction PIN set on this account"
+    # was. Send them to set one instead of into a dead end.
+    if not user.transaction_pin:
+        _clear_actions(pa.msisdn)
+        reply(pa.msisdn, "🔐 You haven't set a transaction PIN yet — it's what authorises "
+                         "payments here and in the Zitch app.\n\nReply *reset pin* to set your "
+                         "6-digit PIN now, then try again.")
+        return False
     if flows_live() and _send_pin_flow(pa, user):
         return True
     # Checked before sending, not after: unkeyed, send_sms succeeds in mock mode, which
@@ -1903,10 +1912,38 @@ def _start_transfer(user, msisdn: str) -> None:
     reply(msisdn, "How much would you like to send? (e.g. 5000 or 5k)")
 
 
+#: Words and digits that plainly start something else. A PIN or a confirmation
+#: code is NOT here — those belong to the flow that is open, and treating a
+#: mistyped code as a new command would cancel the payment it was meant for.
+_NEW_COMMAND_WORDS = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "menu", "hi", "hello", "start", "help", "balance", "bal", "account",
+    "account details", "history", "statement", "transactions", "verify", "kyc",
+    "reset pin", "support", "airtime", "data",
+}
+
+
+def _is_new_command(text: str) -> bool:
+    low = (text or "").strip().lower()
+    if not low or low.isdigit() and len(low) > 1:
+        return False        # a bare number is far more likely a code than a menu pick
+    return low in _NEW_COMMAND_WORDS or low.startswith(("send ", "transfer ", "pay ", "buy "))
+
+
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if pa.state == FLOW_PIN_STATE:
-        # A secure PIN Flow is open: the PIN is entered there, never in chat. If
-        # the user types here instead, nudge them back to the Flow (or cancel).
+        # A secure PIN Flow is open: the PIN is entered there, never in chat.
+        #
+        # But a customer who has moved on has moved on. Repeating "tap the secure
+        # screen" at every message traps them: asking for a balance, then an
+        # account number, then a different transfer all answered with the same
+        # line and no way forward but a word they were never told first. An
+        # unconfirmed payment has moved no money, so a clear new instruction
+        # simply replaces it.
+        if _is_new_command(text):
+            _clear_actions(msisdn)
+            reply(msisdn, "Okay — leaving that payment unconfirmed.")
+            return handle_inbound(msisdn, text)
         cta = (getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("CTA", "Confirm with PIN")
         return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN — "
                              "it stays private and never appears in this chat. Or reply \"cancel\".")
