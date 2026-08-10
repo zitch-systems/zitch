@@ -245,6 +245,13 @@ KYC_PROVIDER = os.environ.get("KYC_PROVIDER", "").strip().lower()
 # (common.http.check_velocity, applied on every send path). 0 disables. Off in
 # tests (suites legitimately hammer one user far faster than any human).
 VELOCITY_MAX_OUT_10MIN = 0 if TESTING else int(os.environ.get("VELOCITY_MAX_OUT_10MIN", "20"))
+# Minutes of WhatsApp silence before the channel re-confirms identity (app
+# biometric, or PIN) ahead of revealing a balance or account details. Off in
+# tests for the same reason as the velocity brake: nearly every suite drives a
+# cold conversation straight at a read, and a gate they all have to step around
+# stops testing the read. whatsapp.tests.IdleReauthTests sets it explicitly.
+# SystemSetting("wa_reauth_idle_minutes") overrides this at runtime.
+WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MINUTES", "15"))
 # (Observability: the Sentry init lives at the bottom of this file — already wired.)
 # Wema / ALAT (Banking-as-a-Service) — the SOLE money-movement rail: fund-in
 # (dedicated NUBANs via a BVN/NIN + OTP flow, which also verifies identity — ALAT has

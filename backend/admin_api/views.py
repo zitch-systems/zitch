@@ -36,6 +36,7 @@ PERMS_MATRIX = [
 # Known runtime settings + human descriptions (merged with live SystemSetting rows).
 SETTING_DEFS = [
     ("ai_enabled_global", "true", "Master switch for the WhatsApp AI intent layer. Off ⇒ channel is fully menu-driven."),
+    ("wa_reauth_idle_minutes", "15", "Minutes of silence before WhatsApp re-confirms identity (biometric in the app, or PIN) before revealing balance or account details. 0 disables."),
     ("fx_margin_bps", "60", "Margin (basis points) added over the provider rate on every conversion quote."),
     ("fx_quote_ttl_seconds", "60", "How long a conversion quote stays valid. Expired quotes are never settled."),
     ("wa_pin_max_attempts", "1", "Wrong-PIN attempts before a WhatsApp flow is cancelled."),
@@ -53,6 +54,7 @@ _INT_SETTINGS = {
     "fx_margin_bps": (0, 1000),          # ≤10% margin
     "fx_quote_ttl_seconds": (5, 3600),   # 5s – 1h quote validity
     "wa_pin_max_attempts": (1, 10),      # keep the throttle meaningful
+    "wa_reauth_idle_minutes": (0, 1440),  # 0 = off, up to a day
 }
 
 

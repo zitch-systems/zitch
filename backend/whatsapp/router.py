@@ -757,6 +757,13 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if pa is not None:
         return _advance(pa, user, msisdn, text)
 
+    # Idle re-auth. WhatsApp's Chat Lock guards the window and we can neither
+    # require nor verify it, so this guards the thing we can: what the bot will
+    # reveal. Only reads are gated — every action already authenticates at the
+    # point money moves, and prompting twice would be friction, not security.
+    if _needs_reauth(convo) and _is_sensitive_read(low):
+        return _send_unlock(user, msisdn, text)
+
     # A bare 4-6 digit message with nothing expecting one is very often a PIN
     # typed out of habit. It is already masked in our log, but it is still in
     # the customer's own thread and only they can remove it — WhatsApp gives a
@@ -830,6 +837,69 @@ def handle_inbound(msisdn: str, text: str) -> None:
 # --------------------------------------------------------------------------- #
 # linking
 # --------------------------------------------------------------------------- #
+#: Commands that reveal money or identity to whoever is holding the phone.
+#: Deliberately reads only: a transfer already needs biometrics or the PIN to
+#: complete, so gating its FIRST message would prompt twice for one movement.
+_SENSITIVE_READS = {
+    "1", "balance", "bal", "my balance", "check balance",
+    "7", "account", "account details", "my account", "account number",
+    "statement", "history", "transactions", "my transactions",
+}
+_REAUTH_SETTING = "wa_reauth_idle_minutes"
+
+
+def _reauth_window() -> timedelta:
+    """How long a proven identity stays good for. 0 disables the gate."""
+    fallback = getattr(settings, "WA_REAUTH_IDLE_MINUTES", 15)
+    try:
+        minutes = int(SystemSetting.get(_REAUTH_SETTING, "") or fallback)
+    except (TypeError, ValueError):
+        minutes = fallback
+    return timedelta(minutes=max(0, minutes))
+
+
+def _is_sensitive_read(low: str) -> bool:
+    return low.strip() in _SENSITIVE_READS
+
+
+def _needs_reauth(convo: ConversationState) -> bool:
+    window = _reauth_window()
+    if not window:
+        return False
+    return convo.last_verified is None or timezone.now() - convo.last_verified > window
+
+
+def _mark_verified(msisdn: str) -> None:
+    """Called the moment an identity is proven, whichever way it was proven."""
+    convo = ConversationState.for_msisdn(msisdn)
+    convo.last_verified = timezone.now()
+    convo.save(update_fields=["last_verified"])
+
+
+def _send_unlock(user, msisdn: str, resume: str) -> None:
+    """Ask the customer to prove it is them before revealing anything, then run
+    what they originally asked for.
+
+    Reuses the confirm machinery unchanged, so unlocking offers the same
+    biometric-first hand-off into the app with the encrypted PIN Flow behind it —
+    the two things we can actually prove happened.
+    """
+    pa = _new_flow(user, msisdn, "unlock", "pin", {"pin_attempts": 0, "resume": resume[:64]})
+    _arm_confirm(pa, user)
+    reply(msisdn, "🔒 *Welcome back.* It's been a while, so confirm it's you before "
+                  "I show your account.\n\n" + _confirm_prompt(pa))
+
+
+def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
+    """Identity proven: start the window and run the command that triggered it."""
+    resume = str(pa.payload.get("resume") or "").strip()
+    _clear_actions(msisdn)
+    _mark_verified(msisdn)
+    if resume:
+        handle_inbound(msisdn, resume)
+    return "Unlocked ✅ — see the chat."
+
+
 def _current_onboarding(msisdn: str) -> WaOnboarding | None:
     WaOnboarding.objects.filter(msisdn=msisdn, expires_at__lt=timezone.now()).delete()
     return WaOnboarding.objects.filter(msisdn=msisdn).first()
@@ -1061,6 +1131,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         + ("" if wallet_views._wema_funding_enabled() else
            "To verify your identity, reply *8* — we'll do your phone, email, BVN "
            "and NIN right here.\n\n")
+        + "🔒 *Tip:* lock this chat with your fingerprint — tap our name above → "
+          "*Chat lock*. Reply *lock* for the steps.\n\n"
         + menu_text(),
     )
     # Roll straight into minting their funding NUBAN — a wallet you can't pay
@@ -2741,9 +2813,14 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     if not user.is_active:
         _clear_actions(pa.msisdn)
         return "Your Zitch account is currently suspended. Please contact support."
+    # Getting here means the PIN or a verified biometric just passed, so it
+    # starts the re-auth window: someone who just authorised a payment should
+    # not be challenged again to read their own balance.
+    _mark_verified(pa.msisdn)
     executors = {
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
+        "unlock": _exec_unlock,
     }
     fn = executors.get(pa.action_type)
     if fn is None:

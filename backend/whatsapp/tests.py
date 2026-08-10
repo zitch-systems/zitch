@@ -2914,3 +2914,80 @@ class AiGlobalSwitchTests(TestCase):
             SystemSetting.set("ai_enabled_global", stored)
             self.assertEqual(ai.global_enabled(), expected)
             self.assertEqual(SystemSetting.get_bool("ai_enabled_global", False), expected)
+
+
+class IdleReauthTests(TestCase):
+    """WhatsApp's Chat Lock guards the chat WINDOW, is user-side, and cannot be
+    required or verified — so it can never be a control. What the bot will
+    REVEAL is ours to gate, and this is that gate."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("wa_reauth_idle_minutes", "15")   # off by default under TESTING
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_cold_conversation_must_confirm_before_showing_a_balance(self):
+        out = self._say("balance")
+        self.assertIn("confirm it's you", out.lower())
+        self.assertNotIn("₦", out)          # the balance itself is withheld
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+    def test_confirming_reveals_it_and_resumes_what_was_asked(self):
+        from whatsapp.router import run_flow_execution
+
+        self._say("balance")
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="unlock")
+        run_flow_execution(pa, self.user)   # what a correct PIN or a biometric reaches
+        out = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+        self.assertIn("₦", out)             # the original request ran
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+    def test_a_warm_conversation_is_not_challenged_again(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now()})
+        self.assertIn("₦", self._say("balance"))
+
+    def test_the_window_expires(self):
+        ConversationState.objects.update_or_create(
+            msisdn=MSISDN, defaults={"last_verified": timezone.now() - timedelta(minutes=16)})
+        self.assertIn("confirm it's you", self._say("balance").lower())
+
+    def test_authorising_a_payment_also_starts_the_window(self):
+        """Someone who just proved who they are to move money must not be asked
+        again to read their own balance."""
+        from whatsapp.router import _mark_verified
+
+        _mark_verified(MSISDN)              # what run_flow_execution does
+        self.assertIn("₦", self._say("balance"))
+
+    def test_actions_are_not_gated_because_they_authenticate_at_the_confirm(self):
+        """Prompting before a transfer AND at its confirm is friction, not
+        security — the money movement is already behind PIN or biometrics."""
+        out = self._say("2")
+        self.assertNotIn("confirm it's you", out.lower())
+
+    def test_zero_minutes_disables_the_gate(self):
+        SystemSetting.set("wa_reauth_idle_minutes", "0")
+        self.assertIn("₦", self._say("balance"))
+
+    def test_an_unreadable_window_falls_back_to_the_deploy_default(self):
+        SystemSetting.set("wa_reauth_idle_minutes", "not-a-number")
+        with override_settings(WA_REAUTH_IDLE_MINUTES=15):
+            self.assertIn("confirm it's you", self._say("balance").lower())
+
+
+class ChatLockPromptTests(TestCase):
+    def test_signup_tells_new_customers_how_to_lock_the_thread(self):
+        """The only thing that guards the transcript itself, so it is offered
+        rather than waiting to be asked for."""
+        from whatsapp.router import _chat_lock_tip
+
+        self.assertIn("Chat lock", _chat_lock_tip())
