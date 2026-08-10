@@ -48,13 +48,17 @@ crons too (`render.yaml` already declares the slots on each).
 | Var | What it is | Where it comes from |
 |---|---|---|
 | `WEMA_CHANNEL_ID` | Channel identifier (travels in the `access`/`x-api-key` header) | Wema |
-| `WEMA_WALLET_KEY` | Subscription key for wallet/account/transfer (`Ocp-Apim-Subscription-Key`) | Wema |
-| `WEMA_CARD_KEY` | Subscription key for the **Virtual Naira Card** product. Its own subscription — no wallet fallback, so the card rail stays disabled until this is set. | Wema |
-| `WEMA_AIRTIME_KEY` | **Optional — leave blank.** No separate Airtime & Data product exists; the Wallet Services key authenticates VAS. Set only if Wema issues a dedicated subscription. | Wema |
-| `WEMA_BILLS_KEY` | **Optional — leave blank.** Same as above: bills ride the Wallet Services key. | Wema |
-| `WEMA_KYC_KEY` | **Optional — leave blank.** Partnership Account KYC is bundled into Wallet Services. | Wema |
+| `WEMA_WALLET_KEY` | **Wallet Services** subscription: wallet creation, credit/debit wallet, account management, notifications and bills. | Wema |
+| `WEMA_CARD_KEY` | **Virtual Naira Card** subscription; no wallet-key fallback. | Wema |
+| `WEMA_CARD_PRODUCT_KEY` | Card product id (`cardKey`) required to issue a virtual card; distinct from the subscription key. | Wema |
+| `WEMA_AIRTIME_KEY` | **Airtime and Data API** subscription. Wallet Services does not cover it. | Wema |
+| `WEMA_BILLS_KEY` | Optional override; Wallet Services already covers Bills Payment. | Wema |
+| `WEMA_UPGRADE_KEY` | **Account Upgrade API** subscription used for bank-side tier/status sync. | Wema |
+| `WEMA_REMITA_KEY` | **Remita Payment** subscription; no wallet-key fallback. | Wema |
+| `WEMA_BNPL_KEY` + merchant credentials | **Buy Now Pay Later** subscription; debt-creating steps stay product/compliance gated. | Wema |
+| `WEMA_KYC_KEY` | Reserved for the separate Partnership Account KYC API; current identity flow uses wallet provisioning. | Wema |
 | `WEMA_SOURCE_ACCOUNT` | Pool NUBAN that funds pool-sourced payouts | Wema |
-| `WEMA_SECURITY_INFO` | A value **we** choose; the bank echoes it back to our Authentication Callback (Wema confirmed 2026-07-27 — nothing is issued). Any long random string; enables `WEMA_AUTH_REQUIRE_SECURITY_INFO`. | us |
+| `WEMA_SECURITY_INFO` | Strong random seed **we** choose. Zitch sends a unique HMAC derived from this seed and each transaction reference; the seed itself never crosses the wire. Minimum 32 characters. | us |
 | `WEMA_BASE_URL` | Live ALAT host (differs from `apiplayground.alat.ng`) | Wema |
 | `WEMA_SIMULATION` | **Deploy-wide simulation switch.** `true` puts the WHOLE stack (Wema, VTU airtime/data/bills, cards, FX, Mono, KYC) into mock mode so every feature can be walked end-to-end with no real money. **Must be unset/blank for live** — `wema_preflight` hard-fails while it is on. | — |
 
@@ -100,10 +104,14 @@ KYC rail.
 - Upgrade the **web service** off `free` (no sleep) and the **Postgres** off `free`
   (the free tier expires). The crons already require `starter`.
 
-### Step 1 — set the keys, still on sandbox
-- Enter every `WEMA_*` key above **except** `WEMA_BASE_URL` (leave it on
-  `apiplayground.alat.ng` for now), on the web service **and** the crons.
-- Set `SENTRY_DSN` everywhere.
+### Step 1 — set least-privilege keys, still on sandbox
+- Rotate every key ever shown in screenshots or Slack. Enter replacements directly in
+  Render; never paste them into tickets, chat, logs or source.
+- Set `WEMA_CHANNEL_ID`, `WEMA_WALLET_KEY`, `WEMA_SOURCE_ACCOUNT` and the keys for
+  features actually enabled. Leave unused product keys out. Keep `WEMA_BASE_URL` on
+  `apiplayground.alat.ng` for now.
+- Web and worker need feature keys. Reconcile crons need only the keys declared in their
+  Blueprint blocks. Set `SENTRY_DSN` everywhere.
 
 ### Step 2 — confirm keys load (still sandbox)
 - Run: `python manage.py wema_preflight` (no shell: `GET /preflight`)
