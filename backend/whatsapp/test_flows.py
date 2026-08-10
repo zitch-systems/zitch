@@ -62,6 +62,8 @@ def _transfer_action(user, state=FLOW_PIN_STATE):
         payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
                  "bank_name": "GTBank", "name": "JOHN DOE",
                  "flow_summary": "Send ₦5,000.00 to JOHN DOE · GTBank 0123456789",
+                 "flow_fields": {"amount": "₦5,000.00", "recipient": "To JOHN DOE",
+                                 "details": "GTBank · 0123456789"},
                  "pin_attempts": 0},
         expires_at=timezone.now() + timedelta(minutes=5),
     )
@@ -140,13 +142,30 @@ class FlowsHandlerTests(TestCase):
         response = handle_flow_request({"action": "data_exchange", "data": ["bad"]})
         self.assertEqual(response["screen"], SUCCESS_SCREEN)
 
-    def test_init_returns_pin_screen_with_summary(self):
+    def test_init_returns_pin_screen_with_amount_recipient_and_bank(self):
         from .flows import PIN_SCREEN, handle_flow_request
 
         pa = _transfer_action(self.user)
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_flow_token(pa)})
         self.assertEqual(resp["screen"], PIN_SCREEN)
-        self.assertIn("JOHN DOE", resp["data"]["summary"])
+        self.assertIn("5,000", resp["data"]["amount"])
+        self.assertIn("JOHN DOE", resp["data"]["recipient"])
+        # The bank is half of where the money goes — it must be on the screen.
+        self.assertIn("GTBank", resp["data"]["details"])
+        self.assertIn("0123456789", resp["data"]["details"])
+
+    def test_pin_screen_falls_back_to_the_one_line_summary(self):
+        """Actions queued before flow_fields existed still render every field."""
+        from .flows import PIN_SCREEN, handle_flow_request
+
+        pa = _transfer_action(self.user)
+        pa.payload.pop("flow_fields")
+        pa.save(update_fields=["payload"])
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_flow_token(pa)})
+        self.assertEqual(resp["screen"], PIN_SCREEN)
+        self.assertIn("JOHN DOE", resp["data"]["amount"])
+        self.assertEqual(resp["data"]["recipient"], "")
+        self.assertEqual(resp["data"]["details"], "")
 
     def test_wrong_pin_reprompts_and_does_not_debit(self):
         from .flows import PIN_SCREEN, handle_flow_request
@@ -424,6 +443,179 @@ class IdentityFlowTests(TestCase):
             self.assertFalse(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
         pa.refresh_from_db()
         self.assertEqual(pa.state, "bvn")
+
+
+class EmailFlowTests(TestCase):
+    """Email rides the same encrypted Flow as BVN and NIN. The address is entered
+    there and the 6-digit code comes back there — the code is a bearer credential
+    for ten minutes, and a thread keeps it far longer than that."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.user.email, self.user.email_verified = "", False
+        self.user.save(update_fields=["email", "email_verified"])
+
+    def _action(self, step="address", **payload):
+        return PendingAction.objects.create(
+            msisdn=MSISDN, user=self.user, action_type="kyc",
+            state=FLOW_ID_STATE, payload={"id_kind": "email", "id_step": step, **payload},
+            expires_at=timezone.now() + timedelta(minutes=10))
+
+    def _submit(self, pa, value):
+        from .flows import handle_flow_request, sign_identity_token
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(pa),
+                                    "data": {"number": value}})
+
+    def test_init_opens_the_address_screen(self):
+        from .flows import EMAIL_SCREEN, handle_flow_request, sign_identity_token
+
+        pa = self._action()
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
+        self.assertEqual(resp["screen"], EMAIL_SCREEN)
+        self.assertEqual(resp["data"]["label"], "Email address")
+
+    def test_init_opens_the_masked_code_screen_once_the_address_is_known(self):
+        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+
+        self.user.email = "ada@example.com"
+        self.user.save(update_fields=["email"])
+        pa = self._action("code")
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
+        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertEqual(resp["data"]["label"], "Email code")
+        self.assertIn("ada@example.com", resp["data"]["summary"])
+
+    def test_a_malformed_address_reprompts_without_saving(self):
+        from .flows import EMAIL_SCREEN
+
+        resp = self._submit(self._action(), "not-an-email")
+        self.assertEqual(resp["screen"], EMAIL_SCREEN)
+        self.assertTrue(resp["data"]["error"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "")
+
+    def test_an_address_owned_by_someone_else_is_refused(self):
+        from .flows import EMAIL_SCREEN
+
+        User.objects.create(username="08010000002", phone="08010000002",
+                            email="taken@example.com")
+        resp = self._submit(self._action(), "TAKEN@example.com")
+        self.assertEqual(resp["screen"], EMAIL_SCREEN)
+        self.assertIn("another Zitch account", resp["data"]["error"])
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "")
+
+    @patch("whatsapp.router.send_email", return_value={"success": True})
+    @patch("whatsapp.router.email_live", return_value=True)
+    def test_a_good_address_mails_a_code_and_moves_to_the_masked_screen(self, _live, mail):
+        from .flows import IDENTITY_SCREEN
+
+        pa = self._action()
+        resp = self._submit(pa, "Ada@Example.com")
+        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.email, "ada@example.com")
+        self.assertFalse(self.user.email_verified)          # the code still has to come back
+        pa.refresh_from_db()
+        self.assertEqual(pa.payload["id_step"], "code")
+        self.assertTrue(pa.payload["code_hash"])
+        mailed = mail.call_args.args[2]
+        self.assertNotIn(mailed.split()[-1], str(resp))     # the code is never echoed to the screen
+
+    @patch("whatsapp.router.send_email", return_value={"success": True})
+    @patch("whatsapp.router.email_live", return_value=True)
+    def test_the_right_code_verifies_the_email_and_never_reaches_the_chat(self, _live, mail):
+        pa = self._action()
+        self._submit(pa, "ada@example.com")
+        code = mail.call_args.args[2].split()[-1]
+        pa.refresh_from_db()
+        resp = self._submit(pa, code)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+        self.assertNotIn(code, str(resp))
+        self.assertFalse(WaMessageLog.objects.filter(text__contains=code).exists())
+
+    @patch("whatsapp.router.send_email", return_value={"success": True})
+    @patch("whatsapp.router.email_live", return_value=True)
+    def test_a_wrong_code_reprompts_and_the_third_one_ends_the_attempt(self, _live, _mail):
+        from .flows import IDENTITY_SCREEN, SUCCESS_SCREEN
+
+        pa = self._action()
+        self._submit(pa, "ada@example.com")
+        for _ in range(2):
+            pa.refresh_from_db()
+            resp = self._submit(pa, "000000")
+            self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+            self.assertTrue(resp["data"]["error"])
+        pa.refresh_from_db()
+        resp = self._submit(pa, "000000")
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.email_verified)
+
+    @patch("whatsapp.router.send_email", return_value={"success": True})
+    @patch("whatsapp.router.email_live", return_value=True)
+    def test_a_used_code_is_burnt_so_it_cannot_be_replayed(self, _live, mail):
+        # NIN still outstanding, so the ladder moves on rather than clearing the
+        # action — which is what lets us look at what it left behind.
+        self.user.nin_verified = False
+        self.user.save(update_fields=["nin_verified"])
+        pa = self._action()
+        self._submit(pa, "ada@example.com")
+        code = mail.call_args.args[2].split()[-1]
+        pa.refresh_from_db()
+        self._submit(pa, code)
+        pa.refresh_from_db()
+        self.assertEqual(pa.payload.get("code_hash"), "")
+
+    def test_the_router_sends_the_email_flow_instead_of_asking_in_the_chat(self):
+        from . import router
+
+        pa = self._action()
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": True}) as sent:
+            self.assertTrue(router._send_email_flow(pa, "address"))  # noqa: SLF001
+        sent.assert_called_once()
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], "email")
+
+    def test_a_failed_send_falls_back_to_the_chat_state(self):
+        from . import router
+
+        pa = self._action("code")
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": False}):
+            self.assertFalse(router._send_email_flow(pa, "code"))  # noqa: SLF001
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "email")
+
+    def test_typing_the_code_into_the_chat_is_refused(self):
+        from . import router
+
+        pa = self._action("code")
+        with patch.object(router, "reply") as mock_reply:
+            router._advance(pa, self.user, MSISDN, "123456")  # noqa: SLF001
+        self.assertIn("secure screen", " ".join(str(c) for c in mock_reply.call_args_list))
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.email_verified)
+
+    @patch("whatsapp.router.send_email", return_value={"success": True})
+    @patch("whatsapp.router.email_live", return_value=True)
+    def test_resend_is_the_one_word_the_chat_still_acts_on(self, _live, mail):
+        """An expired code with no way to ask for another strands the customer
+        inside a Flow they can no longer complete."""
+        from . import router
+
+        self.user.email = "ada@example.com"
+        self.user.save(update_fields=["email"])
+        pa = self._action("code")
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow", return_value={"success": True}):
+            router._advance(pa, self.user, MSISDN, "resend")  # noqa: SLF001
+        mail.assert_called_once()
 
 
 class PemNormalisationTests(unittest.TestCase):

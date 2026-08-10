@@ -39,7 +39,7 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN, PIN_SCREEN,
+from .flows import (EMAIL_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN, PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
@@ -396,12 +396,58 @@ def _flow_summary(pa: PendingAction) -> str:
     return "Confirm your payment"
 
 
+def _flow_fields(pa: PendingAction) -> dict:
+    """The confirm screen's three lines: amount, who/what, and the routing detail.
+
+    Split rather than one sentence because this is the screen someone checks
+    before money leaves. An account number buried mid-sentence is not read; on
+    its own line it is. The bank matters most of all — routing is purely by
+    {account_number, bank_code}, so the bank is half of where the money goes and
+    a customer confirming "JOHN DOE" alone has confirmed the wrong half.
+    """
+    p = pa.payload
+    at = pa.action_type
+    try:
+        if at == "transfer":
+            return {"amount": _money(Decimal(p["amount"])),
+                    "recipient": f"To {p.get('name', 'recipient').upper()}",
+                    "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·")}
+        if at == "airtime":
+            return {"amount": _money(Decimal(p["amount"])),
+                    "recipient": f"{NETWORK_NAMES.get(p.get('net', ''), '')} airtime".strip(),
+                    "details": f"To {p.get('phone', '')}".strip()}
+        if at == "data":
+            return {"amount": _money(Decimal(p["price"])),
+                    "recipient": f"{p.get('plan_name', 'Data')} · "
+                                 f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
+                    "details": f"To {p.get('phone', '')}".strip()}
+        if at == "electricity":
+            return {"amount": _money(Decimal(p["amount"])),
+                    "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
+                    "details": f"Meter {p.get('meter', '')}".strip()}
+        if at == "cable":
+            return {"amount": _money(Decimal(p["price"])),
+                    "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
+                                 f"{p.get('plan_name', '')}".strip(),
+                    "details": f"Smartcard {p.get('iuc', '')}".strip()}
+    except (KeyError, InvalidOperation):
+        pass
+    # Conversion (and any shape we don't itemise) falls back to the one-line
+    # summary in the heading, with the other two lines blank rather than absent —
+    # the screen declares all three, so every one must be supplied.
+    return {"amount": _flow_summary(pa), "recipient": "", "details": ""}
+
+
 def _send_pin_flow(pa: PendingAction, user) -> bool:
     """Send the secure PIN Flow for this action and move it to the flow_pin state.
     Returns True if the Flow was dispatched; False to fall back to SMS/PIN. The
     signed flow_token maps Meta's later data-exchange call back to THIS action."""
     summary = _flow_summary(pa)
     pa.payload["flow_summary"] = summary
+    # Persisted so the Flow endpoint can re-render the same screen on a wrong
+    # PIN or a BACK without recomputing it from a payload that may have moved on.
+    fields = _flow_fields(pa)
+    pa.payload["flow_fields"] = fields
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)  # persist so the token resolves
     # Hierarchy, not availability: a customer with the app is led to the
     # biometric approval and the Flow's own button becomes the fallback ("Use
@@ -416,7 +462,7 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     res = send_flow(
         pa.msisdn, sign_flow_token(pa),
         header="Confirm payment", body=body,
-        screen=PIN_SCREEN, screen_data={"summary": summary, "error": ""},
+        screen=PIN_SCREEN, screen_data={**fields, "error": ""},
         cta=cta,
     )
     return bool(res.get("success"))
@@ -454,6 +500,44 @@ def _send_identity_flow(pa: PendingAction, kind: str) -> bool:
     # otherwise it would sit in a Flow state with no Flow open.
     _touch(pa, state=kind, payload=pa.payload)
     log.warning("wa_identity_flow_send_failed kind=%s pa=%s", kind, pa.id)
+    return False
+
+
+def _send_email_flow(pa: PendingAction, step: str) -> bool:
+    """Run the email step in the encrypted Flow, the same way BVN and NIN run.
+
+    Two halves on one open Flow: the address (unmasked — it is not a secret and
+    has to be typed correctly), then the 6-digit code (masked). The code is the
+    reason this exists: it is a bearer credential for ten minutes, and typing it
+    into the thread leaves it in the customer's history long after that.
+
+    Like the identity Flow and unlike the PIN, this does NOT fail closed — a
+    deploy without Flows configured still verifies email in the chat.
+    """
+    if not flows_live():
+        return False
+    pa.payload["id_kind"] = "email"
+    pa.payload["id_step"] = step
+    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
+    if step == "address":
+        screen, data = EMAIL_SCREEN, {"summary": "What's your email address?",
+                                      "label": "Email address", "error": ""}
+        body = "Enter your email privately — it never appears in this chat."
+    else:
+        screen, data = IDENTITY_SCREEN, {
+            "summary": f"Enter the 6-digit code we sent to {pa.user.email}",
+            "label": "Email code", "error": ""}
+        body = "Enter the code privately — it never appears in this chat."
+    res = send_flow(
+        pa.msisdn, sign_identity_token(pa),
+        header="Verify your email", body=body,
+        screen=screen, screen_data=data, cta="Enter securely",
+    )
+    if res.get("success"):
+        return True
+    # Dispatch failed: put the action back where the chat fallback expects it.
+    _touch(pa, state=("email_address" if step == "address" else "email"), payload=pa.payload)
+    log.warning("wa_email_flow_send_failed step=%s pa=%s", step, pa.id)
     return False
 
 
@@ -1199,57 +1283,149 @@ def _kyc_send_phone_code(pa: PendingAction, user, msisdn: str) -> None:
     reply(msisdn, f"📲 We sent a 6-digit code by SMS to {masked}. Enter it here. (Reply *resend* for a new one.)")
 
 
-def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
-    if not user.email:
-        _touch(pa, state="email_address", payload=pa.payload)
-        return reply(msisdn, "What's your *email address*?")
-    if not email_live() and not _kyc_test_code(user):
-        _clear_actions(msisdn)
-        log.warning("wa_kyc_email_not_configured — RESEND_API_KEY is unset")
-        return reply(msisdn, "⚠️ We can't send emails at the moment, so email verification "
-                             "is unavailable. Please contact support — this is on our side, not yours.")
+def _kyc_email_rail_error(user) -> str:
+    """Why email verification can't run right now, or "" if it can."""
+    if email_live() or _kyc_test_code(user):
+        return ""
+    log.warning("wa_kyc_email_not_configured — RESEND_API_KEY is unset")
+    return ("⚠️ We can't send emails at the moment, so email verification is unavailable. "
+            "Please contact support — this is on our side, not yours.")
+
+
+def _kyc_mail_code(pa: PendingAction, user) -> bool:
+    """Mint, send and arm a fresh email code. False if the provider refused it.
+
+    Checking the key is not enough: a key can be present and still be refused
+    for this sender (typically FROM_EMAIL on an unverified domain), which used
+    to print "We sent a 6-digit code" over mail that never left the building.
+    """
     code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
     sent = send_email(user.email, "Confirm your email for Zitch",
                       f"Your Zitch email confirmation code is {code}")
     if not sent.get("success"):
-        # The SMS branch above has always checked this; email did not, so a
-        # provider rejection (typically FROM_EMAIL on an unverified domain) still
-        # printed "We sent a 6-digit code" and left the customer waiting on mail
-        # that was refused at the API. Checking the key is not enough: a key can
-        # be present and still be refused for this sender.
-        _clear_actions(msisdn)
-        return reply(msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
+        return False
     pa.payload["code_hash"] = make_password(code)
     pa.payload["code_exp"] = (timezone.now() + timedelta(minutes=10)).isoformat()
     pa.payload["code_attempts"] = 0
+    return True
+
+
+def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
+    if not user.email:
+        if _send_email_flow(pa, "address"):
+            return reply(msisdn, "📧 Tap the secure form above to enter your *email address* — "
+                                 "it stays private and never appears in this chat.")
+        _touch(pa, state="email_address", payload=pa.payload)
+        return reply(msisdn, "What's your *email address*?")
+    rail_error = _kyc_email_rail_error(user)
+    if rail_error:
+        _clear_actions(msisdn)
+        return reply(msisdn, rail_error)
+    if not _kyc_mail_code(pa, user):
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
+    # The code is a bearer credential for ten minutes: it belongs in the Flow,
+    # not in a thread the customer keeps forever.
+    if _send_email_flow(pa, "code"):
+        return reply(msisdn, f"📧 We sent a 6-digit code to *{user.email}*. Enter it on the secure "
+                             "form above. (Reply *resend* for a new one.)")
     _touch(pa, state="email", payload=pa.payload)
     reply(msisdn, f"📧 We sent a 6-digit code to *{user.email}*. Enter it here. "
                   "(Reply *resend* for a new one, or *change* to use a different address.)")
 
 
-def _kyc_code_ok(pa: PendingAction, msisdn: str, val: str) -> bool | None:
-    """True on a correct code, False to keep waiting, None if the flow was ended.
-    Single-use and attempt-capped, like every other code in the channel."""
+# --------------------------------------------------------------------------- #
+# email, submitted through the encrypted Flow. Each returns (status, message)
+# where status is "ok" (accepted), "retry" (show the message, ask again) or
+# "stop" (the attempt is over; the message is the terminal screen).
+# --------------------------------------------------------------------------- #
+def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
+    user = pa.user
+    email = (email or "").strip().lower()
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return "retry", "That doesn't look like an email address — enter it like name@example.com."
+    if User.objects.filter(email__iexact=email).exclude(pk=user.pk).exists():
+        return "retry", "That email is already on another Zitch account — enter a different one."
+    rail_error = _kyc_email_rail_error(user)
+    if rail_error:
+        _clear_actions(pa.msisdn)
+        reply(pa.msisdn, rail_error)
+        return "stop", "Email verification is unavailable right now — see the chat."
+    user.email = email
+    user.save(update_fields=["email"])
+    if not _kyc_mail_code(pa, user):
+        _clear_actions(pa.msisdn)
+        reply(pa.msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
+        return "stop", "We couldn't send that email — see the chat."
+    # Same open Flow, second half: arm the code step so the next submit lands here.
+    pa.payload["id_step"] = "code"
+    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+    reply(pa.msisdn, f"📧 We sent a 6-digit code to *{email}*. Enter it on the secure form.")
+    return "ok", ""
+
+
+def kyc_flow_email_code(pa: PendingAction, code: str) -> tuple[str, str]:
+    user, msisdn = pa.user, pa.msisdn
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    if not re.fullmatch(r"\d{6}", code):
+        return "retry", "That should be exactly 6 digits."
+    verdict = _kyc_code_check(pa, code)
+    if verdict == "expired":
+        return "stop", "That code has expired. Reply 8 in the chat to start again."
+    if verdict == "locked":
+        _clear_actions(msisdn)
+        reply(msisdn, "Too many incorrect codes. Reply *8* to start verification again.")
+        return "stop", "Too many incorrect codes — see the chat."
+    if verdict != "ok":
+        left = 3 - int(pa.payload.get("code_attempts", 0))
+        _touch(pa, payload=pa.payload)
+        return "retry", f"That code isn't right. {left} attempt(s) left."
+    user.email_verified = True
+    user.save(update_fields=["email_verified"])
+    reply(msisdn, "✅ Email address verified.")
+    _kyc_next(pa, user, msisdn)
+    return "ok", ""
+
+
+def _kyc_code_check(pa: PendingAction, val: str) -> str:
+    """The verdict on a submitted code: "ok", "expired", "wrong" or "locked".
+
+    Says nothing and clears nothing — the chat and the Flow each phrase it in
+    their own voice, off ONE implementation of single-use, expiry and the
+    attempt cap, so the two entry points cannot drift on what counts as valid.
+    """
     exp = pa.payload.get("code_exp") or ""
     try:
         expired = bool(exp) and timezone.now() >= timezone.datetime.fromisoformat(exp)
     except (TypeError, ValueError):
         expired = True   # unreadable expiry is treated as expired, never as valid
     if expired:
-        reply(msisdn, "That code has expired. Reply *resend* for a new one.")
-        return False
+        return "expired"
     attempts = int(pa.payload.get("code_attempts", 0)) + 1
     if check_password(val, pa.payload.get("code_hash", "")):
         # Burn it so the same code cannot be replayed.
         pa.payload["code_hash"] = ""
-        return True
+        return "ok"
     pa.payload["code_attempts"] = attempts
-    if attempts >= 3:
+    return "locked" if attempts >= 3 else "wrong"
+
+
+def _kyc_code_ok(pa: PendingAction, msisdn: str, val: str) -> bool | None:
+    """True on a correct code, False to keep waiting, None if the flow was ended.
+    Single-use and attempt-capped, like every other code in the channel."""
+    verdict = _kyc_code_check(pa, val)
+    if verdict == "ok":
+        return True
+    if verdict == "expired":
+        reply(msisdn, "That code has expired. Reply *resend* for a new one.")
+        return False
+    if verdict == "locked":
         _clear_actions(msisdn)
         reply(msisdn, "Too many incorrect codes. Reply *8* to start verification again.")
         return None
+    left = 3 - int(pa.payload.get("code_attempts", 0))
     _touch(pa, payload=pa.payload)
-    reply(msisdn, f"That code isn't right. {3 - attempts} attempt(s) left, or reply *resend*.")
+    reply(msisdn, f"That code isn't right. {left} attempt(s) left, or reply *resend*.")
     return False
 
 
@@ -1476,8 +1652,17 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         # Identity Flow open. Refusing to read a number typed here is the point:
         # accepting it would put in the transcript exactly what the Flow exists to
         # keep out of it.
-        which = str(pa.payload.get("id_kind", "BVN")).upper()
-        return reply(msisdn, f"🪪 Please enter your {which} on the secure screen I sent — "
+        kind = str(pa.payload.get("id_kind", "bvn")).lower()
+        if kind == "email":
+            # "resend" is the one word we act on: an expired code with no way to
+            # ask for another would strand the customer inside a dead Flow.
+            if text.strip().lower() == "resend" and pa.payload.get("id_step") == "code":
+                return _kyc_send_email_code(pa, user, msisdn)
+            what = "email code" if pa.payload.get("id_step") == "code" else "email address"
+            return reply(msisdn, f"📧 Please enter your {what} on the secure screen I sent — "
+                                 "it stays private and never appears in this chat. "
+                                 "Or reply \"cancel\".")
+        return reply(msisdn, f"🪪 Please enter your {kind.upper()} on the secure screen I sent — "
                              "it stays private and never appears in this chat. Or reply \"cancel\".")
     handler = {
         "transfer": _advance_transfer,

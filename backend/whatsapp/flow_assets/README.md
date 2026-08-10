@@ -47,19 +47,29 @@ public key.
 
 - `PIN_SCREEN` — masked `password` PIN input; its footer submit does the
   `data_exchange` to our endpoint. Re-rendered with an `error` on a wrong PIN.
-- `IDENTITY_SCREEN` — masked input for a BVN or NIN during chat KYC. Same
-  reasoning as the PIN: WhatsApp has no view-once for text and lets only the
-  **sender** delete a message, so anything typed into the thread stays in the
-  customer's own history indefinitely. `label` and `summary` are supplied per
-  request, so one screen serves both numbers.
+- `IDENTITY_SCREEN` — masked input for a BVN, a NIN, or the 6-digit email
+  confirmation code. Same reasoning as the PIN: WhatsApp has no view-once for
+  text and lets only the **sender** delete a message, so anything typed into the
+  thread stays in the customer's own history indefinitely. `label` and `summary`
+  are supplied per request, so one screen serves all three.
+- `EMAIL_SCREEN` — the email address itself, `input-type: email` and
+  deliberately **not** masked: an address is not a secret, and masking one the
+  customer has to type correctly only breeds typos. It still never reaches the
+  chat. Submitting it mails the code and moves to `IDENTITY_SCREEN` on the same
+  open Flow.
 - `SUCCESS` — terminal screen showing the outcome (`message`).
+
+All four KYC steps therefore behave the same way: phone is the only one whose
+code still arrives in the thread, because the SMS itself is the proof of SIM
+possession and there is nothing to hide from the customer's own device.
 
 The endpoint drives these dynamically from `whatsapp/flows.py`; keep the screen
 ids and field names in sync if you edit the JSON.
 
-> **Re-publish after updating.** `IDENTITY_SCREEN` was added after the first
-> release. Meta serves the version published in WhatsApp Manager, not this file
-> — until you paste the current JSON and publish again, the identity Flow send
+> **Re-publish after updating.** `IDENTITY_SCREEN` and `EMAIL_SCREEN` were added
+> after the first release, and `PIN_SCREEN` now carries the bank and account on
+> their own lines. Meta serves the version published in WhatsApp Manager, not
+> this file — until you paste the current JSON and publish again, the Flow send
 > fails and the channel falls back to asking in the chat. Unlike the PIN this
 > fallback is deliberate rather than fail-closed: refusing service would block
 > every signup on a deploy without Flows, which is worse than the number sitting

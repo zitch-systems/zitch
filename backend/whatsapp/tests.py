@@ -1903,7 +1903,7 @@ class SignupPinPrivacyTests(TestCase):
         # First submit holds only a hash and re-renders the same screen.
         r1 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "2468"}})
         self.assertEqual(r1["screen"], PIN_SCREEN)
-        self.assertIn("Re-enter", r1["data"]["summary"])
+        self.assertIn("Re-enter", r1["data"]["amount"])   # the heading line
         ob.refresh_from_db()
         self.assertTrue(ob.payload["flow_pin_hash"])
         self.assertNotIn("2468", json.dumps(ob.payload))     # never the raw PIN
