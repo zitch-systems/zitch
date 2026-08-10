@@ -217,3 +217,18 @@ def extract_intent(text: str) -> dict | None:
     return {"name": intent.get("name"),
             "input": rehydrate_value(masked_input, mapping),
             "masked_input": masked_input}
+
+
+def global_enabled() -> bool:
+    """The AI kill switch, read the SAME way everywhere.
+
+    A missing row means OFF. That has to be one answer, not three: the router
+    read the default as False while the console read it as True, so an operator
+    saw the switch reporting ON while every message went down the deterministic
+    path — the AI looking "broken" with nothing in the logs to explain it.
+    `ai_state` was corrected to match the router and `ai_config` was not, which
+    is exactly the drift a shared helper prevents.
+    """
+    from .models import SystemSetting
+
+    return SystemSetting.get_bool("ai_enabled_global", False)

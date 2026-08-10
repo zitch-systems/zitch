@@ -2599,11 +2599,41 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
     return False  # clarify / unknown
 
 
+#: Nigerian mobile prefixes by network, national form. Used only to fill in a
+#: network the customer did not state — never to override one they did.
+_NETWORK_PREFIXES = {
+    "1": ("0803", "0806", "0703", "0706", "0813", "0816", "0810", "0814", "0903", "0906", "0913", "0916"),
+    "2": ("0805", "0807", "0705", "0815", "0811", "0905", "0915"),
+    "3": ("0802", "0808", "0708", "0812", "0701", "0902", "0901", "0904", "0907", "0912"),
+    "4": ("0809", "0817", "0818", "0908", "0909"),
+}
+_PREFIX_TO_NETWORK = {p: net for net, prefixes in _NETWORK_PREFIXES.items() for p in prefixes}
+
+
+def _network_from_prefix(phone) -> str | None:
+    """The network a Nigerian mobile number belongs to, or None if unrecognised.
+
+    Ported numbers make this a guess, not a fact — which is why it only ever
+    pre-fills a confirm screen the customer still has to approve, and why a
+    network they stated always wins.
+    """
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if digits.startswith("234"):
+        digits = "0" + digits[3:]
+    return _PREFIX_TO_NETWORK.get(digits[:4]) if len(digits) >= 10 else None
+
+
 def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
     """LLM airtime: if amount + network + phone are all known, jump to confirm;
     otherwise start the guided flow."""
-    netid = _network_id(network)
-    ph = _phone_from(str(phone), user) if phone else None
+    # "2k airtime for me" carries neither a number nor a network. Falling back to
+    # the guided flow for that made the AI look useless on the single most common
+    # sentence customers actually send — so both are inferred rather than asked
+    # for: no target means the customer's own line, and a Nigerian number's
+    # prefix names its network. Neither guess moves money; the confirm screen
+    # still shows what was inferred and still needs biometrics or the PIN.
+    ph = _phone_from(str(phone), user) if phone else (user.phone or "").lstrip("+")
+    netid = _network_id(network) or _network_from_prefix(ph)
     try:
         amt = Decimal(str(amount)) if amount is not None else None
     except (InvalidOperation, TypeError):
