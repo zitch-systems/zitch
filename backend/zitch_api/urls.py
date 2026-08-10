@@ -86,6 +86,14 @@ def health(_request):
         # that behind an admin login, which is exactly what an operator debugging
         # from a phone does not have.
         "whatsapp_outbound_failing": _whatsapp_outbound_failing(),
+        # Both readings above are HISTORICAL — "reached" is true once Meta has
+        # ever called, and "outbound_failing" reads the last replies we sent,
+        # which stay healthy-looking forever if we stop replying at all. A
+        # channel that died two hours ago therefore reads identically to a live
+        # one. These two answer the question actually being asked in an outage:
+        # is anything arriving, and is anything being worked?
+        "whatsapp_inbound_waiting": _whatsapp_inbound_waiting(),
+        "whatsapp_last_processed_at": _whatsapp_last_processed_at(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
 
@@ -145,6 +153,43 @@ def _whatsapp_outbound_failing():
                       .order_by("-created").values_list("processing_error", flat=True)[:20])
         return all(bool(e) for e in recent) if recent else None
     except Exception:      # noqa: BLE001 — liveness outranks this datum
+        return None
+
+
+def _whatsapp_inbound_waiting():
+    """How many inbound messages are queued and not yet processed.
+
+    The decisive number in a silent-channel outage. A hobby-tier host reaps the
+    background drain thread on cold start, so the webhook 200s, the row is
+    stored, and nothing ever works it: no reply, no send attempt, no error — and
+    every other reading on this page stays green. A backlog that is not zero and
+    not moving says exactly that, and points at WHATSAPP_PROCESS_INLINE.
+    """
+    try:
+        from whatsapp.models import WaMessageLog
+
+        return WaMessageLog.objects.filter(direction=WaMessageLog.IN,
+                                           processed_at__isnull=True).count()
+    except Exception:      # noqa: BLE001 — liveness outranks this datum
+        return None
+
+
+def _whatsapp_last_processed_at():
+    """When an inbound message was last worked through to completion.
+
+    Timestamp rather than a boolean, because "is it working" has no useful
+    yes/no answer — an idle channel and a dead one both have nothing to report.
+    An operator comparing this against the clock knows in one glance whether the
+    silence is theirs or ours.
+    """
+    try:
+        from whatsapp.models import WaMessageLog
+
+        row = (WaMessageLog.objects.filter(direction=WaMessageLog.IN,
+                                           processed_at__isnull=False)
+               .order_by("-processed_at").values_list("processed_at", flat=True).first())
+        return row.isoformat() if row else None
+    except Exception:      # noqa: BLE001
         return None
 
 
