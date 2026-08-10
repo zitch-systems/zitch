@@ -485,3 +485,33 @@ class PemNormalisationTests(unittest.TestCase):
                 with self.assertRaises(FlowDecryptError):
                     _private_key()
         self.assertIn("wa_flow_private_key_missing", "\n".join(logs.output))
+
+
+@unittest.skipUnless(_HAS_CRYPTO, "cryptography not importable in this environment")
+class KeyMismatchLoggingTests(TestCase):
+    """A key that parses but is not Meta's pair is the one failure that looks
+    like every other: valid PEM, so neither the missing nor the invalid check
+    fires, and the endpoint still answers a bare 421. It has to name itself."""
+
+    def test_a_mismatched_key_pair_says_so(self):
+        from .flows_crypto import FlowDecryptError, decrypt_request
+
+        meta_side = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        ours = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        aes_key, iv = os.urandom(16), os.urandom(16)
+        body = {
+            "encrypted_flow_data": _b64(AESGCM(aes_key).encrypt(iv, b"{}", None)),
+            # Sealed to a public key we do NOT hold the private half of.
+            "encrypted_aes_key": _b64(meta_side.public_key().encrypt(
+                aes_key, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()),
+                                      algorithm=hashes.SHA256(), label=None))),
+            "initial_vector": _b64(iv),
+        }
+        pem = ours.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()).decode()
+        with override_settings(WHATSAPP_FLOW={"PRIVATE_KEY": pem}):
+            with self.assertLogs("whatsapp", level="WARNING") as logs:
+                with self.assertRaises(FlowDecryptError):
+                    decrypt_request(body)
+        self.assertIn("wa_flow_key_mismatch", "\n".join(logs.output))
