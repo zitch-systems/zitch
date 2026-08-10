@@ -331,3 +331,34 @@ class HealthFlowReadinessTests(TestCase):
                                WHATSAPP_FLOW={"FLOW_ID": "123", "PRIVATE_KEY": "k"}):
             body = Client().get("/healthz").json()
         self.assertTrue(body["integrations"]["whatsapp_flow_ready"])
+
+    def test_health_separates_the_key_from_the_published_flow(self):
+        """flow_ready needs the key AND a Flow ID, so it stays false through the
+        whole Meta setup and cannot say which half is missing — which is exactly
+        when someone is staring at a 421 wondering whether their key took."""
+        from django.test import Client as _C
+
+        with override_settings(WHATSAPP=dict(_WA_ON, MODE="live", TOKEN="t",
+                                             PHONE_NUMBER_ID="p"),
+                               WHATSAPP_FLOW={"FLOW_ID": "", "PRIVATE_KEY": ""}):
+            body = _C().get("/healthz").json()["integrations"]
+        self.assertFalse(body["whatsapp_flow_key_ok"])
+        self.assertFalse(body["whatsapp_flow_ready"])
+
+    def test_health_reports_a_good_key_even_before_the_flow_is_published(self):
+        from django.test import Client as _C
+
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import rsa
+        except Exception:  # pragma: no cover
+            self.skipTest("cryptography not importable")
+        pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()).decode()
+        with override_settings(WHATSAPP=dict(_WA_ON, MODE="live", TOKEN="t",
+                                             PHONE_NUMBER_ID="p"),
+                               WHATSAPP_FLOW={"FLOW_ID": "", "PRIVATE_KEY": pem}):
+            body = _C().get("/healthz").json()["integrations"]
+        self.assertTrue(body["whatsapp_flow_key_ok"])   # key is fine…
+        self.assertFalse(body["whatsapp_flow_ready"])   # …Flow just isn't published

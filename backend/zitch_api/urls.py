@@ -69,6 +69,12 @@ def health(_request):
         # or WHATSAPP_FLOW_PRIVATE_KEY is missing: the fallback is deliberate
         # and safe, but it is not the PIN screen anyone thinks they configured.
         "whatsapp_flow_ready": _flows_live(),
+        # flow_ready needs the key AND a published Flow ID, so it stays false
+        # through the whole Meta setup and cannot tell you which half is
+        # missing. This reports the key alone: true = present and parses, false
+        # = unset or unparseable. It is the difference between the 421 Meta's
+        # health check reports and a Flow that simply hasn't been published yet.
+        "whatsapp_flow_key_ok": _flow_key_ok(),
         # Has Meta ever SUCCESSFULLY called the webhook? Nothing downstream can
         # explain silence when the callback never arrives, and that case is
         # invisible in every other reading: no call means no queue row, no log
@@ -82,6 +88,26 @@ def health(_request):
         "whatsapp_outbound_failing": _whatsapp_outbound_failing(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _flow_key_ok():
+    """Does WHATSAPP_FLOW_PRIVATE_KEY exist and actually parse?
+
+    The Flows endpoint answers Meta with a bare 421 when it cannot decrypt, and
+    that is the ONLY thing Meta's health check shows — "failed to receive
+    expected HTTP response", which reads like a URL problem. Nine times out of
+    ten it is the key: unset, or mangled by the dashboard that stored it. This
+    turns that guess into a reading.
+    """
+    from whatsapp.flows_crypto import FlowDecryptError, _private_key
+
+    try:
+        _private_key()
+        return True
+    except FlowDecryptError:
+        return False
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return None
 
 
 def _whatsapp_webhook_reached():
