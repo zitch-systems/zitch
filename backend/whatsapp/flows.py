@@ -21,6 +21,7 @@ log = logging.getLogger("whatsapp")
 
 PIN_SCREEN = "PIN_SCREEN"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
+EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
 FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
@@ -161,14 +162,43 @@ def resolve_flow_token(token: str):
 # --------------------------------------------------------------------------- #
 # screen builders
 # --------------------------------------------------------------------------- #
-def _pin_screen(summary: str, error: str = "") -> dict:
-    return {"screen": PIN_SCREEN, "data": {"summary": summary or "Confirm your payment", "error": error or ""}}
+def _pin_screen(summary, error: str = "") -> dict:
+    """`summary` is either the structured {amount, recipient, details} the money
+    flows persist, or a bare string (the signup PIN, which has no payment to
+    describe). Every declared field is always supplied — the screen renders all
+    three, so a missing one is a blank line rather than an omission."""
+    fields = summary if isinstance(summary, dict) else {}
+    heading = fields.get("amount") or (summary if isinstance(summary, str) else "")
+    return {"screen": PIN_SCREEN,
+            "data": {"amount": heading or "Confirm your payment",
+                     "recipient": fields.get("recipient", ""),
+                     "details": fields.get("details", ""),
+                     "error": error or ""}}
 
 
-def _identity_screen(kind: str, error: str = "") -> dict:
+def _pa_screen_fields(pa) -> dict:
+    """The persisted screen fields for a pending action, falling back to the
+    one-line summary for an action armed before the structured form existed."""
+    return pa.payload.get("flow_fields") or pa.payload.get("flow_summary", "")
+
+
+def _identity_screen(kind: str, error: str = "", summary: str = "", label: str = "") -> dict:
+    """The masked-entry screen. Defaults to the 11-digit BVN/NIN wording, but the
+    email confirmation code rides the same screen — one published masked input,
+    so every secret the ladder collects is entered the same way."""
     which = (kind or "BVN").upper()
     return {"screen": IDENTITY_SCREEN,
-            "data": {"summary": f"Enter your 11-digit {which}", "label": which,
+            "data": {"summary": summary or f"Enter your 11-digit {which}",
+                     "label": label or which,
+                     "error": error or ""}}
+
+
+def _email_screen(error: str = "", summary: str = "", label: str = "") -> dict:
+    """Address entry. Unmasked, unlike everything else here: an email address is
+    not a secret, and masking one you have to type correctly only breeds typos."""
+    return {"screen": EMAIL_SCREEN,
+            "data": {"summary": summary or "What's your email address?",
+                     "label": label or "Email address",
                      "error": error or ""}}
 
 
@@ -221,21 +251,21 @@ def handle_flow_request(payload: dict) -> dict:
             return _success_screen("This verification expired. Reply 8 in the chat to start again.")
         kind = pa.payload.get("id_kind", "BVN")
         if action == "data_exchange":
-            return _submit_identity(pa, data)
-        return _identity_screen(kind)
+            return _submit_email(pa, data) if kind == "email" else _submit_identity(pa, data)
+        return _email_step_screen(pa) if kind == "email" else _identity_screen(kind)
 
     if action == "INIT":
         pa = resolve_flow_token(token)
         if pa is None:
             return _success_screen("This request has expired. Please start again in the chat.")
-        return _pin_screen(pa.payload.get("flow_summary", ""))
+        return _pin_screen(_pa_screen_fields(pa))
 
     if action == "data_exchange":
         return _submit_pin(token, data)
 
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
     pa = resolve_flow_token(token)
-    return _pin_screen(pa.payload.get("flow_summary", "")) if pa else _success_screen("Session ended.")
+    return _pin_screen(_pa_screen_fields(pa)) if pa else _success_screen("Session ended.")
 
 
 def _ob_summary(ob) -> str:
@@ -302,6 +332,49 @@ def _submit_identity(pa, data: dict) -> dict:
     return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
 
 
+def _email_code_screen(pa, error: str = "") -> dict:
+    return _identity_screen("email", error=error, label="Email code",
+                            summary=f"Enter the 6-digit code we sent to {pa.user.email}")
+
+
+def _email_step_screen(pa, error: str = "") -> dict:
+    """Whichever half of the email step this action is sitting in."""
+    if pa.payload.get("id_step") == "code":
+        return _email_code_screen(pa, error=error)
+    return _email_screen(error=error)
+
+
+def _submit_email(pa, data: dict) -> dict:
+    """The email half of the KYC ladder, run in the encrypted Flow exactly like
+    BVN and NIN: the address is entered here, the 6-digit code comes back here,
+    and neither ever becomes a chat message.
+
+    Both halves delegate to the router, so the Flow and the chat fallback agree
+    on what a valid address is, who already owns it, and how many wrong codes
+    end the attempt.
+    """
+    from .router import kyc_flow_email_address, kyc_flow_email_code
+
+    step = pa.payload.get("id_step", "address")
+    value = str(data.get("number", "")).strip()
+    verdict = kyc_flow_email_address if step == "address" else kyc_flow_email_code
+    try:
+        status, message = verdict(pa, value)
+    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+        log.exception("email flow submission failed for pa=%s step=%s", pa.id, step)
+        return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
+
+    if status == "stop":
+        return _success_screen(message)
+    if status == "retry":
+        return _email_step_screen(pa, error=message)
+    # Accepted. The address half moves on to the code on the same open Flow; the
+    # code half is the end of the email step, and the chat says what comes next.
+    if step == "address":
+        return _email_code_screen(pa)
+    return _success_screen("Email verified ✅ — see the chat for what's next.")
+
+
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
@@ -313,7 +386,7 @@ def _submit_pin(token: str, data: dict) -> dict:
 
     user = pa.user
     pin = str(data.get("pin", "")).strip()
-    summary = pa.payload.get("flow_summary", "")
+    summary = _pa_screen_fields(pa)
 
     ok, code, message = evaluate_transaction_pin(user, pin)
     if not ok:

@@ -2,8 +2,17 @@
   "version": "5.1",
   "data_api_version": "3.0",
   "routing_model": {
-    "PIN_SCREEN": ["SUCCESS"],
-    "IDENTITY_SCREEN": ["SUCCESS"]
+    "PIN_SCREEN": [
+      "SUCCESS"
+    ],
+    "IDENTITY_SCREEN": [
+      "EMAIL_SCREEN",
+      "SUCCESS"
+    ],
+    "EMAIL_SCREEN": [
+      "IDENTITY_SCREEN",
+      "SUCCESS"
+    ]
   },
   "screens": [
     {
@@ -62,12 +71,16 @@
       }
     },
     {
-      "id": "PIN_SCREEN",
-      "title": "Confirm payment",
+      "id": "EMAIL_SCREEN",
+      "title": "Verify your email",
       "data": {
         "summary": {
           "type": "string",
-          "__example__": "Send ₦5,000 to JOHN DOE"
+          "__example__": "What's your email address?"
+        },
+        "label": {
+          "type": "string",
+          "__example__": "Email address"
         },
         "error": {
           "type": "string",
@@ -80,6 +93,73 @@
           {
             "type": "TextHeading",
             "text": "${data.summary}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.error}"
+          },
+          {
+            "type": "Form",
+            "name": "email_form",
+            "children": [
+              {
+                "type": "TextInput",
+                "name": "number",
+                "label": "${data.label}",
+                "input-type": "email",
+                "required": true,
+                "helper-text": "Entered privately — this never appears in your chat"
+              },
+              {
+                "type": "Footer",
+                "label": "Continue",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "number": "${form.number}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "PIN_SCREEN",
+      "title": "Confirm payment",
+      "data": {
+        "amount": {
+          "type": "string",
+          "__example__": "₦5,000.00"
+        },
+        "recipient": {
+          "type": "string",
+          "__example__": "To JOHN DOE"
+        },
+        "details": {
+          "type": "string",
+          "__example__": "GTBank · 0123456789"
+        },
+        "error": {
+          "type": "string",
+          "__example__": ""
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "${data.amount}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.recipient}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.details}"
           },
           {
             "type": "TextBody",
