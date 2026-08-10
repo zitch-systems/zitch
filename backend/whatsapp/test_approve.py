@@ -310,3 +310,24 @@ class BiometricPrimaryTests(TestCase):
         prompt = _confirm_prompt(pa)
         self.assertTrue(prompt.startswith("🔐 Enter the *6-digit code*"))
         self.assertIn("Have the Zitch app?", prompt)
+
+
+class HealthFlowReadinessTests(TestCase):
+    """`whatsapp_live` true with `whatsapp_flow_ready` false is the difference
+    between a PIN typed into a masked field and submitted encrypted, and the
+    channel quietly falling back to an SMS code. Nothing else reported it, and
+    /healthz is the only reading an operator can take without a login."""
+
+    def test_health_reports_whether_the_secure_pin_flow_is_armed(self):
+        with override_settings(WHATSAPP=dict(_WA_ON, MODE="live", TOKEN="t",
+                                             PHONE_NUMBER_ID="p"),
+                               WHATSAPP_FLOW={"FLOW_ID": "", "PRIVATE_KEY": ""}):
+            body = Client().get("/healthz").json()
+        self.assertIn("whatsapp_flow_ready", body["integrations"])
+        self.assertFalse(body["integrations"]["whatsapp_flow_ready"])
+
+        with override_settings(WHATSAPP=dict(_WA_ON, MODE="live", TOKEN="t",
+                                             PHONE_NUMBER_ID="p"),
+                               WHATSAPP_FLOW={"FLOW_ID": "123", "PRIVATE_KEY": "k"}):
+            body = Client().get("/healthz").json()
+        self.assertTrue(body["integrations"]["whatsapp_flow_ready"])
