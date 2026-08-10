@@ -180,6 +180,45 @@ class WemaLiveTests(SimpleTestCase):
         self.assertTrue(result["pending"])
         self.assertNotIn("socket timed out", result["message"])
 
+    @patch("utility.wema.requests.post", side_effect=requests.Timeout("socket timed out"))
+    def test_credit_timeout_is_ambiguous_and_never_retryable(self, _mock_post):
+        result = wema.credit_wallet(
+            1000, "REF-CREDIT-TIMEOUT", "test", destination_account="01",
+        )
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertNotIn("socket timed out", result["message"])
+
+    @patch("utility.wema.requests.post")
+    def test_credit_non_json_response_stays_pending(self, mock_post):
+        mock_post.return_value.json.side_effect = ValueError("gateway returned HTML")
+        result = wema.credit_wallet(
+            1000, "REF-CREDIT-HTML", "test", destination_account="01",
+        )
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+        self.assertNotIn("gateway returned HTML", result["message"])
+
+    @patch("utility.wema.requests.get")
+    def test_credit_status_uses_authenticated_credit_endpoint(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"data": {"status": "SUCCESS",
+                                  "transactionReference": "REF-CREDIT-OK",
+                                  "platformTransactionReference": "WEMA-CREDIT-9"}},
+             "hasError": False}
+        )
+        result = wema.confirm_credit_status("REF-CREDIT-OK")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["platform_reference"], "WEMA-CREDIT-9")
+        self.assertEqual(mock_get.call_args[1]["headers"]["access"], "chan-1")
+        self.assertEqual(mock_get.call_args[1]["headers"]["Ocp-Apim-Subscription-Key"], "subkey")
+        self.assertTrue(
+            mock_get.call_args[0][0].endswith(
+                "/credit-wallet/api/IntraBankTransfer/"
+                "ConfirmClientTransferStatus/REF-CREDIT-OK"
+            )
+        )
+
     @patch("utility.wema.requests.post")
     def test_transfer_envelope_success_does_not_override_failed_status(self, mock_post):
         mock_post.return_value = _resp(
