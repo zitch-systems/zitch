@@ -585,10 +585,68 @@ def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = 
 
 
 def verify_nin(nin: str, name: str = "") -> dict:
-    """NIN verification entry point — see verify_bvn. Verification is the name-matched
-    NUBAN account-creation flow; production routes the caller there, dev/tests mock."""
+    """NIN verification entry point.
+
+    Prembly first when it is configured: it has the standalone NIN lookup the
+    bank does not. That matters because the NUBAN flow name-matches exactly ONE
+    identity — whichever opened the account, in practice the BVN — so without a
+    second rail every NIN falls to the operator review queue, and nobody can
+    spend until a human clears them.
+
+    Falls back to the Wema behaviour when Prembly is unconfigured, so a deploy
+    without those keys behaves exactly as it did before.
+    """
+    if _prembly_live():
+        return prembly_verify_nin(nin, name=name)
     from . import wema
     return wema.verify_nin(nin, name=name)
+
+
+def prembly_verify_nin(nin: str, name: str = "") -> dict:
+    """Look a NIN up at Prembly and name-match the record against `name`.
+
+    Fails CLOSED on every uncertainty — provider down, malformed response, no
+    name on the record, or a name that does not match. A NIN that cannot be
+    checked must land in the review queue rather than be waved through: this
+    result is what lifts a tier and unlocks spending.
+
+    VERIFY-BEFORE-LIVE: confirm the endpoint path and the response field names
+    against your Prembly dashboard before trusting this in production. The
+    shape below follows their documented NIN response; a mismatch surfaces as
+    "could not be confirmed", which is the safe direction but still wrong.
+    """
+    if len(nin) != 11 or not nin.isdigit():
+        return {"success": False, "message": "NIN must be 11 digits"}
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/nin",
+            json={"number": nin}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("prembly_nin_unreachable error_type=%s", type(exc).__name__)
+        return {"success": False, "message": f"Identity provider unreachable: {exc}"}
+
+    record = data.get("data") or data.get("nin_data") or {}
+    if not (data.get("status") and isinstance(record, dict)):
+        return {"success": False, "message": (data.get("message")
+                                              or "That NIN could not be confirmed."),
+                "raw": data}
+    first = str(record.get("firstname") or record.get("first_name") or "").strip()
+    last = str(record.get("surname") or record.get("lastname") or record.get("last_name") or "").strip()
+    resolved = " ".join(part for part in (first, record.get("middlename") or "", last) if part).strip()
+    if name and resolved:
+        from transfers.views import _names_match
+
+        if not _names_match(name, resolved):
+            # Deliberately does not echo the resolved name: it belongs to
+            # whoever owns the NIN, who may not be the person asking.
+            log.warning("prembly_nin_name_mismatch")
+            return {"success": False, "message": "That NIN does not match the name on this account.",
+                    "raw": data}
+    elif not resolved:
+        return {"success": False, "message": "That NIN could not be confirmed.", "raw": data}
+    return {"success": True, "first_name": first, "last_name": last, "raw": data}
 
 
 def verify_vnin(vnin: str, name: str = "") -> dict:
