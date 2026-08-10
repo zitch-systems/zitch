@@ -1686,11 +1686,17 @@ def wema_probe(account_number: str = "", bank_code: str = "", phone: str = "",
 def wema_diagnostics() -> dict:
     m = settings.WEMA
     keys = m.get("KEYS") or {}
+    configured_security = (m.get("SECURITY_INFO", "") or "").strip()
     out = {"base_url": m["BASE_URL"], "channel_id_set": bool(m.get("CHANNEL_ID")),
-           "wallet_key_set": bool(keys.get("wallet")), "security_info_set": bool(m.get("SECURITY_INFO")),
+           "wallet_key_set": bool(keys.get("wallet")),
+           "product_keys_set": {name: bool(keys.get(name)) for name in
+                                ("wallet", "card", "airtime", "bills", "upgrade",
+                                 "kyc", "remita", "bnpl")},
+           "security_info_set": bool(configured_security),
+           "security_info_strong": len(configured_security) >= 32,
            # False above only means WEMA_SECURITY_INFO is unset — money calls still
-           # carry the SECRET_KEY-derived fallback rather than a blank value ALAT
-           # would reject. This says whether SOMETHING will be sent.
+           # derive a nonblank per-reference HMAC from SECRET_KEY. This says whether
+           # an effective private seed exists without exposing it.
            "security_info_effective": bool(security_info_value()),
            "wema_live": wema_live(), "keys_configured": wema_keys_configured(),
            "simulation": wema_simulation()}
