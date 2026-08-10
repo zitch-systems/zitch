@@ -3389,3 +3389,45 @@ class ClarifyIsAnsweredNotSwallowedTests(TestCase):
 
         self.assertNotIn("ai on", menu_text())
         self.assertIn("just type", menu_text().lower())
+
+
+class HealthShowsTheChannelNowTests(TestCase):
+    """The older readings are historical: "reached" is true once Meta has ever
+    called, and "outbound_failing" reads the last replies we sent — which stay
+    healthy-looking forever if we stop replying at all. A channel that died two
+    hours ago read exactly like a live one, which is how a real outage was spent
+    looking at a green page."""
+
+    def _health(self):
+        return Client().get("/healthz").json()["integrations"]
+
+    def test_a_queued_but_unworked_message_is_visible(self):
+        """The hobby-tier failure: the webhook 200s, the row is stored, and the
+        drain thread is reaped before it claims anything."""
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="Hi")
+        h = self._health()
+        self.assertEqual(h["whatsapp_inbound_waiting"], 1)
+        self.assertIsNone(h["whatsapp_last_processed_at"])
+
+    def test_a_worked_message_reports_when(self):
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="Hi",
+                                    processed_at=timezone.now())
+        h = self._health()
+        self.assertEqual(h["whatsapp_inbound_waiting"], 0)
+        self.assertIsNotNone(h["whatsapp_last_processed_at"])
+
+    def test_the_backlog_counts_only_unworked_inbound(self):
+        now = timezone.now()
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="a")
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="b")
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.IN, text="c",
+                                    processed_at=now)
+        WaMessageLog.objects.create(msisdn=MSISDN, direction=WaMessageLog.OUT, text="reply")
+        self.assertEqual(self._health()["whatsapp_inbound_waiting"], 2)
+
+    def test_an_idle_channel_is_not_reported_as_broken(self):
+        """Nothing queued and nothing recent is a quiet night, not an outage —
+        the timestamp lets an operator tell the difference themselves."""
+        h = self._health()
+        self.assertEqual(h["whatsapp_inbound_waiting"], 0)
+        self.assertIsNone(h["whatsapp_last_processed_at"])
