@@ -261,9 +261,8 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # Sandbox host https://apiplayground.alat.ng (LIVE differs — set WEMA_BASE_URL).
 # There is NO inbound-credit webhook: deposits AND payout settlement are handled by
 # the reconcile_wema poller. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
-# flow even in prod (no real money). securityInfo (encrypted, required on
-# money-movement calls) is not in the OpenAPI — set WEMA_SECURITY_INFO once Wema
-# supplies the scheme. See utility.wema.
+# flow even in prod (no real money or debt). securityInfo is a per-reference
+# HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
 WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
