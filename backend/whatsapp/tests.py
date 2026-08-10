@@ -3350,3 +3350,42 @@ class NoPinIsSentToSetOneTests(TestCase):
             msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
         self.assertIn("reset pin", out)
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+
+class ClarifyIsAnsweredNotSwallowedTests(TestCase):
+    """The model knowing WHY it cannot act is the useful part. Discarding it for
+    a generic menu turned an understood request into "Sorry, I didn't get that"
+    — which reads as broken rather than as a limit."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.link = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_the_reason_reaches_the_customer(self, _avail):
+        clarify = {"name": "clarify",
+                   "input": {"reason": "I can't read your phone contacts — send Farida's number."}}
+        with patch("whatsapp.ai.extract_intent", return_value=clarify):
+            out = self._say("Access my contact load Farida 200 airtime")
+        self.assertIn("can't read your phone contacts", out)
+        self.assertNotIn("Sorry, I didn't get that", out)
+
+    @patch("whatsapp.ai.llm_available", return_value=True)
+    def test_a_reasonless_clarify_still_falls_back_to_the_menu(self, _avail):
+        with patch("whatsapp.ai.extract_intent", return_value={"name": "clarify", "input": {}}):
+            self.assertIn("Sorry, I didn't get that", self._say("blah blah"))
+
+    def test_the_menu_no_longer_tells_people_to_switch_on_what_is_already_on(self):
+        from whatsapp.router import menu_text
+
+        self.assertNotIn("ai on", menu_text())
+        self.assertIn("just type", menu_text().lower())
