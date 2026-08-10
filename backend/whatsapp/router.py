@@ -39,7 +39,8 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (EMAIL_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN, PIN_SCREEN,
+from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN,
+                    PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
@@ -1599,8 +1600,63 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str) 
     pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
     pa.payload["using_bvn"] = using_bvn
     _touch(pa, state="otp", payload=pa.payload)
+    # The code completes account creation and is what name-matches the ID, so it
+    # belongs on the secure screen too. Collecting the BVN privately and then
+    # asking for the code that unlocks it in clear would be half a fix.
+    if _send_account_otp_flow(pa):
+        return reply(msisdn, "📲 We sent a code to your phone by SMS. Enter it on the secure form "
+                             "above to finish. (Reply *resend* if it doesn't arrive.)")
     reply(msisdn, "📲 We just sent a code to your phone by SMS. Enter it here to finish. "
                   "(Reply *resend* if it doesn't arrive.)")
+
+
+def _send_account_otp_flow(pa: PendingAction) -> bool:
+    """Put the bank's SMS code on the masked screen. Like every other identity
+    Flow here this does NOT fail closed — without Flows configured the code is
+    entered in the chat, exactly as before."""
+    if not flows_live():
+        return False
+    pa.payload["id_kind"] = ACCOUNT_OTP
+    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+    res = send_flow(
+        pa.msisdn, sign_identity_token(pa),
+        header="Finish your account", body="Enter the code privately — it never appears in this chat.",
+        screen=IDENTITY_SCREEN,
+        screen_data={"summary": "Enter the code we sent to your phone",
+                     "label": "SMS code", "error": ""},
+        cta="Enter securely",
+    )
+    if res.get("success"):
+        return True
+    _touch(pa, state="otp", payload=pa.payload)
+    log.warning("wa_account_otp_flow_send_failed pa=%s", pa.id)
+    return False
+
+
+def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
+    """The SMS code submitted through the Flow. ("retry", msg) to stay on the
+    screen, ("done", msg) to close it — the chat carries the detail either way.
+
+    Delegates to the same completion the chat path uses, so the two cannot drift
+    on what a 400 means or on when the pending action is cleared.
+    """
+    user, msisdn = pa.user, pa.msisdn
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    if not code:
+        return "retry", "Enter the code from the SMS."
+    payload, status = wallet_views.complete_wema_provisioning(
+        user, code, pa.payload.get("tracking_id", ""))
+    if payload.get("success"):
+        _clear_actions(msisdn)
+        _send_account_details(msisdn, get_or_create_wallet(user),
+                              intro="🎉 *Your Zitch account number is ready!*")
+        _kyc_continue_after_account(user, msisdn)
+        return "done", "Account created ✅ — see the chat for your details."
+    if status == 400:   # expired / mismatched attempt: retrying the same code cannot help
+        _clear_actions(msisdn)
+        reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
+        return "done", "That attempt expired — see the chat."
+    return "retry", (payload.get("message") or "That code didn't work.")
 
 
 def _kyc_continue_after_account(user, msisdn: str) -> None:
@@ -1671,18 +1727,14 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
             if res.get("success"):
                 return reply(msisdn, "📲 Code re-sent — enter it here.")
             return reply(msisdn, "⚠️ " + (res.get("message") or "Couldn't resend the code — try again shortly."))
-        payload, status = wallet_views.complete_wema_provisioning(
-            user, val, pa.payload.get("tracking_id", ""))
-        if payload.get("success"):
-            _clear_actions(msisdn)
-            _send_account_details(msisdn, get_or_create_wallet(user),
-                                  intro="🎉 *Your Zitch account number is ready!*")
-            return _kyc_continue_after_account(user, msisdn)
-        if status == 400:   # expired / mismatched attempt: retrying the same code can't help
-            _clear_actions(msisdn)
-            return reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
-        return reply(msisdn, "⚠️ " + (payload.get("message") or "That code didn't work.")
-                     + ' Try again, reply *resend* for a new code, or "cancel".')
+        # Same completion as the Flow path, so a 400 means the same thing and the
+        # pending action is cleared at the same moment on both. Only the wording
+        # of a retry differs: here there is a chat to say "or resend" in.
+        status, message = account_flow_otp(pa, val)
+        if status == "retry":
+            return reply(msisdn, "⚠️ " + message
+                         + ' Try again, reply *resend* for a new code, or "cancel".')
+        return None
     _clear_actions(msisdn)
     return send_menu(msisdn)
 
@@ -1712,6 +1764,18 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         # accepting it would put in the transcript exactly what the Flow exists to
         # keep out of it.
         kind = str(pa.payload.get("id_kind", "bvn")).lower()
+        if kind == ACCOUNT_OTP:
+            if text.strip().lower() == "resend":
+                res = wema_provider.resend_wallet_otp(
+                    user.phone or "", pa.payload.get("tracking_id", ""),
+                    bvn=bool(pa.payload.get("using_bvn")))
+                if res.get("success"):
+                    return reply(msisdn, "📲 Code re-sent — enter it on the secure screen.")
+                return reply(msisdn, "⚠️ " + (res.get("message")
+                                              or "Couldn't resend the code — try again shortly."))
+            return reply(msisdn, "📲 Please enter the SMS code on the secure screen I sent — "
+                                 "it stays private and never appears in this chat. "
+                                 "Or reply \"cancel\".")
         if kind == "email":
             # "resend" is the one word we act on: an expired code with no way to
             # ask for another would strand the customer inside a dead Flow.

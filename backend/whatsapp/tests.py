@@ -1864,6 +1864,65 @@ class ChatAccountSetupTests(TestCase):
         start.assert_not_called()
         self.assertIn("secure screen", self.last_reply(m))
 
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_the_bank_code_is_entered_in_the_flow_too(self, _enabled, start, complete):
+        """The code completes account creation and is what name-matches the ID,
+        so it is a bearer credential for as long as it lives. Collecting the BVN
+        privately and then asking for the code that unlocks it in clear would be
+        half a fix."""
+        from .flows import ACCOUNT_OTP, handle_flow_request, sign_identity_token
+
+        start.return_value = ({"success": True, "tracking_id": "trk-9"}, None)
+        m = self.start_flow(m="2349090000027")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("1", f"o1-{m}", msisdn=m)
+            pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+            handle_flow_request({"action": "data_exchange",
+                                 "flow_token": sign_identity_token(pa),
+                                 "data": {"number": "12345678901"}})
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], ACCOUNT_OTP)
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            self.assertEqual((otp, tracking_id), ("654321", "trk-9"))
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9900000002", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+        complete.side_effect = provision
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "654321"}})
+        self.assertNotIn("654321", str(resp))
+        self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="654321").exists())
+        self.assertIn("9900000002", self.last_reply(m))
+        self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="add_account").exists())
+
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_a_wrong_bank_code_stays_on_the_screen(self, _enabled, start, complete):
+        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+
+        start.return_value = ({"success": True, "tracking_id": "trk-10"}, None)
+        complete.return_value = ({"success": False, "message": "Invalid OTP"}, 422)
+        m = self.start_flow(m="2349090000028")
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.inbound("1", f"w1-{m}", msisdn=m)
+            pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
+            handle_flow_request({"action": "data_exchange", "flow_token": sign_identity_token(pa),
+                                 "data": {"number": "12345678901"}})
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_identity_token(pa),
+                                    "data": {"number": "000000"}})
+        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertIn("Invalid OTP", resp["data"]["error"])
+        self.assertTrue(PendingAction.objects.filter(id=pa.id).exists())   # still open
+
     @patch("whatsapp.router.wallet_views._start_wema_attempt")
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
     def test_the_flow_submission_opens_the_account(self, _enabled, start):
