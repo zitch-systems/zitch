@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.db import transaction as db_transaction
 from django.utils import timezone
 
 from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
@@ -635,6 +636,7 @@ def _arm_confirm(pa: PendingAction, user) -> bool:
     # in a chat. Clear the armed action so a later message cannot execute it.
     pa.state = "blocked"
     _clear_actions(pa.msisdn)
+    reply(pa.msisdn, _confirm_prompt(pa))
     return False
 
 
@@ -912,7 +914,8 @@ def _send_unlock(user, msisdn: str, resume: str) -> None:
     the two things we can actually prove happened.
     """
     pa = _new_flow(user, msisdn, "unlock", "pin", {"pin_attempts": 0, "resume": resume[:64]})
-    _arm_confirm(pa, user)
+    if not _arm_confirm(pa, user):
+        return
     reply(msisdn, "🔒 *Welcome back.* It's been a while, so confirm it's you before "
                   "I show your account.\n\n" + _confirm_prompt(pa))
 
@@ -2078,7 +2081,8 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     name = (res.get("name") or "").strip() or "Bank recipient"
     amount = Decimal(pa.payload["amount"])
     pa.payload.update({"bank_code": bank.bank_code, "bank_name": bank.name, "name": name})
-    _arm_confirm(pa, user)
+    if not _arm_confirm(pa, user):
+        return
     reply(
         msisdn,
         "Confirm transfer\n"
@@ -2437,7 +2441,8 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
-        _arm_confirm(pa, user)
+        if not _arm_confirm(pa, user):
+            return
         return reply_image(
             msisdn, provider_logo(net),
             f"📱 *Confirm airtime*\n{_money(amount)} {net} → {pa.payload['phone']}\n\n"
@@ -2507,7 +2512,8 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         net = NETWORK_NAMES[pa.payload["net"]]
         pa.payload["phone"] = phone
         pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
-        _arm_confirm(pa, user)
+        if not _arm_confirm(pa, user):
+            return
         return reply_image(
             msisdn, provider_logo(net),
             f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}\n\n"
@@ -2583,7 +2589,8 @@ def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> Non
         pa.payload["amount"] = str(amount)
         pa.payload["meta"] = {"meter": pa.payload["meter"], "disco": pa.payload["disco"],
                               "meter_type": pa.payload["meter_type"]}
-        _arm_confirm(pa, user)
+        if not _arm_confirm(pa, user):
+            return
         cust = pa.payload.get("customer") or "—"
         return reply(
             msisdn,
@@ -2669,7 +2676,8 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         cust = res.get("customer_name", "")
         pa.payload.update({"iuc": iuc, "customer": cust})
         pa.payload["meta"] = {"iuc": iuc, "provider": pa.payload["prov"], "plan_code": pa.payload["plan_code"]}
-        _arm_confirm(pa, user)
+        if not _arm_confirm(pa, user):
+            return
         cust = cust or "—"
         return reply_image(
             msisdn, provider_logo(prov_name),
@@ -2834,7 +2842,8 @@ def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
         pa = _new_flow(user, msisdn, "airtime", "pin",
                        {"pin_attempts": 0, "net": netid, "phone": ph, "amount": str(amt.quantize(Decimal("0.01"))),
                         "meta": {"phone": ph, "network": netid}})
-        _arm_confirm(pa, user)   # the AI fast-path must arm the SMS code too
+        if not _arm_confirm(pa, user):   # failure is already explained in-chat
+            return True
         reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}\n"
                       f"{_confirm_prompt(pa)}")
         return True
@@ -2881,7 +2890,8 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
             _clear_actions(msisdn)
             return reply(msisdn, exc.message)
         pa.payload["quote_ref"] = quote.quote_ref
-        _arm_confirm(pa, user)
+        if not _arm_confirm(pa, user):
+            return
         secs = max(1, int((quote.expires_at - timezone.now()).total_seconds()))
         return reply(
             msisdn,
@@ -2920,15 +2930,30 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
 # AFTER verifying the PIN, so a Flow-confirmed action runs the exact same money
 # path as the chat PIN path.
 # --------------------------------------------------------------------------- #
+@db_transaction.atomic
 def run_flow_execution(pa: PendingAction, user) -> str:
-    # Re-check account state HERE. The chat path gates on is_active in handle_inbound,
-    # but the encrypted Flow (native PIN pad) endpoint reaches execution through a
-    # separate path that never re-checks it — so a transfer armed *before* an admin
-    # freezes the account for fraud could still execute via the Flow within the arm
-    # window, defeating the freeze (the platform's primary incident-response lever).
-    if not user.is_active:
-        _clear_actions(pa.msisdn)
+    # Token resolution and PIN verification happen before this call. Re-read and
+    # lock both records here so a concurrent cancel, replay, expiry or account
+    # freeze cannot race past the final execution boundary.
+    live = PendingAction.objects.select_for_update().filter(
+        pk=pa.pk,
+        user_id=user.pk,
+        msisdn=pa.msisdn,
+        state__in=(FLOW_PIN_STATE, "pin"),
+    ).first()
+    if live is None:
+        return "This request expired or was cancelled. Start again in the chat."
+    if live.expired:
+        live.delete()
+        return "This request expired or was cancelled. Start again in the chat."
+
+    live_user = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
+    if live_user is None or not live_user.is_active:
+        _clear_actions(live.msisdn)
         return "Your Zitch account is currently suspended. Please contact support."
+
+    pa = live
+    user = live_user
     # Getting here means the PIN or a verified biometric just passed, so it
     # starts the re-auth window: someone who just authorised a payment should
     # not be challenged again to read their own balance.

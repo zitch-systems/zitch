@@ -109,6 +109,18 @@ def _claim_inbound(pk: int):
         ).first()
         if row is None or row.processed_at is not None:
             return None, "done"
+        # Preserve the state machine's per-sender order even when several worker
+        # processes claim the global queue concurrently. A later reply must not
+        # overtake an earlier command and mutate the same PendingAction first.
+        earlier_pending = WaMessageLog.objects.filter(
+            direction=WaMessageLog.IN,
+            msisdn=row.msisdn,
+            processed_at__isnull=True,
+        ).filter(
+            Q(created__lt=row.created) | Q(created=row.created, pk__lt=row.pk),
+        ).exists()
+        if earlier_pending:
+            return None, "sender_busy"
         if row.next_attempt_at and row.next_attempt_at > now:
             return None, "deferred"
         if row.processing_started_at and row.processing_started_at > now - INBOUND_LEASE:

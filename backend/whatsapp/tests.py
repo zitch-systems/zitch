@@ -174,6 +174,35 @@ class ChannelTests(TestCase):
         self.assertIn("balance", self.last_reply().lower())
 
     @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_same_sender_messages_are_claimed_in_order(self):
+        self.link()
+        self.inbound("send", "fifo-1")
+        self.inbound("5000", "fifo-2")
+        first, second = WaMessageLog.objects.filter(
+            msisdn=MSISDN,
+            direction=WaMessageLog.IN,
+        ).order_by("created", "pk")
+
+        from .jobs import _claim_inbound
+
+        claimed, disposition = _claim_inbound(first.pk)
+        self.assertEqual(disposition, "claimed")
+        self.assertEqual(claimed.pk, first.pk)
+
+        blocked, disposition = _claim_inbound(second.pk)
+        self.assertIsNone(blocked)
+        self.assertEqual(disposition, "sender_busy")
+
+        WaMessageLog.objects.filter(pk=first.pk).update(
+            processed_at=timezone.now(),
+            processing_started_at=None,
+            processing_payload=b"",
+        )
+        claimed, disposition = _claim_inbound(second.pk)
+        self.assertEqual(disposition, "claimed")
+        self.assertEqual(claimed.pk, second.pk)
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
     def test_dead_letter_erases_encrypted_customer_payload(self):
         self.link()
         self.inbound("balance", "dead-1")
@@ -1111,6 +1140,50 @@ class ProductionConfirmSafetyTests(TestCase):
         self.assertFalse(PendingAction.objects.filter(pk=action.pk).exists())
         self.assertNotIn("your PIN", _confirm_prompt(action))
         self.assertIn("Zitch app", _confirm_prompt(action))
+
+
+    @override_settings(
+        DEBUG=False,
+        TESTING=False,
+        TERMII={"BASE_URL": "", "API_KEY": "", "SENDER_ID": "Zitch", "CHANNEL": "dnd"},
+    )
+    def test_no_pin_unlock_stops_after_safe_reset_instruction(self):
+        from whatsapp.router import _send_unlock
+
+        user, _ = make_user()
+        user.transaction_pin = ""
+        user.save(update_fields=["transaction_pin"])
+
+        _send_unlock(user, MSISDN, "balance")
+
+        replies = list(WaMessageLog.objects.filter(
+            msisdn=MSISDN,
+            direction=WaMessageLog.OUT,
+        ).values_list("text", flat=True))
+        self.assertEqual(len(replies), 1)
+        self.assertIn("reset pin", replies[0].lower())
+        self.assertNotIn("reply with your pin", replies[0].lower())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    def test_cancelled_action_cannot_execute_from_a_stale_token(self):
+        from whatsapp.router import run_flow_execution
+
+        user, _ = make_user()
+        action = PendingAction.objects.create(
+            user=user,
+            msisdn=MSISDN,
+            action_type="airtime",
+            state=FLOW_PIN_STATE,
+            payload={"amount": "200", "phone": MSISDN, "net": "mtn"},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+        PendingAction.objects.filter(pk=action.pk).delete()
+
+        with patch("whatsapp.router._exec_airtime") as executor:
+            outcome = run_flow_execution(action, user)
+
+        executor.assert_not_called()
+        self.assertIn("expired or was cancelled", outcome)
 
 
 class AuditLogImmutabilityTests(TestCase):
