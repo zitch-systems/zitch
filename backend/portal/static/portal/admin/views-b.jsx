@@ -379,8 +379,40 @@ function Audit({ toast }) {
   );
 }
 
+// ---- one settings row: editable where the value is a plain number or flag --- //
+function SettingRow({ s, toast, refresh }) {
+  const { can } = useRole();
+  const [val, setVal] = useStateB(s.value);
+  const [busy, setBusy] = useStateB(false);
+  const save = async () => {
+    setBusy(true);
+    try { await ZAPI.settingSave(s.key, val); toast(s.key + ' saved (audit logged)'); refresh(); }
+    catch (e) { toast('\u26a0 ' + e.message); }
+    setBusy(false);
+  };
+  return (
+    <tr>
+      <td><span className="mono sm">{s.key}</span></td>
+      <td>
+        {s.secret
+          // Encrypted is not the same as safe to display: it is still credential
+          // material on a screen that gets shared.
+          ? <span className="dim mono sm" title="Hidden — stored encrypted, never shown">••••••••</span>
+          : s.editable && can.settings
+            ? <span style={{ display: 'flex', gap: 6 }}>
+                <input className="mono sm" value={val} style={{ width: 110 }}
+                       onChange={(e) => setVal(e.target.value)} />
+                <button className="btn ghost sm" disabled={busy || val === s.value} onClick={save}>Save</button>
+              </span>
+            : <b className="num">{s.value || '—'}</b>}
+      </td>
+      <td className="dim sm">{s.desc}</td>
+    </tr>
+  );
+}
+
 // ================= SETTINGS & TEAM =================
-function Settings({ toast }) {
+function Settings({ toast, refresh }) {
   return (
     <div>
       <PageHead title="Settings & team" sub="Runtime configuration and role-based access." />
@@ -390,11 +422,7 @@ function Settings({ toast }) {
             <thead><tr><th>Key</th><th>Value</th><th>Description</th></tr></thead>
             <tbody>
               {DB.SETTINGS.map((s) => (
-                <tr key={s.key}>
-                  <td><span className="mono sm">{s.key}</span></td>
-                  <td><b className="num">{s.value || '—'}</b></td>
-                  <td className="dim sm">{s.desc}</td>
-                </tr>
+                <SettingRow key={s.key} s={s} toast={toast} refresh={refresh} />
               ))}
             </tbody>
           </table>

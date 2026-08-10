@@ -427,6 +427,11 @@ COMPLIANCE_EXPORT_EMAIL = os.environ.get("COMPLIANCE_EXPORT_EMAIL", "").strip()
 TXN_ALERTS = {
     "EMAIL": os.environ.get("TXN_ALERTS_EMAIL", "true").strip().lower() != "false",
     "SMS": os.environ.get("TXN_ALERTS_SMS", "").strip().lower() == "true",
+    # On by default, unlike SMS: a WhatsApp message costs us nothing per send and
+    # lands in the thread the customer already banks in. For someone who signed
+    # up on WhatsApp and has never opened the app, it is the only alert they will
+    # actually see.
+    "WHATSAPP": os.environ.get("TXN_ALERTS_WHATSAPP", "true").strip().lower() != "false",
 }
 # KYC — selfie/liveness + address + ID-document (image/biometric) — Prembly
 # (IdentityPass). Blank => mock mode.

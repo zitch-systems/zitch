@@ -239,11 +239,11 @@ class ChannelTests(TestCase):
         self.assertIn("look like an email", self.last_reply(m))
         self.inbound("Tunde.Bello@Example.com", "o3c", msisdn=m)
         self.assertIn("PIN", self.last_reply(m))
-        self.inbound("1357", "o4", msisdn=m)   # set PIN
-        self.inbound("1357", "o5", msisdn=m)   # confirm PIN
+        self.inbound("135790", "o4", msisdn=m)   # set PIN
+        self.inbound("135790", "o5", msisdn=m)   # confirm PIN
         u = User.objects.get(phone="09090000002")
         self.assertEqual(u.tier, 0)            # unverified chat signup (no BVN/NIN) -> Tier 0
-        self.assertTrue(u.check_transaction_pin("1357"))
+        self.assertTrue(u.check_transaction_pin("135790"))
         self.assertEqual(u.email, "tunde.bello@example.com")  # stored lowercased
         self.assertTrue(u.onboarded_via_whatsapp)
         self.assertFalse(u.email_verified)                    # chat-collected: unproven
@@ -3151,3 +3151,61 @@ class StalePinBlocksSpendingTests(TestCase):
         from common.http import stale_pin_error as _err
 
         self.assertIsNone(_err(user))
+
+
+class HistoryAndCreditAlertTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_option_9_lists_recent_movements_newest_first(self):
+        out = self._say("9")
+        self.assertIn("50,000", out)      # the seed credit
+        self.assertIn("Balance", out)
+
+    def test_the_menu_offers_it(self):
+        from whatsapp.router import menu_text
+
+        self.assertIn("Transaction history", menu_text())
+
+    def test_an_empty_history_says_so_rather_than_showing_an_empty_list(self):
+        from wallet.models import Transaction
+
+        Transaction.objects.filter(user=self.user).delete()
+        self.assertIn("No transactions yet", self._say("history"))
+
+    def test_history_sits_behind_the_same_idle_gate_as_a_balance(self):
+        """It reveals money to whoever is holding the phone, exactly like the
+        balance does."""
+        from whatsapp.router import _is_sensitive_read
+
+        for word in ("9", "history", "statement", "transactions"):
+            self.assertTrue(_is_sensitive_read(word), word)
+
+    def test_a_credit_reaches_the_customer_on_whatsapp(self):
+        """An email alert to someone who signed up on WhatsApp and has never
+        opened the app is a notification nobody reads."""
+        from wallet.services import credit
+
+        with self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("2500"), "Transfer from ADA EZE")
+        sent = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT, text__contains="Credit alert").first()
+        self.assertIsNotNone(sent)
+        self.assertIn("2,500", sent.text)
+
+    def test_an_alert_failure_can_never_roll_back_the_ledger(self):
+        from wallet.services import credit, get_or_create_wallet
+
+        before = get_or_create_wallet(self.user).balance
+        with patch("whatsapp.router.reply", side_effect=RuntimeError("whatsapp down")):
+            with self.captureOnCommitCallbacks(execute=True):
+                credit(self.user, Decimal("100"), "Deposit")
+        self.assertEqual(get_or_create_wallet(self.user).balance, before + Decimal("100"))

@@ -918,12 +918,60 @@ SETTING_DESCRIPTIONS = {
 }
 
 
+#: Rows whose VALUE must never reach a console screen. The settings table lists
+#: every SystemSetting row, so anything secret stored there is rendered in full
+#: to anyone who opens the page — llm_api_key_enc was, as ciphertext. Encrypted
+#: is not the same as safe to display: it is still credential material on a
+#: screen that gets shared, and llm.masked_key exists precisely to avoid it.
+#: Substring match, so a future llm_api_key_v2 is covered without an edit.
+_SECRET_SETTING_MARKERS = ("key", "secret", "token", "password", "_enc")
+
+#: Editable from the console, with the type each value must parse as. Anything
+#: not listed is shown but not writable: a money-math or security setting gets
+#: its own audited endpoint (fx/margin, ai-global) rather than a free-text box.
+_EDITABLE_SETTINGS = {
+    "wa_reauth_idle_minutes": ("int", 0, 1440),
+    "wa_pin_max_attempts": ("int", 1, 10),
+    "fx_quote_ttl_seconds": ("int", 5, 3600),
+    "broadcast_marketing_optin_only": ("bool", None, None),
+    "cny_settlement_enabled": ("bool", None, None),
+}
+
+
+def _is_secret_setting(key: str) -> bool:
+    low = (key or "").lower()
+    return any(marker in low for marker in _SECRET_SETTING_MARKERS)
+
+
+def _clean_setting(key: str, raw):
+    """(value, error). Console writes must parse as what their consumer reads —
+    an unparseable wa_reauth_idle_minutes would fall back silently and an absurd
+    one would disable a security gate by accident."""
+    kind, low, high = _EDITABLE_SETTINGS[key]
+    if kind == "bool":
+        text = str(raw).strip().lower()
+        if text not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+            return None, "Value must be true or false"
+        return ("true" if text in {"true", "1", "yes", "on"} else "false"), None
+    try:
+        number = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None, "Value must be a whole number"
+    if number < low or number > high:
+        return None, f"Value must be between {low} and {high}"
+    return str(number), None
+
+
 @api
 @require_cap()
 def settings_view(request):
     keys = sorted(set(SETTING_DESCRIPTIONS) | set(SystemSetting.objects.values_list("key", flat=True)))
     rows = [
-        {"key": k, "value": SystemSetting.get(k, ""), "desc": SETTING_DESCRIPTIONS.get(k, "")}
+        {"key": k,
+         "value": "••••••••" if _is_secret_setting(k) else SystemSetting.get(k, ""),
+         "secret": _is_secret_setting(k),
+         "editable": k in _EDITABLE_SETTINGS,
+         "desc": SETTING_DESCRIPTIONS.get(k, "")}
         for k in keys
     ]
     team = [
@@ -947,3 +995,26 @@ def settings_view(request):
         ]
     ]
     return ok(settings=rows, team=team, perms=perms, roles=list(ROLES))
+
+
+@api
+@require_cap("settings")
+def setting_save(request):
+    """Write one allow-listed runtime setting, audited.
+
+    Deliberately narrow. The console showed every setting and could save none of
+    them, which reads as broken — but the answer is not a free-text box over
+    every key: the ones that drive money math or a security decision keep their
+    own endpoints, where the validation and the audit trail can be specific.
+    """
+    key = str(request.data.get("key") or "").strip()
+    if key not in _EDITABLE_SETTINGS:
+        return fail("That setting isn't editable here", status=400)
+    value, error = _clean_setting(key, request.data.get("value"))
+    if error:
+        return fail(error, status=400)
+    before = SystemSetting.get(key, "")
+    SystemSetting.set(key, value)
+    record_audit("settings.update", actor=request.user_obj, target=key,
+                 before={"value": before}, after={"value": value})
+    return ok(success=True, key=key, value=value)

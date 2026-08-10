@@ -102,6 +102,7 @@ window.ZAPI = (function () {
     thread: (msisdn) => call('thread', { msisdn }),
     convAi: (msisdn, enabled) => call('conv-ai', { msisdn, enabled }),
     aiGlobal: (enabled) => call('ai-global', { enabled }),
+    settingSave: (key, value) => call('setting-save', { key, value }),
     aiConfigSave: (cfg) => call('ai-config-save', cfg),
     aiTest: () => call('ai-test'),
     // the three conversation actions live on the WhatsApp app's ops routes
