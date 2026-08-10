@@ -477,3 +477,86 @@ class FirstSpendVerificationTests(TestCase):
         with self.assertRaises(FxError) as ctx:
             create_fx_quote(self.user, "NGN", "USD", Decimal("1000"))
         self.assertIn("BVN", str(ctx.exception.message))
+
+
+class SmsAlertFormatTests(TestCase):
+    """Nigerian bank alerts share one shape, and customers read them by position
+    rather than by reading them. Matching it means a Zitch alert is scanned the
+    same way as the bank's own alert sitting directly above it."""
+
+    def setUp(self):
+        self.user, _ = make_user("08060000009", "alert@zitch.test", balance="10000")
+        w = get_or_create_wallet(self.user)
+        w.account_number = "0228565772"
+        w.save(update_fields=["account_number"])
+
+    def _alert(self, **kw):
+        from wallet.alerts import _sms_alert
+
+        with self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("4300"), "Transfer from YUSUFF MUZZAMMIL")
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        return _sms_alert(txn, **kw), txn
+
+    def test_it_follows_the_bank_layout_line_for_line(self):
+        body, txn = self._alert()
+        lines = body.split("\n")
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(lines[0].startswith("CR:NGN 4,300.00"))
+        self.assertEqual(lines[1], "Acct No:0228****72")     # bank's own masking
+        self.assertTrue(lines[2].startswith("Desc :"))
+        self.assertTrue(lines[3].startswith("Bal :"))
+        self.assertRegex(lines[4], r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}$")
+
+    def test_a_debit_reads_dr(self):
+        from wallet.alerts import _sms_alert
+
+        with self.captureOnCommitCallbacks(execute=True):
+            debit(self.user, Decimal("2100"), "transfer", meta={"recipient_name": "LUCY OJOCHIDE"})
+        txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
+        self.assertTrue(_sms_alert(txn).startswith("DR:NGN 2,100.00"))
+
+    def test_a_reversal_reads_cr_even_though_the_row_is_a_debit(self):
+        """Calling money coming back a debit is the most alarming possible way to
+        phrase good news."""
+        from wallet.alerts import _sms_alert
+
+        with self.captureOnCommitCallbacks(execute=True):
+            debit(self.user, Decimal("500"), "transfer")
+        txn = Transaction.objects.filter(user=self.user, direction=Transaction.OUT).first()
+        body = _sms_alert(txn, reversal=True)
+        self.assertTrue(body.startswith("CR:"))
+        self.assertIn("REVERSAL-", body)
+
+    def test_it_stays_inside_one_segment_by_trimming_the_description(self):
+        """The balance and the timestamp are what the customer checks; a second
+        segment costs a second message."""
+        from wallet.alerts import _sms_alert
+
+        with self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("100"), "x" * 300)
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        body = _sms_alert(txn)
+        self.assertLessEqual(len(body), 160)
+        self.assertIn("Bal :", body)
+        self.assertRegex(body.split("\n")[-1], r"^\d{2}-\d{2}-\d{4}")
+
+    def test_it_stays_inside_the_gsm_7_alphabet(self):
+        """One character outside GSM-7 forces the whole message into UCS-2, where
+        a segment is 70 characters rather than 160 — so a single naira sign turns
+        every alert into two billable messages."""
+        from wallet.alerts import _sms_alert
+
+        with self.captureOnCommitCallbacks(execute=True):
+            credit(self.user, Decimal("4300"), "Transfer from YUSUFF")
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        body = _sms_alert(txn)
+        self.assertNotIn("₦", body)
+        self.assertIn("NGN ", body)
+        body.encode("ascii")            # raises if anything non-GSM crept in
+
+    def test_an_unreadable_wallet_never_breaks_the_alert(self):
+        from wallet.alerts import _mask_account
+
+        self.assertEqual(_mask_account(""), "—")
+        self.assertEqual(_mask_account("0228565772"), "0228****72")
