@@ -353,3 +353,57 @@ class NinIdentityRailTests(SimpleTestCase):
         with patch("utility.providers.requests.post") as post:
             self.assertFalse(P.verify_nin("123", name="Ada Eze")["success"])
         post.assert_not_called()
+
+
+class BvnIdentityRailTests(SimpleTestCase):
+    """The bank's only BVN check is the name match performed while opening a
+    NUBAN, and WEMA_SIMULATION mocks it — so a simulation deploy marked every BVN
+    verified without anyone looking. Prembly is a separate rail, unaffected by
+    that flag, which is what lets a demo run real identity over fake transfers."""
+
+    def _resp(self, payload):
+        class R:
+            status_code = 200
+
+            def json(self):
+                return payload
+        return R()
+
+    @override_settings(PREMBLY=PREMBLY_OFF)
+    def test_without_prembly_it_falls_back_to_the_previous_behaviour(self):
+        with patch("utility.wema.verify_bvn", return_value={"success": True, "mock": True}) as wema:
+            self.assertTrue(P.verify_bvn("12345678901", name="ADA EZE")["success"])
+        wema.assert_called_once()
+
+    @override_settings(PREMBLY=PREMBLY_LIVE, WEMA={"SIMULATION": True})
+    def test_simulation_does_not_reach_the_bvn_check(self):
+        """The whole point: transfers stay fake, identity does not."""
+        payload = {"status": True, "data": {"firstname": "ADA", "surname": "EZE"}}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
+            self.assertTrue(P.verify_bvn("12345678901", name="Ada Eze")["success"])
+        post.assert_called_once()
+        self.assertIn("/bvn", post.call_args[0][0])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_different_person_is_refused_without_naming_them(self):
+        payload = {"status": True, "data": {"firstname": "CHINEDU", "surname": "OKAFOR"}}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)):
+            result = P.verify_bvn("12345678901", name="Ada Eze")
+        self.assertFalse(result["success"])
+        self.assertNotIn("CHINEDU", result["message"])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_it_fails_closed_like_the_nin_rail(self):
+        import requests as R
+
+        with patch("utility.providers.requests.post", side_effect=R.RequestException("down")):
+            self.assertFalse(P.verify_bvn("12345678901", name="Ada Eze")["success"])
+        with patch("utility.providers.requests.post",
+                   return_value=self._resp({"status": False, "message": "not found"})):
+            self.assertFalse(P.verify_bvn("12345678901", name="Ada Eze")["success"])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_malformed_bvn_never_reaches_the_provider(self):
+        with patch("utility.providers.requests.post") as post:
+            self.assertFalse(P.verify_bvn("123", name="Ada Eze")["success"])
+        post.assert_not_called()

@@ -578,10 +578,74 @@ def kyc_provider() -> str:
 
 
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
-    """BVN verification entry point. ALAT has no standalone lookup — in production this
-    routes the user to the name-matched NUBAN account-creation flow; dev/tests mock."""
+    """BVN verification entry point.
+
+    Prembly first when configured, for the same reason as NIN — and for one more:
+    the bank's only BVN check is the name match performed while opening a NUBAN,
+    which WEMA_SIMULATION mocks. A simulation deploy therefore marked every BVN
+    verified without anyone looking at it, so the identity half could not be
+    exercised for real without also moving real money.
+
+    Prembly's lookup is a separate rail, unaffected by the simulation flag, which
+    lets a demo deploy run genuine BVN and NIN checks over simulated transfers.
+
+    Falls back to the Wema behaviour when Prembly is unconfigured.
+    """
+    if _prembly_live():
+        return prembly_verify_bvn(bvn, name=name)
     from . import wema
     return wema.verify_bvn(bvn, name=name, date_of_birth=date_of_birth, mobile=mobile)
+
+
+def prembly_verify_bvn(bvn: str, name: str = "") -> dict:
+    """Look a BVN up at Prembly and name-match the record. Fails CLOSED on every
+    uncertainty, exactly like the NIN path — this result lifts a tier and, unlike
+    NIN, currently gates whether an account may spend at all.
+
+    VERIFY-BEFORE-LIVE: confirm the endpoint path and response field names on
+    your Prembly dashboard. A mismatch surfaces as "could not be confirmed",
+    which is the safe direction but still wrong.
+    """
+    if len(bvn) != 11 or not bvn.isdigit():
+        return {"success": False, "message": "BVN must be 11 digits"}
+    return _prembly_identity_lookup("bvn", bvn, name)
+
+
+def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
+    """Shared BVN/NIN lookup: one request shape, one name match, one failure
+    policy. Written once so the two identities cannot drift on what counts as a
+    pass — they gate the same money."""
+    try:
+        resp = requests.post(
+            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/{kind}",
+            json={"number": number}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
+        )
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("prembly_%s_unreachable error_type=%s", kind, type(exc).__name__)
+        return {"success": False, "message": f"Identity provider unreachable: {exc}"}
+
+    record = data.get("data") or data.get(f"{kind}_data") or {}
+    if not (data.get("status") and isinstance(record, dict)):
+        return {"success": False,
+                "message": data.get("message") or f"That {kind.upper()} could not be confirmed.",
+                "raw": data}
+    first = str(record.get("firstname") or record.get("first_name") or "").strip()
+    last = str(record.get("surname") or record.get("lastname") or record.get("last_name") or "").strip()
+    resolved = " ".join(p for p in (first, record.get("middlename") or "", last) if p).strip()
+    if name and resolved:
+        from transfers.views import _names_match
+
+        if not _names_match(name, resolved):
+            # Never echo the resolved name: it belongs to whoever owns the
+            # number, who may not be the person asking.
+            log.warning("prembly_%s_name_mismatch", kind)
+            return {"success": False,
+                    "message": f"That {kind.upper()} does not match the name on this account.",
+                    "raw": data}
+    elif not resolved:
+        return {"success": False, "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
+    return {"success": True, "first_name": first, "last_name": last, "raw": data}
 
 
 def verify_nin(nin: str, name: str = "") -> dict:
@@ -608,46 +672,14 @@ def prembly_verify_nin(nin: str, name: str = "") -> dict:
     Fails CLOSED on every uncertainty — provider down, malformed response, no
     name on the record, or a name that does not match. A NIN that cannot be
     checked must land in the review queue rather than be waved through: this
-    result is what lifts a tier and unlocks spending.
+    result is what lifts a tier.
 
     VERIFY-BEFORE-LIVE: confirm the endpoint path and the response field names
-    against your Prembly dashboard before trusting this in production. The
-    shape below follows their documented NIN response; a mismatch surfaces as
-    "could not be confirmed", which is the safe direction but still wrong.
+    against your Prembly dashboard before trusting this in production.
     """
     if len(nin) != 11 or not nin.isdigit():
         return {"success": False, "message": "NIN must be 11 digits"}
-    try:
-        resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/nin",
-            json={"number": nin}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
-        )
-        data = resp.json()
-    except (requests.RequestException, ValueError) as exc:
-        log.warning("prembly_nin_unreachable error_type=%s", type(exc).__name__)
-        return {"success": False, "message": f"Identity provider unreachable: {exc}"}
-
-    record = data.get("data") or data.get("nin_data") or {}
-    if not (data.get("status") and isinstance(record, dict)):
-        return {"success": False, "message": (data.get("message")
-                                              or "That NIN could not be confirmed."),
-                "raw": data}
-    first = str(record.get("firstname") or record.get("first_name") or "").strip()
-    last = str(record.get("surname") or record.get("lastname") or record.get("last_name") or "").strip()
-    resolved = " ".join(part for part in (first, record.get("middlename") or "", last) if part).strip()
-    if name and resolved:
-        from transfers.views import _names_match
-
-        if not _names_match(name, resolved):
-            # Deliberately does not echo the resolved name: it belongs to
-            # whoever owns the NIN, who may not be the person asking.
-            log.warning("prembly_nin_name_mismatch")
-            return {"success": False, "message": "That NIN does not match the name on this account.",
-                    "raw": data}
-    elif not resolved:
-        return {"success": False, "message": "That NIN could not be confirmed.", "raw": data}
-    return {"success": True, "first_name": first, "last_name": last, "raw": data}
-
+    return _prembly_identity_lookup("nin", nin, name)
 
 def verify_vnin(vnin: str, name: str = "") -> dict:
     """Virtual-NIN verification entry point — see verify_bvn. Verification is the
