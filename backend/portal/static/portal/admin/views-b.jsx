@@ -206,7 +206,9 @@ function AiControls({ toast, refresh }) {
     ? { text: 'No model key saved — nothing can parse a sentence yet. Add one under Model provider.', tone: 'warn' }
     : !on
       ? { text: 'A key is installed but the kill switch is off, so every message goes down the deterministic path.', tone: 'warn' }
-      : { text: 'Key installed and the switch is on. Per-user and per-conversation toggles still apply.', tone: 'ok' };
+      : (DB.AI.consented === 0 && DB.AI.linked > 0)
+        ? { text: 'Key installed and the switch is on, but none of your ' + DB.AI.linked + ' linked customers have opted in yet — free-form text goes to a third-party model, so each customer grants that themselves by replying “ai on” in the chat.', tone: 'warn' }
+        : { text: 'Key installed, switch on, ' + (DB.AI.consented || 0) + ' of ' + (DB.AI.linked || 0) + ' linked customers opted in (they reply “ai on”). Handover disables it per conversation.', tone: 'ok' };
   return (
     <div>
       <PageHead title="AI controls" sub="The model only proposes — validation, confirm and PIN still gate every movement." />

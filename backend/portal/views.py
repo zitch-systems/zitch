@@ -724,6 +724,11 @@ def ai_state(request):
     ]
     return ok(
         enabled=ai.global_enabled(),
+        # Per-user consent is the scope operators cannot set and cannot see, so
+        # it is the one that silently explains "the AI is on and does nothing".
+        # The customer grants it themselves by replying "ai on".
+        linked=WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE).count(),
+        consented=WhatsAppLink.objects.filter(status=WhatsAppLink.ACTIVE, ai_enabled=True).count(),
         intents=intents,
     )
 

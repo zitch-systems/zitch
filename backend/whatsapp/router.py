@@ -151,7 +151,11 @@ MENU_BODY = (
     "6️⃣  🏦 Add money\n"
     "7️⃣  🧾 My account details\n"
     "8️⃣  ✅ Verify my identity\n\n"
-    "Or just type it, e.g. \"send 5k\". Reply \"cancel\" anytime."
+    # "just type it" was a promise the channel could not keep: free-form routing
+    # needs the customer's own AI consent, which defaults off and which nobody
+    # guesses the phrase for. Name the phrase where the promise is made.
+    "Or type naturally — reply *ai on* first to switch on smart replies.\n"
+    "Reply \"cancel\" anytime."
 )
 
 
