@@ -14,6 +14,7 @@
     "test:ci": "jest --runInBand",
     "typecheck": "tsc --noEmit",
     "doctor": "expo-doctor",
+    "check:browser-assets": "node scripts/check-browser-assets.mjs",
     "test:e2e": "bash scripts/maestro.sh"
   },
   "jest": {
