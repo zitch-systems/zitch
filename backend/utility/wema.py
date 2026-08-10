@@ -16,9 +16,11 @@ AUTH (Azure APIM) — TWO credentials per call:
 Per-product base path under one host: sandbox ``https://apiplayground.alat.ng``;
 the LIVE host differs (set WEMA_BASE_URL).
 
-securityInfo: every MONEY-MOVEMENT call (transfer / credit / VAS) carries an opaque
-private value chosen by Zitch. Wema echoes it with the transaction reference to our
-authentication callback; no encryption/signature algorithm is specified or needed.
+securityInfo: every MONEY-MOVEMENT call (transfer / credit / VAS) carries a
+per-transaction HMAC derived from a private value chosen by Zitch and the transaction
+reference. Wema echoes it with that reference to our authentication callback. The
+portal requires the value to be dynamic and unique per transaction; the secret seed
+itself is never sent.
 Account creation / balance / name-enquiry do not use it.
 
 Envelopes (two shapes, both handled by ``_ok``):
@@ -140,38 +142,35 @@ def _mock_blocked() -> bool:
     return mock_disabled_in_prod() and not wema_simulation()
 
 
-# Products the ALAT Wallet Services subscription authenticates. Its portal listing
-# (confirmed 2026-07-27) bundles 13 APIs: Wallet Creation BVN + NIN, Wallet Services
-# Account Management, Account Upgrade, Partnership Account KYC / Face Biometric /
-# Address Verification, Credit Wallet, Debit Wallet, Airtime and Data, Bills Payment,
-# Remita-Payment and Card Management. So none of these needs its own key.
-#
-# `card` IS covered: the portal catalogue has exactly one card API — Card Management —
-# and the virtual-card operations (VirtualCardRequest, VirtualCard-GetCardDetails) are
-# operations OF it, alongside the physical-card ones. There is no separate "Virtual
-# Naira Card" product, so the wallet key authenticates our card calls too. Switching
-# the card BACKEND is a separate decision from being able to authenticate: see
-# card_opted_in(), which still requires an explicit WEMA_CARD_KEY so a wallet-keyed
-# deploy never silently moves cards onto the Wema rail (it supports neither reversible
-# freeze nor top-up, while the generic CARD_ISSUER supports both).
-#
-# `bnpl` stays excluded — it is genuinely its own product with its own merchant auth.
-_WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "upgrade", "credit", "debit",
-                   "airtime", "bills", "remita", "kyc", "card")
+# Products authenticated by the Wallet Services subscription. The live product page
+# lists exactly: wallet creation, credit wallet, debit wallet, bills payment,
+# transaction notification and account management. The portal sells Virtual Naira
+# Card, Remita, BNPL, Address Verification, scheduled debit, statements and
+# Pay-with-Bank as separate subscriptions; an unrelated wallet key must never be sent
+# to those products. Airtime/Data and Account Upgrade are also separate API products
+# in the catalogue, so they require their own keys when used.
+_WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit", "bills")
 
 
 def _sub_key(product: str) -> str:
-    """Subscription key for a product: its own key if one is set, else the wallet key.
+    """Return only a subscription key that the ALAT product is documented to accept.
 
-    A product-specific key always wins, so if Wema later issues a dedicated
-    airtime/bills subscription, setting WEMA_AIRTIME_KEY / WEMA_BILLS_KEY switches
-    to it with no code change.
+    Wallet Services covers the six rails in _WALLET_COVERED. Every other product is
+    fail-closed unless its own key is configured; cross-product fallback can mask a
+    bad deployment until a real request is rejected by APIM.
     """
     keys = settings.WEMA.get("KEYS") or {}
     own = keys.get(product, "")
     if own:
         return own
     return keys.get("wallet", "") if product in _WALLET_COVERED else ""
+
+
+def _product_live(product: str) -> bool:
+    """Whether a channel-authenticated ALAT product may make real calls."""
+    if wema_simulation():
+        return False
+    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key(product))
 
 
 def _bnpl_headers() -> dict:
@@ -322,33 +321,14 @@ def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
 
 
 def security_info_value() -> str:
-    """The ``securityInfo`` this deployment uses on money-movement calls.
+    """Return the private seed used to derive per-transaction securityInfo.
 
-    There is no algorithm to implement and nothing to obtain from the bank. Wema
-    confirmed the semantics directly (2026-07-27): "the security info is a private
-    key best known to you", and "all we do is to call your authentication webhook
-    URL to confirm if the transactions are coming from you… by passing the security
-    info and the custom transaction reference in your payload for you to authorize
-    either true or false".
+    Wema does not issue this secret: Zitch chooses it. When WEMA_SECURITY_INFO is not
+    set, derive a stable deployment seed from SECRET_KEY so ALAT never receives the
+    blank value it rejects. Production preflight still requires an explicit secret so
+    rotating Django's key cannot invalidate callbacks for transactions in flight.
 
-    So it is a value WE choose, which the bank echoes back to our authentication
-    callback.
-
-    WEMA_SECURITY_INFO is the value when set. When it is NOT set we derive a stable
-    per-deployment one from SECRET_KEY instead of sending an empty string: ALAT
-    REJECTS a money-movement call carrying a blank securityInfo ("Security Info must
-    not be empty"), which made every transfer fail on an environment that had keys
-    but no explicit securityInfo. The derived value is secret (SECRET_KEY is), stable
-    across processes, and — because the authentication callback resolves `expected`
-    through this same function — still matches what the bank echoes back.
-
-    Rotating SECRET_KEY therefore rotates this fallback: callbacks for payouts still
-    in flight at that moment would fail the match (and be denied). Set an explicit
-    WEMA_SECURITY_INFO for production — the go-live preflight hard-fails while it is
-    unset for exactly that reason.
-
-    The ledger's fresh-PENDING-reference check remains the primary authorization gate;
-    this echoed constant is inexpensive defence in depth.
+    The seed itself is never sent to ALAT.
     """
     configured = (settings.WEMA.get("SECURITY_INFO", "") or "").strip()
     if configured:
@@ -359,14 +339,19 @@ def security_info_value() -> str:
     return hmac.new(secret, b"zitch:wema:security-info", hashlib.sha256).hexdigest()
 
 
-def _security_info(**kwargs) -> str:
-    """Call-site wrapper for :func:`security_info_value`.
+def security_info_for_reference(reference: str) -> str:
+    """Derive the dynamic, unique value ALAT echoes for one transaction reference."""
+    seed = security_info_value()
+    ref = str(reference or "").strip()
+    if not seed or not ref:
+        return ""
+    message = f"zitch:wema:transaction:{ref}".encode()
+    return hmac.new(seed.encode(), message, hashlib.sha256).hexdigest()
 
-    It is not a signature over the payload — the kwargs are accepted only so callers
-    read naturally at the call site and a per-operation scheme could be introduced
-    later without touching them.
-    """
-    return security_info_value()
+
+def _security_info(**kwargs) -> str:
+    """Bind securityInfo to the transaction reference."""
+    return security_info_for_reference(kwargs.get("reference", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +498,7 @@ def get_kyc_status(account_number: str) -> dict:
 
     Returns {success, tier, account_status, restriction_status,
     address_verification, name}."""
-    if not wema_live():
+    if not _product_live("upgrade"):
         if _mock_blocked():
             return {"success": False, "message": "Account services are not configured"}
         return {"success": True, "mock": True, "tier": "", "restriction_status": ""}
@@ -553,7 +538,7 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
     Best-effort sync of the account's BANK-side tier (and thus its NUBAN limits) when
     the user completes the matching Zitch KYC step — it does NOT change Zitch's own tier
     policy. Fails soft in production when unkeyed."""
-    if not wema_live():
+    if not _product_live("upgrade"):
         return {"success": not _mock_blocked(), "mock": True}
     try:
         data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier2",
@@ -568,7 +553,7 @@ def upgrade_tier3(account_number: str, address) -> dict:
     """Upgrade a partnership NUBAN to Tier 3 at the bank via address verification
     (partner-account-upgrade-tier3 {residentialAddress{...}, accountNumber}). Best-effort
     bank-side sync (see upgrade_tier2)."""
-    if not wema_live():
+    if not _product_live("upgrade"):
         return {"success": not _mock_blocked(), "mock": True}
     try:
         data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier3",
@@ -901,12 +886,8 @@ def confirm_credit_status(reference: str) -> dict:
 # stored VTU.ng codes) — see docs/wema-migration.md.
 # ---------------------------------------------------------------------------
 def _vas_live(product: str) -> bool:
-    """Whether the VAS product (airtime/bills) makes real calls: key + channel, and
-    simulation off — VAS spends real money too, so it honours the switch like the
-    money rail does."""
-    if wema_simulation():
-        return False
-    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key(product))
+    """Whether a VAS product may make real calls with its documented key."""
+    return _product_live(product)
 
 
 def _vas_source() -> str:
@@ -1287,8 +1268,12 @@ def remita_receipt(rrr: str) -> dict:
 # behind a product/compliance decision (see the loans app).
 # ---------------------------------------------------------------------------
 def _bnpl_live() -> bool:
+    """BNPL creates real debt: simulation and every credential fail closed."""
+    if wema_simulation():
+        return False
     m = settings.WEMA
-    return bool(m.get("BNPL_MERCHANT_ID") and m.get("BNPL_AUTH_KEY"))
+    keys = m.get("KEYS") or {}
+    return bool(keys.get("bnpl") and m.get("BNPL_MERCHANT_ID") and m.get("BNPL_AUTH_KEY"))
 
 
 def bnpl_offers() -> dict:
@@ -1404,12 +1389,8 @@ def bnpl_liquidate(customer_reference: str, *, amount=None) -> dict:
 # alternative reveal endpoint if virtual-card-details doesn't return the full PAN/CVV.)
 # ---------------------------------------------------------------------------
 def _card_live() -> bool:
-    """Whether Card-Management makes real calls — own key, or the Wallet Services key
-    that bundles the product, and simulation off. Gates mock-vs-real inside the card_*
-    calls; issuing a real card is a real-world side effect like any other."""
-    if wema_simulation():
-        return False
-    return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key("card"))
+    """Whether the separately subscribed Virtual Naira Card product is live."""
+    return _product_live("card")
 
 
 def card_opted_in() -> bool:
@@ -1457,6 +1438,8 @@ def card_issue(holder: str, customer_ref: str, *, account_number: str = "", emai
                 "expiry": f"{1 + seed % 12:02d}/{29 + seed % 3}"}
     if not account_number:
         return {"success": False, "message": "Set up your Zitch account before creating a card"}
+    if not settings.WEMA.get("CARD_PRODUCT_KEY"):
+        return {"success": False, "message": "Card issuing is not configured"}
     try:
         body = {"emailaddress": email, "phoneNumber": phone, "amount": float(amount or 0),
                 "accountNo": account_number, "customerAddress": address,
