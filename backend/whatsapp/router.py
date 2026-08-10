@@ -150,7 +150,8 @@ MENU_BODY = (
     "5️⃣  💱 Convert currency\n"
     "6️⃣  🏦 Add money\n"
     "7️⃣  🧾 My account details\n"
-    "8️⃣  ✅ Verify my identity\n\n"
+    "8️⃣  ✅ Verify my identity\n"
+    "9️⃣  🧾 Transaction history\n\n"
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -828,6 +829,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
+    if low in ("9", "history", "transactions", "my transactions", "statement", "recent"):
+        return _do_history(user, msisdn)
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
@@ -858,7 +861,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
 _SENSITIVE_READS = {
     "1", "balance", "bal", "my balance", "check balance",
     "7", "account", "account details", "my account", "account number",
-    "statement", "history", "transactions", "my transactions",
+    "statement", "history", "transactions", "my transactions", "9", "recent",
 }
 _REAUTH_SETTING = "wa_reauth_idle_minutes"
 
@@ -1274,6 +1277,25 @@ def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:
     return reply(msisdn, f"🤖 Smart replies are currently *{state}*.\n\n"
                          "With them on you can type naturally instead of using the menu. "
                          "Reply *ai on* or *ai off*.")
+
+
+def _do_history(user, msisdn: str) -> None:
+    """The last few settled movements. Short on purpose: a statement belongs in
+    the app, and a wall of text in a chat is read by nobody."""
+    from wallet.models import Transaction
+
+    rows = list(Transaction.objects.filter(user=user)
+                .exclude(transaction_status=Transaction.FAILED)
+                .order_by("-created")[:8])
+    if not rows:
+        return reply(msisdn, "🧾 No transactions yet. Reply *6* to add money and get started.")
+    lines = []
+    for t in rows:
+        sign = "＋" if t.direction == Transaction.IN else "－"
+        label = (t.service or "").strip() or ("Credit" if t.direction == Transaction.IN else "Debit")
+        lines.append(f"{sign}{_money(t.amount)}  ·  {label}\n     _{t.created:%d %b, %I:%M %p}_")
+    reply(msisdn, "🧾 *Your last {n} transactions*\n\n".format(n=len(rows)) + "\n".join(lines)
+          + f"\n\nBalance: {_money(get_or_create_wallet(user).balance)}")
 
 
 def _do_support(msisdn: str) -> None:

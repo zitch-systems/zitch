@@ -99,6 +99,34 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
             send_sms(user.phone, f"Zitch: {subject}. Ref {txn.reference}.")
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_sms_failed ref=%s", txn.reference)
+    _whatsapp_alert(txn, subject, body)
+
+
+def _whatsapp_alert(txn, subject: str, body: str) -> None:
+    """Alert the customer where they actually bank, for a WhatsApp customer.
+
+    Costs nothing per message and lands in the thread they already use, which
+    for this channel's customers is the one place they will see it — an email
+    alert to someone who signed up on WhatsApp and has never opened the app is a
+    notification nobody reads.
+
+    Best-effort in every direction: no link, no send; a failure is logged and
+    never propagates, because an alert must not be able to roll back the ledger
+    write that triggered it.
+    """
+    if not _alerts_on("whatsapp"):
+        return
+    try:
+        from whatsapp.models import WhatsAppLink
+        from whatsapp.router import reply
+
+        link = WhatsAppLink.objects.filter(user=txn.user, status=WhatsAppLink.ACTIVE).first()
+        if link is None:
+            return
+        icon = "💰" if txn.direction == txn.IN else "💸"
+        reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
+    except Exception:  # noqa: BLE001
+        log.exception("txn_alert_whatsapp_failed ref=%s", txn.reference)
 
 
 def _meta(txn) -> dict:

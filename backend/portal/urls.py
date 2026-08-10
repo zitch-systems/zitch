@@ -35,6 +35,7 @@ urlpatterns = [
     path("audit/", views.audit),
     path("recon/", views.recon),
     path("settings/", views.settings_view),
+    path("setting-save/", views.setting_save),
     # Same operator features as /api/admin/, so an operator using the live portal is
     # not sent to a second surface to manage their own second factor or drain the
     # approval queue.
