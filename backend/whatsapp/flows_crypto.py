@@ -16,11 +16,16 @@ this process, after decryption — never in the chat, the message log, or at res
 """
 import base64
 import json
+import logging
+import re
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from django.conf import settings
+
+
+log = logging.getLogger("whatsapp")
 
 
 class FlowDecryptError(Exception):
@@ -29,15 +34,49 @@ class FlowDecryptError(Exception):
     public key."""
 
 
+def normalize_pem(raw: str) -> str:
+    """Repair a PEM that lost its newlines on the way into an env var.
+
+    A PEM is only valid with real line breaks, and every dashboard that takes
+    secrets mangles them differently: some store a literal ``\\n``, some collapse
+    the block onto one line, some wrap the value in quotes. The result is a key
+    that looks present and correct in the UI and fails to parse — which surfaces
+    as HTTP 421 and a health check that says nothing more useful than "failed".
+    Rather than make that a support ticket every time, put the block back
+    together.
+
+    A key carrying PEM headers (``Proc-Type``/``DEK-Info``, on legacy encrypted
+    keys) is left alone: those live between the header line and the body, and
+    re-wrapping would destroy them.
+    """
+    pem = (raw or "").strip().strip('"').strip("'")
+    pem = pem.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+    match = re.match(r"(-----BEGIN [A-Z0-9 ]+-----)(.*?)(-----END [A-Z0-9 ]+-----)",
+                     pem, re.DOTALL)
+    if not match:
+        return pem                      # not a PEM we recognise — let the loader judge
+    head, body, tail = match.groups()
+    if ":" in body:                     # legacy encrypted key with PEM headers
+        return pem
+    body = re.sub(r"\s+", "", body)
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return "\n".join([head, *lines, tail]) + "\n"
+
+
 def _private_key():
     cfg = getattr(settings, "WHATSAPP_FLOW", {}) or {}
-    pem = cfg.get("PRIVATE_KEY", "") or ""
+    pem = normalize_pem(cfg.get("PRIVATE_KEY", "") or "")
     if not pem:
+        # Logged, not just raised: the endpoint answers Meta with a bare 421, so
+        # without a line here the only signal anyone sees is a health check that
+        # failed for no stated reason.
+        log.warning("wa_flow_private_key_missing — WHATSAPP_FLOW_PRIVATE_KEY is unset")
         raise FlowDecryptError("Flows private key is not configured")
     passphrase = (cfg.get("PRIVATE_KEY_PASSPHRASE", "") or "").encode() or None
     try:
         return serialization.load_pem_private_key(pem.encode(), password=passphrase)
     except (ValueError, TypeError) as exc:
+        log.warning("wa_flow_private_key_invalid error=%s", exc)
         raise FlowDecryptError(f"Invalid Flows private key: {exc}") from exc
 
 

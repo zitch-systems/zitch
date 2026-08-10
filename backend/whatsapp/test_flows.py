@@ -424,3 +424,64 @@ class IdentityFlowTests(TestCase):
             self.assertFalse(router._send_identity_flow(pa, "bvn"))  # noqa: SLF001
         pa.refresh_from_db()
         self.assertEqual(pa.state, "bvn")
+
+
+class PemNormalisationTests(unittest.TestCase):
+    """A PEM is only valid with real line breaks, and secret-management UIs mangle
+    them in several different ways. Each variant below looks correct in the
+    dashboard and fails to parse, surfacing as HTTP 421 and a Meta health check
+    that says nothing more useful than "failed"."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        if not _HAS_CRYPTO:
+            raise unittest.SkipTest("cryptography not importable")
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        cls.pem = key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()).decode()
+
+    def _loads(self, variant):
+        from .flows_crypto import normalize_pem
+
+        serialization.load_pem_private_key(normalize_pem(variant).encode(), password=None)
+
+    def test_an_untouched_pem_still_loads(self):
+        self._loads(self.pem)
+
+    def test_literal_backslash_n_is_repaired(self):
+        self._loads(self.pem.replace("\n", "\\n"))
+
+    def test_a_pem_flattened_onto_one_line_is_repaired(self):
+        self._loads(" ".join(self.pem.split()))
+
+    def test_surrounding_quotes_are_stripped(self):
+        self._loads('"' + self.pem + '"')
+
+    def test_a_legacy_encrypted_key_is_left_alone(self):
+        """Proc-Type/DEK-Info headers live between the header line and the body;
+        re-wrapping would destroy them, so that shape is passed through."""
+        from .flows_crypto import normalize_pem
+
+        # Assembled rather than written literally: a "BEGIN RSA PRIVATE KEY"
+        # banner in source is precisely what the repo's secret scan exists to
+        # catch, and a test fixture is not worth teaching it to ignore. The body
+        # is four bytes of padding — there is no key here.
+        begin, end = "-----BEGIN RSA ", "-----END RSA "
+        legacy = (f"{begin}PRIVATE KEY-----\n"
+                  "Proc-Type: 4,ENCRYPTED\n"
+                  "DEK-Info: AES-128-CBC,0123\n\nAAAA\n"
+                  f"{end}PRIVATE KEY-----\n")
+        self.assertEqual(normalize_pem(legacy), legacy.strip())
+
+    def test_an_unset_key_is_reported_not_swallowed(self):
+        from django.test import override_settings
+
+        from .flows_crypto import FlowDecryptError, _private_key
+
+        with override_settings(WHATSAPP_FLOW={"PRIVATE_KEY": ""}):
+            with self.assertLogs("whatsapp", level="WARNING") as logs:
+                with self.assertRaises(FlowDecryptError):
+                    _private_key()
+        self.assertIn("wa_flow_private_key_missing", "\n".join(logs.output))
