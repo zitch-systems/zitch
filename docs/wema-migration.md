@@ -162,46 +162,35 @@ shape (masked PAN / expiry / CVV) and the `cardKey` product id (`WEMA_CARD_PRODU
 
 Set these in the host (never in source). Boolean-only status is visible at `/healthz`.
 
-- `WEMA_CHANNEL_ID` — the single channel id (sent as `x-api-key`, or `access` on the
-  credit/debit-wallet/VAS products). **Same value for all products.**
-- `WEMA_WALLET_KEY` — Wallet-Services subscription key (`Ocp-Apim-Subscription-Key`).
-  Its portal listing (confirmed 2026-07-27) bundles **13 APIs**, so this one key covers
-  far more than the name suggests: Wallet Creation BVN + NIN, Wallet Services Account
-  Management, Account Upgrade, Partnership Account KYC / Face Biometric / Address
-  Verification, Credit Wallet, Debit Wallet, **Airtime and Data**, **Bills Payment**,
-  **Remita-Payment** and Card Management. `_sub_key` falls back to it for every product
-  in `_WALLET_COVERED`.
-- `WEMA_KYC_KEY` / `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` / `WEMA_REMITA_KEY` —
-  **optional; normally left blank.** All four APIs are bundled into Wallet Services, so
-  they authenticate with that key. Set one only if Wema ever issues a dedicated
-  subscription; a value here always wins over the wallet key.
-  > ⚠️ Because `vas_provider()` AUTO-selects Wema once its VAS keys resolve, a deploy with
-  > `WEMA_WALLET_KEY` set and `VAS_PROVIDER` blank now routes **airtime to Wema** instead of
-  > VTU.ng (data/cable follow once `wema_code` is seeded; electricity/betting stay on
-  > VTU.ng). Set `VAS_PROVIDER=vtung` to keep the old routing.
-- `WEMA_CARD_KEY` — **optional; opts the card backend in.** Correcting an earlier note:
-  there is no separate "Virtual Naira Card" product. The portal catalogue has exactly one
-  card API — **Card Management** — and the virtual-card operations (`VirtualCardRequest`,
-  `VirtualCard-GetCardDetails`) are operations *of it*, alongside the physical-card ones,
-  so the Wallet Services key already authenticates our card calls (`_card_live()`).
-  Setting this key is what makes `card_provider()` **auto-select** Wema (`card_opted_in()`);
-  without it cards stay on the generic `CARD_ISSUER`, because the Wema card rail supports
-  neither reversible freeze nor top-up while `CARD_ISSUER` supports both.
-  `CARD_PROVIDER=wema` still forces the Wema rail explicitly.
-- `WEMA_CARD_PRODUCT_KEY` — the `cardKey` (card product id) ALAT's `virtualCard` request
-  needs; distinct from the subscription key above. Supplied by Wema; blank until then.
-- `WEMA_SOURCE_ACCOUNT` — our pool NUBAN that funds outbound transfers (see money-flow note).
-- `WEMA_SECURITY_INFO` — a value **we** choose, echoed back by the bank to our Authentication
-  Callback. Not issued by Wema; set any long random value. When it is unset the code derives a
-  stable value from `SECRET_KEY` rather than sending an empty string (ALAT rejects a
-  money-movement call with a blank `securityInfo` — "Security Info must not be empty"), so
-  transfers still work; pin an explicit value in production, because rotating `SECRET_KEY`
-  would rotate the derived one under any payout still awaiting its callback.
-- `WEMA_BASE_URL` — `https://apiplayground.alat.ng` (sandbox). Set the live host for go-live.
-- `WEMA_SIMULATION=true` — serve the mock flow in a real build without live keys (no money moves).
-- `PAYOUT_PROVIDER` / `PAYMENT_PROVIDER` / `VAS_PROVIDER` / `KYC_PROVIDER` / `CARD_PROVIDER` —
-  optional selectors; blank already auto-resolves (wema for money/KYC; wema-when-keyed for
-  VAS/card). You don't need to set them.
+- `WEMA_CHANNEL_ID` — the channel id (sent as `x-api-key`, or `access` on
+  the credit/debit-wallet/VAS products).
+- `WEMA_WALLET_KEY` — **Wallet Services** subscription. The live product page lists
+  six capabilities: wallet creation, credit wallet, debit wallet, bills payment,
+  transaction notification and account management.
+- `WEMA_CARD_KEY` — **Virtual Naira Card** subscription. Required for all card calls;
+  Wallet Services is not a fallback. `WEMA_CARD_PRODUCT_KEY` is the separate `cardKey`
+  product id required for issuance.
+- `WEMA_AIRTIME_KEY` — **Airtime and Data API** subscription. Without it, AUTO routing
+  stays on VTU.ng and an explicit `VAS_PROVIDER=wema` fails preflight.
+- `WEMA_BILLS_KEY` — optional override; Bills Payment is covered by Wallet Services.
+- `WEMA_UPGRADE_KEY` — **Account Upgrade API** subscription used for tier/status sync.
+- `WEMA_REMITA_KEY` — **Remita Payment** subscription; no wallet-key fallback.
+- `WEMA_BNPL_KEY` + `WEMA_BNPL_MERCHANT_ID` + `WEMA_BNPL_AUTH_KEY` — the separate
+  BNPL product and merchant credentials. Simulation or any missing credential disables it.
+- `WEMA_KYC_KEY` — reserved for the separate Partnership Account KYC API; the current
+  BVN/NIN identity flow instead verifies through wallet provisioning.
+- The subscribed **Address Verification**, **Scheduled Direct Debit**, **Get Statement**
+  and **Pay with Bank Account** keys are not runtime secrets today: those products are
+  not used by the core dedicated-NUBAN wallet flow. Do not store unused credentials.
+- `WEMA_SOURCE_ACCOUNT` — our pool NUBAN that funds pool-sourced payouts.
+- `WEMA_SECURITY_INFO` — a strong random seed chosen by Zitch. The seed never crosses
+  the wire; a unique per-reference HMAC is sent and verified on the callback. Production
+  preflight requires at least 32 characters.
+- `WEMA_BASE_URL` — `https://apiplayground.alat.ng` (sandbox). Set the bank-supplied
+  live host for go-live.
+- `WEMA_SIMULATION=true` — serve mock flows in a real build without moving money or debt.
+- `PAYOUT_PROVIDER` / `PAYMENT_PROVIDER` / `VAS_PROVIDER` / `KYC_PROVIDER` /
+  `CARD_PROVIDER` — optional selectors; blank uses the safe AUTO rules.
 
 To test payout in sandbox: set `WEMA_CHANNEL_ID` + `WEMA_WALLET_KEY` + `WEMA_SOURCE_ACCOUNT`
 (`WEMA_SECURITY_INFO` may be left blank — the call then carries the `SECRET_KEY`-derived value,
@@ -233,49 +222,28 @@ new Remita / pay-with-bank / BNPL products). Summary:
 before it settles. Unknown/blank still counts (a live gateway that omits the field can't
 strand real money); a Pending row credits on a later sweep once it settles.
 
-### `securityInfo` — ANSWERED (nothing to build, nothing to obtain)
+### `securityInfo` — dynamic per transaction
 
-**Wema settled this directly on 2026-07-27** (Temi Orekunrin, #zitch):
+Wema confirmed that Zitch chooses the private value and that the bank returns
+`securityInfo` with the custom `transactionReference` to the Authentication Callback.
+The current portal additionally requires it to be highly secure, dynamic and unique for
+each transaction.
 
-> "the security info is a **private key best known to you** to make your transactions secure"
+`WEMA_SECURITY_INFO` is therefore a private **seed**, not the value sent on the wire.
+For every money request, Zitch sends:
 
-> "All we do is to call your authentication webhook URL to confirm if the transactions are
-> coming from you. This will be done by **passing the security info and the custom transaction
-> reference in your payload for you to authorize either true or false**"
+```
+HMAC-SHA256(seed, "zitch:wema:transaction:" + transactionReference)
+```
 
-So it is **a value we choose**, which the bank stores and echoes back to our Authentication
-Callback alongside the transaction reference. There is no algorithm, no credential to be
-issued, and nothing to wait for.
+The callback recomputes that value from the echoed reference using constant-time
+comparison, then still requires a fresh PENDING bank-payout ledger row. A copied
+`securityInfo` from one transaction cannot authorize another reference, and the seed
+never leaves Zitch.
 
-**This supersedes the earlier reading recorded here**, which inferred an AES-CBC + PBKDF2
-signing scheme from the `EncryptionCredentials` shape in the specs and listed nine questions
-for Wema about cipher, KDF, iterations and encodings. That inference was wrong: the quartet
-appears in the specs but is not what `securityInfo` is, and every one of those questions was
-aimed at a construction that does not exist. Kept in the git history rather than the document
-so nobody re-opens it.
-
-**Consequences, all now corrected in code:**
-
-- It is **not a go-live gate**. `wema_preflight` used to hard-fail on it; a blank value does
-  not stop a payout settling. It is now a soft WARN.
-- `/healthz`'s `funding_wema_security_info: false` means one optional factor is unused — not
-  that live money calls are rejected and auto-refunded, which is what the field used to claim.
-- `_security_info()` is no longer a fail-loud stub and no longer logs a warning telling
-  operators to go and find a scheme.
-
-**Never sent blank.** ALAT rejects a money-movement call whose `securityInfo` is empty
-("Security Info must not be empty" — the pool VAS variants declare it `minLength 1`), which
-failed every transfer on an environment that had live keys but no `WEMA_SECURITY_INFO`. With
-the var unset, `utility.wema.security_info_value()` now derives a stable value from
-`SECRET_KEY`; the authentication callback resolves `expected` through the same function, so
-the echoed value still matches.
-
-**Still worth setting.** Generate any long random value and put it in `WEMA_SECURITY_INFO`.
-It costs nothing and it is what lets `WEMA_AUTH_REQUIRE_SECURITY_INFO=true` add a second
-factor to the payout-authorisation decision. Note it is a *static* value that travels on every
-money-movement call, so treat it as a shared secret, not a signature: the real authority in
-that decision is the ledger check (a fresh PENDING bank payout under that exact reference),
-which is strictly stronger than comparing an echoed constant.
+ALAT rejects a blank value. Development can derive a stable seed from `SECRET_KEY`, but
+go-live preflight requires an explicit random `WEMA_SECURITY_INFO` of at least 32
+characters so rotating Django's key cannot invalidate transactions in flight.
 
 `securityInfo` is carried by: `ProcessClientTransfer`, `FundWallet`, `PurchaseAirtime`/`Data`
 (Client **and** pool — **required, minLength 1** on the pool variants), `PayBill` (+ pool),
@@ -353,9 +321,12 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
 - **Get Statement** — `POST /api/wallet/statement/` returns the user's Wema NUBAN bank statement
   (ALAT transhistoryV2, normalised) for a date range; distinct from the Zitch ledger history.
 
-Still unwired: **Direct Debit / Scheduled Payments** and any recurring-mandate flow — the bundle
-carries recurring *schemas* (SaveRecurringRequest/RecurringBillsResponse in bills-payment) but no
-recurring *endpoints*, so there's nothing to call yet. Confirm the endpoints with Wema.
+- **Direct Debit / Scheduled Payments** — intentionally not exposed in Zitch. The live
+  portal now documents four merchant endpoints (setup mandate, consent status, run schedule,
+  schedule lookup) under `/merchant-direct-debit`. Shipping this is a separate product, not
+  an API-wrapper task: it needs mandate persistence, customer-consent UX, cancellation,
+  retries, notices and compliance approval. Its subscription key should remain out of Render
+  until that product is approved and implemented end to end.
 
 ## ⚠️ Open decisions — confirm with Wema before go-live
 

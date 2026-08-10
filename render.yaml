@@ -97,9 +97,10 @@ services:
       - key: VAS_PROVIDER
         sync: false
       # ---------------------------------------------------------------------
-      # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Set WEMA_CHANNEL_ID
-      # + WEMA_WALLET_KEY (and the per-product keys card/airtime/bills/kyc),
-      # WEMA_SOURCE_ACCOUNT (the pool NUBAN that funds payouts), the live WEMA_BASE_URL,
+      # Wema / ALAT — the SOLE money-movement + Nigeria-KYC rail. Wallet Services,
+      # Card, Airtime, Account Upgrade, Remita and BNPL are distinct subscriptions;
+      # set only the product keys the deployed features use, plus WEMA_SOURCE_ACCOUNT
+      # (the pool NUBAN that funds payouts) and the live WEMA_BASE_URL,
       # and the WEMA_SECURITY_INFO scheme. Blank keys => mock; WEMA_SIMULATION=true
       # tests the flow without live keys (no real money). There is NO inbound-credit
       # webhook — deposits AND payout settlement are polled by the zitch-reconcile-wema
@@ -114,6 +115,8 @@ services:
       - key: WEMA_AIRTIME_KEY
         sync: false
       - key: WEMA_BILLS_KEY
+        sync: false
+      - key: WEMA_UPGRADE_KEY
         sync: false
       - key: WEMA_KYC_KEY
         sync: false
@@ -377,6 +380,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
       - key: WEMA_BILLS_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+      - key: WEMA_UPGRADE_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_UPGRADE_KEY}
       - key: WEMA_KYC_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_KYC_KEY}
       - key: WEMA_REMITA_KEY
