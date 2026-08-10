@@ -268,13 +268,17 @@ WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
     "KEYS": {
-        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),   # Wallet Services — bundles 13 APIs (see _WALLET_COVERED)
-        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card — its OWN product, no wallet fallback
-        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # optional — falls back to the wallet key
-        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional — falls back to the wallet key
-        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # optional — falls back to the wallet key
-        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # optional — falls back to the wallet key
-        "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later APIM subscription
+        # Wallet Services covers wallet creation, credit/debit wallet, account
+        # management, notifications and bills. Every product sold separately in
+        # the portal requires its own key; never borrow this key across products.
+        "wallet": os.environ.get("WEMA_WALLET_KEY", ""),
+        "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
+        "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API
+        "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional override; Wallet Services covers bills
+        "upgrade": os.environ.get("WEMA_UPGRADE_KEY", ""), # Account Upgrade API
+        "kyc": os.environ.get("WEMA_KYC_KEY", ""),         # Partnership Account KYC
+        "remita": os.environ.get("WEMA_REMITA_KEY", ""),   # Remita Payment
+        "bnpl": os.environ.get("WEMA_BNPL_KEY", ""),       # Buy-Now-Pay-Later
     },
     # The card product id ("cardKey") ALAT's virtualCard request expects — distinct
     # from the subscription key above. Supplied by Wema; blank until then.
