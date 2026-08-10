@@ -198,9 +198,21 @@ function AiControls({ toast, refresh }) {
     catch (e) { toast('⚠ ' + e.message); }
   };
   const on = DB.AI.enabled;
+  const configured = (DB.AI_CFG || {}).configured;
+  // Four scopes gate the AI and only two are knowable from here, so the page
+  // says which of those two is blocking rather than leaving an operator to
+  // guess why a switch reading ON produces no intents.
+  const blocker = !configured
+    ? { text: 'No model key saved — nothing can parse a sentence yet. Add one under Model provider.', tone: 'warn' }
+    : !on
+      ? { text: 'A key is installed but the kill switch is off, so every message goes down the deterministic path.', tone: 'warn' }
+      : { text: 'Key installed and the switch is on. Per-user and per-conversation toggles still apply.', tone: 'ok' };
   return (
     <div>
       <PageHead title="AI controls" sub="The model only proposes — validation, confirm and PIN still gate every movement." />
+      <div className={'ai-status ' + blocker.tone} style={{ marginBottom: 14 }}>
+        <Icon name={blocker.tone === 'ok' ? 'check' : 'lock'} size={14} /> <span>{blocker.text}</span>
+      </div>
       <div className="grid-2-1">
         <Card title="Recent parsed intents" sub="Stored on each inbound message" pad={false}>
           {DB.AI.intents.length ? (

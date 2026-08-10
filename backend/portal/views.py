@@ -31,6 +31,7 @@ from whatsapp.models import (
     WaMessageLog,
     WhatsAppLink,
 )
+from whatsapp import ai
 from whatsapp.ops import record_audit
 from whatsapp.router import reply as wa_reply
 
@@ -722,10 +723,7 @@ def ai_state(request):
         for m in WaMessageLog.objects.exclude(intent_json={}).order_by("-created")[:25]
     ]
     return ok(
-        # Match the router exactly (ai_active -> get_bool(..., False)). Reading a
-        # missing row as "true" here made the console report the AI as live while
-        # the channel had it switched off.
-        enabled=SystemSetting.get_bool("ai_enabled_global", False),
+        enabled=ai.global_enabled(),
         intents=intents,
     )
 
@@ -734,7 +732,7 @@ def ai_state(request):
 @require_cap("ai")
 def ai_global(request):
     enabled = bool(request.data.get("enabled"))
-    before = SystemSetting.get("ai_enabled_global", "true")
+    before = ai.global_enabled()
     SystemSetting.set("ai_enabled_global", "true" if enabled else "false")
     record_audit("ai.global_toggle", actor=request.user_obj, target="ai_enabled_global",
                  before={"enabled": before}, after={"enabled": enabled})
@@ -764,7 +762,7 @@ def ai_config(request):
         base_url=cfg["base_url"],
         api_key_masked=llm.masked_key(cfg["api_key"]),
         configured=llm.configured(),
-        enabled=SystemSetting.get("ai_enabled_global", "true") != "false",
+        enabled=ai.global_enabled(),
     )
 
 

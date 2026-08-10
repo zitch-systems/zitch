@@ -2849,3 +2849,68 @@ class ChatLockTipTests(TestCase):
         self.assertIn("Linked!", said)
         self.assertIn("Chat lock", said)
         self.assertIn("what would you like to do", said.lower())   # menu still sent
+
+
+class AiAirtimeShorthandTests(TestCase):
+    """"2k airtime for me" is the single most common sentence customers send, and
+    it carries neither a phone number nor a network. Falling back to the guided
+    flow for it made the AI look like it did nothing at all."""
+
+    def setUp(self):
+        self.user, _ = make_user(phone="08031234567")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def test_no_phone_and_no_network_still_reaches_the_confirm(self):
+        from whatsapp import router
+
+        self.assertTrue(router._begin_airtime(self.user, MSISDN, 2000, None, None))  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="airtime")
+        self.assertEqual(pa.state, "pin")                      # armed, not a guided flow
+        self.assertEqual(pa.payload["phone"], "08031234567")   # the customer's own line
+        self.assertEqual(pa.payload["net"], "1")               # 0803 -> MTN
+        self.assertEqual(Decimal(pa.payload["amount"]), Decimal("2000.00"))
+
+    def test_a_stated_network_always_beats_the_prefix_guess(self):
+        """Ported numbers make the prefix a guess. What the customer said is not."""
+        from whatsapp import router
+
+        router._begin_airtime(self.user, MSISDN, 500, "08031234567", "Airtel")  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="airtime")
+        self.assertEqual(pa.payload["net"], "3")
+
+    def test_an_unrecognised_prefix_falls_back_to_asking(self):
+        from whatsapp import router
+
+        self.user.phone = "07000000000"        # not a mobile prefix we map
+        self.user.save(update_fields=["phone"])
+        router._begin_airtime(self.user, MSISDN, 2000, None, None)  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="airtime")
+        self.assertNotEqual(pa.state, "pin")   # guided, rather than a wrong guess
+
+    def test_the_prefix_map_reads_international_form_too(self):
+        from whatsapp.router import _network_from_prefix
+
+        self.assertEqual(_network_from_prefix("2348031234567"), "1")
+        self.assertEqual(_network_from_prefix("+234 809 123 4567"), "4")
+        self.assertIsNone(_network_from_prefix("12345"))
+
+
+class AiGlobalSwitchTests(TestCase):
+    """The switch must read the same from the router and from the console. It did
+    not: the router treated a missing row as OFF and ai_config treated it as ON,
+    so an operator saw the AI reporting live while every message went down the
+    deterministic path."""
+
+    def test_a_missing_row_is_off_everywhere(self):
+        from whatsapp import ai
+
+        SystemSetting.objects.filter(key="ai_enabled_global").delete()
+        self.assertFalse(ai.global_enabled())
+
+    def test_the_console_and_the_router_never_disagree(self):
+        from whatsapp import ai
+
+        for stored, expected in (("true", True), ("false", False), ("on", True), ("", False)):
+            SystemSetting.set("ai_enabled_global", stored)
+            self.assertEqual(ai.global_enabled(), expected)
+            self.assertEqual(SystemSetting.get_bool("ai_enabled_global", False), expected)
