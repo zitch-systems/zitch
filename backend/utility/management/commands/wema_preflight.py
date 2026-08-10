@@ -24,7 +24,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from utility import wema
-from utility.providers import kyc_provider, payment_provider, payout_provider, vas_provider
+from utility.providers import card_provider, kyc_provider, payment_provider, payout_provider, vas_provider
 from utility.vtung import vtu_probe
 
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
@@ -47,16 +47,34 @@ class Command(BaseCommand):
             PASS if d["wema_live"] else FAIL,
             "channel + wallet + product keys present" if d["wema_live"]
             else f"status={d['status']} — {d['hint']}"))
-        # HARD: Wema confirmed securityInfo is a private value chosen by Zitch and
-        # echoed to the authorization callback. It is inexpensive defence in depth;
-        # requiring it prevents a leaked callback URL alone from authorising a payout.
+        # HARD: the private seed derives a unique HMAC for each transactionReference.
+        # Require a real high-entropy seed; a short human phrase is not sufficient for
+        # an authorization value carried through a third party.
+        security_strong = d.get("security_info_strong", d["security_info_set"])
         checks.append((
             True, "securityInfo",
-            PASS if d["security_info_set"] else FAIL,
-            "set (echoed back to the authentication callback)" if d["security_info_set"]
-            else ("WEMA_SECURITY_INFO unset — money calls fall back to a SECRET_KEY-derived "
-                  "value (never blank, which ALAT rejects), but pin a strong random value "
-                  "here so rotating SECRET_KEY can't invalidate in-flight payout callbacks")))
+            PASS if security_strong else FAIL,
+            "strong seed set; per-transaction HMAC enabled" if security_strong
+            else ("WEMA_SECURITY_INFO must be a random value of at least 32 characters; "
+                  "the SECRET_KEY fallback is for testing, not go-live")))
+        product_keys = d.get("product_keys_set") or {
+            name: bool(((settings.WEMA or {}).get("KEYS") or {}).get(name))
+            for name in ("wallet", "card", "airtime", "bills", "upgrade", "kyc", "remita", "bnpl")
+        }
+        if vas_provider() == "wema":
+            checks.append((
+                True, "ALAT Airtime/Data subscription",
+                PASS if product_keys.get("airtime") else FAIL,
+                "dedicated key set" if product_keys.get("airtime")
+                else "VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY; Wallet Services does not cover it"))
+        if card_provider() == "wema":
+            card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
+            checks.append((
+                True, "ALAT Virtual Naira Card subscription",
+                PASS if card_ready else FAIL,
+                "subscription and card product id set" if card_ready
+                else "Wema cards require WEMA_CARD_KEY and WEMA_CARD_PRODUCT_KEY"))
+
         callback = settings.WEMA or {}
         callback_token = str(callback.get("CALLBACK_TOKEN") or "").strip()
         checks.append((
