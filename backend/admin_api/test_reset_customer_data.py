@@ -30,7 +30,8 @@ class ResetCustomerDataTests(TestCase):
         self.customer = User.objects.create_user(
             username="08011112222", phone="08011112222", email="customer@zitch.test",
         )
-        Group.objects.create(name="support").user_set.add(self.staff)
+        support, _created = Group.objects.get_or_create(name="support")
+        support.user_set.add(self.staff)
         OperatorTotp.objects.create(user=self.staff, secret="JBSWY3DPEHPK3PXP")
         staff_token = AccessToken.issue(self.staff)
         customer_token = AccessToken.issue(self.customer)
