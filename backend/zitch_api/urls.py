@@ -94,8 +94,27 @@ def health(_request):
         # is anything arriving, and is anything being worked?
         "whatsapp_inbound_waiting": _whatsapp_inbound_waiting(),
         "whatsapp_last_processed_at": _whatsapp_last_processed_at(),
+        # Every reading above answers "is the channel configured/alive". None of
+        # them answers "does the Flow behind WHATSAPP_FLOW_ID still have the
+        # screens this code sends" — and that is the one that silently breaks,
+        # because the Flow JSON ships in this repo but is published BY HAND in
+        # WhatsApp Manager. Screens added earliest keep working while the newest
+        # are rejected, which reads like "some features are broken" instead of
+        # "the Flow is one publish behind". `missing_screens` names them.
+        "whatsapp_flow_published": _whatsapp_flow_published(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_flow_published():
+    """Ask Meta what the published Flow contains. Networked, so it is skipped
+    unless the channel is live and a Flow ID is set (see published_flow_report)."""
+    from whatsapp.providers import published_flow_report
+
+    try:
+        return published_flow_report()
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return {"status": "error"}
 
 
 def _flow_key_ok():
