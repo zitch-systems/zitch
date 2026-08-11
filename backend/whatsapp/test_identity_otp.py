@@ -7,8 +7,8 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from whatsapp.flows import (FLOW_ID_STATE, IDENTITY_CHAIN, IDENTITY_SCREEN, SUCCESS_SCREEN,
-                            handle_flow_request, sign_identity_token)
+from whatsapp.flows import (FLOW_ID_STATE, IDENTITY_CHAIN, IDENTITY_RETRY, IDENTITY_SCREEN,
+                            SUCCESS_SCREEN, handle_flow_request, sign_identity_token)
 from whatsapp.models import PendingAction, SystemSetting
 from whatsapp.test_flows import MSISDN, _make_user
 
@@ -36,6 +36,18 @@ class IdentityOtpTests(TestCase):
     def _pass_lookup(self, phone="08031234567"):
         return patch(LOOKUP, return_value={"success": True, "first_name": "Ada",
                                            "last_name": "Eze", "phone": f"234{phone[1:]}"})
+
+    def test_a_good_bvn_after_a_typo_still_reaches_the_code_screen(self):
+        """The retry screen must route onward too, or a corrected number would
+        dead-end on the attempt that finally succeeds."""
+        pa = self._pa()
+        with patch(LOOKUP, return_value={"success": False, "invalid": True, "message": "no"}):
+            self.assertEqual(self._submit(pa, "11111111111")["screen"], IDENTITY_RETRY)
+        with self._pass_lookup(), patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}):
+            resp = self._submit(pa, "22222222222")
+        self.assertEqual(resp["screen"], IDENTITY_CHAIN)
 
     def test_a_good_bvn_challenges_the_registered_line_instead_of_verifying(self):
         pa = self._pa()
@@ -137,13 +149,17 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
     def _reject(self, message="That BVN does not match the name on this account."):
         return patch(LOOKUP, return_value={"success": False, "invalid": True, "message": message})
 
-    def test_a_wrong_bvn_asks_again_on_the_same_screen(self):
+    def test_a_wrong_bvn_asks_again_on_a_screen_that_starts_empty(self):
+        """A DIFFERENT screen id, and that is the fix: WhatsApp keeps form state
+        across a same-screen re-render, so re-rendering IDENTITY_SCREEN left the
+        rejected digits in the box and one tap resubmitted them."""
         pa = self._pa()
         with self._reject():
             resp = self._submit(pa)
-        self.assertEqual(resp["screen"], IDENTITY_SCREEN)      # retype, not a terminal
+        self.assertEqual(resp["screen"], IDENTITY_RETRY)
+        self.assertNotEqual(resp["screen"], IDENTITY_SCREEN)
         self.assertIn("isn't valid", resp["data"]["error"])
-        self.assertIn("2 attempt(s) left", resp["data"]["error"])
+        self.assertIn("1 attempt(s) left", resp["data"]["error"])
 
     def test_a_wrong_bvn_is_never_queued_for_review(self):
         pa = self._pa()
@@ -166,11 +182,10 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
     def test_the_retry_screen_is_bounded_so_it_cannot_be_used_to_probe(self):
         pa = self._pa()
         with self._reject(), patch("whatsapp.router.reply"):
-            self.assertEqual(self._submit(pa)["screen"], IDENTITY_SCREEN)
-            self.assertEqual(self._submit(pa)["screen"], IDENTITY_SCREEN)
-            third = self._submit(pa)
-        self.assertEqual(third["screen"], SUCCESS_SCREEN)      # terminal, not another guess
-        self.assertIn("Too many", third["data"]["message"])
+            self.assertEqual(self._submit(pa)["screen"], IDENTITY_RETRY)
+            second = self._submit(pa)
+        self.assertEqual(second["screen"], SUCCESS_SCREEN)     # terminal, not another guess
+        self.assertIn("Too many", second["data"]["message"])
 
     def test_an_unreachable_provider_still_queues_because_that_one_is_ours(self):
         """The distinction: the provider SAYING no is definitive; not being able
@@ -184,3 +199,40 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
         pa.refresh_from_db()
         self.assertEqual(pa.payload.get("pending_review"), "bvn")
         self.assertIn("unreachable", SystemSetting.get("wa_last_identity_review", ""))
+
+
+class WrongPinRetriesOnAnEmptyScreenTests(TestCase):
+    """A wrong PIN must not come back with the wrong PIN still in the box.
+
+    WhatsApp keeps form state across a same-screen re-render (the reason
+    PIN_CONFIRM exists), so the retry arrived pre-filled with digits already
+    known to be wrong — and one tap spent another of the five attempts on them.
+    """
+
+    def setUp(self):
+        from whatsapp.test_flows import _transfer_action
+
+        self.user = _make_user()
+        self.pa = _transfer_action(self.user)
+
+    def test_a_wrong_pin_returns_a_screen_that_starts_empty(self):
+        from whatsapp.flows import PIN_RETRY, PIN_SCREEN, sign_flow_token
+
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(self.pa),
+                                    "data": {"pin": "999999"}})
+        self.assertEqual(resp["screen"], PIN_RETRY)
+        self.assertNotEqual(resp["screen"], PIN_SCREEN)
+        self.assertTrue(resp["data"]["error"])
+        self.assertIn("5,000", resp["data"]["amount"])       # still says what is being paid
+
+    def test_the_correct_pin_still_executes_from_the_retry_screen(self):
+        from whatsapp.flows import SUCCESS_SCREEN, sign_flow_token
+
+        handle_flow_request({"action": "data_exchange",
+                             "flow_token": sign_flow_token(self.pa),
+                             "data": {"pin": "999999"}})
+        done = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(self.pa),
+                                    "data": {"pin": "1234"}})
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)

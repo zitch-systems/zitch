@@ -168,14 +168,17 @@ class FlowsHandlerTests(TestCase):
         self.assertEqual(resp["data"]["details"], "")
 
     def test_wrong_pin_reprompts_and_does_not_debit(self):
-        from .flows import PIN_SCREEN, handle_flow_request
+        # PIN_RETRY, not PIN_SCREEN: WhatsApp keeps form state across a
+        # same-screen re-render, so re-asking on PIN_SCREEN came back with the
+        # rejected PIN still in the box. See PIN_RETRY.
+        from .flows import PIN_RETRY, handle_flow_request
 
         pa = _transfer_action(self.user)
         before = get_or_create_wallet(self.user).balance
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_flow_token(pa),
                                     "data": {"pin": "0000"}})
-        self.assertEqual(resp["screen"], PIN_SCREEN)
+        self.assertEqual(resp["screen"], PIN_RETRY)
         self.assertTrue(resp["data"]["error"])
         self.assertEqual(get_or_create_wallet(self.user).balance, before)   # nothing moved
         self.assertTrue(PendingAction.objects.filter(id=pa.id).exists())    # still pending
@@ -199,7 +202,8 @@ class FlowsHandlerTests(TestCase):
         already exists and is verified server-side, so a second entry would be
         pure friction; this pins the requirement so the confirm screen can never
         leak into the payment path."""
-        from .flows import PIN_CONFIRM, PIN_SCREEN, SUCCESS_SCREEN, handle_flow_request
+        from .flows import (PIN_CONFIRM, PIN_RETRY, PIN_SCREEN, SUCCESS_SCREEN,
+                            handle_flow_request)
 
         pa = _transfer_action(self.user)
         token = sign_flow_token(pa)
@@ -211,12 +215,14 @@ class FlowsHandlerTests(TestCase):
         self.assertEqual(done["screen"], SUCCESS_SCREEN)          # one entry, executed
         self.assertNotEqual(opened["screen"], PIN_CONFIRM)
 
-        # And a WRONG pin re-asks on the payment screen, not the confirm pair.
+        # And a WRONG pin re-asks on an empty payment screen — never the confirm
+        # pair, which would read as "re-enter to confirm" on a failed payment.
         pa2 = _transfer_action(self.user)
         wrong = handle_flow_request({"action": "data_exchange",
                                      "flow_token": sign_flow_token(pa2),
                                      "data": {"pin": "0000"}})
-        self.assertEqual(wrong["screen"], PIN_SCREEN)
+        self.assertEqual(wrong["screen"], PIN_RETRY)
+        self.assertNotEqual(wrong["screen"], PIN_CONFIRM)
 
     def test_forged_token_is_rejected(self):
         from .flows import SUCCESS_SCREEN, handle_flow_request

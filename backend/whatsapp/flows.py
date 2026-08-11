@@ -38,6 +38,18 @@ SIGNUP_SCREEN = "SIGNUP_SCREEN"
 #: so error re-renders stay put instead of navigating.
 PIN_CHAIN = "PIN_CHAIN"
 IDENTITY_CHAIN = "IDENTITY_CHAIN"
+#: The second identity attempt. A DIFFERENT screen for the same reason
+#: PIN_CONFIRM is one: WhatsApp keeps a form's client-side state when the
+#: endpoint answers with the same screen id, so "that number isn't valid, try
+#: again" re-rendered onto IDENTITY_SCREEN arrived with the rejected digits
+#: still in the box — one tap resubmitted the number that had just been
+#: refused, and burned the next attempt on it. A separate screen starts empty.
+IDENTITY_RETRY = "IDENTITY_RETRY"
+#: The same problem on the money path, and worse: a wrong PIN re-rendered onto
+#: PIN_SCREEN came back with the wrong PIN still in the box, so tapping Confirm
+#: resubmitted it — spending another of the five attempts on digits already
+#: known to be wrong, and walking the customer into a lockout they did not type.
+PIN_RETRY = "PIN_RETRY"
 TRANSFER_FORM = "TRANSFER_FORM"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
@@ -444,13 +456,15 @@ def _submit_identity(pa, data: dict) -> dict:
         else:
             outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
             if outcome == "invalid":
-                # A wrong number is corrected in place, not queued: re-render the
-                # SAME screen so the customer simply retypes it. (Same screen id
-                # — a navigation would need a route that must not exist.)
+                # A wrong number is corrected by the customer, not queued — but
+                # on a FRESH screen, so the refused digits are gone and the retry
+                # is a real retry rather than a resubmit of the same number.
                 pa.refresh_from_db()
                 left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
+                pa.payload["flow_screen"] = IDENTITY_RETRY
+                pa.save(update_fields=["payload"])
                 return _identity_screen(
-                    kind, screen=_flow_screen(pa, IDENTITY_SCREEN),
+                    kind, screen=IDENTITY_RETRY,
                     error=f"That {kind.upper()} isn't valid for this account. "
                           f"Check the digits and try again ({left} attempt(s) left).")
             if outcome == "stop":
@@ -602,7 +616,12 @@ def _submit_pin(token: str, data: dict) -> dict:
         if code == "pin_locked":
             _clear_actions(pa.msisdn)
             return _success_screen(message)
-        return _pin_screen(summary, error=message, screen=_flow_screen(pa, PIN_SCREEN))
+        # A fresh screen, not a re-render: see PIN_RETRY. Attempts beyond the
+        # first land back here, which is a smaller problem than the first retry
+        # silently resubmitting — by then the customer has seen the box.
+        pa.payload["flow_screen"] = PIN_RETRY
+        pa.save(update_fields=["payload"])
+        return _pin_screen(summary, error=message, screen=PIN_RETRY)
 
     try:
         outcome = run_flow_execution(pa, user)
