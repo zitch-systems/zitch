@@ -8,6 +8,7 @@ WhatsApp).
 """
 import functools
 import json
+import logging
 import re
 import secrets
 from datetime import timedelta
@@ -136,6 +137,7 @@ def flow_endpoint(request):
     # without this check the endpoint accepts forged PIN submissions from any
     # origin. Mock mode (channel not live) accepts unsigned, as on the webhook.
     if not verify_signature(request.body, request.headers.get("X-Hub-Signature-256", "")):
+        record_flow_endpoint("?", "", "signature rejected")
         return JsonResponse({"success": False, "message": "Invalid signature"}, status=401)
 
     from .flows import handle_flow_request
@@ -144,20 +146,62 @@ def flow_endpoint(request):
     try:
         body = json.loads(request.body or b"{}")
     except (ValueError, TypeError):
+        record_flow_endpoint("?", "", "body was not JSON")
         return HttpResponse(status=400)
     if not isinstance(body, dict):
+        record_flow_endpoint("?", "", "body was not an object")
         return HttpResponse(status=400)
 
     try:
         payload, aes_key, iv = decrypt_request(body)
-    except FlowDecryptError:
-        # 421 => Meta refetches the endpoint's public key and retries.
+    except FlowDecryptError as exc:
+        # 421 => Meta refetches the endpoint's public key and retries. Recorded
+        # because the customer sees only "Something went wrong" and this leaves
+        # no other trace an operator can reach.
+        record_flow_endpoint("?", "", f"decrypt failed: {exc}")
         return HttpResponse(status=421)
 
-    response = handle_flow_request(payload)
+    action = str((payload or {}).get("action", "?"))[:24]
+    try:
+        response = handle_flow_request(payload)
+    except Exception as exc:  # noqa: BLE001
+        # An exception here used to 500, which Meta renders to the customer as a
+        # blank panel saying "Something went wrong. Try again later." — no screen,
+        # no reason, and nothing recorded anywhere reachable. Answer with a real
+        # sentence and keep the reason.
+        logging.getLogger("whatsapp").exception("flow endpoint failed action=%s", action)
+        record_flow_endpoint(action, "", f"{type(exc).__name__}: {exc}")
+        response = {"screen": "SUCCESS",
+                    "data": {"message": "Something went wrong on our side. "
+                                        "Reply 8 in the chat to try again."}}
+    else:
+        record_flow_endpoint(action, str(response.get("screen", ""))[:24])
     encrypted = encrypt_response(response, aes_key, iv)
     # Meta expects the raw base64 ciphertext as the body (not JSON-wrapped).
     return HttpResponse(encrypted, content_type="text/plain")
+
+
+#: The last call Meta made to the Flows endpoint. Distinguishes the two halves of
+#: "Something went wrong": if this timestamp does NOT move when the customer
+#: reproduces, Meta never reached us (cold start, signature, networking); if it
+#: moves and carries an error, the reason is right there.
+FLOW_ENDPOINT_KEY = "wa_last_flow_endpoint"
+
+
+def record_flow_endpoint(action: str, screen: str, error: str = "") -> None:
+    """Park the last endpoint call where /healthz can report it. Carries the
+    action, the screen answered, and any failure — never the decrypted payload,
+    which is where the PIN and the identity numbers live."""
+    from django.utils import timezone
+
+    from .models import SystemSetting
+
+    try:
+        SystemSetting.set(FLOW_ENDPOINT_KEY,
+                          "|".join((timezone.now().isoformat(timespec="seconds"),
+                                    action or "?", screen or "", str(error)[:120]))[:255])
+    except Exception:  # noqa: BLE001 — diagnostics never break the endpoint
+        logging.getLogger("whatsapp").debug("could not record flow endpoint call", exc_info=True)
 
 
 def _iter_messages(event: dict):
