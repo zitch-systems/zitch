@@ -52,10 +52,13 @@ class UserAdmin(BaseUserAdmin):
             req = record_request(user=user, kind=DataSubjectRequest.EXPORT,
                                  actor=request.user, completed=True,
                                  outcome={"sections": sorted(data), "delivered_to": to})
+            from common.emails import branded_message
+            body_text = (f"Data-subject export for {req.subject_label} (request {req.pk}, due "
+                         f"{req.due:%Y-%m-%d}). Sections: {', '.join(sorted(data))}.")
             sent = send_email(
-                to, f"Zitch NDPR data export — request {req.pk}",
-                f"Data-subject export for {req.subject_label} (request {req.pk}, due "
-                f"{req.due:%Y-%m-%d}). Sections: {', '.join(sorted(data))}.",
+                to, f"Zitch NDPR data export — request {req.pk}", body_text,
+                html=branded_message("Your Zitch data export", body_text,
+                                     note="The complete record is the attached JSON file."),
                 attachments=[{"filename": f"zitch-dsr-{req.pk}.json", "content": payload}])
             log.info("dsr_export request=%s by=%s ok=%s", req.pk, request.user.pk,
                      sent.get("success"))

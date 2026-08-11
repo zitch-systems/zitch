@@ -584,7 +584,9 @@ class EmailAlertBrandingTests(TestCase):
         call = self._send()
         self.assertTrue(call.args[2])                        # plain text intact
         html = call.kwargs.get("html") or ""
-        self.assertIn("zitch-mark.png", html)                # the logo
+        from common.emails import LOGO_URL
+
+        self.assertIn(LOGO_URL, html)                        # the shared brand logo
         self.assertIn("+₦4,300.00", html)                    # signed amount
         self.assertIn("0228****72", html)                    # masked, never full
         self.assertNotIn("0228565772", html)
