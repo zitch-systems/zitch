@@ -583,16 +583,13 @@ def kyc_provider() -> str:
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
     """BVN verification entry point.
 
-    Prembly first when configured, for the same reason as NIN — and for one more:
-    the bank's only BVN check is the name match performed while opening a NUBAN,
-    which WEMA_SIMULATION mocks. A simulation deploy therefore marked every BVN
-    verified without anyone looking at it, so the identity half could not be
-    exercised for real without also moving real money.
+    Prembly first when configured and simulation is OFF. During an end-to-end
+    simulation, no identity number may leave Zitch merely because live Prembly
+    credentials are staged in the environment; the dedicated simulated-KYC path
+    supplies namespaced fake hashes without accepting or storing a real BVN.
 
-    Prembly's lookup is a separate rail, unaffected by the simulation flag, which
-    lets a demo deploy run genuine BVN and NIN checks over simulated transfers.
-
-    Falls back to the Wema behaviour when Prembly is unconfigured.
+    Falls back to the Wema behaviour when Prembly is unconfigured or the
+    deploy-wide simulation switch is on.
     """
     if _prembly_live():
         return prembly_verify_bvn(bvn, name=name)
