@@ -49,6 +49,14 @@ def health(_request):
         # whole story: keyed or in mock mode. The old per-rail sms_sendchamp boolean
         # went with the rail — anything alerting on it should watch sms_live instead.
         "sms_provider": "termii",
+        # Termii ACCEPTS a message (returns a message_id, so `success` is true and
+        # the customer is told a code is coming) and then never delivers it when
+        # the sender ID is not whitelisted for the route. That is the single most
+        # common OTP failure here and it is invisible from the send result. Both
+        # halves are config, not secrets: `generic` is the PROMOTIONAL route and
+        # is dropped for DND-registered lines, which is most Nigerian numbers.
+        "sms_sender_id": (getattr(settings, "TERMII", {}) or {}).get("SENDER_ID", ""),
+        "sms_channel": (getattr(settings, "TERMII", {}) or {}).get("CHANNEL", ""),
         "sms_live": sms_live(),
         "email_resend": bool(settings.RESEND["API_KEY"]),
         "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)

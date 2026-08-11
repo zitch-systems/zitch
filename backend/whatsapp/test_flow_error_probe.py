@@ -63,3 +63,22 @@ class LastFlowErrorTests(TestCase):
     def test_a_diagnostics_failure_never_breaks_the_send_path(self):
         with patch("whatsapp.models.SystemSetting.set", side_effect=RuntimeError("db down")):
             self.assertFalse(self._send(_Rejection())["success"])   # returned, not raised
+
+
+class SmsRouteIsVisibleTests(TestCase):
+    """The Termii route on /healthz. Accepted is not delivered, and the two
+    fields that decide delivery were previously unreadable without a token."""
+
+    @override_settings(TERMII={"SENDER_ID": "Zitch", "CHANNEL": "generic",
+                               "API_KEY": "k", "BASE_URL": "https://v3.api.termii.com"})
+    def test_healthz_reports_the_sender_id_and_route(self):
+        body = self.client.get("/healthz").json()["integrations"]
+        self.assertEqual(body["sms_sender_id"], "Zitch")
+        self.assertEqual(body["sms_channel"], "generic")   # the promotional route
+
+    @override_settings(TERMII={"SENDER_ID": "Zitch", "CHANNEL": "dnd",
+                               "API_KEY": "k", "BASE_URL": "https://v3.api.termii.com"})
+    def test_no_secret_reaches_the_page(self):
+        raw = self.client.get("/healthz").content.decode()
+        self.assertNotIn("k", raw.split('"sms_sender_id"')[0][-30:])
+        self.assertNotIn("API_KEY", raw)
