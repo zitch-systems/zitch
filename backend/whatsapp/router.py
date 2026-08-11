@@ -1753,22 +1753,42 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     checker = verify_bvn if kind == "bvn" else verify_nin
     result = checker(digits, name=user.get_full_name() or "")
     setter = user.set_bvn if kind == "bvn" else user.set_nin
-    setter(digits)
     fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
 
+    if result.get("invalid"):
+        # The authoritative source answered, and the answer is no: wrong number,
+        # or a number belonging to someone else. That is the CUSTOMER'S to
+        # correct, not an operator's to approve — queueing it would put a human
+        # in front of a decision already made, and "this BVN is not yours" is
+        # exactly the request that must never be waved through. Nothing is
+        # stored: an unowned identity has no business on the account.
+        attempts = int(pa.payload.get("id_bad_attempts") or 0) + 1
+        pa.payload["id_bad_attempts"] = attempts
+        _touch(pa, payload=pa.payload)
+        if attempts >= _MAX_ID_ATTEMPTS:
+            # Bounded so the screen cannot be used to probe numbers.
+            _clear_actions(msisdn)
+            reply(msisdn, f"⚠️ That's {_MAX_ID_ATTEMPTS} incorrect {kind.upper()} attempts. "
+                          "Please check the number and reply *8* to start again, or contact "
+                          "support if you believe this is wrong.")
+            return "stop"
+        return "invalid"
+
     if not result.get("success"):
-        # Submitted, not verified: the portal's KYC queue approves it, and
-        # recompute_tier picks it up from there. Record WHY for the operator —
-        # "submitted for review" is the same sentence whether the number was not
-        # found, the name did not match, or the provider was unreachable, and
-        # those need different actions.
+        # We could not ASK — provider unreachable or unconfigured. That is ours,
+        # not the customer's, so it queues rather than accusing them of a wrong
+        # number. Record why: "submitted for review" is one sentence for several
+        # causes, and they need different actions.
+        setter(digits)
         user.save(update_fields=fields)
         _record_identity_review(kind, result.get("message", ""))
         pa.payload["pending_review"] = kind
         _touch(pa, payload=pa.payload)
-        reply(msisdn, f"📋 Your {kind.upper()} has been submitted for review.")
+        reply(msisdn, f"📋 We couldn't reach the verification service just now — your "
+                      f"{kind.upper()} has been submitted for review.")
         return _kyc_next(pa, user, msisdn)
 
+    setter(digits)
     user.save(update_fields=fields)
     # A name match proves someone knows a name. A code delivered to the line
     # registered against the identity proves the person asking controls it — so
@@ -1789,6 +1809,11 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     reply(msisdn, f"✅ {kind.upper()} verified.")
     return _kyc_next(pa, user, msisdn)
 
+
+#: Wrong-number attempts before the identity step gives up. Bounded because an
+#: unlimited retry screen is a lookup oracle: it answers "is this BVN real, and
+#: whose is it" for anyone willing to sit and type.
+_MAX_ID_ATTEMPTS = 3
 
 #: Where the last identity-review reason is parked for /healthz. Same reasoning
 #: as wa_last_flow_error: the reason exists, but only in a log stream nobody

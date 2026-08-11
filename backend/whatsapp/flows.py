@@ -428,7 +428,7 @@ def _submit_identity(pa, data: dict) -> dict:
     """
     import re
 
-    from .router import _account_submit_identity, _kyc_submit_identity
+    from .router import _MAX_ID_ATTEMPTS, _account_submit_identity, _kyc_submit_identity
 
     kind = pa.payload.get("id_kind", "bvn")
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
@@ -443,6 +443,20 @@ def _submit_identity(pa, data: dict) -> dict:
             _account_submit_identity(pa, pa.user, pa.msisdn, number)
         else:
             outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+            if outcome == "invalid":
+                # A wrong number is corrected in place, not queued: re-render the
+                # SAME screen so the customer simply retypes it. (Same screen id
+                # — a navigation would need a route that must not exist.)
+                pa.refresh_from_db()
+                left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
+                return _identity_screen(
+                    kind, screen=_flow_screen(pa, IDENTITY_SCREEN),
+                    error=f"That {kind.upper()} isn't valid for this account. "
+                          f"Check the digits and try again ({left} attempt(s) left).")
+            if outcome == "stop":
+                return _success_screen(
+                    f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
+                    "start again.")
             if outcome == "otp":
                 # The lookup passed and a code is on its way to the line
                 # REGISTERED AGAINST THE IDENTITY — not the account's own
