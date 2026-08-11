@@ -2073,18 +2073,28 @@ class SignupPinPrivacyTests(TestCase):
     def to_pin_step(self, m=None):
         m = m or self.m
         self.inbound("1", f"p1-{m}", msisdn=m)
-        self.inbound("Chidi", f"p2-{m}", msisdn=m)
-        self.inbound("Obi", f"p3-{m}", msisdn=m)
-        self.inbound(f"chidi{m[-4:]}@zitch.test", f"p4-{m}", msisdn=m)
+        ob = WaOnboarding.objects.get(msisdn=m)
+        if ob.step == "flow_signup":
+            # Flows live: the details go through the private form, not the chat.
+            handle_flow_request({"action": "data_exchange",
+                                 "flow_token": sign_onboarding_token(ob),
+                                 "data": {"first_name": "Chidi", "last_name": "Obi",
+                                          "email": f"chidi{m[-4:]}@zitch.test"}})
+        else:
+            self.inbound("Chidi", f"p2-{m}", msisdn=m)
+            self.inbound("Obi", f"p3-{m}", msisdn=m)
+            self.inbound(f"chidi{m[-4:]}@zitch.test", f"p4-{m}", msisdn=m)
         return m
 
     @patch("whatsapp.router.send_flow", return_value={"success": True})
     @patch("whatsapp.router.flows_live", return_value=True)
     def test_pin_is_collected_in_the_secure_flow_not_the_chat(self, _live, flow):
         m = self.to_pin_step()
+        # ONE flow message covers the whole signup now: the form chains into the
+        # PIN pair as data_exchange responses on the same session.
         flow.assert_called_once()
         self.assertEqual(WaOnboarding.objects.get(msisdn=m).step, FLOW_PIN_STATE)
-        self.assertIn("never appears in this chat", self.last_reply(m))
+        self.assertIn("secure form", self.last_reply(m))
         # No prompt anywhere asks for a PIN in the chat.
         prompts = WaMessageLog.objects.filter(msisdn=m, direction=WaMessageLog.OUT)
         self.assertFalse([r for r in prompts if "Create a *4-digit PIN*" in r.text])
