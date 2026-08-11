@@ -2,7 +2,8 @@
 
 The linked WhatsApp number identifies the only account the commands may change.
 Both simulation switches must be on; turning WEMA_SIMULATION off makes every
-command inert. No real identity number is accepted or stored.
+command inert. Interactive test digits never leave Zitch and are not used to
+derive the identity hashes stored on the account.
 """
 from datetime import timedelta
 from decimal import Decimal
@@ -25,6 +26,18 @@ MSISDN = "2348012345678"
 PHONE = "08012345678"
 _SIM_ON = {"SIMULATION": True}
 _SIM_OFF = {"SIMULATION": False}
+_REAL_TERMII = {
+    "BASE_URL": "https://v3.api.termii.com",
+    "API_KEY": "termii-live",
+    "SENDER_ID": "Zitch",
+    "CHANNEL": "dnd",
+}
+_REAL_RESEND = {
+    "BASE_URL": "https://api.resend.com",
+    "API_KEY": "resend-live",
+    "FROM_EMAIL": "Zitch <no-reply@send.zitch.ng>",
+}
+_NO_TEST_OTP = {"PHONE": "", "CODE": ""}
 
 
 class WhatsAppSimulationCommandTests(TestCase):
@@ -103,6 +116,65 @@ class WhatsAppSimulationCommandTests(TestCase):
             ).count(),
             1,
         )
+
+    @override_settings(
+        WEMA=_SIM_ON,
+        ALLOW_PRODUCTION_SIMULATION=True,
+        TERMII=_REAL_TERMII,
+        RESEND=_REAL_RESEND,
+        TEST_OTP=_NO_TEST_OTP,
+    )
+    def test_interactive_verification_uses_real_sms_and_email_codes(self):
+        self.user.phone_verified = True
+        self.user.email_verified = True
+        self.user.bvn_verified = True
+        self.user.nin_verified = True
+        self.user.tier = 1
+        self.user.set_bvn("22222222222")
+        self.user.set_nin("33333333333")
+        self.user.save(update_fields=[
+            "phone_verified", "email_verified", "bvn_verified", "nin_verified",
+            "tier", "bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
+        ])
+
+        with patch("whatsapp.router.send_sms", return_value={"success": True}) as sms, \
+             patch("whatsapp.router.send_email", return_value={"success": True}) as email, \
+             patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            self.command("simulate verification")
+
+            self.user.refresh_from_db()
+            self.assertFalse(self.user.phone_verified)
+            self.assertFalse(self.user.email_verified)
+            self.assertFalse(self.user.bvn_verified)
+            self.assertFalse(self.user.nin_verified)
+            self.assertFalse(self.user.bvn_hash)
+            self.assertFalse(self.user.nin_hash)
+            self.assertEqual(self.user.tier, 0)
+            sms.assert_called_once()
+            self.assertEqual(sms.call_args.args[0], PHONE)
+            pa = PendingAction.objects.get(msisdn=MSISDN)
+            self.assertEqual(pa.state, "phone")
+            self.assertTrue(pa.payload.get("code_hash"))
+
+            sms_code = sms.call_args.args[1].split("Zitch: ", 1)[1][:6]
+            self.command(sms_code)
+
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.phone_verified)
+        self.assertFalse(self.user.email_verified)
+        email.assert_called_once()
+        self.assertEqual(email.call_args.args[0], self.user.email)
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload.get("id_kind"), "email")
+        self.assertEqual(pa.payload.get("id_step"), "code")
+        replies = "\n".join(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT
+        ).values_list("text", flat=True))
+        self.assertIn("Interactive verification ready", replies)
+        self.assertIn("real delivery through Termii", replies)
+        self.assertIn("real delivery through Resend", replies)
 
     @override_settings(WEMA=_SIM_ON, ALLOW_PRODUCTION_SIMULATION=True)
     def test_explicit_simulated_deposit_accepts_compact_amount(self):
