@@ -193,6 +193,31 @@ class FlowsHandlerTests(TestCase):
         self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
         self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())   # consumed
 
+    def test_a_transaction_takes_one_pin_entry_and_never_sees_the_confirm_screen(self):
+        """The re-enter pair exists to catch a typo while CREATING a PIN — where a
+        typo locks the customer out of their own money. On a transaction the PIN
+        already exists and is verified server-side, so a second entry would be
+        pure friction; this pins the requirement so the confirm screen can never
+        leak into the payment path."""
+        from .flows import PIN_CONFIRM, PIN_SCREEN, SUCCESS_SCREEN, handle_flow_request
+
+        pa = _transfer_action(self.user)
+        token = sign_flow_token(pa)
+        opened = handle_flow_request({"action": "INIT", "flow_token": token})
+        self.assertEqual(opened["screen"], PIN_SCREEN)
+
+        done = handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                    "data": {"pin": "1234"}})
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)          # one entry, executed
+        self.assertNotEqual(opened["screen"], PIN_CONFIRM)
+
+        # And a WRONG pin re-asks on the payment screen, not the confirm pair.
+        pa2 = _transfer_action(self.user)
+        wrong = handle_flow_request({"action": "data_exchange",
+                                     "flow_token": sign_flow_token(pa2),
+                                     "data": {"pin": "0000"}})
+        self.assertEqual(wrong["screen"], PIN_SCREEN)
+
     def test_forged_token_is_rejected(self):
         from .flows import SUCCESS_SCREEN, handle_flow_request
 
