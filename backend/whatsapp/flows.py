@@ -296,11 +296,17 @@ def handle_flow_request(payload: dict) -> dict:
                 return _submit_email(pa, data)
             if kind == ACCOUNT_OTP:
                 return _submit_account_otp(pa, data)
+            # An armed challenge means this submit is the CODE, not the number:
+            # the identity was accepted on the previous exchange of this session.
+            if pa.payload.get("id_otp_hash"):
+                return _submit_identity_otp(pa, data)
             return _submit_identity(pa, data)
         if kind == "email":
             return _email_step_screen(pa)
         if kind == ACCOUNT_OTP:
             return _account_otp_screen(pa)
+        if pa.payload.get("id_otp_hash"):
+            return _identity_otp_screen(pa)
         return _identity_screen(kind)
 
     if action == "INIT":
@@ -422,7 +428,7 @@ def _submit_identity(pa, data: dict) -> dict:
     """
     import re
 
-    from .router import _account_submit_identity, _kyc_submit_identity
+    from .router import _MAX_ID_ATTEMPTS, _account_submit_identity, _kyc_submit_identity
 
     kind = pa.payload.get("id_kind", "bvn")
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
@@ -436,13 +442,65 @@ def _submit_identity(pa, data: dict) -> dict:
         if pa.action_type == "add_account":
             _account_submit_identity(pa, pa.user, pa.msisdn, number)
         else:
-            _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+            outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+            if outcome == "invalid":
+                # A wrong number is corrected in place, not queued: re-render the
+                # SAME screen so the customer simply retypes it. (Same screen id
+                # — a navigation would need a route that must not exist.)
+                pa.refresh_from_db()
+                left = _MAX_ID_ATTEMPTS - int(pa.payload.get("id_bad_attempts") or 0)
+                return _identity_screen(
+                    kind, screen=_flow_screen(pa, IDENTITY_SCREEN),
+                    error=f"That {kind.upper()} isn't valid for this account. "
+                          f"Check the digits and try again ({left} attempt(s) left).")
+            if outcome == "stop":
+                return _success_screen(
+                    f"Too many incorrect {kind.upper()} attempts. Reply 8 in the chat to "
+                    "start again.")
+            if outcome == "otp":
+                # The lookup passed and a code is on its way to the line
+                # REGISTERED AGAINST THE IDENTITY — not the account's own
+                # number. Collected on the same open session, so the code never
+                # becomes a chat message either.
+                pa.refresh_from_db()
+                return _identity_otp_screen(pa)
     except Exception:  # noqa: BLE001 — never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
     return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
+
+
+def _identity_otp_screen(pa, error: str = "") -> dict:
+    """The identity challenge code. Always the chained twin: this is only ever
+    reached from IDENTITY_SCREEN inside one session, never opened on."""
+    kind = (pa.payload.get("id_otp_kind") or "bvn").upper()
+    return _identity_screen(kind, error=error, label=f"{kind} code",
+                            summary=f"Enter the 6-digit code we sent to "
+                                    f"{pa.payload.get('id_otp_to', 'your phone')}",
+                            screen=IDENTITY_CHAIN)
+
+
+def _submit_identity_otp(pa, data: dict) -> dict:
+    """The code that proves control of the line the identity is registered to."""
+    from .router import kyc_flow_identity_otp
+
+    try:
+        status, message = kyc_flow_identity_otp(pa, str(data.get("number", "")))
+    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+        log.exception("identity otp submission failed for pa=%s", pa.id)
+        return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
+    if status == "retry":
+        return _identity_otp_screen(pa, error=message)
+    if status == "ok":
+        from .router import _kyc_next
+
+        try:
+            _kyc_next(pa, pa.user, pa.msisdn)   # the chat says what remains
+        except Exception:  # noqa: BLE001
+            log.exception("kyc advance failed after identity otp for pa=%s", pa.id)
+    return _success_screen(message)
 
 
 def _account_otp_screen(pa, error: str = "") -> dict:

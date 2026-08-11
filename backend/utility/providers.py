@@ -607,7 +607,7 @@ def prembly_verify_bvn(bvn: str, name: str = "") -> dict:
     which is the safe direction but still wrong.
     """
     if len(bvn) != 11 or not bvn.isdigit():
-        return {"success": False, "message": "BVN must be 11 digits"}
+        return {"success": False, "invalid": True, "message": "BVN must be 11 digits"}
     return _prembly_identity_lookup("bvn", bvn, name)
 
 
@@ -623,11 +623,16 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
         log.warning("prembly_%s_unreachable error_type=%s", kind, type(exc).__name__)
+        # NOT invalid: we could not ask. Reviewable.
         return {"success": False, "message": f"Identity provider unreachable: {exc}"}
 
     record = data.get("data") or data.get(f"{kind}_data") or {}
     if not (data.get("status") and isinstance(record, dict)):
-        return {"success": False,
+        # The provider answered, and the answer is no. `invalid` means definitive:
+        # a wrong number is the customer's to correct, not an operator's to
+        # approve — queueing it would put a human in front of a decision the
+        # authoritative source has already made.
+        return {"success": False, "invalid": True,
                 "message": data.get("message") or f"That {kind.upper()} could not be confirmed.",
                 "raw": data}
     first = str(record.get("firstname") or record.get("first_name") or "").strip()
@@ -640,12 +645,41 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
             # Never echo the resolved name: it belongs to whoever owns the
             # number, who may not be the person asking.
             log.warning("prembly_%s_name_mismatch", kind)
-            return {"success": False,
+            # Definitive, and deliberately not reviewable: "this number belongs
+            # to someone else" is precisely the case an operator must never be
+            # asked to wave through.
+            return {"success": False, "invalid": True,
                     "message": f"That {kind.upper()} does not match the name on this account.",
                     "raw": data}
     elif not resolved:
-        return {"success": False, "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
-    return {"success": True, "first_name": first, "last_name": last, "raw": data}
+        return {"success": False, "invalid": True,
+                "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
+    return {"success": True, "first_name": first, "last_name": last,
+            "phone": _record_phone(record), "raw": data}
+
+
+#: Field names the BVN and NIN records use for the registered line. Both are
+#: tried for both identities because the provider's own naming is not stable
+#: across products, and a lookup that silently found no phone is indistinguishable
+#: from one that found an empty string.
+_PHONE_FIELDS = ("phoneNumber1", "phone_number1", "phoneNumber", "phone_number",
+                 "telephoneno", "telephone_no", "phone", "msisdn")
+
+
+def _record_phone(record: dict) -> str:
+    """The line registered against the identity, normalised, or "".
+
+    This is the number the OTP goes to — NOT the number on the Zitch account.
+    That difference is the entire point: matching a name proves someone knows a
+    name, while a code delivered to the line the bank or NIMC holds proves the
+    person asking controls it.
+    """
+    for field in _PHONE_FIELDS:
+        raw = str(record.get(field) or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 10:
+            return _ng_msisdn(digits)
+    return ""
 
 
 def verify_nin(nin: str, name: str = "") -> dict:
@@ -678,7 +712,7 @@ def prembly_verify_nin(nin: str, name: str = "") -> dict:
     against your Prembly dashboard before trusting this in production.
     """
     if len(nin) != 11 or not nin.isdigit():
-        return {"success": False, "message": "NIN must be 11 digits"}
+        return {"success": False, "invalid": True, "message": "NIN must be 11 digits"}
     return _prembly_identity_lookup("nin", nin, name)
 
 def verify_vnin(vnin: str, name: str = "") -> dict:
