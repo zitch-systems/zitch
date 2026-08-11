@@ -19,7 +19,8 @@ from django.db import transaction as db_transaction
 from django.utils import timezone
 
 from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
-                         evaluate_transaction_pin, send_limit_error, velocity_exceeded)
+                         evaluate_transaction_pin, mask_pii, send_limit_error,
+                         velocity_exceeded)
 from transfers.models import Bank
 from transfers.views import _names_match
 from transfers.services import PayoutError, execute_payout
@@ -40,7 +41,8 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, IDENTITY_SCREEN,
+from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, FLOW_SIGNUP_STATE,
+                    IDENTITY_SCREEN, SIGNUP_SCREEN,
                     PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
@@ -1021,6 +1023,26 @@ def _start_onboarding(msisdn: str) -> None:
         return reply(msisdn, UNLINKED_APP_ONLY)
     if User.objects.filter(phone=_local_phone(msisdn)).exists():
         return reply(msisdn, "This number already has a Zitch account. Open the app → *Settings → Link WhatsApp* to connect it here.")
+    # One private form for names + email, chained into the PIN pair on the same
+    # open Flow — the whole signup with zero chat round-trips. Names and an
+    # email address are not secrets, so unlike the PIN this falls back to the
+    # chat question-by-question path when Flows are unavailable.
+    if flows_live():
+        ob, _ = WaOnboarding.objects.update_or_create(
+            msisdn=msisdn,
+            defaults={"step": FLOW_SIGNUP_STATE, "payload": {},
+                      "expires_at": timezone.now() + ONBOARD_TTL},
+        )
+        res = send_flow(
+            msisdn, sign_onboarding_token(ob),
+            header="Create your Zitch account",
+            body="Your details go into a private form — they never appear in this chat.",
+            screen=SIGNUP_SCREEN, screen_data={"error": ""}, cta="Create account",
+        )
+        if res.get("success"):
+            return reply(msisdn, "🎉 Tap *Create account* on the secure form above to get started.")
+        log.warning("wa_signup_flow_send_failed msisdn=%s detail=%r",
+                    mask_pii(msisdn), res.get("error_detail", ""))
     WaOnboarding.objects.update_or_create(
         msisdn=msisdn,
         defaults={"step": "first_name", "payload": {}, "expires_at": timezone.now() + ONBOARD_TTL},
@@ -1089,6 +1111,9 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
         return reply(msisdn, "No problem — signup cancelled. Reply *1* to start again anytime.")
+    if ob.step == FLOW_SIGNUP_STATE:
+        return reply(msisdn, "📝 Please fill the secure *Create account* form above — "
+                             "or reply \"cancel\" to start over.")
     if ob.step == FLOW_PIN_STATE:
         # The PIN belongs in the secure screen, never here. If they typed one
         # anyway it is already masked in our log — but it is still sitting in

@@ -27,10 +27,12 @@ PIN_SCREEN = "PIN_SCREEN"
 #: "confirmed" it without a single digit retyped, which is no confirmation at
 #: all. A separate screen starts empty because it is a separate form.
 PIN_CONFIRM = "PIN_CONFIRM"
+SIGNUP_SCREEN = "SIGNUP_SCREEN"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
-FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
+FLOW_PIN_STATE = "flow_pin"
+FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
@@ -81,7 +83,7 @@ def resolve_onboarding_token(token: str):
     if not pid.isdigit():
         return None
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
-    if ob is None or ob.step != FLOW_PIN_STATE or ob.expired:
+    if ob is None or ob.step not in (FLOW_SIGNUP_STATE, FLOW_PIN_STATE) or ob.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -249,7 +251,11 @@ def handle_flow_request(payload: dict) -> dict:
         if ob is None:
             return _success_screen("This signup expired. Send us a message to start again.")
         if action == "data_exchange":
+            if "first_name" in data:
+                return _submit_signup_details(ob, data)
             return _submit_onboarding_pin(ob, data)
+        if ob.step == FLOW_SIGNUP_STATE:
+            return _signup_screen()
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob)))
 
@@ -297,6 +303,38 @@ def _confirm_pin_screen(error: str = "") -> dict:
                      "recipient": "Type the same 6 digits again to confirm",
                      "details": "",
                      "error": error or ""}}
+
+
+def _signup_screen(error: str = "") -> dict:
+    return {"screen": SIGNUP_SCREEN, "data": {"error": error or ""}}
+
+
+def _submit_signup_details(ob, data: dict) -> dict:
+    """The signup form: names + email in ONE private screen, then straight into
+    the PIN pair on the same open Flow — the whole signup with zero chat
+    round-trips. The same validation the chat path applies, because two entry
+    points must not disagree on what a valid signup is. The email is only
+    COLLECTED here; the OTP round-trip still verifies it afterwards.
+    """
+    import re
+
+    from accounts.models import User
+
+    first = str(data.get("first_name", "")).strip()[:40]
+    last = str(data.get("last_name", "")).strip()[:40]
+    email = str(data.get("email", "")).strip().lower()
+    if len(first) < 2 or len(last) < 2:
+        return _signup_screen(error="Please enter your first and last name.")
+    if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return _signup_screen(error="That doesn't look like an email address.")
+    if User.objects.filter(email__iexact=email).exists():
+        # Recovery looks accounts up by email; a duplicate would make reset
+        # codes ambiguous — refused at entry, exactly like the chat path.
+        return _signup_screen(error="That email is already on a Zitch account — use a different one.")
+    ob.payload.update({"first_name": first, "last_name": last, "email": email})
+    ob.step = FLOW_PIN_STATE
+    ob.save(update_fields=["payload", "step"])
+    return _pin_screen(_ob_summary(ob))
 
 
 def _ob_summary(ob) -> str:

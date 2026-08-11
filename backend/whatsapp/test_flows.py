@@ -762,6 +762,15 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
 
         self._assert_matches(self._sent(router._send_pin_flow, self.pa, self.user))  # noqa: SLF001
 
+    def test_the_signup_form(self):
+        from whatsapp import router
+        from whatsapp.models import WaOnboarding
+
+        def start():
+            router._start_onboarding("2348099990002")  # noqa: SLF001
+
+        self._assert_matches(self._sent(start))
+
     def test_the_signup_pin(self):
         from whatsapp import router
         from whatsapp.models import WaOnboarding
@@ -885,3 +894,73 @@ class KeyMismatchLoggingTests(TestCase):
                 with self.assertRaises(FlowDecryptError):
                     decrypt_request(body)
         self.assertIn("wa_flow_key_mismatch", "\n".join(logs.output))
+
+
+class SignupFormFlowTests(TestCase):
+    """The template-gallery pattern, on our own flow: names + email in ONE
+    private form, chained straight into the PIN pair — the whole signup with
+    zero chat round-trips. The email is only COLLECTED here; the OTP round-trip
+    still verifies it afterwards."""
+
+    def _ob(self, step=None):
+        from datetime import timedelta as td
+
+        from .flows import FLOW_SIGNUP_STATE
+        from .models import WaOnboarding
+
+        return WaOnboarding.objects.create(
+            msisdn="2348099990001", step=step or FLOW_SIGNUP_STATE, payload={},
+            expires_at=timezone.now() + td(minutes=15))
+
+    def _submit(self, ob, **data):
+        from .flows import handle_flow_request, sign_onboarding_token
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_onboarding_token(ob),
+                                    "data": data})
+
+    def test_init_opens_the_signup_form(self):
+        from .flows import SIGNUP_SCREEN, handle_flow_request, sign_onboarding_token
+
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_onboarding_token(self._ob())})
+        self.assertEqual(resp["screen"], SIGNUP_SCREEN)
+
+    def test_valid_details_store_and_chain_into_the_pin_screen(self):
+        from .flows import PIN_SCREEN
+
+        ob = self._ob()
+        resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="Ngozi@Example.com")
+        self.assertEqual(resp["screen"], PIN_SCREEN)          # same flow session
+        ob.refresh_from_db()
+        self.assertEqual(ob.payload["email"], "ngozi@example.com")
+        self.assertEqual(ob.payload["first_name"], "Ngozi")
+
+    def test_the_whole_signup_completes_in_one_flow_session(self):
+        from .flows import PIN_CONFIRM, SUCCESS_SCREEN
+
+        ob = self._ob()
+        self._submit(ob, first_name="Ngozi", last_name="Ade", email="ngozi1@example.com")
+        ob.refresh_from_db()
+        first = self._submit(ob, pin="246810")
+        self.assertEqual(first["screen"], PIN_CONFIRM)
+        done = self._submit(ob, pin="246810")
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        u = User.objects.get(phone="08099990001")
+        self.assertEqual(u.email, "ngozi1@example.com")
+        self.assertFalse(u.email_verified)                    # collected, not verified
+        self.assertTrue(u.check_transaction_pin("246810"))
+
+    def test_bad_or_taken_details_re_render_with_the_reason(self):
+        from .flows import SIGNUP_SCREEN
+
+        ob = self._ob()
+        self.assertIn("first and last name",
+                      self._submit(ob, first_name="N", last_name="A", email="x@y.z")["data"]["error"])
+        self.assertIn("look like an email",
+                      self._submit(ob, first_name="Ngozi", last_name="Ade", email="nope")["data"]["error"])
+        User.objects.create(username="08088880000", phone="08088880000", email="taken2@example.com")
+        resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="taken2@example.com")
+        self.assertEqual(resp["screen"], SIGNUP_SCREEN)
+        self.assertIn("already on a Zitch account", resp["data"]["error"])
+        ob.refresh_from_db()
+        self.assertNotIn("email", ob.payload)                 # nothing stored on a refusal
