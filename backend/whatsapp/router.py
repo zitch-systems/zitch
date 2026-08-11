@@ -1756,20 +1756,121 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     setter(digits)
     fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
 
-    if result.get("success"):
-        setattr(user, f"{kind}_verified", True)
-        fields.append(f"{kind}_verified")
-        user.save(update_fields=fields)
-        reply(msisdn, f"✅ {kind.upper()} verified.")
-    else:
+    if not result.get("success"):
         # Submitted, not verified: the portal's KYC queue approves it, and
-        # recompute_tier picks it up from there.
+        # recompute_tier picks it up from there. Record WHY for the operator —
+        # "submitted for review" is the same sentence whether the number was not
+        # found, the name did not match, or the provider was unreachable, and
+        # those need different actions.
         user.save(update_fields=fields)
+        _record_identity_review(kind, result.get("message", ""))
         pa.payload["pending_review"] = kind
         _touch(pa, payload=pa.payload)
         reply(msisdn, f"📋 Your {kind.upper()} has been submitted for review.")
-    # Move on regardless: a queued identity must not block the remaining steps.
+        return _kyc_next(pa, user, msisdn)
+
+    user.save(update_fields=fields)
+    # A name match proves someone knows a name. A code delivered to the line
+    # registered against the identity proves the person asking controls it — so
+    # the lookup passing is the START of verification here, not the end.
+    otp_error = _kyc_send_identity_otp(pa, user, kind, result.get("phone", ""))
+    if otp_error is None:
+        return "otp"
+    if otp_error:                     # cannot run the challenge -> review, with the reason
+        _record_identity_review(kind, otp_error)
+        pa.payload["pending_review"] = kind
+        _touch(pa, payload=pa.payload)
+        reply(msisdn, f"📋 Your {kind.upper()} has been submitted for review.")
+        return _kyc_next(pa, user, msisdn)
+    # Dev/test deploys have no SMS and no Flow to collect a code in; the suite
+    # and the simulation walkthrough still need the ladder to complete.
+    setattr(user, f"{kind}_verified", True)
+    user.save(update_fields=[f"{kind}_verified"])
+    reply(msisdn, f"✅ {kind.upper()} verified.")
     return _kyc_next(pa, user, msisdn)
+
+
+#: Where the last identity-review reason is parked for /healthz. Same reasoning
+#: as wa_last_flow_error: the reason exists, but only in a log stream nobody
+#: debugging from a phone can reach.
+IDENTITY_REVIEW_KEY = "wa_last_identity_review"
+
+
+def _record_identity_review(kind: str, reason: str) -> None:
+    """Why the last identity went to review. Carries no identity number and no
+    resolved name — the reason concerns OUR lookup, not the person."""
+    from .models import SystemSetting
+
+    try:
+        SystemSetting.set(IDENTITY_REVIEW_KEY,
+                          "|".join((timezone.now().isoformat(timespec="seconds"),
+                                    kind, str(reason)[:150]))[:255])
+    except Exception:  # noqa: BLE001 — diagnostics never break the ladder
+        log.debug("could not record identity review reason", exc_info=True)
+
+
+def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
+    """Send the identity challenge code to the line on the BVN/NIN record.
+
+    Returns None when the code is away (the caller chains to the code screen),
+    a string when the challenge cannot be run (the caller queues for review with
+    that reason), or "" when this deploy has no channel for it at all.
+    """
+    if getattr(settings, "TESTING", False) or settings.DEBUG:
+        return ""
+    if not flows_live():
+        # The code is a bearer credential. Collecting it in the thread would undo
+        # the reason the number was collected in a Flow in the first place.
+        return "no secure screen to collect the code on"
+    if not phone:
+        return "the identity record carried no phone number"
+    if not sms_live():
+        return "SMS is not configured"
+    code = f"{secrets.randbelow(10**6):06d}"
+    sent = send_sms(phone, f"Zitch: {code} is your {kind.upper()} verification code. "
+                           "It expires in 10 minutes. Never share it.")
+    if not sent.get("success"):
+        return "the verification SMS was rejected"
+    pa.payload.update({
+        "id_otp_hash": make_password(code),
+        "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
+        "id_otp_attempts": 0,
+        # Masked so the chat and the screen can say where it went without
+        # printing a number that belongs to the identity, not the account.
+        "id_otp_to": f"•••••{phone[-4:]}",
+        "id_otp_kind": kind,
+    })
+    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+    return None
+
+
+def kyc_flow_identity_otp(pa: PendingAction, code: str):
+    """Check the identity challenge code. ("retry", msg) | ("stop", msg) | ("ok", msg)."""
+    user = pa.user
+    kind = pa.payload.get("id_otp_kind", "bvn")
+    expires = pa.payload.get("id_otp_exp")
+    if not pa.payload.get("id_otp_hash") or not expires or timezone.now() > timezone.datetime.fromisoformat(expires):
+        _clear_actions(pa.msisdn)
+        return "stop", "That code expired. Reply 8 in the chat to try again."
+    attempts = int(pa.payload.get("id_otp_attempts") or 0) + 1
+    if not check_password("".join(ch for ch in str(code) if ch.isdigit()),
+                          pa.payload["id_otp_hash"]):
+        if attempts >= 3:
+            # Three wrong codes is not a typo. Queue it rather than letting the
+            # challenge be ground down.
+            _record_identity_review(kind, "three wrong verification codes")
+            _clear_actions(pa.msisdn)
+            return "stop", (f"That's 3 incorrect codes — your {kind.upper()} has been sent "
+                            "for manual review instead.")
+        pa.payload["id_otp_attempts"] = attempts
+        _touch(pa, payload=pa.payload)
+        return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
+    setattr(user, f"{kind}_verified", True)
+    user.save(update_fields=[f"{kind}_verified"])
+    for key in ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to", "id_otp_kind"):
+        pa.payload.pop(key, None)
+    _touch(pa, payload=pa.payload)
+    return "ok", f"{kind.upper()} verified ✅"
 
 
 def _do_account_details(user, msisdn: str) -> None:

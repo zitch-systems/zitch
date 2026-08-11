@@ -645,7 +645,32 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
                     "raw": data}
     elif not resolved:
         return {"success": False, "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
-    return {"success": True, "first_name": first, "last_name": last, "raw": data}
+    return {"success": True, "first_name": first, "last_name": last,
+            "phone": _record_phone(record), "raw": data}
+
+
+#: Field names the BVN and NIN records use for the registered line. Both are
+#: tried for both identities because the provider's own naming is not stable
+#: across products, and a lookup that silently found no phone is indistinguishable
+#: from one that found an empty string.
+_PHONE_FIELDS = ("phoneNumber1", "phone_number1", "phoneNumber", "phone_number",
+                 "telephoneno", "telephone_no", "phone", "msisdn")
+
+
+def _record_phone(record: dict) -> str:
+    """The line registered against the identity, normalised, or "".
+
+    This is the number the OTP goes to — NOT the number on the Zitch account.
+    That difference is the entire point: matching a name proves someone knows a
+    name, while a code delivered to the line the bank or NIMC holds proves the
+    person asking controls it.
+    """
+    for field in _PHONE_FIELDS:
+        raw = str(record.get(field) or "").strip()
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 10:
+            return _ng_msisdn(digits)
+    return ""
 
 
 def verify_nin(nin: str, name: str = "") -> dict:

@@ -116,8 +116,28 @@ def health(_request):
         # — so in practice it has been guessed at from symptoms. This is the
         # last rejection, in Meta's own words, on a page an operator can open.
         "whatsapp_last_flow_error": _whatsapp_last_flow_error(),
+        # "Your BVN has been submitted for review" is the same sentence whether
+        # the number was not found, the name did not match, the provider was
+        # unreachable, or the record carried no phone to challenge — and those
+        # need different actions. This is the last one, with its reason.
+        "whatsapp_last_identity_review": _whatsapp_last_identity_review(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_last_identity_review():
+    """Why the last BVN/NIN went to review instead of verifying."""
+    try:
+        from whatsapp.models import SystemSetting
+        from whatsapp.router import IDENTITY_REVIEW_KEY
+
+        raw = SystemSetting.get(IDENTITY_REVIEW_KEY, "")
+        if not raw:
+            return {}
+        parts = (raw.split("|", 2) + ["", "", ""])[:3]
+        return {"at": parts[0], "kind": parts[1], "reason": parts[2]}
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return {}
 
 
 def _whatsapp_last_flow_error():
