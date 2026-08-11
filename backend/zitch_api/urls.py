@@ -63,6 +63,13 @@ def health(_request):
         "kyc_wema": wema.wema_live(),
         "kyc_prembly": _prembly_live(),  # selfie/liveness + address + ID-doc stay on Prembly
         "cards_issuer": bool(settings.CARD_ISSUER["API_KEY"]),
+        # The audit that found the queue backlog also found REDIS_URL
+        # disconnected — and there is a reason a boot-time check couldn't have
+        # been trusted to catch it: DJANGO_REQUIRE_SHARED_CACHE can be set to
+        # false on a service, which makes a Redis-less boot pass silently
+        # instead of refusing to start. So "the app answered /healthz" is NOT
+        # proof Redis is wired — this is the only thing that is.
+        "redis": _redis_status(),
         # The chat channel belongs here for the same reason as every rail above:
         # this is the only endpoint an operator can read without a login, and a
         # silent WhatsApp bot is indistinguishable from a healthy one everywhere
@@ -181,6 +188,33 @@ def _whatsapp_flow_published():
         return published_flow_report()
     except Exception:  # noqa: BLE001 — a health probe never raises
         return {"status": "error"}
+
+
+def _redis_status():
+    """Prove the shared cache is Redis AND reachable — not just configured.
+
+    A boot-time check exists for this (validate_production_configuration), but
+    it can be silenced by DJANGO_REQUIRE_SHARED_CACHE=false on a per-service
+    basis, which is exactly what the earlier audit found: a Redis-less boot
+    that passes silently instead of refusing to start. So "the app answered
+    /healthz" was never proof Redis is wired — only a real round-trip is. A
+    misconfigured REDIS_URL (wrong host, unreachable instance) would pass a
+    bare settings check and still fail here, which is the case that matters.
+    """
+    from django.core.cache import cache
+
+    configured = bool(settings.REDIS_URL)
+    backend = str((getattr(settings, "CACHES", {}) or {}).get("default", {}).get("BACKEND", ""))
+    is_redis_backend = "RedisCache" in backend
+    if not (configured and is_redis_backend):
+        return {"configured": configured, "backend_is_redis": is_redis_backend, "reachable": None}
+    probe_key = "healthz_redis_probe"
+    try:
+        cache.set(probe_key, "1", timeout=10)
+        reachable = cache.get(probe_key) == "1"
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        reachable = False
+    return {"configured": True, "backend_is_redis": True, "reachable": reachable}
 
 
 def _flow_key_ok():
