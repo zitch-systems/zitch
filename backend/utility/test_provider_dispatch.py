@@ -356,10 +356,9 @@ class NinIdentityRailTests(SimpleTestCase):
 
 
 class BvnIdentityRailTests(SimpleTestCase):
-    """The bank's only BVN check is the name match performed while opening a
-    NUBAN, and WEMA_SIMULATION mocks it — so a simulation deploy marked every BVN
-    verified without anyone looking. Prembly is a separate rail, unaffected by
-    that flag, which is what lets a demo run real identity over fake transfers."""
+    """Prembly is the live standalone BVN rail. Deploy-wide simulation must
+    bypass it even when credentials remain staged; simulated KYC stores only
+    namespaced fake hashes, so no real identity number leaves Zitch."""
 
     def _resp(self, payload):
         class R:
@@ -376,13 +375,13 @@ class BvnIdentityRailTests(SimpleTestCase):
         wema.assert_called_once()
 
     @override_settings(PREMBLY=PREMBLY_LIVE, WEMA={"SIMULATION": True})
-    def test_simulation_does_not_reach_the_bvn_check(self):
-        """The whole point: transfers stay fake, identity does not."""
-        payload = {"status": True, "data": {"firstname": "ADA", "surname": "EZE"}}
-        with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
-            self.assertTrue(P.verify_bvn("12345678901", name="Ada Eze")["success"])
-        post.assert_called_once()
-        self.assertIn("/bvn", post.call_args[0][0])
+    def test_simulation_never_reaches_prembly_bvn(self):
+        """Fake-money mode is also fake-identity mode: no BVN leaves Zitch."""
+        with patch("utility.providers.requests.post") as post:
+            result = P.verify_bvn("12345678901", name="Ada Eze")
+        self.assertTrue(result["success"])
+        self.assertTrue(result.get("mock"))
+        post.assert_not_called()
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_different_person_is_refused_without_naming_them(self):
