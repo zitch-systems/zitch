@@ -82,8 +82,10 @@ class IdentityOtpTests(TestCase):
              patch("whatsapp.router.sms_live", return_value=True), \
              patch("whatsapp.router.send_sms", return_value={"success": True}):
             self._submit(pa, "22222222222")
+        from whatsapp.flows import CODE_RETRY
+
         for _ in range(2):
-            self.assertEqual(self._submit(pa, "000000")["screen"], IDENTITY_CHAIN)
+            self.assertEqual(self._submit(pa, "000000")["screen"], CODE_RETRY)
         third = self._submit(pa, "000000")
         self.assertEqual(third["screen"], SUCCESS_SCREEN)
         self.user.refresh_from_db()

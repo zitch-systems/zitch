@@ -41,8 +41,9 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_EMAIL_CODE_STATE, FLOW_FORM_STATE,
-                    FLOW_ID_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
+from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STATE,
+                    FLOW_FORM_STATE, IDENTITY_CHAIN,
+                    FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
                     FLOW_SIGNUP_STATE, IDENTITY_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
                     PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
@@ -531,14 +532,14 @@ def _send_email_flow(pa: PendingAction, step: str) -> bool:
         return False
     pa.payload["id_kind"] = "email"
     pa.payload["id_step"] = step
-    pa.payload["flow_screen"] = EMAIL_SCREEN if step == "address" else IDENTITY_SCREEN
+    pa.payload["flow_screen"] = EMAIL_SCREEN if step == "address" else CODE_SCREEN
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
     if step == "address":
         screen, data = EMAIL_SCREEN, {"summary": "What's your email address?",
                                       "label": "Email address", "error": ""}
         body = "Enter your email privately — it never appears in this chat."
     else:
-        screen, data = IDENTITY_SCREEN, {
+        screen, data = CODE_SCREEN, {
             "summary": f"Enter the 6-digit code we sent to {pa.user.email}",
             "label": "Email code", "error": ""}
         body = "Enter the code privately — it never appears in this chat."
@@ -1266,6 +1267,13 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     if ob.step == FLOW_PHONE_STATE:
         return reply(msisdn, "📱 Please enter your phone number on the *secure screen* above — "
                              "or reply \"cancel\" to start over.")
+    if ob.step == FLOW_PHONE_CODE_STATE:
+        if re.fullmatch(r"\d{4,8}", val):
+            return reply(msisdn, "📲 Please enter the code on the *secure screen* above — not in "
+                                 "the chat. Delete the message you just sent (press and hold → "
+                                 "Delete → *Delete for everyone*), then tap the secure screen.")
+        return reply(msisdn, "📲 Tap the *secure screen* above to enter the SMS code, "
+                             "or reply \"cancel\".")
     if ob.step == FLOW_PIN_STATE:
         # The PIN belongs in the secure screen, never here. If they typed one
         # anyway it is already masked in our log — but it is still sitting in
@@ -1338,7 +1346,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         # Typing the number you are chatting from proves possession — the chat
         # session IS the phone. A different number is stored unverified and
         # gets the SMS round-trip in the ladder.
-        phone_verified=(local == wa_local),
+        phone_verified=(local == wa_local) or bool(ob.payload.get("phone_verified_flow")),
     )
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
     if pin:
@@ -1406,6 +1414,52 @@ def send_onboarding_email_code(ob: WaOnboarding) -> bool:
                        "email_code_exp": (timezone.now() + timedelta(minutes=15)).isoformat(),
                        "email_code_attempts": 0})
     return True
+
+
+def send_onboarding_phone_code(ob: WaOnboarding) -> bool:
+    """Mint, arm and SMS the phone confirmation code — for a typed number that
+    is NOT the one they are chatting from (that one is proven by the session).
+    False when this deploy cannot deliver an SMS, so the ladder skips rather
+    than dead-ends; the KYC ladder re-verifies later."""
+    typed = ob.payload.get("phone", "")
+    test_code = (settings.TEST_OTP_CODE
+                 if getattr(settings, "TEST_OTP_PHONE", "") == typed else "")
+    if not sms_live() and not test_code:
+        return False
+    code = test_code or f"{secrets.randbelow(10**6):06d}"
+    if not test_code:
+        sent = send_sms(typed, f"Zitch: {code} is your phone confirmation code. "
+                               "It expires in 15 minutes. Never share it.")
+        if not sent.get("success"):
+            return False
+    ob.payload.update({"phone_code_hash": make_password(code),
+                       "phone_code_exp": (timezone.now() + timedelta(minutes=15)).isoformat(),
+                       "phone_code_attempts": 0})
+    return True
+
+
+def check_onboarding_phone_code(ob: WaOnboarding, code: str):
+    """("ok", "") verified · ("retry", why) · ("unverified", note) move on."""
+    digits = "".join(ch for ch in str(code) if ch.isdigit())
+    if len(digits) != 6:
+        return "retry", "The code is exactly 6 digits — check the SMS and try again."
+    exp = ob.payload.get("phone_code_exp", "")
+    if not ob.payload.get("phone_code_hash") or (
+            exp and timezone.now() > timezone.datetime.fromisoformat(exp)):
+        return "unverified", "That code expired — we'll verify your number later (reply 8)."
+    if not check_password(digits, ob.payload["phone_code_hash"]):
+        attempts = int(ob.payload.get("phone_code_attempts") or 0) + 1
+        ob.payload["phone_code_attempts"] = attempts
+        ob.save(update_fields=["payload"])
+        if attempts >= 3:
+            return "unverified", ("That's 3 incorrect codes — we'll verify your number "
+                                  "later (reply 8).")
+        return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
+    ob.payload["phone_verified_flow"] = True
+    for key in ("phone_code_hash", "phone_code_exp", "phone_code_attempts"):
+        ob.payload.pop(key, None)
+    ob.save(update_fields=["payload"])
+    return "ok", ""
 
 
 def check_onboarding_email_code(ob: WaOnboarding, code: str):
@@ -1819,8 +1873,12 @@ def kyc_flow_email_address(pa: PendingAction, email: str) -> tuple[str, str]:
         _clear_actions(pa.msisdn)
         reply(pa.msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
         return "stop", "We couldn't send that email — see the chat."
-    # Same open Flow, second half: arm the code step so the next submit lands here.
+    # Same open Flow, second half: arm the code step so the next submit lands
+    # here, and record that the code page arrives IN-SESSION (IDENTITY_CHAIN) —
+    # the render must not fall back to the CODE_SCREEN root, which the routing
+    # model does not permit as a navigation from EMAIL_SCREEN.
     pa.payload["id_step"] = "code"
+    pa.payload["flow_screen"] = IDENTITY_CHAIN
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
     reply(pa.msisdn, f"📧 We sent a 6-digit code to *{email}*. Enter it on the secure form.")
     return "ok", ""
@@ -2183,7 +2241,8 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
           "1️⃣  BVN\n2️⃣  NIN\n\nReply *1* or *2* (or \"cancel\" to do this later).")
 
 
-def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str) -> None:
+def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
+                             in_flow: bool = False) -> str | None:
     """Open the NUBAN with the ID just supplied — from the Flow or, if Flows are
     not configured, from the chat. One implementation so the two entry points
     cannot drift on recovery or on what a failure does to the pending action.
@@ -2215,6 +2274,16 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str) 
     # The code completes account creation and is what name-matches the ID, so it
     # belongs on the secure screen too. Collecting the BVN privately and then
     # asking for the code that unlocks it in clear would be half a fix.
+    if in_flow:
+        # The BVN arrived through an open flow session: the code page is the
+        # NEXT PAGE of that session, not a second flow message. Arm the state;
+        # the caller renders the screen as the data_exchange response.
+        pa.payload["id_kind"] = ACCOUNT_OTP
+        pa.payload["flow_screen"] = IDENTITY_CHAIN
+        _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+        reply(msisdn, "📲 We sent a code to your phone by SMS — enter it on the next page "
+                      "of the secure form. (Reply *resend* if it doesn't arrive.)")
+        return "otp"
     if _send_account_otp_flow(pa):
         return reply(msisdn, "📲 We sent a code to your phone by SMS. Enter it on the secure form "
                              "above to finish. (Reply *resend* if it doesn't arrive.)")
@@ -2229,11 +2298,12 @@ def _send_account_otp_flow(pa: PendingAction) -> bool:
     if not flows_live():
         return False
     pa.payload["id_kind"] = ACCOUNT_OTP
+    pa.payload["flow_screen"] = CODE_SCREEN   # 6-digit root; IDENTITY_SCREEN is 11/11 now
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
     res = send_flow(
         pa.msisdn, sign_identity_token(pa),
         header="Finish your account", body="Enter the code privately — it never appears in this chat.",
-        screen=IDENTITY_SCREEN,
+        screen=CODE_SCREEN,
         screen_data={"summary": "Enter the code we sent to your phone",
                      "label": "SMS code", "error": ""},
         cta="Enter securely",

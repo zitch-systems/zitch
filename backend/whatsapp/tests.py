@@ -1981,7 +1981,7 @@ class ChatAccountSetupTests(TestCase):
     @patch("whatsapp.router.wallet_views._start_wema_attempt")
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
     def test_a_wrong_bank_code_stays_on_the_screen(self, _enabled, start, complete):
-        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+        from .flows import CODE_RETRY, handle_flow_request, sign_identity_token
 
         start.return_value = ({"success": True, "tracking_id": "trk-10"}, None)
         complete.return_value = ({"success": False, "message": "Invalid OTP"}, 422)
@@ -1994,7 +1994,7 @@ class ChatAccountSetupTests(TestCase):
                                  "data": {"number": "12345678901"}})
         resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_identity_token(pa),
                                     "data": {"number": "000000"}})
-        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertEqual(resp["screen"], CODE_RETRY)       # empty box, error stated
         self.assertIn("Invalid OTP", resp["data"]["error"])
         self.assertTrue(PendingAction.objects.filter(id=pa.id).exists())   # still open
 
@@ -2015,8 +2015,15 @@ class ChatAccountSetupTests(TestCase):
         self.assertEqual(start.call_args[0][1:], ("", "12345678901"))   # routed as NIN
         self.assertNotIn("12345678901", str(resp))
         self.assertFalse(WaMessageLog.objects.filter(msisdn=m, text__contains="12345678901").exists())
+        # The bank's OTP is now the NEXT PAGE of the same session, not a second
+        # flow message: the response IS the code screen, and the action is armed
+        # in the flow-identity state rather than the chat "otp" state.
+        from .flows import FLOW_ID_STATE, IDENTITY_CHAIN
+
+        self.assertEqual(resp["screen"], IDENTITY_CHAIN)
         pa.refresh_from_db()
-        self.assertEqual(pa.state, "otp")
+        self.assertEqual(pa.state, FLOW_ID_STATE)
+        self.assertEqual(pa.payload["id_kind"], "account_otp")
         # The message log never holds the NIN in clear (masked identity state).
         self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
 

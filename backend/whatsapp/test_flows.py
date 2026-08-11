@@ -513,13 +513,13 @@ class EmailFlowTests(TestCase):
         self.assertEqual(resp["data"]["label"], "Email address")
 
     def test_init_opens_the_masked_code_screen_once_the_address_is_known(self):
-        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+        from .flows import CODE_SCREEN, handle_flow_request, sign_identity_token
 
         self.user.email = "ada@example.com"
         self.user.save(update_fields=["email"])
         pa = self._action("code")
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
-        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertEqual(resp["screen"], CODE_SCREEN)     # the 6-digit root
         self.assertEqual(resp["data"]["label"], "Email code")
         self.assertIn("ada@example.com", resp["data"]["summary"])
 
@@ -546,11 +546,11 @@ class EmailFlowTests(TestCase):
     @patch("whatsapp.router.send_email", return_value={"success": True})
     @patch("whatsapp.router.email_live", return_value=True)
     def test_a_good_address_mails_a_code_and_moves_to_the_masked_screen(self, _live, mail):
-        from .flows import IDENTITY_SCREEN
+        from .flows import IDENTITY_CHAIN
 
         pa = self._action()
         resp = self._submit(pa, "Ada@Example.com")
-        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertEqual(resp["screen"], IDENTITY_CHAIN)   # next page, same session
         self.user.refresh_from_db()
         self.assertEqual(self.user.email, "ada@example.com")
         self.assertFalse(self.user.email_verified)          # the code still has to come back
@@ -576,14 +576,16 @@ class EmailFlowTests(TestCase):
     @patch("whatsapp.router.send_email", return_value={"success": True})
     @patch("whatsapp.router.email_live", return_value=True)
     def test_a_wrong_code_reprompts_and_the_third_one_ends_the_attempt(self, _live, _mail):
-        from .flows import IDENTITY_SCREEN, SUCCESS_SCREEN
+        # CODE_RETRY, not a same-screen re-render: the masked box must never
+        # come back holding the code that just failed.
+        from .flows import CODE_RETRY, SUCCESS_SCREEN
 
         pa = self._action()
         self._submit(pa, "ada@example.com")
         for _ in range(2):
             pa.refresh_from_db()
             resp = self._submit(pa, "000000")
-            self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+            self.assertEqual(resp["screen"], CODE_RETRY)
             self.assertTrue(resp["data"]["error"])
         pa.refresh_from_db()
         resp = self._submit(pa, "000000")
@@ -1198,3 +1200,82 @@ class TransferFormChatGuardTests(TestCase):
         self.assertIn("balance", out.lower())          # and the command still ran
         self.assertFalse(PendingAction.objects.filter(
             id=self.pa.id, state="flow_transfer_form").exists())
+
+
+class SignupPhoneCodeTests(TestCase):
+    """The SMS check for the typed phone — mirroring the email code page.
+
+    Only for a number OTHER than the one they are chatting from: the chat
+    session already proves possession of its own number, so that case skips
+    the code entirely rather than paying for an SMS that proves nothing new.
+    """
+
+    def _ob(self):
+        from datetime import timedelta as td
+
+        from .flows import FLOW_PHONE_STATE
+        from .models import WaOnboarding
+
+        return WaOnboarding.objects.create(
+            msisdn="2348099990001", step=FLOW_PHONE_STATE,
+            payload={"first_name": "Ngozi", "last_name": "Ade", "email": "np@example.com"},
+            expires_at=timezone.now() + td(minutes=15))
+
+    def _submit(self, ob, **data):
+        from .flows import handle_flow_request, sign_onboarding_token
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_onboarding_token(ob), "data": data})
+
+    def test_the_chat_number_skips_the_code_page(self):
+        from .flows import PIN_CHAIN
+
+        ob = self._ob()
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms") as sms:
+            resp = self._submit(ob, phone="08099990001")   # the number they chat from
+        self.assertEqual(resp["screen"], PIN_CHAIN)
+        sms.assert_not_called()                            # possession already proven
+
+    def test_a_different_number_gets_the_code_page_and_verifies(self):
+        from .flows import PIN_CHAIN, SIGNUP_PHONE_CODE
+
+        ob = self._ob()
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            resp = self._submit(ob, phone="08077770009")
+            self.assertEqual(resp["screen"], SIGNUP_PHONE_CODE)
+            self.assertIn("•••••0009", resp["data"]["summary"])
+            self.assertEqual(sms.call_args[0][0], "08077770009")   # the TYPED number
+            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        wrong = self._submit(ob, phone_code="000000")
+        self.assertEqual(wrong["screen"], SIGNUP_PHONE_CODE)
+        self.assertIn("⚠️", wrong["data"]["error"])
+        ok = self._submit(ob, phone_code=code)
+        self.assertEqual(ok["screen"], PIN_CHAIN)
+        ob.refresh_from_db()
+        self.assertTrue(ob.payload["phone_verified_flow"])
+
+    def test_no_sms_rail_moves_on_unverified_rather_than_dead_ending(self):
+        from .flows import PIN_CHAIN
+
+        ob = self._ob()
+        resp = self._submit(ob, phone="08077770010")       # sms_live False in tests
+        self.assertEqual(resp["screen"], PIN_CHAIN)
+        ob.refresh_from_db()
+        self.assertFalse(ob.payload.get("phone_verified_flow"))
+
+    def test_a_flow_verified_number_lands_verified_on_the_account(self):
+        from .flows import SUCCESS_SCREEN
+
+        ob = self._ob()
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            self._submit(ob, phone="08077770011")
+            code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        self._submit(ob, phone_code=code)
+        self._submit(ob, pin="246810")
+        done = self._submit(ob, pin="246810")
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        u = User.objects.get(phone="08077770011")
+        self.assertTrue(u.phone_verified)                  # proven by the code, not the chat

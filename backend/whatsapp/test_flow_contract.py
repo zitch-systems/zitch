@@ -32,7 +32,12 @@ SERVER_TRANSITIONS = [
     ("TRANSFER_FORM", "TRANSFER_FORM"), ("TRANSFER_FORM", "PIN_CHAIN"), ("TRANSFER_FORM", "SUCCESS"),
     ("IDENTITY_SCREEN", "IDENTITY_RETRY"), ("IDENTITY_SCREEN", "IDENTITY_CHAIN"), ("IDENTITY_SCREEN", "SUCCESS"),
     ("IDENTITY_RETRY", "IDENTITY_RETRY"), ("IDENTITY_RETRY", "IDENTITY_CHAIN"), ("IDENTITY_RETRY", "SUCCESS"),
-    ("IDENTITY_CHAIN", "IDENTITY_CHAIN"), ("IDENTITY_CHAIN", "SUCCESS"),
+    ("IDENTITY_CHAIN", "CODE_RETRY"), ("IDENTITY_CHAIN", "SUCCESS"),
+    ("CODE_SCREEN", "CODE_RETRY"), ("CODE_SCREEN", "SUCCESS"),
+    ("CODE_RETRY", "CODE_RETRY"), ("CODE_RETRY", "SUCCESS"),
+    ("SIGNUP_PHONE", "SIGNUP_PHONE_CODE"),
+    ("SIGNUP_PHONE_CODE", "SIGNUP_PHONE_CODE"), ("SIGNUP_PHONE_CODE", "PIN_CHAIN"),
+    ("SIGNUP_PHONE_CODE", "SUCCESS"),
     ("PIN_SCREEN", "PIN_RETRY"), ("PIN_SCREEN", "PIN_CONFIRM"), ("PIN_SCREEN", "SUCCESS"),
     ("PIN_CHAIN", "PIN_RETRY"), ("PIN_CHAIN", "PIN_CONFIRM"), ("PIN_CHAIN", "SUCCESS"),
     ("PIN_RETRY", "PIN_RETRY"), ("PIN_RETRY", "SUCCESS"),
@@ -105,13 +110,38 @@ class FlowFileContractTests(SimpleTestCase):
                     yield from secret_inputs(v)
 
         found = [inp for s in FLOW["screens"] for inp in secret_inputs(s["layout"])]
-        self.assertEqual(len(found), 9)
+        self.assertEqual(len(found), 11)
         for inp in found:
             # The email ADDRESS rides the same field name but is not digits —
             # it keeps the email keyboard. Everything else is a passcode pad.
             expected = "email" if inp.get("input-type") == "email" else "passcode"
             self.assertEqual(inp.get("input-type"), expected)
-        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 8)
+        self.assertEqual(sum(1 for i in found if i.get("input-type") == "passcode"), 10)
+
+    def test_identity_fields_are_eleven_and_code_fields_six(self):
+        """An incomplete BVN is refused AT THE FIELD (red outline), and a code
+        field cannot accept eleven digits — which is why codes have their own
+        screens instead of riding IDENTITY_SCREEN."""
+        def number_input(sid):
+            def walk(node):
+                if isinstance(node, dict):
+                    if node.get("type") == "TextInput" and node.get("name") == "number":
+                        return node
+                    for v in node.values():
+                        r = walk(v)
+                        if r: return r
+                elif isinstance(node, list):
+                    for v in node:
+                        r = walk(v)
+                        if r: return r
+            return walk(BY_ID[sid]["layout"])
+
+        for sid in ("IDENTITY_SCREEN", "IDENTITY_RETRY"):
+            inp = number_input(sid)
+            self.assertEqual((inp["min-chars"], inp["max-chars"]), (11, 11), sid)
+        for sid in ("IDENTITY_CHAIN", "CODE_SCREEN", "CODE_RETRY"):
+            inp = number_input(sid)
+            self.assertEqual((inp["min-chars"], inp["max-chars"]), (6, 6), sid)
 
     def test_signup_name_fields_refuse_a_single_letter_client_side(self):
         """The server requires >= 2 characters (the name must match the BVN
