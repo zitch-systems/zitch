@@ -1884,9 +1884,13 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
     if not pa.payload.get("id_otp_hash") or not expires or timezone.now() > timezone.datetime.fromisoformat(expires):
         _clear_actions(pa.msisdn)
         return "stop", "That code expired. Reply 8 in the chat to try again."
+    digits = "".join(ch for ch in str(code) if ch.isdigit())
+    if len(digits) != 6:
+        # A five-digit entry is a typo, not a guess — it must not spend one of
+        # the three attempts the real challenge gets.
+        return "retry", "The code is exactly 6 digits — check the SMS and try again."
     attempts = int(pa.payload.get("id_otp_attempts") or 0) + 1
-    if not check_password("".join(ch for ch in str(code) if ch.isdigit()),
-                          pa.payload["id_otp_hash"]):
+    if not check_password(digits, pa.payload["id_otp_hash"]):
         if attempts >= 3:
             # Three wrong codes is not a typo. Queue it rather than letting the
             # challenge be ground down.

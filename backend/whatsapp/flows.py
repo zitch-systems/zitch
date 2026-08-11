@@ -50,6 +50,13 @@ IDENTITY_RETRY = "IDENTITY_RETRY"
 #: resubmitted it — spending another of the five attempts on digits already
 #: known to be wrong, and walking the customer into a lockout they did not type.
 PIN_RETRY = "PIN_RETRY"
+#: And on the creation pair: a MISMATCHED confirm entry re-rendered onto
+#: PIN_CONFIRM kept the mismatched digits in its masked box, so one tap
+#: resubmitted the same mismatch forever — in a field the customer cannot even
+#: read to correct. The error render goes here instead; the clean first render
+#: stays on PIN_CONFIRM. Always legal: PIN_CONFIRM routes here, and an error on
+#: this screen re-renders it (same id).
+PIN_CONFIRM_RETRY = "PIN_CONFIRM_RETRY"
 TRANSFER_FORM = "TRANSFER_FORM"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
@@ -350,8 +357,13 @@ def handle_flow_request(payload: dict) -> dict:
 def _confirm_pin_screen(error: str = "") -> dict:
     """Routing is forward-only, so a mismatch cannot send the customer back to
     PIN_SCREEN — the held first entry stays authoritative and the error says how
-    to start over instead (cancel in the chat)."""
-    return {"screen": PIN_CONFIRM,
+    to start over instead (cancel in the chat).
+
+    An ERROR render always answers with the retry twin: from PIN_CONFIRM that is
+    a routed navigation, from the twin itself a same-screen re-render — legal
+    from both, so no state tracking — and either way the masked box arrives
+    EMPTY instead of holding the digits that just failed."""
+    return {"screen": PIN_CONFIRM_RETRY if error else PIN_CONFIRM,
             "data": {"amount": "Re-enter your PIN",
                      "recipient": "Type the same 6 digits again to confirm",
                      "details": "",
@@ -445,8 +457,12 @@ def _submit_identity(pa, data: dict) -> dict:
     kind = pa.payload.get("id_kind", "bvn")
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
     if not re.fullmatch(r"\d{11}", number):
+        # The retry twin, so the masked box comes back empty — same reasoning as
+        # a rejected number, minus the attempt: a typo is not a verdict.
+        pa.payload["flow_screen"] = IDENTITY_RETRY
+        pa.save(update_fields=["payload"])
         return _identity_screen(kind, error="That should be exactly 11 digits.",
-                                screen=_flow_screen(pa, IDENTITY_SCREEN))
+                                screen=IDENTITY_RETRY)
 
     try:
         # Both entry points collect the same number on the same screen; what
