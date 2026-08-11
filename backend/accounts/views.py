@@ -29,41 +29,9 @@ from wallet.services import get_or_create_wallet, wema_account_reference
 
 from .models import OTP, AccessToken, User, hash_identifier
 
-# Brand mark hosted on the marketing site (Cloudflare), so email clients can load it.
-_LOGO_URL = "https://zitch.ng/assets/brand/zitch-icon.png"
-
-
-def _branded_email(title: str, intro: str, *, code: str = "", note: str = "") -> str:
-    """An email-client-safe branded HTML body: the Zitch logo + wordmark on the brand
-    header, a heading, an intro line, an OPTIONAL prominent one-time-code box, an
-    optional fine-print note, and a brand footer. Inline styles only (no
-    <style>/external CSS) so it renders consistently in Gmail/Outlook/Apple Mail.
-
-    `code` is optional — omit it for message-only emails (e.g. a sign-in reminder);
-    the code box only renders when a code is supplied."""
-    code_box = (
-        '<div style="font-size:32px;font-weight:bold;letter-spacing:10px;color:#0FA295;'
-        f'background:#EAF3F1;border-radius:12px;padding:18px 10px;margin:0 0 22px;">{code}</div>'
-    ) if code else ""
-    note_p = (
-        f'<p style="font-size:12.5px;color:#737B83;line-height:1.55;margin:0;">{note}</p>'
-    ) if note else ""
-    return (
-        '<div style="background:#EFF7F5;padding:32px 16px;font-family:Arial,Helvetica,sans-serif;">'
-        '<div style="max-width:460px;margin:0 auto;background:#ffffff;border-radius:18px;overflow:hidden;border:1px solid #E2EEEB;">'
-        '<div style="background:#0C3A39;padding:24px 0;text-align:center;">'
-        f'<img src="{_LOGO_URL}" width="54" height="54" alt="Zitch" style="border-radius:14px;display:inline-block;vertical-align:middle;" />'
-        '<span style="color:#ffffff;font-size:22px;font-weight:bold;letter-spacing:0.5px;vertical-align:middle;margin-left:10px;">Zitch</span>'
-        '</div>'
-        '<div style="padding:32px 28px;text-align:center;">'
-        f'<h1 style="font-size:20px;color:#0A0A0B;margin:0 0 8px;">{title}</h1>'
-        f'<p style="font-size:14px;color:#737B83;line-height:1.55;margin:0 0 22px;">{intro}</p>'
-        f'{code_box}{note_p}'
-        '</div>'
-        '<div style="background:#F4F9F8;border-top:1px solid #E2EEEB;padding:16px;text-align:center;font-size:11px;color:#9AAEB0;">'
-        'Zitch Technologies Limited'
-        '</div></div></div>'
-    )
+# The shared design system in common.emails is the only place email HTML lives.
+# This alias keeps the name that accounts, whatsapp and admin already import.
+from common.emails import branded_message as _branded_email  # noqa: E402
 
 
 def _otp_on_cooldown(phone: str) -> bool:

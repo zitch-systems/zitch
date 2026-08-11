@@ -485,6 +485,17 @@ ZITCH_LINKS = {
     "SUPPORT_WA": os.environ.get("ZITCH_SUPPORT_WHATSAPP", ""),
     "SUPPORT_EMAIL": os.environ.get("ZITCH_SUPPORT_EMAIL", "support@zitch.ng"),
 }
+# Social profiles for the email footer. Env-driven and omitted when blank —
+# the same never-print-a-dead-link rule the WhatsApp menu follows. Deliberately
+# NOT defaulted to guessed handles: a handle we don't actually own is exactly
+# what a squatter turns into a phishing surface.
+SOCIAL_LINKS = {name: url for name, url in {
+    "X": os.environ.get("ZITCH_SOCIAL_X", "").strip(),
+    "Instagram": os.environ.get("ZITCH_SOCIAL_INSTAGRAM", "").strip(),
+    "Facebook": os.environ.get("ZITCH_SOCIAL_FACEBOOK", "").strip(),
+    "TikTok": os.environ.get("ZITCH_SOCIAL_TIKTOK", "").strip(),
+    "LinkedIn": os.environ.get("ZITCH_SOCIAL_LINKEDIN", "").strip(),
+}.items() if url}
 
 # WhatsApp Flows — the secure PIN pad. When a published Flow ID + our RSA private
 # key are set (and the WhatsApp channel is live), a money confirm sends an
