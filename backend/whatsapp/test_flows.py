@@ -1159,3 +1159,42 @@ class TransferFormFlowTests(TestCase):
         done = self._submit(pa, pin="1234")
         self.assertEqual(done["screen"], SUCCESS_SCREEN)
         self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("2300"))
+
+
+class TransferFormChatGuardTests(TestCase):
+    """Chat text while the transfer form is armed. This guard previously sat in
+    _confirm_prompt(pa) — a string builder with no text/msisdn in scope — where
+    it was dead code one routing change away from a NameError. These pin it to
+    the dispatcher where the text actually arrives."""
+
+    def setUp(self):
+        self.user = _make_user()
+        from .flows import FLOW_FORM_STATE
+
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_FORM_STATE,
+            payload={"pin_attempts": 0}, expires_at=timezone.now() + timedelta(minutes=5))
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        sent = []
+        with patch("whatsapp.router.reply", side_effect=lambda m, t, **k: sent.append(t)), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            handle_inbound(MSISDN, text)
+        return "\n".join(sent)
+
+    def test_digits_are_pointed_back_at_the_form_without_crashing(self):
+        # Digit-only text is far more likely a stray amount/code than a new
+        # instruction, so it stays on the form. This is the line that would
+        # have raised NameError from the old location.
+        out = self._say("2500")
+        self.assertIn("Send money", out)
+        self.assertTrue(PendingAction.objects.filter(id=self.pa.id).exists())
+
+    def test_a_new_command_escapes_the_form(self):
+        out = self._say("balance")
+        self.assertIn("leaving that transfer", out)
+        self.assertIn("balance", out.lower())          # and the command still ran
+        self.assertFalse(PendingAction.objects.filter(
+            id=self.pa.id, state="flow_transfer_form").exists())
