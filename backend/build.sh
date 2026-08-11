@@ -7,6 +7,26 @@ python manage.py collectstatic --no-input
 python manage.py migrate
 python manage.py seed_plans
 
+# One-time pre-launch customer/test-data reset. The command independently checks
+# the exact confirmation, the nonce, and both production simulation switches.
+# Its hashed receipt makes a nonce single-use; remove these env vars immediately
+# after the reset deploy (and remove this temporary hook after verification).
+if [ -n "${CUSTOMER_RESET_NONCE:-}" ]; then
+  if [ "${CUSTOMER_RESET_CONFIRMATION:-}" != "CONFIRM CUSTOMER RESET" ]; then
+    echo "==> ERROR: CUSTOMER_RESET_CONFIRMATION must exactly match the approved phrase."
+    exit 1
+  fi
+  echo "==> Customer reset requested: reporting scope before execution."
+  python manage.py reset_customer_data \
+    --confirm "$CUSTOMER_RESET_CONFIRMATION" \
+    --nonce "$CUSTOMER_RESET_NONCE" \
+    --dry-run
+  echo "==> Executing the confirmed one-time customer reset."
+  python manage.py reset_customer_data \
+    --confirm "$CUSTOMER_RESET_CONFIRMATION" \
+    --nonce "$CUSTOMER_RESET_NONCE"
+fi
+
 # Auto-provision a super_admin operator from env vars (Render free tier has no
 # shell, so this is the only way to bootstrap admin access without one). Skipped
 # when DJANGO_SUPERUSER_PASSWORD is unset, and idempotent: seed_ops upserts the
