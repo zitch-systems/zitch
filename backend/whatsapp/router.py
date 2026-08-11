@@ -812,12 +812,55 @@ def _handle_simulation_command(user, msisdn: str, low: str) -> None:
             )
 
         if low in _SIMULATION_KYC_COMMANDS:
-            from accounts.views import apply_simulated_kyc
+            # This is the realistic walkthrough: contact ownership is proved by
+            # genuinely delivered Termii/Resend codes, while the two government-ID
+            # lookups remain local mocks. Refuse to start if either real contact
+            # rail is absent (or a fixed test OTP would short-circuit delivery).
+            if _kyc_test_code(user):
+                return reply(
+                    msisdn,
+                    "⚠️ A fixed test OTP is still enabled for this account. Disable it "
+                    "before testing real SMS and email delivery.",
+                )
+            missing = []
+            if not sms_live():
+                missing.append("Termii SMS")
+            if not email_live():
+                missing.append("Resend email")
+            if missing:
+                return reply(
+                    msisdn,
+                    "⚠️ Interactive verification needs real " + " and ".join(missing)
+                    + " delivery configured first.",
+                )
 
-            account_number, state = apply_simulated_kyc(user, 3)
-            suffix = f"\nFunding account: {account_number}" if account_number else ""
-            return reply(msisdn, f"🧪 Simulated KYC complete — Tier {state['tier']}."
-                          f"{suffix}\nReply *reset pin* to continue testing.")
+            with db_transaction.atomic():
+                user.phone_verified = False
+                user.email_verified = False
+                user.bvn_verified = False
+                user.nin_verified = False
+                # Erase earlier simulated identity markers. The digits entered in
+                # the coming Flow are never stored; successful mock steps receive
+                # fresh per-user simulation hashes in _kyc_submit_identity.
+                user.bvn_hash = ""
+                user.bvn_last4 = ""
+                user.nin_hash = ""
+                user.nin_last4 = ""
+                user.recompute_tier()
+                user.save(update_fields=[
+                    "phone_verified", "email_verified", "bvn_verified", "nin_verified",
+                    "bvn_hash", "bvn_last4", "nin_hash", "nin_last4", "tier",
+                ])
+
+            reply(
+                msisdn,
+                "🧪 *Interactive verification ready*\n\n"
+                "📲 Phone code: real delivery through Termii\n"
+                "📧 Email code: real delivery through Resend\n"
+                "🪪 BVN and NIN: enter test 11-digit values in the private Flow; "
+                "verification is simulated and no identity provider is contacted.",
+            )
+            return _start_kyc(user, msisdn)
 
         match = _SIMULATION_DEPOSIT_COMMAND.fullmatch(low)
         raw_amount = (match.group(1) if match else "") or "50000"
@@ -1912,10 +1955,14 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     the customer, it is stored (hashed, never raw) and queued for the operator
     KYC review that already exists in the portal.
     """
-    from accounts.models import User as UserModel
+    from accounts.models import hash_identifier
     from accounts.views import _identity_owned_by_another_user
 
-    if _identity_owned_by_another_user(user, kind, digits):
+    simulation = _chat_simulation_allowed()
+    # Real identities remain globally unique. Test digits deliberately do not:
+    # every tester may use the same documented fake values, and the stored marker
+    # is namespaced by user rather than derived from what they entered.
+    if not simulation and _identity_owned_by_another_user(user, kind, digits):
         _clear_actions(msisdn)
         return reply(msisdn, "⚠️ That number is already linked to another Zitch account. "
                              "Please contact support if this is unexpected.")
@@ -1923,6 +1970,23 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     result = checker(digits, name=user.get_full_name() or "")
     setter = user.set_bvn if kind == "bvn" else user.set_nin
     fields = ["bvn_hash", "bvn_last4"] if kind == "bvn" else ["nin_hash", "nin_last4"]
+
+    if simulation and result.get("success") and result.get("mock"):
+        hash_field, last4_field = fields
+        setattr(user, hash_field, hash_identifier(f"simulation:{kind}:{user.pk}"))
+        # Never retain even the last four digits entered in a simulation Flow.
+        # A per-user marker preserves the support/audit shape without turning a
+        # tester's accidental real BVN/NIN into stored identity data.
+        setattr(user, last4_field, f"{user.pk:04d}"[-4:])
+        setattr(user, f"{kind}_verified", True)
+        user.recompute_tier()
+        user.save(update_fields=[hash_field, last4_field, f"{kind}_verified", "tier"])
+        log.warning("wa_simulated_identity_verified user=%s kind=%s", user.pk, kind)
+        reply(
+            msisdn,
+            f"✅ {kind.upper()} verified in simulation — no live identity provider was contacted.",
+        )
+        return _kyc_next(pa, user, msisdn)
 
     if result.get("invalid"):
         # The authoritative source answered, and the answer is no: wrong number,
