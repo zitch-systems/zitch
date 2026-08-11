@@ -317,15 +317,17 @@ class ChannelTests(TestCase):
         self.assertIn("already has a Zitch account", self.last_reply())
         self.assertFalse(WaMessageLog.objects.filter(text__icontains="first name").exists())
 
-    def test_whatsapp_user_can_send_without_bvn(self):
-        # WhatsApp accounts transact immediately (capped at the unverified Tier-1
-        # limits) — no BVN gate before sending.
+    def test_whatsapp_user_cannot_send_without_bvn(self):
+        # Encoded the OLD policy ("transact immediately, no BVN gate") until the
+        # verification-before-first-transaction requirement landed. It kept
+        # passing only because the refusal lived at debit time and this walked
+        # no further than "how much" — the gate now answers at the door.
         self.user.bvn_verified = False
         self.user.save(update_fields=["bvn_verified"])
         self.link()
         self.inbound("send", "b1")
-        self.assertIn("how much", self.last_reply().lower())
-        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+        self.assertIn("verify your bvn", self.last_reply().lower())
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
 
     def test_frozen_user_is_blocked_on_whatsapp(self):
         # Freeze is the primary incident-response lever; it must cover WhatsApp
@@ -3431,3 +3433,96 @@ class HealthShowsTheChannelNowTests(TestCase):
         h = self._health()
         self.assertEqual(h["whatsapp_inbound_waiting"], 0)
         self.assertIsNone(h["whatsapp_last_processed_at"])
+
+
+class UnverifiedCannotStartMoneyFlowsTests(TestCase):
+    """The authoritative gate at debit time meant money never actually left an
+    unverified account — but it walked a Tier-0 customer through amount, account,
+    bank and the PIN screen before saying no. Same rule, now asked at the door."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.email_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "email_verified"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _say(self, text):
+        from whatsapp.router import handle_inbound
+
+        handle_inbound(MSISDN, text)
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_transfer_is_refused_at_the_first_message(self):
+        out = self._say("2")
+        self.assertIn("verify", out.lower())
+        self.assertNotIn("How much", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="transfer").exists())
+
+    def test_the_ai_fast_path_is_gated_too(self):
+        from whatsapp import router
+
+        self.assertTrue(router._begin_airtime(self.user, MSISDN, 2000, None, None))  # noqa: SLF001
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="airtime").exists())
+        self.assertIn("verify", self._say("menu").lower() if False else
+                      WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+                      .order_by("created").first().text.lower())
+
+    def test_funding_and_balance_stay_open(self):
+        """Money ARRIVING is how a customer gets to the point of verifying."""
+        self.assertNotIn("verify your", self._say("1").lower())
+
+    def test_a_verified_account_is_untouched(self):
+        self.user.bvn_verified = self.user.email_verified = True
+        self.user.save(update_fields=["bvn_verified", "email_verified"])
+        self.assertIn("How much", self._say("2"))
+
+
+class IdentityNeverFallsBackToChatInProductionTests(TestCase):
+    """Tonight's production run proved what the chat fallback costs: a BVN and a
+    NIN sitting in the thread in clear because the Flow dispatch failed. On a
+    deploy with Flows configured, identity is Flow-or-nothing."""
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.user.bvn_verified = self.user.nin_verified = False
+        self.user.save(update_fields=["bvn_verified", "nin_verified"])
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+
+    def _last(self):
+        return WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first().text
+
+    def test_a_failed_identity_send_refuses_chat_entry_when_flows_exist(self):
+        from whatsapp.router import handle_inbound
+
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": False}):
+            handle_inbound(MSISDN, "8")
+        out = self._last()
+        self.assertIn("won't ask", out)
+        self.assertNotIn("Enter your 11-digit", out)
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
+
+    def test_a_failed_email_code_send_refuses_chat_entry_when_flows_exist(self):
+        from whatsapp.router import handle_inbound
+
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": False}), \
+             patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.send_email", return_value={"success": True}):
+            handle_inbound(MSISDN, "8")
+        out = self._last()
+        self.assertIn("won't ask", out)
+
+    def test_an_unconfigured_deploy_keeps_the_chat_path(self):
+        """Dev and preview deploys have no Flows at all; refusing there would
+        block every verification everywhere."""
+        from whatsapp.router import handle_inbound
+
+        with patch("whatsapp.router.flows_live", return_value=False):
+            handle_inbound(MSISDN, "8")
+        self.assertIn("Enter your 11-digit", self._last())

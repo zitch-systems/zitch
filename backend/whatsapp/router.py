@@ -1051,7 +1051,13 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
             msisdn, sign_onboarding_token(ob),
             header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
             screen=PIN_SCREEN,
-            screen_data={"summary": "Create a 6-digit PIN to authorise payments", "error": ""},
+            # PIN_SCREEN's published schema is {amount, recipient, details, error}
+            # since the three-line confirm landed. This still sent the retired
+            # "summary" key — an undeclared property, which Meta rejects — so
+            # every signup PIN send failed the moment the new Flow was published,
+            # and signup silently fell down its fallback rungs.
+            screen_data={"amount": "Create a 6-digit PIN", "recipient": "",
+                         "details": "You'll enter it again to confirm", "error": ""},
         )
         if res.get("success"):
             return reply(msisdn, "🔐 Tap the secure screen above to set your *6-digit PIN*. "
@@ -1411,11 +1417,22 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_email_code(pa, user, msisdn)
     if _send_identity_flow(pa, step):
         return None
+    if flows_live():
+        # The secure screen EXISTS on this deploy and the dispatch failed —
+        # tonight's production run proved what the chat fallback costs here: a
+        # BVN and a NIN sitting in the thread in clear, exactly what the Flow
+        # was built to prevent. When the deploy has Flows, identity is
+        # Flow-or-nothing; the send failure is in the logs
+        # (wa_identity_flow_send_failed and the provider rejection beside it).
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
+                             "your ID number here in the chat. Reply *8* to try again in a "
+                             "moment, or verify in the Zitch app.")
     which = step.upper()
     _touch(pa, state=step, payload=pa.payload)
-    # Fallback only — see _send_identity_flow. We store a hash, but the customer's
-    # own copy of what they typed stays in their history, so the one thing that
-    # can still remove it is named explicitly.
+    # Fallback only for deploys with NO Flows configured (dev/preview). We store
+    # a hash, but the customer's own copy of what they typed stays in their
+    # history, so the one thing that can still remove it is named explicitly.
     return reply(msisdn, f"Enter your 11-digit *{which}*. We store it only as a secure hash.\n\n"
                          "_Delete your message afterwards (press and hold → Delete → "
                          "Delete for everyone) — WhatsApp only lets the sender do this._")
@@ -1478,8 +1495,20 @@ def _kyc_mail_code(pa: PendingAction, user) -> bool:
     to print "We sent a 6-digit code" over mail that never left the building.
     """
     code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
+    # Same branded template the app's OTP emails use — one design, so a customer
+    # never has to judge whether a bare-text code email is really from us.
+    from accounts.views import _branded_email
+
     sent = send_email(user.email, "Confirm your email for Zitch",
-                      f"Your Zitch email confirmation code is {code}")
+                      f"Your Zitch email confirmation code is {code}",
+                      html=_branded_email(
+                          "Confirm your email",
+                          "Enter this code on the secure WhatsApp screen to confirm "
+                          "your email address.",
+                          code=code,
+                          note="This code expires in 10 minutes. If you didn't request "
+                               "it, you can ignore this email — nothing changes without "
+                               "the code."))
     if not sent.get("success"):
         return False
     pa.payload["code_hash"] = make_password(code)
@@ -1507,6 +1536,12 @@ def _kyc_send_email_code(pa: PendingAction, user, msisdn: str) -> None:
     if _send_email_flow(pa, "code"):
         return reply(msisdn, f"📧 We sent a 6-digit code to *{user.email}*. Enter it on the secure "
                              "form above. (Reply *resend* for a new one.)")
+    if flows_live():
+        # Same policy as the identity numbers: on a deploy with Flows, a failed
+        # dispatch must not demote the code to a chat message.
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
+                             "the code here in the chat. Reply *8* to try again in a moment.")
     _touch(pa, state="email", payload=pa.payload)
     reply(msisdn, f"📧 We sent a 6-digit code to *{user.email}*. Enter it here. "
                   "(Reply *resend* for a new one, or *change* to use a different address.)")
@@ -1882,6 +1917,11 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         # was the channel's widest remaining exposure.
         if _send_identity_flow(pa, kind, fallback_state="bvn"):
             return None
+        if flows_live():
+            _clear_actions(msisdn)
+            return reply(msisdn, "⚠️ The secure entry screen didn't go through, so I won't ask for "
+                                 "your ID number here in the chat. Reply *6* to try again in a "
+                                 "moment, or finish setup in the Zitch app.")
         return reply(msisdn, f"Enter your 11-digit *{kind.upper()}*. It is used only to open your "
                              "account.\n\n_Delete your message afterwards (press and hold → Delete → "
                              "Delete for everyone) — WhatsApp only lets the sender do this._")
@@ -1913,7 +1953,29 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
 # --------------------------------------------------------------------------- #
 # transfer (slot-filling state machine)
 # --------------------------------------------------------------------------- #
+def _blocked_from_spending(user, msisdn: str) -> bool:
+    """Refuse to START a money flow for an account that cannot finish one.
+
+    The authoritative gate has always been at debit time, under the wallet lock
+    — money never actually left an unverified account. But gating only there
+    walked a Tier-0 customer through amount, account, bank and the PIN screen
+    before telling them no: the refusal came at the last step instead of the
+    first, which reads as "I am able to transfer" right up until it isn't.
+    Same rule, asked at the door.
+    """
+    from common.http import unverified_error
+
+    message = unverified_error(user)
+    if not message:
+        return False
+    _clear_actions(msisdn)
+    reply(msisdn, f"🔒 {message}")
+    return True
+
+
 def _start_transfer(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
     _clear_actions(msisdn)
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="transfer", state="amount",
@@ -1922,22 +1984,24 @@ def _start_transfer(user, msisdn: str) -> None:
     reply(msisdn, "How much would you like to send? (e.g. 5000 or 5k)")
 
 
-#: Words and digits that plainly start something else. A PIN or a confirmation
-#: code is NOT here — those belong to the flow that is open, and treating a
-#: mistyped code as a new command would cancel the payment it was meant for.
-_NEW_COMMAND_WORDS = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "menu", "hi", "hello", "start", "help", "balance", "bal", "account",
-    "account details", "history", "statement", "transactions", "verify", "kyc",
-    "reset pin", "support", "airtime", "data",
-}
-
-
 def _is_new_command(text: str) -> bool:
+    """Whether this message plainly starts something else.
+
+    A keyword list was too narrow: "i want to create a new pin" is unmistakably a
+    new request and matched nothing, so the customer was answered with "tap the
+    secure screen" — the very stonewalling the escape hatch exists to prevent.
+
+    While a Flow is open the customer has nothing to type in chat: the PIN goes
+    in the Flow. So anything that is not digits is a new instruction. Digits stay
+    excluded because a mistyped confirmation code must not cancel the payment it
+    was meant for.
+    """
     low = (text or "").strip().lower()
-    if not low or low.isdigit() and len(low) > 1:
-        return False        # a bare number is far more likely a code than a menu pick
-    return low in _NEW_COMMAND_WORDS or low.startswith(("send ", "transfer ", "pay ", "buy "))
+    if not low:
+        return False
+    if any(ch.isdigit() for ch in low) and not any(ch.isalpha() for ch in low):
+        return False        # digits only — far more likely a code than a request
+    return True
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -2246,6 +2310,8 @@ def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
 def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_query: str) -> bool:
     """Validate then open a transfer at the bank step — shared by the paste path
     and the LLM. Returns False only when the bank can't be matched (caller decides)."""
+    if _blocked_from_spending(user, msisdn):
+        return True
     matches = _match_banks(bank_query)
     if not matches:
         return False
@@ -2412,6 +2478,8 @@ def _choice_id(text: str, names: dict) -> str | None:
 
 # ---- airtime ----
 def _start_airtime(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
     _new_flow(user, msisdn, "airtime", "network")
     _ask_network(msisdn)
 
@@ -2478,6 +2546,8 @@ def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
 
 # ---- data ----
 def _start_data(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
     _new_flow(user, msisdn, "data", "network")
     _ask_network(msisdn)
 
@@ -2549,6 +2619,8 @@ def _exec_data(pa: PendingAction, user, msisdn: str) -> str:
 
 # ---- electricity ----
 def _start_electricity(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
     _new_flow(user, msisdn, "electricity", "disco")
     reply(msisdn, DISCO_PROMPT)
 
@@ -2636,6 +2708,8 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
 
 # ---- cable ----
 def _start_cable(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
     _new_flow(user, msisdn, "cable", "provider")
     reply(msisdn, CABLE_PROMPT)
 
@@ -2829,6 +2903,8 @@ def _network_from_prefix(phone) -> str | None:
 def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
     """LLM airtime: if amount + network + phone are all known, jump to confirm;
     otherwise start the guided flow."""
+    if _blocked_from_spending(user, msisdn):
+        return True
     # "2k airtime for me" carries neither a number nor a network. Falling back to
     # the guided flow for that made the AI look useless on the single most common
     # sentence customers actually send — so both are inferred rather than asked
@@ -2865,6 +2941,8 @@ CONVERT_CCYS = ["NGN", "USD", "GBP", "CAD"]  # settle-able; CNY is quote-only (b
 
 
 def _start_convert(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
     _new_flow(user, msisdn, "convert", "from")
     reply(msisdn, "Convert currency.\nWhich currency are you selling? (NGN, USD, GBP, CAD)")
 
