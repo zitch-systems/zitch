@@ -316,3 +316,77 @@ def send_template(msisdn: str, template_name: str, params: list | None = None, l
                     mask_pii(msisdn), type(exc).__name__)
         return {"success": False, "uncertain": True,
                 "message": "WhatsApp delivery status unknown"}
+
+
+def published_flow_report() -> dict:
+    """What Meta's PUBLISHED Flow actually contains, versus what this code sends.
+
+    This is the one reading nothing else provides. `whatsapp_flow_ready` says a
+    Flow ID and a key are configured; it cannot say whether the Flow behind that
+    ID has the screen a send names. When it doesn't, Meta rejects the send and
+    the customer sees only "the secure entry screen didn't go through" — a
+    symptom that looks identical to a bad token, an unverified business, or an
+    expired session, and which has repeatedly cost days to tell apart.
+
+    The failure is structural, not exotic: the Flow JSON lives in this repo but
+    is *published by hand* in WhatsApp Manager, so every screen added here is
+    missing on Meta's side until someone pastes and publishes. Screens added
+    earliest (PIN_SCREEN) keep working while the newest ones (IDENTITY_SCREEN,
+    TRANSFER_FORM) fail — which reads like "some features are broken" rather
+    than "the Flow is one publish behind".
+
+    Returns {status, published_screens, missing_screens, stale, ...}; never
+    raises, because a health probe that raises is worse than no probe.
+    """
+    import json
+    from pathlib import Path
+
+    flow = getattr(settings, "WHATSAPP_FLOW", {}) or {}
+    flow_id = flow.get("FLOW_ID")
+    if not (wa_live() and flow_id):
+        return {"status": "unconfigured"}
+
+    asset = Path(__file__).resolve().parent / "flow_assets" / "pin_flow.json"
+    try:
+        expected = [s["id"] for s in json.loads(asset.read_text())["screens"]]
+    except Exception:  # noqa: BLE001
+        expected = []
+
+    base = _cfg().get("BASE_URL", "https://graph.facebook.com/v21.0")
+    headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}"}
+    try:
+        meta = requests.get(f"{base}/{flow_id}",
+                            params={"fields": "id,name,status,validation_errors"},
+                            headers=headers, timeout=15)
+        info = meta.json() if meta.content else {}
+        if meta.status_code >= 400:
+            err = (info.get("error") or {})
+            return {"status": "error", "expected_screens": expected,
+                    "detail": str(err.get("message") or meta.status_code)[:300]}
+
+        # The published screens live in the FLOW_JSON asset, not on the node.
+        assets = requests.get(f"{base}/{flow_id}/assets", headers=headers, timeout=15)
+        published = []
+        for item in (assets.json().get("data") or []) if assets.content else []:
+            if item.get("asset_type") != "FLOW_JSON" or not item.get("download_url"):
+                continue
+            body = requests.get(item["download_url"], timeout=15)
+            published = [s["id"] for s in (body.json().get("screens") or [])]
+            break
+    except Exception as exc:  # noqa: BLE001 — never raise from a probe
+        return {"status": "unreachable", "expected_screens": expected,
+                "detail": type(exc).__name__}
+
+    missing = [s for s in expected if s not in published]
+    return {
+        "status": str(info.get("status") or "unknown").lower(),   # published | draft | ...
+        "name": info.get("name"),
+        "published_screens": published,
+        "expected_screens": expected,
+        # The actionable line: these screens exist in the code and NOT on Meta,
+        # so every send naming one of them is rejected until a re-publish.
+        "missing_screens": missing,
+        "stale": bool(missing),
+        "validation_errors": [e.get("error_type") or e.get("message")
+                              for e in (info.get("validation_errors") or [])][:5],
+    }
