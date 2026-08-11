@@ -20,6 +20,13 @@ from django.conf import settings
 log = logging.getLogger("whatsapp")
 
 PIN_SCREEN = "PIN_SCREEN"
+#: The set-then-confirm second entry. Its OWN screen rather than a re-render of
+#: PIN_SCREEN: WhatsApp keeps a form's client-side state when the endpoint
+#: responds with the same screen, so "re-enter to confirm" re-rendered onto the
+#: first screen arrived with the first PIN still sitting in the box — one tap
+#: "confirmed" it without a single digit retyped, which is no confirmation at
+#: all. A separate screen starts empty because it is a separate form.
+PIN_CONFIRM = "PIN_CONFIRM"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
@@ -243,7 +250,8 @@ def handle_flow_request(payload: dict) -> dict:
             return _success_screen("This signup expired. Send us a message to start again.")
         if action == "data_exchange":
             return _submit_onboarding_pin(ob, data)
-        return _pin_screen(_ob_summary(ob))
+        return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
+                else _pin_screen(_ob_summary(ob)))
 
     # A KYC identity step. Same reasoning as the PIN: a BVN or NIN typed into the
     # chat stays in the customer's own history forever — WhatsApp has no
@@ -280,6 +288,17 @@ def handle_flow_request(payload: dict) -> dict:
     return _pin_screen(_pa_screen_fields(pa)) if pa else _success_screen("Session ended.")
 
 
+def _confirm_pin_screen(error: str = "") -> dict:
+    """Routing is forward-only, so a mismatch cannot send the customer back to
+    PIN_SCREEN — the held first entry stays authoritative and the error says how
+    to start over instead (cancel in the chat)."""
+    return {"screen": PIN_CONFIRM,
+            "data": {"amount": "Re-enter your PIN",
+                     "recipient": "Type the same 6 digits again to confirm",
+                     "details": "",
+                     "error": error or ""}}
+
+
 def _ob_summary(ob) -> str:
     return ("Re-enter your new PIN to confirm" if ob.payload.get("flow_pin_hash")
             else "Create a 6-digit PIN to authorise payments")
@@ -303,12 +322,12 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
     if not held:
         ob.payload["flow_pin_hash"] = make_password(pin)   # never the raw PIN
         ob.save(update_fields=["payload"])
-        return _pin_screen(_ob_summary(ob))
+        return _confirm_pin_screen()
 
     if not check_password(pin, held):
-        ob.payload["flow_pin_hash"] = ""                   # start the pair over
-        ob.save(update_fields=["payload"])
-        return _pin_screen(_ob_summary(ob), error="Those didn't match — set your PIN again.")
+        return _confirm_pin_screen(error="Those didn't match — enter the same PIN you "
+                                         "chose on the first screen, or reply \"cancel\" "
+                                         "in the chat to start over.")
 
     try:
         message = finish_onboarding_from_flow(ob, pin)
@@ -453,11 +472,12 @@ def _submit_pin(token: str, data: dict) -> dict:
 
 
 def _set_pin_screen(pa, error: str = "") -> dict:
-    holding = bool(pa.payload.get("new_pin_hash"))
-    return _pin_screen({"amount": "Re-enter to confirm" if holding else "Create a 6-digit PIN",
+    """Create on PIN_SCREEN; confirm on PIN_CONFIRM, whose form starts empty."""
+    if pa.payload.get("new_pin_hash"):
+        return _confirm_pin_screen(error=error)
+    return _pin_screen({"amount": "Create a 6-digit PIN",
                         "recipient": "",
-                        "details": "Both entries must match" if holding
-                                   else "You'll enter it again to confirm"},
+                        "details": "You'll enter it again to confirm"},
                        error=error)
 
 
@@ -486,9 +506,12 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
 
     from django.contrib.auth.hashers import check_password
     if not check_password(pin, held):
-        pa.payload["new_pin_hash"] = ""                   # start the pair over
-        pa.save(update_fields=["payload"])
-        return _set_pin_screen(pa, error="Those didn't match — choose your PIN again.")
+        # Routing is forward-only, so the customer cannot be sent back to the
+        # create screen — the held first entry stays authoritative and the error
+        # names the way out (cancel in the chat).
+        return _confirm_pin_screen(error="Those didn't match — enter the same PIN you "
+                                         "chose on the first screen, or reply \"cancel\" "
+                                         "in the chat to start over.")
 
     user.set_transaction_pin(pin)                         # also clears pin_reset_required
     user.save(update_fields=["transaction_pin", "pin_reset_required"])
