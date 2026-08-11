@@ -659,13 +659,6 @@ def _confirm_prompt(pa: PendingAction) -> str:
         if has_app:
             return f"{_approve_link_line(pa, primary=True)}\n\n{code_line}"
         return code_line + _approve_link_line(pa, primary=False)
-    if pa.state == FLOW_FORM_STATE:
-        if _is_new_command(text):
-            _clear_actions(msisdn)
-            reply(msisdn, "Okay — leaving that transfer.")
-            return handle_inbound(msisdn, text)
-        return reply(msisdn, "💸 Please fill the secure *Send money* form above — "
-                             "or reply \"cancel\".")
     if pa.state == FLOW_PIN_STATE:
         # The secure Flow is already open and carries its own confirm button, so
         # this line must NOT restate the ask. It used to fall through to the
@@ -2280,6 +2273,20 @@ def _is_new_command(text: str) -> bool:
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    if pa.state == FLOW_FORM_STATE:
+        # The transfer form is open. Same escape hatch as the PIN screen below:
+        # an unsubmitted form has moved no money, so a clear new instruction
+        # replaces it rather than trapping the customer in "fill the form".
+        #
+        # This branch previously sat in _confirm_prompt(pa) — a string builder
+        # with no `text` or `msisdn` in scope — where it was dead code one
+        # routing change away from a NameError.
+        if _is_new_command(text):
+            _clear_actions(msisdn)
+            reply(msisdn, "Okay — leaving that transfer.")
+            return handle_inbound(msisdn, text)
+        return reply(msisdn, "💸 Please fill the secure *Send money* form above — "
+                             "or reply \"cancel\".")
     if pa.state == FLOW_PIN_STATE:
         # A secure PIN Flow is open: the PIN is entered there, never in chat.
         #
