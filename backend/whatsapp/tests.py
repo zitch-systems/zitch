@@ -2075,11 +2075,15 @@ class SignupPinPrivacyTests(TestCase):
         self.inbound("1", f"p1-{m}", msisdn=m)
         ob = WaOnboarding.objects.get(msisdn=m)
         if ob.step == "flow_signup":
-            # Flows live: the details go through the private form, not the chat.
+            # Flows live: details then phone go through the private form, not
+            # the chat. (No email rail in tests, so the code page is skipped.)
             handle_flow_request({"action": "data_exchange",
                                  "flow_token": sign_onboarding_token(ob),
                                  "data": {"first_name": "Chidi", "last_name": "Obi",
                                           "email": f"chidi{m[-4:]}@zitch.test"}})
+            handle_flow_request({"action": "data_exchange",
+                                 "flow_token": sign_onboarding_token(ob),
+                                 "data": {"phone": _local_phone(m)}})
         else:
             self.inbound("Chidi", f"p2-{m}", msisdn=m)
             self.inbound("Obi", f"p3-{m}", msisdn=m)

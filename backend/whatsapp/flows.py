@@ -28,6 +28,10 @@ PIN_SCREEN = "PIN_SCREEN"
 #: all. A separate screen starts empty because it is a separate form.
 PIN_CONFIRM = "PIN_CONFIRM"
 SIGNUP_SCREEN = "SIGNUP_SCREEN"
+#: The signup ladder's middle pages: the email code (sent when the details are
+#: accepted, entered on the SAME open session) and the account phone number.
+SIGNUP_EMAIL_CODE = "SIGNUP_EMAIL_CODE"
+SIGNUP_PHONE = "SIGNUP_PHONE"
 #: Chained twins of PIN_SCREEN and IDENTITY_SCREEN. Meta forbids ONE screen being
 #: both a flow's opening screen and the target of another screen's route: a Flow
 #: may only open on a ROOT of the routing graph ("Specified screen X is not
@@ -63,6 +67,8 @@ EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
 FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
 FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open
+FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is pending
+FLOW_PHONE_STATE = "flow_phone"             # ...while the signup phone page is open
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
@@ -114,7 +120,8 @@ def resolve_onboarding_token(token: str):
     if not pid.isdigit():
         return None
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
-    if ob is None or ob.step not in (FLOW_SIGNUP_STATE, FLOW_PIN_STATE) or ob.expired:
+    if ob is None or ob.expired or ob.step not in (
+            FLOW_SIGNUP_STATE, FLOW_EMAIL_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -293,11 +300,21 @@ def handle_flow_request(payload: dict) -> dict:
         if ob is None:
             return _success_screen("This signup expired. Send us a message to start again.")
         if action == "data_exchange":
-            if "first_name" in data:
+            # Which page submitted is the onboarding's STEP, not the shape of
+            # the posted data — same rule as the money session's dispatch.
+            if ob.step == FLOW_SIGNUP_STATE:
                 return _submit_signup_details(ob, data)
+            if ob.step == FLOW_EMAIL_CODE_STATE:
+                return _submit_signup_email_code(ob, data)
+            if ob.step == FLOW_PHONE_STATE:
+                return _submit_signup_phone(ob, data)
             return _submit_onboarding_pin(ob, data)
         if ob.step == FLOW_SIGNUP_STATE:
             return _signup_screen()
+        if ob.step == FLOW_EMAIL_CODE_STATE:
+            return _signup_email_code_screen(ob)
+        if ob.step == FLOW_PHONE_STATE:
+            return _signup_phone_screen()
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
@@ -371,7 +388,10 @@ def _confirm_pin_screen(error: str = "") -> dict:
 
 
 def _signup_screen(error: str = "") -> dict:
-    return {"screen": SIGNUP_SCREEN, "data": {"error": error or ""}}
+    # The refusal is flagged loudly: a same-screen re-render keeps the typed
+    # values (right for visible fields), so without a marker "we didn't accept
+    # that" reads as "nothing happened".
+    return {"screen": SIGNUP_SCREEN, "data": {"error": f"⚠️ {error}" if error else ""}}
 
 
 def _submit_signup_details(ob, data: dict) -> dict:
@@ -396,8 +416,60 @@ def _submit_signup_details(ob, data: dict) -> dict:
         # Recovery looks accounts up by email; a duplicate would make reset
         # codes ambiguous — refused at entry, exactly like the chat path.
         return _signup_screen(error="That email is already on a Zitch account — use a different one.")
-    ob.payload.update({"first_name": first, "last_name": last, "email": email,
-                       # SIGNUP_SCREEN routes to PIN_CHAIN, not PIN_SCREEN.
+    ob.payload.update({"first_name": first, "last_name": last, "email": email})
+    from .router import send_onboarding_email_code
+
+    if send_onboarding_email_code(ob):
+        ob.step = FLOW_EMAIL_CODE_STATE
+        ob.save(update_fields=["payload", "step"])
+        return _signup_email_code_screen(ob)
+    # No email rail on this deploy: the address is kept unverified (the KYC
+    # ladder re-verifies it later) and signup moves on rather than dead-ending.
+    ob.step = FLOW_PHONE_STATE
+    ob.save(update_fields=["payload", "step"])
+    return _signup_phone_screen()
+
+
+def _signup_email_code_screen(ob, error: str = "") -> dict:
+    return {"screen": SIGNUP_EMAIL_CODE,
+            "data": {"summary": f"We sent a 6-digit code to {ob.payload.get('email', 'your email')}.",
+                     "error": f"⚠️ {error}" if error else ""}}
+
+
+def _signup_phone_screen(error: str = "") -> dict:
+    return {"screen": SIGNUP_PHONE,
+            "data": {"error": f"⚠️ {error}" if error else ""}}
+
+
+def _submit_signup_email_code(ob, data: dict) -> dict:
+    """The email code, on the same open session that collected the address."""
+    from .router import check_onboarding_email_code
+
+    status, message = check_onboarding_email_code(ob, str(data.get("email_code", "")))
+    if status == "retry":
+        return _signup_email_code_screen(ob, error=message)
+    # Verified, or attempts/expiry exhausted — either way the ladder moves on;
+    # an unverified address is re-verified later, a dead end helps nobody.
+    ob.step = FLOW_PHONE_STATE
+    ob.save(update_fields=["payload", "step"])
+    return _signup_phone_screen(error=message if status == "unverified" else "")
+
+
+def _submit_signup_phone(ob, data: dict) -> dict:
+    """The account phone number. Normalised to local 0XXXXXXXXXXX; refused with
+    the reason when it is malformed or already on another account."""
+    from accounts.models import User
+
+    digits = "".join(ch for ch in str(data.get("phone", "")) if ch.isdigit())
+    if digits.startswith("234") and len(digits) == 13:
+        digits = "0" + digits[3:]
+    if len(digits) != 11 or not digits.startswith("0"):
+        return _signup_phone_screen(error="Enter the 11-digit number, e.g. 08012345678.")
+    if User.objects.filter(phone=digits).exists() or User.objects.filter(username=digits).exists():
+        return _signup_phone_screen(error="That number is already on a Zitch account — "
+                                          "open the app to link it, or use another number.")
+    ob.payload.update({"phone": digits,
+                       # SIGNUP_PHONE routes to PIN_CHAIN, not PIN_SCREEN.
                        "flow_screen": PIN_CHAIN})
     ob.step = FLOW_PIN_STATE
     ob.save(update_fields=["payload", "step"])
