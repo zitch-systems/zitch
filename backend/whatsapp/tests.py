@@ -2131,9 +2131,12 @@ class SignupPinPrivacyTests(TestCase):
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
         # Routing is forward-only, so a mismatch cannot go back to the create
-        # screen: the first entry stays authoritative and the confirm re-asks.
+        # screen: the first entry stays authoritative and the confirm re-asks —
+        # on the retry twin, so the mismatched digits are not still in the box.
+        from whatsapp.flows import PIN_CONFIRM_RETRY
+
         r2 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "111111"}})
-        self.assertEqual(r2["screen"], PIN_CONFIRM)
+        self.assertEqual(r2["screen"], PIN_CONFIRM_RETRY)
         self.assertIn("didn't match", r2["data"]["error"])
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 

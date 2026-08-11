@@ -386,15 +386,20 @@ class IdentityFlowTests(TestCase):
         self.assertEqual(resp["screen"], IDENTITY_SCREEN)
         self.assertEqual(resp["data"]["label"], "NIN")
 
-    def test_a_wrong_length_number_is_rejected_without_leaving_the_screen(self):
-        from .flows import IDENTITY_SCREEN, handle_flow_request, sign_identity_token
+    def test_a_wrong_length_number_is_rejected_onto_an_empty_retry_screen(self):
+        # IDENTITY_RETRY, not a same-screen re-render: the field is MASKED, so
+        # digits left in the box cannot even be read to correct. A typo costs
+        # no lookup attempt — length is not a verdict.
+        from .flows import IDENTITY_RETRY, handle_flow_request, sign_identity_token
 
         pa = self._action()
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_identity_token(pa),
                                     "data": {"number": "123"}})
-        self.assertEqual(resp["screen"], IDENTITY_SCREEN)
+        self.assertEqual(resp["screen"], IDENTITY_RETRY)
         self.assertIn("11 digits", resp["data"]["error"])
+        pa.refresh_from_db()
+        self.assertFalse(pa.payload.get("id_bad_attempts"))   # no attempt burned
 
     def test_a_valid_number_is_stored_hashed_and_never_echoed(self):
         from .flows import handle_flow_request, sign_identity_token
