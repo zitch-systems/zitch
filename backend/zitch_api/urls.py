@@ -121,8 +121,30 @@ def health(_request):
         # unreachable, or the record carried no phone to challenge — and those
         # need different actions. This is the last one, with its reason.
         "whatsapp_last_identity_review": _whatsapp_last_identity_review(),
+        # The other direction of the Flow channel. `last_flow_error` is a send WE
+        # made that Meta refused; this is a call META made to US — the leg behind
+        # the blank panel reading "Something went wrong. Try again later.", which
+        # otherwise leaves no trace at all. If `at` does NOT move when the
+        # customer reproduces, Meta never reached us (cold start, signature,
+        # networking). If it moves and carries an `error`, that is the reason.
+        "whatsapp_last_flow_endpoint": _whatsapp_last_flow_endpoint(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_last_flow_endpoint():
+    """The last call Meta made to the Flows data-exchange endpoint."""
+    try:
+        from whatsapp.models import SystemSetting
+        from whatsapp.views import FLOW_ENDPOINT_KEY
+
+        raw = SystemSetting.get(FLOW_ENDPOINT_KEY, "")
+        if not raw:
+            return {}
+        parts = (raw.split("|", 3) + ["", "", "", ""])[:4]
+        return {"at": parts[0], "action": parts[1], "screen": parts[2], "error": parts[3]}
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return {}
 
 
 def _whatsapp_last_identity_review():
