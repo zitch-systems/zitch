@@ -76,6 +76,11 @@ _VT_FAILED = {"failed", "refunded", "cancelled", "reversed", "declined"}
 
 
 def _live() -> bool:
+    # WEMA_SIMULATION is the deploy-wide payment switch. It must override staged
+    # VTU.ng credentials too; otherwise electricity/data can leave the mock Wema
+    # route and buy a real product during an end-to-end simulation.
+    if bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION")):
+        return False
     cfg = settings.VTUNG
     return bool(cfg["API_KEY"] or (cfg["USERNAME"] and cfg["PASSWORD"]))
 
