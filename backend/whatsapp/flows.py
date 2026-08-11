@@ -32,6 +32,7 @@ SIGNUP_SCREEN = "SIGNUP_SCREEN"
 #: accepted, entered on the SAME open session) and the account phone number.
 SIGNUP_EMAIL_CODE = "SIGNUP_EMAIL_CODE"
 SIGNUP_PHONE = "SIGNUP_PHONE"
+SIGNUP_PHONE_CODE = "SIGNUP_PHONE_CODE"
 #: Chained twins of PIN_SCREEN and IDENTITY_SCREEN. Meta forbids ONE screen being
 #: both a flow's opening screen and the target of another screen's route: a Flow
 #: may only open on a ROOT of the routing graph ("Specified screen X is not
@@ -49,6 +50,14 @@ IDENTITY_CHAIN = "IDENTITY_CHAIN"
 #: still in the box — one tap resubmitted the number that had just been
 #: refused, and burned the next attempt on it. A separate screen starts empty.
 IDENTITY_RETRY = "IDENTITY_RETRY"
+#: The 6-digit code pages. IDENTITY_CHAIN carries a code reached IN-SESSION
+#: (BVN accepted -> the bank's OTP; email address -> its code); CODE_SCREEN is
+#: the ROOT for a code asked in a fresh flow message; CODE_RETRY carries every
+#: wrong-code error render so the masked box never comes back holding the code
+#: that just failed. Identity number fields are 11/11 client-side and code
+#: fields 6/6 — which is why codes can no longer ride IDENTITY_SCREEN.
+CODE_SCREEN = "CODE_SCREEN"
+CODE_RETRY = "CODE_RETRY"
 #: The same problem on the money path, and worse: a wrong PIN re-rendered onto
 #: PIN_SCREEN came back with the wrong PIN still in the box, so tapping Confirm
 #: resubmitted it — spending another of the five attempts on digits already
@@ -69,6 +78,7 @@ FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) whil
 FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open
 FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is pending
 FLOW_PHONE_STATE = "flow_phone"             # ...while the signup phone page is open
+FLOW_PHONE_CODE_STATE = "flow_phone_code"   # ...while the signup phone SMS code is pending
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
@@ -121,7 +131,8 @@ def resolve_onboarding_token(token: str):
         return None
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
     if ob is None or ob.expired or ob.step not in (
-            FLOW_SIGNUP_STATE, FLOW_EMAIL_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE):
+            FLOW_SIGNUP_STATE, FLOW_EMAIL_CODE_STATE, FLOW_PHONE_STATE,
+            FLOW_PHONE_CODE_STATE, FLOW_PIN_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -308,6 +319,8 @@ def handle_flow_request(payload: dict) -> dict:
                 return _submit_signup_email_code(ob, data)
             if ob.step == FLOW_PHONE_STATE:
                 return _submit_signup_phone(ob, data)
+            if ob.step == FLOW_PHONE_CODE_STATE:
+                return _submit_signup_phone_code(ob, data)
             return _submit_onboarding_pin(ob, data)
         if ob.step == FLOW_SIGNUP_STATE:
             return _signup_screen()
@@ -315,6 +328,8 @@ def handle_flow_request(payload: dict) -> dict:
             return _signup_email_code_screen(ob)
         if ob.step == FLOW_PHONE_STATE:
             return _signup_phone_screen()
+        if ob.step == FLOW_PHONE_CODE_STATE:
+            return _signup_phone_code_screen(ob)
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
@@ -468,12 +483,43 @@ def _submit_signup_phone(ob, data: dict) -> dict:
     if User.objects.filter(phone=digits).exists() or User.objects.filter(username=digits).exists():
         return _signup_phone_screen(error="That number is already on a Zitch account — "
                                           "open the app to link it, or use another number.")
-    ob.payload.update({"phone": digits,
-                       # SIGNUP_PHONE routes to PIN_CHAIN, not PIN_SCREEN.
-                       "flow_screen": PIN_CHAIN})
+    ob.payload["phone"] = digits
+    from .router import _local_phone, send_onboarding_phone_code
+
+    if digits != _local_phone(ob.msisdn) and send_onboarding_phone_code(ob):
+        # A number OTHER than the one they are chatting from: possession is not
+        # proven by the session, so it gets the same code round-trip as the
+        # email. The chat number itself needs no SMS — the chat is the phone.
+        ob.step = FLOW_PHONE_CODE_STATE
+        ob.save(update_fields=["payload", "step"])
+        return _signup_phone_code_screen(ob)
+    return _signup_to_pin(ob)
+
+
+def _signup_to_pin(ob) -> dict:
+    ob.payload["flow_screen"] = PIN_CHAIN   # SIGNUP pages route to PIN_CHAIN
     ob.step = FLOW_PIN_STATE
     ob.save(update_fields=["payload", "step"])
     return _pin_screen(_ob_summary(ob), screen=PIN_CHAIN)
+
+
+def _signup_phone_code_screen(ob, error: str = "") -> dict:
+    masked = f"•••••{(ob.payload.get('phone') or '')[-4:]}"
+    return {"screen": SIGNUP_PHONE_CODE,
+            "data": {"summary": f"We sent a 6-digit code by SMS to {masked}.",
+                     "error": f"⚠️ {error}" if error else ""}}
+
+
+def _submit_signup_phone_code(ob, data: dict) -> dict:
+    """The SMS code proving the typed number is really theirs."""
+    from .router import check_onboarding_phone_code
+
+    status, message = check_onboarding_phone_code(ob, str(data.get("phone_code", "")))
+    if status == "retry":
+        return _signup_phone_code_screen(ob, error=message)
+    # Verified, or attempts/expiry exhausted — the ladder moves on either way;
+    # an unverified number gets the KYC ladder's SMS round-trip later.
+    return _signup_to_pin(ob)
 
 
 def _ob_summary(ob) -> str:
@@ -540,7 +586,13 @@ def _submit_identity(pa, data: dict) -> dict:
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
-            _account_submit_identity(pa, pa.user, pa.msisdn, number)
+            outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
+                                               in_flow=True)
+            if outcome == "otp":
+                # The bank accepted the ID and sent its SMS code — collected on
+                # the NEXT PAGE of this same session, not a second flow message.
+                pa.refresh_from_db()
+                return _account_otp_screen(pa)
         else:
             outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
             if outcome == "invalid":
@@ -581,7 +633,7 @@ def _identity_otp_screen(pa, error: str = "") -> dict:
     return _identity_screen(kind, error=error, label=f"{kind} code",
                             summary=f"Enter the 6-digit code we sent to "
                                     f"{pa.payload.get('id_otp_to', 'your phone')}",
-                            screen=IDENTITY_CHAIN)
+                            screen=CODE_RETRY if error else IDENTITY_CHAIN)
 
 
 def _submit_identity_otp(pa, data: dict) -> dict:
@@ -606,8 +658,14 @@ def _submit_identity_otp(pa, data: dict) -> dict:
 
 
 def _account_otp_screen(pa, error: str = "") -> dict:
+    """Clean render: whichever code page this session is on (IDENTITY_CHAIN when
+    chained from the BVN entry, CODE_SCREEN when opened fresh). Error render:
+    always CODE_RETRY — legal from both and from itself, and the masked box
+    arrives empty instead of holding the code that just failed."""
+    screen = CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN)
     return _identity_screen(ACCOUNT_OTP, error=error, label="SMS code",
-                            summary="Enter the code we sent to your phone")
+                            summary="Enter the code we sent to your phone",
+                            screen=screen)
 
 
 def _submit_account_otp(pa, data: dict) -> dict:
@@ -632,15 +690,19 @@ def _submit_account_otp(pa, data: dict) -> dict:
 
 
 def _email_code_screen(pa, error: str = "") -> dict:
-    # Reached two ways: chained from EMAIL_SCREEN inside one session (so the
-    # twin, which EMAIL_SCREEN routes to), or as its own flow message when the
-    # address was already known (so the root). _send_email_flow records which.
+    # Reached two ways: chained from EMAIL_SCREEN inside one session (so
+    # IDENTITY_CHAIN, which EMAIL_SCREEN routes to), or as its own flow message
+    # when the address was already known (so the CODE_SCREEN root). An error
+    # render always answers CODE_RETRY so the box comes back empty.
+    if error:
+        screen = CODE_RETRY
+    elif _flow_screen(pa, CODE_SCREEN) in (EMAIL_SCREEN, IDENTITY_CHAIN):
+        screen = IDENTITY_CHAIN
+    else:
+        screen = CODE_SCREEN
     return _identity_screen("email", error=error, label="Email code",
                             summary=f"Enter the 6-digit code we sent to {pa.user.email}",
-                            screen=(IDENTITY_CHAIN
-                                    if _flow_screen(pa, IDENTITY_SCREEN) in (EMAIL_SCREEN,
-                                                                            IDENTITY_CHAIN)
-                                    else IDENTITY_SCREEN))
+                            screen=screen)
 
 
 def _email_step_screen(pa, error: str = "") -> dict:
