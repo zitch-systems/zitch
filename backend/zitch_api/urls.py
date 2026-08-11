@@ -102,8 +102,24 @@ def health(_request):
         # are rejected, which reads like "some features are broken" instead of
         # "the Flow is one publish behind". `missing_screens` names them.
         "whatsapp_flow_published": _whatsapp_flow_published(),
+        # `flow_published` proves the Flow is right; it cannot explain a send
+        # Meta refused for any OTHER reason. That reason is logged, but reading
+        # it means shell access to the log stream while reproducing the failure
+        # — so in practice it has been guessed at from symptoms. This is the
+        # last rejection, in Meta's own words, on a page an operator can open.
+        "whatsapp_last_flow_error": _whatsapp_last_flow_error(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_last_flow_error():
+    """The most recent Flow send Meta refused. {} when none ever has."""
+    from whatsapp.providers import last_flow_error
+
+    try:
+        return last_flow_error()
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return {}
 
 
 def _whatsapp_flow_published():
