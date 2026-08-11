@@ -41,7 +41,8 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_FORM_STATE, FLOW_ID_STATE, FLOW_PIN_STATE,
+from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_EMAIL_CODE_STATE, FLOW_FORM_STATE,
+                    FLOW_ID_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
                     FLOW_SIGNUP_STATE, IDENTITY_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
                     PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
@@ -1123,6 +1124,18 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     if ob.step == FLOW_SIGNUP_STATE:
         return reply(msisdn, "📝 Please fill the secure *Create account* form above — "
                              "or reply \"cancel\" to start over.")
+    if ob.step == FLOW_EMAIL_CODE_STATE:
+        # The code is a bearer credential for 15 minutes; typed here it sits in
+        # the customer's own history. Same advice as a chat-typed PIN.
+        if re.fullmatch(r"\d{4,8}", val):
+            return reply(msisdn, "📧 Please enter the code on the *secure screen* above — not in "
+                                 "the chat. Delete the message you just sent (press and hold → "
+                                 "Delete → *Delete for everyone*), then tap the secure screen.")
+        return reply(msisdn, "📧 Tap the *secure screen* above to enter your email code, "
+                             "or reply \"cancel\".")
+    if ob.step == FLOW_PHONE_STATE:
+        return reply(msisdn, "📱 Please enter your phone number on the *secure screen* above — "
+                             "or reply \"cancel\" to start over.")
     if ob.step == FLOW_PIN_STATE:
         # The PIN belongs in the secure screen, never here. If they typed one
         # anyway it is already masked in our log — but it is still sitting in
@@ -1171,7 +1184,11 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
 
 
 def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
-    local = _local_phone(msisdn)
+    wa_local = _local_phone(msisdn)
+    # The account phone is the one TYPED on the signup form when there is one —
+    # a customer may bank on a different line than they chat on. Falls back to
+    # the WhatsApp number for the chat-question path, which never asks.
+    local = (ob.payload.get("phone") or "").strip() or wa_local
     fn = (ob.payload.get("first_name") or "").strip()
     ln = (ob.payload.get("last_name") or "").strip()
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
@@ -1185,7 +1202,13 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         username=local, phone=local, first_name=fn, last_name=ln, tier=0,
         email=(ob.payload.get("email") or "").strip().lower(),
         onboarded_via_whatsapp=True,   # gates KYC on in-app email re-verification
-        email_verified=False,          # chat-collected: unverified until the app OTP
+        # Verified when the code round-trip happened INSIDE the signup flow;
+        # otherwise unverified until the KYC ladder's OTP.
+        email_verified=bool(ob.payload.get("email_verified_flow")),
+        # Typing the number you are chatting from proves possession — the chat
+        # session IS the phone. A different number is stored unverified and
+        # gets the SMS round-trip in the ladder.
+        phone_verified=(local == wa_local),
     )
     user.set_unusable_password()       # no app password yet; "Forgot password" sets one
     if pin:
@@ -1213,13 +1236,72 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
            "and NIN right here.\n\n")
         + "🔒 *Tip:* lock this chat with your fingerprint — tap our name above → "
           "*Chat lock*. Reply *lock* for the steps.\n\n"
-        + menu_text(),
+        + menu_text()
+        + "\n\n📋 *Note:* verify your *BVN and NIN* — reply *8* — before your "
+          "personal Zitch account number can be created.",
     )
     # Roll straight into minting their funding NUBAN — a wallet you can't pay
     # into isn't much of an account. Skipped quietly when the bank integration
     # is off; option 6 offers the same setup any time.
     if wallet_views._wema_funding_enabled():
         _start_add_account(user, msisdn, after_signup=True)
+
+
+def send_onboarding_email_code(ob: WaOnboarding) -> bool:
+    """Mint, arm and email the signup confirmation code. False when this deploy
+    cannot actually deliver one — send_email silent-succeeds unkeyed, so the
+    rail is checked first, exactly like the KYC ladder's sends."""
+    local = _local_phone(ob.msisdn)
+    test_code = (settings.TEST_OTP_CODE
+                 if getattr(settings, "TEST_OTP_PHONE", "") == local else "")
+    if not email_live() and not test_code:
+        return False
+    code = test_code or f"{secrets.randbelow(10**6):06d}"
+    from accounts.views import _branded_email
+
+    if not test_code:
+        sent = send_email(ob.payload.get("email", ""), "Confirm your email for Zitch",
+                          f"Your Zitch email confirmation code is {code}",
+                          html=_branded_email(
+                              "Confirm your email",
+                              "Enter this code on the secure WhatsApp screen to finish "
+                              "creating your Zitch account.",
+                              code=code,
+                              note="This code expires in 15 minutes. If you didn't request "
+                                   "it, you can ignore this email — no account is created "
+                                   "without it."))
+        if not sent.get("success"):
+            return False
+    ob.payload.update({"email_code_hash": make_password(code),
+                       "email_code_exp": (timezone.now() + timedelta(minutes=15)).isoformat(),
+                       "email_code_attempts": 0})
+    return True
+
+
+def check_onboarding_email_code(ob: WaOnboarding, code: str):
+    """("ok", "") verified · ("retry", why) ask again · ("unverified", note)
+    move on without verification — three wrong codes or an expired code must
+    not dead-end a signup; the KYC ladder re-verifies email later."""
+    digits = "".join(ch for ch in str(code) if ch.isdigit())
+    if len(digits) != 6:
+        return "retry", "The code is exactly 6 digits — check the email and try again."
+    exp = ob.payload.get("email_code_exp", "")
+    if not ob.payload.get("email_code_hash") or (
+            exp and timezone.now() > timezone.datetime.fromisoformat(exp)):
+        return "unverified", "That code expired — we'll verify your email later (reply 8)."
+    if not check_password(digits, ob.payload["email_code_hash"]):
+        attempts = int(ob.payload.get("email_code_attempts") or 0) + 1
+        ob.payload["email_code_attempts"] = attempts
+        ob.save(update_fields=["payload"])
+        if attempts >= 3:
+            return "unverified", ("That's 3 incorrect codes — we'll verify your email "
+                                  "later (reply 8).")
+        return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
+    ob.payload["email_verified_flow"] = True
+    for key in ("email_code_hash", "email_code_exp", "email_code_attempts"):
+        ob.payload.pop(key, None)
+    ob.save(update_fields=["payload"])
+    return "ok", ""
 
 
 def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:

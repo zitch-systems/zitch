@@ -944,24 +944,81 @@ class SignupFormFlowTests(TestCase):
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_onboarding_token(self._ob())})
         self.assertEqual(resp["screen"], SIGNUP_SCREEN)
 
-    def test_valid_details_store_and_chain_into_the_pin_screen(self):
-        # PIN_CHAIN, not PIN_SCREEN: a Flow may only OPEN on a routing root, so
-        # the screen chained into from a form has to be PIN_SCREEN's twin or
-        # every direct PIN send is refused. See test_flow_entry_screens.
-        from .flows import PIN_CHAIN
+    def test_valid_details_move_to_the_phone_page_when_no_email_rail_exists(self):
+        # The ladder is details -> email code -> phone -> PIN, but a deploy with
+        # no email rail cannot send a code, so the ladder skips to the phone
+        # page rather than dead-ending the signup.
+        from .flows import SIGNUP_PHONE
 
         ob = self._ob()
         resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="Ngozi@Example.com")
-        self.assertEqual(resp["screen"], PIN_CHAIN)           # same flow session
+        self.assertEqual(resp["screen"], SIGNUP_PHONE)        # same flow session
         ob.refresh_from_db()
         self.assertEqual(ob.payload["email"], "ngozi@example.com")
         self.assertEqual(ob.payload["first_name"], "Ngozi")
+
+    def test_with_an_email_rail_the_code_page_comes_first_and_verifies(self):
+        from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
+
+        ob = self._ob()
+        with patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.send_email", return_value={"success": True}) as mail:
+            resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="n1@example.com")
+            self.assertEqual(resp["screen"], SIGNUP_EMAIL_CODE)
+            self.assertIn("n1@example.com", resp["data"]["summary"])
+            code = mail.call_args[0][2].split("code is ")[1][:6]
+        # Wrong code: a prompt with the reason, on the same page.
+        wrong = self._submit(ob, email_code="000000")
+        self.assertEqual(wrong["screen"], SIGNUP_EMAIL_CODE)
+        self.assertIn("⚠️", wrong["data"]["error"])
+        # Right code: verified, on to the phone page.
+        ok = self._submit(ob, email_code=code)
+        self.assertEqual(ok["screen"], SIGNUP_PHONE)
+        ob.refresh_from_db()
+        self.assertTrue(ob.payload["email_verified_flow"])
+
+    def test_three_wrong_codes_move_on_unverified_instead_of_dead_ending(self):
+        from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
+
+        ob = self._ob()
+        with patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.send_email", return_value={"success": True}):
+            self._submit(ob, first_name="Ngozi", last_name="Ade", email="n2@example.com")
+        for _ in range(2):
+            self.assertEqual(self._submit(ob, email_code="000000")["screen"], SIGNUP_EMAIL_CODE)
+        third = self._submit(ob, email_code="000000")
+        self.assertEqual(third["screen"], SIGNUP_PHONE)       # moved on, with the note
+        self.assertIn("⚠️", third["data"]["error"])
+        ob.refresh_from_db()
+        self.assertFalse(ob.payload.get("email_verified_flow"))
+
+    def test_a_taken_or_malformed_phone_is_refused_with_the_reason(self):
+        from .flows import FLOW_PHONE_STATE, SIGNUP_PHONE
+
+        User.objects.create(username="08055550000", phone="08055550000", email="t@x.z")
+        ob = self._ob(step=FLOW_PHONE_STATE)
+        short = self._submit(ob, phone="0812345")
+        self.assertEqual(short["screen"], SIGNUP_PHONE)
+        self.assertIn("11-digit", short["data"]["error"])
+        taken = self._submit(ob, phone="08055550000")
+        self.assertIn("already on a Zitch account", taken["data"]["error"])
+
+    def test_the_phone_page_chains_into_the_pin_screen(self):
+        from .flows import FLOW_PHONE_STATE, PIN_CHAIN
+
+        ob = self._ob(step=FLOW_PHONE_STATE)
+        resp = self._submit(ob, phone="08066660001")
+        self.assertEqual(resp["screen"], PIN_CHAIN)
+        ob.refresh_from_db()
+        self.assertEqual(ob.payload["phone"], "08066660001")
 
     def test_the_whole_signup_completes_in_one_flow_session(self):
         from .flows import PIN_CONFIRM, SUCCESS_SCREEN
 
         ob = self._ob()
         self._submit(ob, first_name="Ngozi", last_name="Ade", email="ngozi1@example.com")
+        # Typing the number you are chatting from proves possession of it.
+        self._submit(ob, phone="08099990001")
         ob.refresh_from_db()
         first = self._submit(ob, pin="246810")
         self.assertEqual(first["screen"], PIN_CONFIRM)
@@ -969,8 +1026,21 @@ class SignupFormFlowTests(TestCase):
         self.assertEqual(done["screen"], SUCCESS_SCREEN)
         u = User.objects.get(phone="08099990001")
         self.assertEqual(u.email, "ngozi1@example.com")
-        self.assertFalse(u.email_verified)                    # collected, not verified
+        self.assertFalse(u.email_verified)                    # no email rail here
+        self.assertTrue(u.phone_verified)                     # same number as the chat
         self.assertTrue(u.check_transaction_pin("246810"))
+
+    def test_a_different_account_phone_is_stored_unverified(self):
+        from .flows import SUCCESS_SCREEN
+
+        ob = self._ob()
+        self._submit(ob, first_name="Ngozi", last_name="Ade", email="ngozi3@example.com")
+        self._submit(ob, phone="08077770002")                  # banks on a different line
+        self._submit(ob, pin="246810")
+        done = self._submit(ob, pin="246810")
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        u = User.objects.get(phone="08077770002")              # the TYPED number
+        self.assertFalse(u.phone_verified)                     # possession not proven
 
     def test_bad_or_taken_details_re_render_with_the_reason(self):
         from .flows import SIGNUP_SCREEN
