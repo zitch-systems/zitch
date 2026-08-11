@@ -47,19 +47,19 @@ def is_mock_account(account_id: str) -> bool:
 
 
 def mono_live() -> bool:
-    """Whether Mono has a secret key configured (live, non-mock)."""
-    return bool(settings.MONO.get("SECRET_KEY"))
+    """Whether Mono may make a live call on this deployment."""
+    return not mono_simulation() and bool(settings.MONO.get("SECRET_KEY"))
 
 
 def mono_simulation() -> bool:
-    """Whether bank-linking SIMULATION is explicitly enabled (MONO_SIMULATION).
+    """Whether bank linking must use its mock flow.
 
-    When on, the mock flow is served even in production (so a real build can test
-    the full link/fund flow without Mono keys) â€” no real bank is contacted and no
-    real money moves. Off by default; never auto-fakes a link on a misconfigured
-    live deploy.
+    MONO_SIMULATION can isolate this provider, while WEMA_SIMULATION is the
+    deploy-wide end-to-end switch. Either one prevents a live Mono request even
+    when credentials are already staged for go-live.
     """
-    return bool(settings.MONO.get("SIMULATION"))
+    return bool(settings.MONO.get("SIMULATION")
+                or (getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))
 
 
 def _mock_blocked() -> bool:
