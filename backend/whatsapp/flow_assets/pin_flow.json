@@ -85,14 +85,20 @@
                 "name": "first_name",
                 "label": "First name",
                 "input-type": "text",
-                "required": true
+                "required": true,
+                "min-chars": 2,
+                "max-chars": 40,
+                "helper-text": "As it appears on your BVN — at least 2 letters"
               },
               {
                 "type": "TextInput",
                 "name": "last_name",
                 "label": "Last name",
                 "input-type": "text",
-                "required": true
+                "required": true,
+                "min-chars": 2,
+                "max-chars": 40,
+                "helper-text": "As it appears on your BVN — at least 2 letters"
               },
               {
                 "type": "TextInput",

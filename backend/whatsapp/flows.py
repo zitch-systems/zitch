@@ -371,7 +371,10 @@ def _confirm_pin_screen(error: str = "") -> dict:
 
 
 def _signup_screen(error: str = "") -> dict:
-    return {"screen": SIGNUP_SCREEN, "data": {"error": error or ""}}
+    # The refusal is flagged loudly: a same-screen re-render keeps the typed
+    # values (right for visible fields), so without a marker "we didn't accept
+    # that" reads as "nothing happened".
+    return {"screen": SIGNUP_SCREEN, "data": {"error": f"⚠️ {error}" if error else ""}}
 
 
 def _submit_signup_details(ob, data: dict) -> dict:

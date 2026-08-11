@@ -86,6 +86,25 @@ class FlowFileContractTests(SimpleTestCase):
                 self.assertEqual((inp.get("min-chars"), inp.get("max-chars")), (6, 6), sid)
                 self.assertNotIn("4–6", inp.get("helper-text", ""))
 
+    def test_signup_name_fields_refuse_a_single_letter_client_side(self):
+        """The server requires >= 2 characters (the name must match the BVN
+        record later); without the client constraint a one-letter entry submits,
+        is refused, and the re-render reads as "unable to proceed"."""
+        def named_inputs(node):
+            if isinstance(node, dict):
+                if node.get("type") == "TextInput" and node.get("name") in ("first_name", "last_name"):
+                    yield node
+                for v in node.values():
+                    yield from named_inputs(v)
+            elif isinstance(node, list):
+                for v in node:
+                    yield from named_inputs(v)
+
+        found = list(named_inputs(BY_ID["SIGNUP_SCREEN"]["layout"]))
+        self.assertEqual(len(found), 2)
+        for inp in found:
+            self.assertEqual(inp.get("min-chars"), 2, inp["name"])
+
     def test_the_logo_is_the_same_bytes_on_every_screen(self):
         def srcs(node):
             if isinstance(node, dict):
