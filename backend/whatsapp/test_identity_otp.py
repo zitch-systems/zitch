@@ -7,6 +7,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
+from accounts.models import hash_identifier
 from whatsapp.flows import (FLOW_ID_STATE, IDENTITY_CHAIN, IDENTITY_RETRY, IDENTITY_SCREEN,
                             SUCCESS_SCREEN, handle_flow_request, sign_identity_token)
 from whatsapp.models import PendingAction, SystemSetting
@@ -121,6 +122,74 @@ class IdentityOtpTests(TestCase):
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_identity_token(pa)})
         self.assertEqual(resp["screen"], IDENTITY_CHAIN)
         self.assertNotEqual(resp["screen"], IDENTITY_SCREEN)
+
+
+@override_settings(
+    TESTING=False,
+    DEBUG=False,
+    WEMA={"SIMULATION": True},
+    ALLOW_PRODUCTION_SIMULATION=True,
+    PREMBLY={"BASE_URL": "https://prembly.invalid", "API_KEY": "staged", "APP_ID": "staged"},
+)
+class SimulatedIdentityFlowTests(TestCase):
+    """The private Flow still collects both IDs, but the values never leave Zitch
+    or determine the identity markers stored for a simulation account."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.user.phone_verified = True
+        self.user.email_verified = True
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.save(update_fields=[
+            "phone_verified", "email_verified", "bvn_verified", "nin_verified",
+        ])
+        self.pa = PendingAction.objects.create(
+            user=self.user,
+            msisdn=MSISDN,
+            action_type="kyc",
+            state=FLOW_ID_STATE,
+            payload={"id_kind": "bvn"},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+    def _submit(self, value):
+        return handle_flow_request({
+            "action": "data_exchange",
+            "flow_token": sign_identity_token(self.pa),
+            "data": {"number": value},
+        })
+
+    def test_bvn_and_nin_are_entered_then_verified_without_a_live_lookup(self):
+        bvn, nin = "22222222222", "33333333333"
+        with patch("utility.providers.requests.post") as provider_post, \
+             patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}), \
+             patch("whatsapp.router.send_sms") as identity_sms, \
+             patch("whatsapp.router.reply"):
+            first = self._submit(bvn)
+            self.pa.refresh_from_db()
+            self.assertEqual(self.pa.payload["id_kind"], "nin")
+            second = self._submit(nin)
+
+        self.assertEqual(first["screen"], SUCCESS_SCREEN)
+        self.assertEqual(second["screen"], SUCCESS_SCREEN)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertTrue(self.user.nin_verified)
+        self.assertEqual(self.user.tier, 1)
+        self.assertEqual(
+            self.user.bvn_hash,
+            hash_identifier(f"simulation:bvn:{self.user.pk}"),
+        )
+        self.assertEqual(
+            self.user.nin_hash,
+            hash_identifier(f"simulation:nin:{self.user.pk}"),
+        )
+        self.assertNotEqual(self.user.bvn_hash, hash_identifier(bvn))
+        self.assertNotEqual(self.user.nin_hash, hash_identifier(nin))
+        provider_post.assert_not_called()
+        identity_sms.assert_not_called()
 
 
 @override_settings(TESTING=False, DEBUG=False)
