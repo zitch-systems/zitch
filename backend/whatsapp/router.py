@@ -1813,7 +1813,14 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
 #: Wrong-number attempts before the identity step gives up. Bounded because an
 #: unlimited retry screen is a lookup oracle: it answers "is this BVN real, and
 #: whose is it" for anyone willing to sit and type.
-_MAX_ID_ATTEMPTS = 3
+#:
+#: TWO, not three, and that is a Flow constraint rather than a policy view: each
+#: attempt needs its own screen to arrive with an empty box (WhatsApp keeps form
+#: state across a same-screen re-render), routing is a DAG so screens cannot
+#: alternate, and a third would mean a third screen carrying a third copy of the
+#: layout. Two covers the typo; anything beyond it is a wrong number, and
+#: replying 8 mints a fresh attempt anyway.
+_MAX_ID_ATTEMPTS = 2
 
 #: Where the last identity-review reason is parked for /healthz. Same reasoning
 #: as wa_last_flow_error: the reason exists, but only in a log stream nobody
