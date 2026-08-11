@@ -722,6 +722,51 @@ def _simulate_provision_account(user) -> str:
     return num
 
 
+def apply_simulated_kyc(user, tier: int = 3) -> tuple[str, dict]:
+    """Apply test-only KYC to one already-authenticated user.
+
+    Shared by the token-protected HTTP endpoint and the WhatsApp simulation
+    command. The caller still owns its authentication gate; this helper owns
+    the simulation-only invariant and the single implementation of the state
+    change. No real BVN or NIN is stored.
+    """
+    if not wema.wema_simulation():
+        raise ValueError("Simulation is disabled")
+    if tier not in (1, 2, 3):
+        raise ValueError("tier must be 1, 2, or 3")
+
+    # Set the flags recompute_tier() derives the tier from (see User.recompute_tier):
+    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Deterministic,
+    # namespaced hashes populate audit/support fields without inventing real IDs.
+    # Namespace simulation hashes away from the real 11-digit identity domain, so
+    # a test customer can never collide with a legitimate BVN/NIN by chance.
+    user.bvn_hash = hash_identifier(f"simulation:bvn:{user.id}")
+    user.bvn_last4 = f"{user.id:04d}"[-4:]
+    user.nin_hash = hash_identifier(f"simulation:nin:{user.id}")
+    user.nin_last4 = f"{user.id:04d}"[-4:]
+    user.email_verified = True
+    user.phone_verified = True
+    user.bvn_verified = True
+    user.nin_verified = True
+    user.face_verified = tier >= 2
+    user.address_verified = tier >= 2
+    user.id_document_verified = tier >= 3
+    user.recompute_tier()
+    # Persist the contact flags too. The old endpoint assigned them in memory but
+    # omitted them from update_fields, so an unverified test account could appear
+    # verified in the response and revert on the next request.
+    user.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
+                             "email_verified", "phone_verified",
+                             "bvn_verified", "nin_verified", "face_verified",
+                             "address_verified", "id_document_verified", "tier"])
+
+    account_number = _simulate_provision_account(user)
+    log.warning("simulate_kyc_used phone=%s tier=%s account=%s — simulation is enabled; "
+                "disable WEMA_SIMULATION before go-live",
+                mask_pii(user.phone or ""), user.tier, mask_pii(account_number))
+    return account_number, _kyc_state(user)
+
+
 @api
 @ratelimit("simulate_kyc", limit=30, window=60)
 def simulate_kyc(request):
@@ -762,34 +807,9 @@ def simulate_kyc(request):
     if user is None:
         return fail("No user with that phone", status=404)
 
-    # Set the flags recompute_tier() derives the tier from (see User.recompute_tier):
-    # tier 1 = BVN+NIN, tier 2 += face+address, tier 3 += ID document. Deterministic,
-    # namespaced hashes populate audit/support fields without inventing real IDs.
-    # Namespace simulation hashes away from the real 11-digit identity domain, so
-    # a test customer can never collide with a legitimate BVN/NIN by chance.
-    user.bvn_hash = hash_identifier(f"simulation:bvn:{user.id}")
-    user.bvn_last4 = f"{user.id:04d}"[-4:]
-    user.nin_hash = hash_identifier(f"simulation:nin:{user.id}")
-    user.nin_last4 = f"{user.id:04d}"[-4:]
-    # Every tier >= 1 requires both contact channels; simulate them like the rest.
-    user.email_verified = True
-    user.phone_verified = True
-    user.bvn_verified = True
-    user.nin_verified = True
-    user.face_verified = tier >= 2
-    user.address_verified = tier >= 2
-    user.id_document_verified = tier >= 3
-    user.recompute_tier()
-    user.save(update_fields=["bvn_hash", "bvn_last4", "nin_hash", "nin_last4",
-                             "bvn_verified", "nin_verified", "face_verified",
-                             "address_verified", "id_document_verified", "tier"])
-
-    account_number = _simulate_provision_account(user)
-    log.warning("simulate_kyc_used phone=%s tier=%s account=%s — SIMULATE_DEPOSIT_TOKEN is "
-                "set (WEMA_SIMULATION on); REMOVE before go-live",
-                mask_pii(phone), user.tier, mask_pii(account_number))
+    account_number, state = apply_simulated_kyc(user, tier)
     return ok(success=True, account_number=account_number,
-              message="Simulated KYC applied", **_kyc_state(user))
+              message="Simulated KYC applied", **state)
 
 
 _KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid

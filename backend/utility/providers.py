@@ -463,7 +463,10 @@ def email_probe() -> dict:
 # verified by the name-matched NUBAN account-creation flow (see verify_bvn/nin/vnin).
 # ---------------------------------------------------------------------------
 def _prembly_live() -> bool:
-    return bool(settings.PREMBLY["API_KEY"] and settings.PREMBLY["APP_ID"])
+    # A deploy-wide simulation must not leak real identity data to Prembly just
+    # because credentials remain configured for the later go-live.
+    return (not simulation_mode()
+            and bool(settings.PREMBLY["API_KEY"] and settings.PREMBLY["APP_ID"]))
 
 
 def _prembly_headers() -> dict:
@@ -580,16 +583,13 @@ def kyc_provider() -> str:
 def verify_bvn(bvn: str, name: str = "", date_of_birth: str = "", mobile: str = "") -> dict:
     """BVN verification entry point.
 
-    Prembly first when configured, for the same reason as NIN — and for one more:
-    the bank's only BVN check is the name match performed while opening a NUBAN,
-    which WEMA_SIMULATION mocks. A simulation deploy therefore marked every BVN
-    verified without anyone looking at it, so the identity half could not be
-    exercised for real without also moving real money.
+    Prembly first when configured and simulation is OFF. During an end-to-end
+    simulation, no identity number may leave Zitch merely because live Prembly
+    credentials are staged in the environment; the dedicated simulated-KYC path
+    supplies namespaced fake hashes without accepting or storing a real BVN.
 
-    Prembly's lookup is a separate rail, unaffected by the simulation flag, which
-    lets a demo deploy run genuine BVN and NIN checks over simulated transfers.
-
-    Falls back to the Wema behaviour when Prembly is unconfigured.
+    Falls back to the Wema behaviour when Prembly is unconfigured or the
+    deploy-wide simulation switch is on.
     """
     if _prembly_live():
         return prembly_verify_bvn(bvn, name=name)
@@ -726,7 +726,9 @@ def verify_vnin(vnin: str, name: str = "") -> dict:
 # Card issuer (virtual cards) — provider TBD. Blank key => MOCK mode.
 # ---------------------------------------------------------------------------
 def _card_issuer_live() -> bool:
-    return bool(settings.CARD_ISSUER["API_KEY"])
+    # Keep card creation fake while the deploy-wide simulation switch is on,
+    # even if the production issuer key is already staged in the environment.
+    return not simulation_mode() and bool(settings.CARD_ISSUER["API_KEY"])
 
 
 def _card_issuer_headers() -> dict:
@@ -837,7 +839,9 @@ def fund_card(card_token: str, amount) -> dict:
 # deterministic mid-market rates + auto-settle, so the flow is testable offline.
 # --------------------------------------------------------------------------- #
 def fincra_live() -> bool:
-    return bool(settings.FINCRA.get("SECRET_KEY"))
+    # A simulated conversion must use the deterministic mock rate and must not
+    # execute at Fincra merely because credentials are present.
+    return not simulation_mode() and bool(settings.FINCRA.get("SECRET_KEY"))
 
 
 # Mock mid-market reference (NGN per 1 unit) — only used without keys.

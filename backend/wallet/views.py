@@ -581,6 +581,32 @@ def fund_verify(request):
     return ok(success=True, wallet=str(wallet.balance), message="Wallet funded")
 
 
+def apply_simulated_deposit(user, amount):
+    """Credit bounded fake money to one already-authenticated test user.
+
+    Shared by the token-protected HTTP endpoint and the WhatsApp simulation
+    command. Authentication stays with the caller; this helper guarantees that
+    the real-money rail is off and that the amount remains inside the test cap.
+    """
+    if not wema_provider.wema_simulation():
+        raise ValueError("Simulation is disabled")
+    amount = parse_amount(amount)
+    if amount is None or amount < 100:
+        raise ValueError("Enter a valid amount (min ₦100)")
+    if amount > 1_000_000:
+        raise ValueError("Simulated deposit is capped at ₦1,000,000 per call")
+
+    # WEMA-CR- prefix + unique suffix => routed and idempotent exactly like a real
+    # reconciled deposit (see apply_wema_credit / settle_reserved_funding).
+    reference = f"WEMA-CR-SIM-{secrets.token_hex(6).upper()}"
+    settle_reserved_funding(reference, amount, user)
+    wallet = get_or_create_wallet(user)
+    log.warning("simulate_deposit_used phone=%s amount=%s ref=%s — simulation is enabled; "
+                "disable WEMA_SIMULATION before go-live",
+                mask_pii(user.phone or ""), amount, reference)
+    return wallet, reference
+
+
 @api
 @ratelimit("simulate_deposit", limit=30, window=60)
 def simulate_deposit(request):
@@ -621,14 +647,7 @@ def simulate_deposit(request):
     if user is None:
         return fail("No user with that phone", status=404)
 
-    # WEMA-CR- prefix + unique suffix => routed and idempotent exactly like a real
-    # reconciled deposit (see apply_wema_credit / settle_reserved_funding).
-    reference = f"WEMA-CR-SIM-{secrets.token_hex(6).upper()}"
-    settle_reserved_funding(reference, amount, user)
-    wallet = get_or_create_wallet(user)
-    log.warning("simulate_deposit_used phone=%s amount=%s ref=%s — SIMULATE_DEPOSIT_TOKEN "
-                "is set (WEMA_SIMULATION on); REMOVE before go-live",
-                mask_pii(phone), amount, reference)
+    wallet, reference = apply_simulated_deposit(user, amount)
     return ok(success=True, wallet=str(wallet.balance), reference=reference,
               message="Simulated deposit credited")
 

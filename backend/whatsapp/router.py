@@ -744,6 +744,95 @@ def _touch(pa: PendingAction, **fields) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Test-only, no-CLI simulation commands
+# --------------------------------------------------------------------------- #
+_SIMULATION_SETUP_COMMANDS = {
+    "simulate setup", "simulation setup", "test setup", "setup simulation",
+}
+_SIMULATION_KYC_COMMANDS = {
+    "simulate kyc", "simulate identity", "simulate verification",
+}
+_SIMULATION_DEPOSIT_COMMAND = re.compile(
+    r"^(?:simulate|simulation|test)\s+(?:deposit|fund|funding)(?:\s+(.+))?$"
+)
+
+
+def _is_simulation_command(low: str) -> bool:
+    return (low in _SIMULATION_SETUP_COMMANDS
+            or low in _SIMULATION_KYC_COMMANDS
+            or bool(_SIMULATION_DEPOSIT_COMMAND.fullmatch(low)))
+
+
+def _chat_simulation_allowed() -> bool:
+    """Both switches must say this is a deliberate fake-money deployment.
+
+    An active WhatsAppLink authenticates which account is changed, so the
+    command needs no shared secret in the chat. Turning WEMA_SIMULATION off
+    removes the command's power even if the second switch is accidentally left.
+    """
+    wema_cfg = getattr(settings, "WEMA", {}) or {}
+    deliberate = (getattr(settings, "ALLOW_PRODUCTION_SIMULATION", False)
+                  or getattr(settings, "DEBUG", False)
+                  or getattr(settings, "TESTING", False))
+    return bool(wema_cfg.get("SIMULATION") and deliberate)
+
+
+def _handle_simulation_command(user, msisdn: str, low: str) -> None:
+    """Prepare the linked account for an end-to-end fake-money walkthrough.
+
+    This runs before pending-action dispatch, so it can safely replace the BVN
+    Flow currently open in the chat. It is deliberately absent from the menu.
+    """
+    if not _chat_simulation_allowed():
+        return reply(msisdn, "🧪 Simulation commands are disabled on this deployment.")
+
+    _clear_actions(msisdn)
+    try:
+        if low in _SIMULATION_SETUP_COMMANDS:
+            from accounts.views import apply_simulated_kyc
+
+            with db_transaction.atomic():
+                account_number, state = apply_simulated_kyc(user, 3)
+                wallet = get_or_create_wallet(user)
+                target = Decimal("50000")
+                gap = target - wallet.balance
+                # Idempotent setup: bring a fresh account up to ₦50k, but do not
+                # add another ₦50k when the command is repeated.
+                if gap >= Decimal("100"):
+                    wallet, _ = wallet_views.apply_simulated_deposit(user, gap)
+            account_line = account_number or "mock account provisioning pending"
+            return reply(
+                msisdn,
+                "🧪 *Simulation ready*\n\n"
+                f"✅ Identity: Tier {state['tier']} (BVN/NIN simulated)\n"
+                f"✅ Funding account: {account_line}\n"
+                f"✅ Mock balance: {_money(wallet.balance)}\n\n"
+                "No real BVN, Wema deposit or bank transfer was used. "
+                "Reply *reset pin* next, then test balance and a small payment.",
+            )
+
+        if low in _SIMULATION_KYC_COMMANDS:
+            from accounts.views import apply_simulated_kyc
+
+            account_number, state = apply_simulated_kyc(user, 3)
+            suffix = f"\nFunding account: {account_number}" if account_number else ""
+            return reply(msisdn, f"🧪 Simulated KYC complete — Tier {state['tier']}."
+                          f"{suffix}\nReply *reset pin* to continue testing.")
+
+        match = _SIMULATION_DEPOSIT_COMMAND.fullmatch(low)
+        raw_amount = (match.group(1) if match else "") or "50000"
+        amount = parse_amount(raw_amount)
+        wallet, reference = wallet_views.apply_simulated_deposit(user, amount)
+        return reply(msisdn, f"🧪 Simulated deposit credited: {_money(amount)}\n"
+                      f"Balance: {_money(wallet.balance)}\nReference: {reference}")
+    except ValueError as exc:
+        return reply(msisdn, f"⚠️ {exc}")
+    except Exception:
+        log.exception("wa_simulation_command_failed user=%s", user.pk)
+        return reply(msisdn, "⚠️ The simulation setup couldn't finish. Please try again shortly.")
+
+
+# --------------------------------------------------------------------------- #
 # entry point (called by the webhook, after dedupe)
 # --------------------------------------------------------------------------- #
 def handle_inbound(msisdn: str, text: str) -> None:
@@ -784,6 +873,11 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("menu", "hi", "hello", "start", "help"):
         _clear_actions(msisdn)
         return send_menu(msisdn)
+
+    # A test setup command must be able to escape the BVN/PIN Flow that is
+    # currently open; every other message still belongs to the pending action.
+    if _is_simulation_command(low):
+        return _handle_simulation_command(user, msisdn, low)
 
     pa = _current_action(msisdn)
     if pa is not None:

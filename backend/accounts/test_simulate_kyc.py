@@ -74,6 +74,9 @@ class SimulateKycTests(TestCase):
         self.assertTrue(body["account_number"])  # mock NUBAN provisioned
         self.user.refresh_from_db()
         self.assertEqual(self.user.tier, 3)
+        # Contact verification must survive the request. The original endpoint
+        # assigned these flags but omitted them from update_fields.
+        self.assertTrue(self.user.phone_verified and self.user.email_verified)
         self.assertTrue(get_or_create_wallet(self.user).account_number)
 
     @override_settings(WEMA=_SIM_ON, SIMULATE_DEPOSIT_TOKEN=_TOKEN)
