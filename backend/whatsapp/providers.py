@@ -217,7 +217,54 @@ def send_flow(msisdn: str, flow_token: str, header: str, body: str,
             },
         },
     }}
-    return _send_payload(msisdn, payload, f"[flow] {header} -> {screen}")
+    res = _send_payload(msisdn, payload, f"[flow] {header} -> {screen}")
+    if not res.get("success"):
+        _record_flow_rejection(screen, res)
+    return res
+
+
+#: Where the last Flow rejection is parked so /healthz can report it.
+LAST_FLOW_ERROR_KEY = "wa_last_flow_error"
+
+
+def _record_flow_rejection(screen: str, res: dict) -> None:
+    """Park Meta's rejection where an operator can actually reach it.
+
+    The reason is already logged, but reading it means shell access to the
+    host's log stream while reproducing the failure — which is why diagnosing
+    "the secure entry screen didn't go through" has repeatedly meant guessing
+    from symptoms instead. The rejection is about OUR request (a screen name, a
+    flow id, a parameter), so it carries no customer data; the recipient is
+    deliberately not stored.
+    """
+    from django.utils import timezone
+
+    try:
+        from .models import SystemSetting
+
+        SystemSetting.set(LAST_FLOW_ERROR_KEY, "|".join((
+            timezone.now().isoformat(timespec="seconds"),
+            str(screen),
+            str(res.get("error_code", "")),
+            str(res.get("error_detail", ""))[:150],
+        ))[:255])
+    except Exception:  # noqa: BLE001 — never let diagnostics break a send path
+        log.debug("could not record flow rejection", exc_info=True)
+
+
+def last_flow_error() -> dict:
+    """The most recent Flow send Meta refused: when, which screen, and its own
+    words. Empty when no Flow send has ever been rejected."""
+    try:
+        from .models import SystemSetting
+
+        raw = SystemSetting.get(LAST_FLOW_ERROR_KEY, "")
+    except Exception:  # noqa: BLE001
+        return {}
+    if not raw:
+        return {}
+    parts = (raw.split("|", 3) + ["", "", "", ""])[:4]
+    return {"at": parts[0], "screen": parts[1], "code": parts[2], "detail": parts[3]}
 
 
 def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:

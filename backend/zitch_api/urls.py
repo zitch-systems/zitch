@@ -49,6 +49,14 @@ def health(_request):
         # whole story: keyed or in mock mode. The old per-rail sms_sendchamp boolean
         # went with the rail — anything alerting on it should watch sms_live instead.
         "sms_provider": "termii",
+        # Termii ACCEPTS a message (returns a message_id, so `success` is true and
+        # the customer is told a code is coming) and then never delivers it when
+        # the sender ID is not whitelisted for the route. That is the single most
+        # common OTP failure here and it is invisible from the send result. Both
+        # halves are config, not secrets: `generic` is the PROMOTIONAL route and
+        # is dropped for DND-registered lines, which is most Nigerian numbers.
+        "sms_sender_id": (getattr(settings, "TERMII", {}) or {}).get("SENDER_ID", ""),
+        "sms_channel": (getattr(settings, "TERMII", {}) or {}).get("CHANNEL", ""),
         "sms_live": sms_live(),
         "email_resend": bool(settings.RESEND["API_KEY"]),
         "kyc_provider": kyc_provider(),  # which backend verifies BVN/NIN/vNIN (wema Full KYC)
@@ -102,8 +110,24 @@ def health(_request):
         # are rejected, which reads like "some features are broken" instead of
         # "the Flow is one publish behind". `missing_screens` names them.
         "whatsapp_flow_published": _whatsapp_flow_published(),
+        # `flow_published` proves the Flow is right; it cannot explain a send
+        # Meta refused for any OTHER reason. That reason is logged, but reading
+        # it means shell access to the log stream while reproducing the failure
+        # — so in practice it has been guessed at from symptoms. This is the
+        # last rejection, in Meta's own words, on a page an operator can open.
+        "whatsapp_last_flow_error": _whatsapp_last_flow_error(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_last_flow_error():
+    """The most recent Flow send Meta refused. {} when none ever has."""
+    from whatsapp.providers import last_flow_error
+
+    try:
+        return last_flow_error()
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return {}
 
 
 def _whatsapp_flow_published():
