@@ -28,6 +28,16 @@ PIN_SCREEN = "PIN_SCREEN"
 #: all. A separate screen starts empty because it is a separate form.
 PIN_CONFIRM = "PIN_CONFIRM"
 SIGNUP_SCREEN = "SIGNUP_SCREEN"
+#: Chained twins of PIN_SCREEN and IDENTITY_SCREEN. Meta forbids ONE screen being
+#: both a flow's opening screen and the target of another screen's route: a Flow
+#: may only open on a ROOT of the routing graph ("Specified screen X is not
+#: allowed as first screen of this flow"). PIN_SCREEN and IDENTITY_SCREEN are
+#: both — sent directly to confirm a payment / collect a BVN, AND chained into
+#: from a form. So the chained arrival is a separate id with an identical layout;
+#: `flow_screen` on the payload records which of the pair a session is sitting on
+#: so error re-renders stay put instead of navigating.
+PIN_CHAIN = "PIN_CHAIN"
+IDENTITY_CHAIN = "IDENTITY_CHAIN"
 TRANSFER_FORM = "TRANSFER_FORM"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
@@ -177,18 +187,28 @@ def resolve_flow_token(token: str):
 # --------------------------------------------------------------------------- #
 # screen builders
 # --------------------------------------------------------------------------- #
-def _pin_screen(summary, error: str = "") -> dict:
+def _pin_screen(summary, error: str = "", screen: str = PIN_SCREEN) -> dict:
     """`summary` is either the structured {amount, recipient, details} the money
     flows persist, or a bare string (the signup PIN, which has no payment to
     describe). Every declared field is always supplied — the screen renders all
     three, so a missing one is a blank line rather than an omission."""
     fields = summary if isinstance(summary, dict) else {}
     heading = fields.get("amount") or (summary if isinstance(summary, str) else "")
-    return {"screen": PIN_SCREEN,
+    return {"screen": screen,
             "data": {"amount": heading or "Confirm your payment",
                      "recipient": fields.get("recipient", ""),
                      "details": fields.get("details", ""),
                      "error": error or ""}}
+
+
+def _flow_screen(container, default: str) -> str:
+    """The screen this Flow session is actually displaying.
+
+    A session that opened on PIN_SCREEN and one that arrived at PIN_CHAIN from a
+    form render the same thing, but returning the wrong id turns a re-render into
+    a navigation — which Meta rejects when no route exists between them.
+    """
+    return (getattr(container, "payload", None) or {}).get("flow_screen") or default
 
 
 def _pa_screen_fields(pa) -> dict:
@@ -197,12 +217,13 @@ def _pa_screen_fields(pa) -> dict:
     return pa.payload.get("flow_fields") or pa.payload.get("flow_summary", "")
 
 
-def _identity_screen(kind: str, error: str = "", summary: str = "", label: str = "") -> dict:
+def _identity_screen(kind: str, error: str = "", summary: str = "", label: str = "",
+                     screen: str = IDENTITY_SCREEN) -> dict:
     """The masked-entry screen. Defaults to the 11-digit BVN/NIN wording, but the
     email confirmation code rides the same screen — one published masked input,
     so every secret the ladder collects is entered the same way."""
     which = (kind or "BVN").upper()
-    return {"screen": IDENTITY_SCREEN,
+    return {"screen": screen,
             "data": {"summary": summary or f"Enter your 11-digit {which}",
                      "label": label or which,
                      "error": error or ""}}
@@ -259,7 +280,7 @@ def handle_flow_request(payload: dict) -> dict:
         if ob.step == FLOW_SIGNUP_STATE:
             return _signup_screen()
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
-                else _pin_screen(_ob_summary(ob)))
+                else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
     # A KYC identity step. Same reasoning as the PIN: a BVN or NIN typed into the
     # chat stays in the customer's own history forever — WhatsApp has no
@@ -290,7 +311,7 @@ def handle_flow_request(payload: dict) -> dict:
             return _transfer_form_screen()
         if pa.action_type == "setpin":
             return _set_pin_screen(pa)
-        return _pin_screen(_pa_screen_fields(pa))
+        return _pin_screen(_pa_screen_fields(pa), screen=_flow_screen(pa, PIN_SCREEN))
 
     if action == "data_exchange":
         # Which screen submitted is the pending action's STATE, not the shape of
@@ -304,7 +325,8 @@ def handle_flow_request(payload: dict) -> dict:
 
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
     pa = resolve_flow_token(token)
-    return _pin_screen(_pa_screen_fields(pa)) if pa else _success_screen("Session ended.")
+    return (_pin_screen(_pa_screen_fields(pa), screen=_flow_screen(pa, PIN_SCREEN))
+            if pa else _success_screen("Session ended."))
 
 
 def _confirm_pin_screen(error: str = "") -> dict:
@@ -344,10 +366,12 @@ def _submit_signup_details(ob, data: dict) -> dict:
         # Recovery looks accounts up by email; a duplicate would make reset
         # codes ambiguous — refused at entry, exactly like the chat path.
         return _signup_screen(error="That email is already on a Zitch account — use a different one.")
-    ob.payload.update({"first_name": first, "last_name": last, "email": email})
+    ob.payload.update({"first_name": first, "last_name": last, "email": email,
+                       # SIGNUP_SCREEN routes to PIN_CHAIN, not PIN_SCREEN.
+                       "flow_screen": PIN_CHAIN})
     ob.step = FLOW_PIN_STATE
     ob.save(update_fields=["payload", "step"])
-    return _pin_screen(_ob_summary(ob))
+    return _pin_screen(_ob_summary(ob), screen=PIN_CHAIN)
 
 
 def _ob_summary(ob) -> str:
@@ -367,7 +391,8 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
 
     pin = str(data.get("pin", "")).strip()
     if not re.fullmatch(r"\d{6}", pin):
-        return _pin_screen(_ob_summary(ob), error="Your PIN must be exactly 6 digits.")
+        return _pin_screen(_ob_summary(ob), error="Your PIN must be exactly 6 digits.",
+                           screen=_flow_screen(ob, PIN_SCREEN))
 
     held = ob.payload.get("flow_pin_hash") or ""
     if not held:
@@ -402,7 +427,8 @@ def _submit_identity(pa, data: dict) -> dict:
     kind = pa.payload.get("id_kind", "bvn")
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
     if not re.fullmatch(r"\d{11}", number):
-        return _identity_screen(kind, error="That should be exactly 11 digits.")
+        return _identity_screen(kind, error="That should be exactly 11 digits.",
+                                screen=_flow_screen(pa, IDENTITY_SCREEN))
 
     try:
         # Both entry points collect the same number on the same screen; what
@@ -446,8 +472,15 @@ def _submit_account_otp(pa, data: dict) -> dict:
 
 
 def _email_code_screen(pa, error: str = "") -> dict:
+    # Reached two ways: chained from EMAIL_SCREEN inside one session (so the
+    # twin, which EMAIL_SCREEN routes to), or as its own flow message when the
+    # address was already known (so the root). _send_email_flow records which.
     return _identity_screen("email", error=error, label="Email code",
-                            summary=f"Enter the 6-digit code we sent to {pa.user.email}")
+                            summary=f"Enter the 6-digit code we sent to {pa.user.email}",
+                            screen=(IDENTITY_CHAIN
+                                    if _flow_screen(pa, IDENTITY_SCREEN) in (EMAIL_SCREEN,
+                                                                            IDENTITY_CHAIN)
+                                    else IDENTITY_SCREEN))
 
 
 def _email_step_screen(pa, error: str = "") -> dict:
@@ -511,7 +544,7 @@ def _submit_pin(token: str, data: dict) -> dict:
         if code == "pin_locked":
             _clear_actions(pa.msisdn)
             return _success_screen(message)
-        return _pin_screen(summary, error=message)
+        return _pin_screen(summary, error=message, screen=_flow_screen(pa, PIN_SCREEN))
 
     try:
         outcome = run_flow_execution(pa, user)
@@ -606,8 +639,10 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
                        "name": name, "pin_attempts": 0})
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
+    # The form routes to PIN_CHAIN, not PIN_SCREEN — see the PIN_CHAIN comment.
+    pa.payload["flow_screen"] = PIN_CHAIN
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)
-    return _pin_screen(fields)
+    return _pin_screen(fields, screen=PIN_CHAIN)
 
 
 def _set_pin_screen(pa, error: str = "") -> dict:

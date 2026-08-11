@@ -934,11 +934,14 @@ class SignupFormFlowTests(TestCase):
         self.assertEqual(resp["screen"], SIGNUP_SCREEN)
 
     def test_valid_details_store_and_chain_into_the_pin_screen(self):
-        from .flows import PIN_SCREEN
+        # PIN_CHAIN, not PIN_SCREEN: a Flow may only OPEN on a routing root, so
+        # the screen chained into from a form has to be PIN_SCREEN's twin or
+        # every direct PIN send is refused. See test_flow_entry_screens.
+        from .flows import PIN_CHAIN
 
         ob = self._ob()
         resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="Ngozi@Example.com")
-        self.assertEqual(resp["screen"], PIN_SCREEN)          # same flow session
+        self.assertEqual(resp["screen"], PIN_CHAIN)           # same flow session
         ob.refresh_from_db()
         self.assertEqual(ob.payload["email"], "ngozi@example.com")
         self.assertEqual(ob.payload["first_name"], "Ngozi")
@@ -1005,25 +1008,25 @@ class TransferFormFlowTests(TestCase):
                                     "flow_token": sign_flow_token(pa), "data": data})
 
     def test_the_form_resolves_the_name_and_chains_into_the_pin_screen(self):
-        from .flows import PIN_SCREEN
+        from .flows import PIN_CHAIN
 
         pa = self._pa()
         with patch("utility.providers.payout_resolve_account",
                    return_value={"success": True, "name": "Adeyemi William"}):
             resp = self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
-        self.assertEqual(resp["screen"], PIN_SCREEN)
+        self.assertEqual(resp["screen"], PIN_CHAIN)
         self.assertIn("ADEYEMI WILLIAM", resp["data"]["recipient"])   # auto-detected name
         self.assertIn("GTBank", resp["data"]["details"])
 
     def test_one_checksum_match_autodetects_the_bank(self):
-        from .flows import PIN_SCREEN
+        from .flows import PIN_CHAIN
 
         acct = self._valid_account("058")
         pa = self._pa()
         with patch("utility.providers.payout_resolve_account",
                    return_value={"success": True, "name": "Ada Eze"}) as enquiry:
             resp = self._submit(pa, amount="2300", account_number=acct, bank="")
-        self.assertEqual(resp["screen"], PIN_SCREEN)
+        self.assertEqual(resp["screen"], PIN_CHAIN)
         self.assertIn("GTBank", resp["data"]["details"])              # detected, not asked
         enquiry.assert_called_once_with(acct, "058")
 

@@ -494,6 +494,7 @@ def _send_identity_flow(pa: PendingAction, kind: str, fallback_state: str = "") 
     if not flows_live():
         return False
     pa.payload["id_kind"] = kind
+    pa.payload["flow_screen"] = IDENTITY_SCREEN          # opens on the root, not the twin
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
     which = kind.upper()
     res = send_flow(
@@ -529,6 +530,7 @@ def _send_email_flow(pa: PendingAction, step: str) -> bool:
         return False
     pa.payload["id_kind"] = "email"
     pa.payload["id_step"] = step
+    pa.payload["flow_screen"] = EMAIL_SCREEN if step == "address" else IDENTITY_SCREEN
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
     if step == "address":
         screen, data = EMAIL_SCREEN, {"summary": "What's your email address?",
