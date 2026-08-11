@@ -650,9 +650,10 @@ class PublishedFlowJsonTests(unittest.TestCase):
                     f"{source} -> {target} is a backward route; Meta will reject the Flow")
 
     def test_the_screens_the_endpoint_returns_are_all_published(self):
-        from .flows import EMAIL_SCREEN, IDENTITY_SCREEN, PIN_SCREEN, SUCCESS_SCREEN
+        from .flows import (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_CONFIRM, PIN_SCREEN,
+                            SUCCESS_SCREEN)
 
-        for screen in (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_SCREEN, SUCCESS_SCREEN):
+        for screen in (EMAIL_SCREEN, IDENTITY_SCREEN, PIN_CONFIRM, PIN_SCREEN, SUCCESS_SCREEN):
             self.assertIn(screen, self.order)
 
     def test_every_screen_opens_with_the_zitch_mark(self):
@@ -673,7 +674,10 @@ class PublishedFlowJsonTests(unittest.TestCase):
                             _pin_screen, _success_screen)
 
         declared = {s["id"]: set(s["data"]) for s in self.doc["screens"]}
+        from .flows import _confirm_pin_screen  # noqa: SLF001
+
         for built in (_pin_screen({"amount": "a", "recipient": "b", "details": "c"}, "e"),
+                      _confirm_pin_screen("e"),
                       _identity_screen("bvn", error="e"),
                       _email_screen(error="e"),
                       _success_screen("done")):

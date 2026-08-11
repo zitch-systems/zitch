@@ -2107,23 +2107,27 @@ class SignupPinPrivacyTests(TestCase):
         ob = WaOnboarding.objects.get(msisdn=m)
         token = sign_onboarding_token(ob)
 
-        # First submit holds only a hash and re-renders the same screen.
+        # First submit holds only a hash and moves to the SEPARATE confirm
+        # screen — its own form, so it starts empty. Re-rendering the same
+        # screen kept the first PIN sitting in the box, and one tap "confirmed"
+        # it without a single digit retyped.
+        from whatsapp.flows import PIN_CONFIRM
+
         r1 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
-        self.assertEqual(r1["screen"], PIN_SCREEN)
-        self.assertIn("Re-enter", r1["data"]["amount"])   # the heading line
+        self.assertEqual(r1["screen"], PIN_CONFIRM)
         ob.refresh_from_db()
         self.assertTrue(ob.payload["flow_pin_hash"])
         self.assertNotIn("246810", json.dumps(ob.payload))     # never the raw PIN
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
-        # A mismatch restarts the pair rather than setting the wrong PIN.
+        # Routing is forward-only, so a mismatch cannot go back to the create
+        # screen: the first entry stays authoritative and the confirm re-asks.
         r2 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "111111"}})
-        self.assertEqual(r2["screen"], PIN_SCREEN)
+        self.assertEqual(r2["screen"], PIN_CONFIRM)
         self.assertIn("didn't match", r2["data"]["error"])
         self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
 
-        # Set again, then confirm: the account is created with that PIN.
-        handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
+        # Matching the first entry creates the account with that PIN.
         r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
         self.assertEqual(r3["screen"], "SUCCESS")
         u = User.objects.get(phone=_local_phone(m))

@@ -507,7 +507,8 @@ def _send_identity_flow(pa: PendingAction, kind: str, fallback_state: str = "") 
     # otherwise it would sit in a Flow state with no Flow open. Account setup
     # parks both ID types in one "bvn" entry state, so it names its own.
     _touch(pa, state=fallback_state or kind, payload=pa.payload)
-    log.warning("wa_identity_flow_send_failed kind=%s pa=%s", kind, pa.id)
+    log.warning("wa_identity_flow_send_failed kind=%s pa=%s detail=%r", kind, pa.id,
+                res.get("error_detail", ""))
     return False
 
 
@@ -545,7 +546,8 @@ def _send_email_flow(pa: PendingAction, step: str) -> bool:
         return True
     # Dispatch failed: put the action back where the chat fallback expects it.
     _touch(pa, state=("email_address" if step == "address" else "email"), payload=pa.payload)
-    log.warning("wa_email_flow_send_failed step=%s pa=%s", step, pa.id)
+    log.warning("wa_email_flow_send_failed step=%s pa=%s detail=%r", step, pa.id,
+                res.get("error_detail", ""))
     return False
 
 
@@ -1062,7 +1064,8 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
         if res.get("success"):
             return reply(msisdn, "🔐 Tap the secure screen above to set your *6-digit PIN*. "
                                  "It's typed privately and never appears in this chat.")
-        log.warning("wa_onboarding_pin_flow_failed msisdn=%s", msisdn)
+        log.warning("wa_onboarding_pin_flow_failed msisdn=%s detail=%r", msisdn,
+                    res.get("error_detail", ""))
     if _pin_in_chat_allowed():
         _onboard_to(ob, "pin")
         return reply(msisdn, "Create a *6-digit PIN* to authorise payments (any 6 digits — keep it secret).")
@@ -1834,7 +1837,8 @@ def _send_account_otp_flow(pa: PendingAction) -> bool:
     if res.get("success"):
         return True
     _touch(pa, state="otp", payload=pa.payload)
-    log.warning("wa_account_otp_flow_send_failed pa=%s", pa.id)
+    log.warning("wa_account_otp_flow_send_failed pa=%s detail=%r", pa.id,
+                res.get("error_detail", ""))
     return False
 
 

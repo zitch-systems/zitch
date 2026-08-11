@@ -97,6 +97,15 @@ def _message_result(response) -> dict:
     }
     if not result["success"]:
         result.update({
+            # Meta's own words. error_code alone (e.g. a bare 131009) has cost
+            # DAYS across this project: the message and error_data.details name
+            # the offending parameter — "screen not found", "invalid flow_id" —
+            # and carry no customer data, so they are safe to log and return.
+            "error_detail": "; ".join(str(x) for x in (
+                error.get("message"),
+                (error.get("error_data") or {}).get("details")
+                if isinstance(error.get("error_data"), dict) else None,
+            ) if x)[:300],
             "error_code": error.get("code") or status or "provider_error",
             "message": "WhatsApp provider rejected the request",
             # A 429 is an explicit refusal and is safe to retry. A 5xx may have
@@ -137,9 +146,9 @@ def _log_if_rejected(response, msisdn: str) -> dict:
     any health counter."""
     result = _message_result(response)
     if not result["success"]:
-        log.warning("wa_send_rejected recipient=%s status=%s error_code=%s",
+        log.warning("wa_send_rejected recipient=%s status=%s error_code=%s detail=%r",
                     mask_pii(msisdn), getattr(response, "status_code", 0),
-                    result.get("error_code"))
+                    result.get("error_code"), result.get("error_detail", ""))
     return result
 
 
