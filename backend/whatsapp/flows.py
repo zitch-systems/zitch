@@ -28,11 +28,13 @@ PIN_SCREEN = "PIN_SCREEN"
 #: all. A separate screen starts empty because it is a separate form.
 PIN_CONFIRM = "PIN_CONFIRM"
 SIGNUP_SCREEN = "SIGNUP_SCREEN"
+TRANSFER_FORM = "TRANSFER_FORM"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
-FLOW_PIN_STATE = "flow_pin"
-FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
+FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
+FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open
+FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
@@ -165,7 +167,7 @@ def resolve_flow_token(token: str):
     if not pid.isdigit():
         return None
     pa = PendingAction.objects.filter(id=int(pid)).first()
-    if pa is None or pa.state != FLOW_PIN_STATE or pa.expired:
+    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE) or pa.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{pa.id}:{pa.msisdn}")):
         return None
@@ -284,9 +286,20 @@ def handle_flow_request(payload: dict) -> dict:
         pa = resolve_flow_token(token)
         if pa is None:
             return _success_screen("This request has expired. Please start again in the chat.")
+        if pa.state == FLOW_FORM_STATE:
+            return _transfer_form_screen()
+        if pa.action_type == "setpin":
+            return _set_pin_screen(pa)
         return _pin_screen(_pa_screen_fields(pa))
 
     if action == "data_exchange":
+        # Which screen submitted is the pending action's STATE, not the shape of
+        # the data it posted. The form and the PIN pad are two exchanges on one
+        # session, and sniffing for a field name would misroute the moment a
+        # screen gains or loses one.
+        pa = resolve_flow_token(token)
+        if pa is not None and pa.state == FLOW_FORM_STATE:
+            return _submit_transfer_form(token, data)
         return _submit_pin(token, data)
 
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
@@ -507,6 +520,94 @@ def _submit_pin(token: str, data: dict) -> dict:
         _clear_actions(pa.msisdn)
         return _success_screen("Something went wrong completing that. If you were charged it will auto-reverse.")
     return _success_screen(outcome)
+
+
+def _transfer_form_screen(error: str = "", candidates=None) -> dict:
+    from .router import _bank_items
+
+    return {"screen": TRANSFER_FORM,
+            "data": {"banks": _bank_items(candidates), "error": error or ""}}
+
+
+def _submit_transfer_form(token: str, data: dict) -> dict:
+    """The transfer form: amount + account + (optional) bank in one private
+    screen. The server verifies everything the chat interrogation verified —
+    minimum, limits, balance, and the name enquiry — then chains into the PIN
+    screen on the same session, showing WHO the money is going to.
+
+    Bank auto-detect is deliberately a suggestion: the NUBAN checksum narrows
+    the list, picks alone only when exactly ONE bank matches, and otherwise
+    re-renders with the candidates leading the dropdown. The name enquiry is
+    the real safety net either way.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from common.http import MIN_TRANSFER, daily_limit_error, send_limit_error
+    from transfers.models import Bank
+    from utility.providers import payout_resolve_account
+
+    from .router import (_clear_actions, _flow_fields, _insufficient, _touch,
+                         nuban_bank_candidates)
+    from wallet.services import get_or_create_wallet
+
+    pa = resolve_flow_token(token)
+    if pa is None:
+        return _success_screen("This request has expired. Please start again in the chat.")
+    user = pa.user
+
+    try:
+        amount = Decimal(str(data.get("amount", "")).strip())
+    except InvalidOperation:
+        return _transfer_form_screen(error="Enter the amount as a number, e.g. 5000.")
+    account = "".join(ch for ch in str(data.get("account_number", "")) if ch.isdigit())
+    if len(account) != 10:
+        return _transfer_form_screen(error="The account number should be exactly 10 digits.")
+    if amount < MIN_TRANSFER:
+        return _transfer_form_screen(error=f"Minimum transfer is NGN {MIN_TRANSFER:,.0f}.")
+    limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "transfer")
+    if limit_msg:
+        return _transfer_form_screen(error=limit_msg)
+    if _insufficient(user, amount):
+        balance = get_or_create_wallet(user).balance
+        return _transfer_form_screen(error=f"Insufficient balance — you have NGN {balance:,.2f}.")
+
+    code = str(data.get("bank", "")).strip()
+    bank = Bank.objects.filter(code=code, active=True).first() if code else None
+    if bank is None:
+        candidates = nuban_bank_candidates(account)
+        if len(candidates) == 1:
+            bank = candidates[0]
+        elif candidates:
+            return _transfer_form_screen(
+                error=f"This account number matches {len(candidates)} banks — "
+                      "pick yours from the top of the list.",
+                candidates=candidates)
+        else:
+            return _transfer_form_screen(error="Pick the bank from the list.")
+
+    res = payout_resolve_account(account, bank.bank_code)
+    if not res.get("success"):
+        return _transfer_form_screen(
+            error=f"Couldn't verify that account at {bank.name} — check the number.")
+    name = (res.get("name") or "").strip() or "Bank recipient"
+
+    # The chat path routes through _arm_confirm, which refuses to raise a PIN pad
+    # for an account that has no PIN — a screen the customer can never satisfy.
+    # The form chains straight to PIN_SCREEN, so it must make the same refusal.
+    if not user.transaction_pin:
+        _clear_actions(pa.msisdn)
+        return _success_screen(
+            "You haven't set a transaction PIN yet — it's what authorises payments here "
+            "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
+            "the transfer again.")
+
+    pa.payload.update({"amount": str(amount), "account": account,
+                       "bank_code": bank.bank_code, "bank_name": bank.name,
+                       "name": name, "pin_attempts": 0})
+    fields = _flow_fields(pa)
+    pa.payload["flow_fields"] = fields
+    _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)
+    return _pin_screen(fields)
 
 
 def _set_pin_screen(pa, error: str = "") -> dict:

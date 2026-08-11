@@ -41,8 +41,8 @@ from wallet.services import (
 )
 
 from . import ai
-from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_ID_STATE, FLOW_PIN_STATE, FLOW_SIGNUP_STATE,
-                    IDENTITY_SCREEN, SIGNUP_SCREEN,
+from .flows import (ACCOUNT_OTP, EMAIL_SCREEN, FLOW_FORM_STATE, FLOW_ID_STATE, FLOW_PIN_STATE,
+                    FLOW_SIGNUP_STATE, IDENTITY_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
                     PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
@@ -656,6 +656,13 @@ def _confirm_prompt(pa: PendingAction) -> str:
         if has_app:
             return f"{_approve_link_line(pa, primary=True)}\n\n{code_line}"
         return code_line + _approve_link_line(pa, primary=False)
+    if pa.state == FLOW_FORM_STATE:
+        if _is_new_command(text):
+            _clear_actions(msisdn)
+            reply(msisdn, "Okay — leaving that transfer.")
+            return handle_inbound(msisdn, text)
+        return reply(msisdn, "💸 Please fill the secure *Send money* form above — "
+                             "or reply \"cancel\".")
     if pa.state == FLOW_PIN_STATE:
         # The secure Flow is already open and carries its own confirm button, so
         # this line must NOT restate the ask. It used to fall through to the
@@ -2006,6 +2013,24 @@ def _start_transfer(user, msisdn: str) -> None:
     if _blocked_from_spending(user, msisdn):
         return None
     _clear_actions(msisdn)
+    # One private form (amount, account, searchable bank list) that chains into
+    # the PIN screen with the recipient's resolved name — replacing the
+    # question-by-question chat interrogation. The typed/AI path is untouched:
+    # "send 2300 to Ada, opay, 91887..." still parses straight to a confirm.
+    if flows_live():
+        pa = _new_flow(user, msisdn, "transfer", FLOW_FORM_STATE, {"pin_attempts": 0})
+        res = send_flow(
+            msisdn, sign_flow_token(pa),
+            header="Send money", body="Fill in the details privately — we'll confirm the "
+                                      "account name before anything moves.",
+            screen=TRANSFER_FORM, screen_data={"banks": _bank_items(), "error": ""},
+            cta="Send money",
+        )
+        if res.get("success"):
+            return reply(msisdn, "💸 Tap *Send money* on the secure form above.")
+        log.warning("wa_transfer_form_send_failed pa=%s detail=%r",
+                    pa.id, res.get("error_detail", ""))
+        _clear_actions(msisdn)
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="transfer", state="amount",
         payload={"pin_attempts": 0}, expires_at=timezone.now() + FLOW_TTL,
@@ -2168,6 +2193,43 @@ def _match_banks(text: str) -> list:
     if exact:
         return exact
     return [b for b in banks if t and (t in b.name.lower() or b.name.lower() in t)]
+
+
+def _bank_items(candidates=None) -> list:
+    """Dropdown data for the transfer form: {id, title} per active bank, popular
+    first. When `candidates` (Bank rows) is given they lead the list — the
+    NUBAN-narrowed suggestions — with everything else after, because a checksum
+    match is a suggestion and the customer must stay able to pick any bank."""
+    banks = list(Bank.objects.filter(active=True).order_by("-popular", "name")[:200])
+    if candidates:
+        heads = [b for b in banks if b.code in {c.code for c in candidates}]
+        banks = heads + [b for b in banks if b.code not in {c.code for c in candidates}]
+    return [{"id": b.code, "title": b.name} for b in banks[:200]]
+
+
+def nuban_bank_candidates(account: str) -> list:
+    """The active banks this 10-digit NUBAN is checksum-valid for.
+
+    The CBN algorithm bakes the bank code into the check digit: weights 3,7,3
+    cycling over bank_code + the 9-digit serial, check = (10 - sum mod 10) mod
+    10. Running it against every bank's code narrows hundreds to a handful —
+    which is why this SUGGESTS an ordering and never picks silently when more
+    than one matches: a wrong guess is money at the wrong institution.
+    """
+    digits = "".join(ch for ch in str(account or "") if ch.isdigit())
+    if len(digits) != 10:
+        return []
+    serial, check = digits[:9], int(digits[9])
+    out = []
+    for bank in Bank.objects.filter(active=True):
+        code = "".join(ch for ch in (bank.bank_code or "") if ch.isdigit())
+        if not code:
+            continue
+        seq = code + serial
+        total = sum(int(c) * (3, 7, 3)[i % 3] for i, c in enumerate(seq))
+        if (10 - total % 10) % 10 == check:
+            out.append(bank)
+    return out
 
 
 def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:

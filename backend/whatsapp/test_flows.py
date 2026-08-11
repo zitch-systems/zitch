@@ -762,6 +762,14 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
 
         self._assert_matches(self._sent(router._send_pin_flow, self.pa, self.user))  # noqa: SLF001
 
+    def test_the_transfer_form(self):
+        from transfers.models import Bank
+        from whatsapp import router
+
+        Bank.objects.get_or_create(code="gtb", defaults={"name": "GTBank", "bank_code": "058",
+                                                         "color": "#e30613", "active": True})
+        self._assert_matches(self._sent(router._start_transfer, self.user, MSISDN))  # noqa: SLF001
+
     def test_the_signup_form(self):
         from whatsapp import router
         from whatsapp.models import WaOnboarding
@@ -964,3 +972,106 @@ class SignupFormFlowTests(TestCase):
         self.assertIn("already on a Zitch account", resp["data"]["error"])
         ob.refresh_from_db()
         self.assertNotIn("email", ob.payload)                 # nothing stored on a refusal
+
+
+class TransferFormFlowTests(TestCase):
+    """The transfer form: amount + account + searchable bank in one private
+    screen, the bank auto-detected from the NUBAN checksum when it is
+    unambiguous, and the account NAME resolved server-side before the PIN."""
+
+    def setUp(self):
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
+        Bank.objects.create(code="uba", name="UBA", bank_code="033", color="#c00", active=True)
+        self.user = _make_user()
+
+    def _valid_account(self, bank_code="058"):
+        """Mint a NUBAN whose check digit is valid for `bank_code` only."""
+        serial = "123456789"
+        seq = bank_code + serial
+        check = (10 - sum(int(c) * (3, 7, 3)[i % 3] for i, c in enumerate(seq)) % 10) % 10
+        return serial + str(check)
+
+    def _pa(self):
+        from .flows import FLOW_FORM_STATE
+
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_FORM_STATE,
+            payload={"pin_attempts": 0}, expires_at=timezone.now() + timedelta(minutes=5))
+
+    def _submit(self, pa, **data):
+        from .flows import handle_flow_request
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(pa), "data": data})
+
+    def test_the_form_resolves_the_name_and_chains_into_the_pin_screen(self):
+        from .flows import PIN_SCREEN
+
+        pa = self._pa()
+        with patch("utility.providers.payout_resolve_account",
+                   return_value={"success": True, "name": "Adeyemi William"}):
+            resp = self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
+        self.assertEqual(resp["screen"], PIN_SCREEN)
+        self.assertIn("ADEYEMI WILLIAM", resp["data"]["recipient"])   # auto-detected name
+        self.assertIn("GTBank", resp["data"]["details"])
+
+    def test_one_checksum_match_autodetects_the_bank(self):
+        from .flows import PIN_SCREEN
+
+        acct = self._valid_account("058")
+        pa = self._pa()
+        with patch("utility.providers.payout_resolve_account",
+                   return_value={"success": True, "name": "Ada Eze"}) as enquiry:
+            resp = self._submit(pa, amount="2300", account_number=acct, bank="")
+        self.assertEqual(resp["screen"], PIN_SCREEN)
+        self.assertIn("GTBank", resp["data"]["details"])              # detected, not asked
+        enquiry.assert_called_once_with(acct, "058")
+
+    def test_no_checksum_match_asks_rather_than_guessing(self):
+        from .flows import TRANSFER_FORM
+
+        pa = self._pa()
+        # 10 digits whose check digit fits neither seeded bank.
+        acct = self._valid_account("058")
+        bad = acct[:9] + str((int(acct[9]) + 1) % 10)
+        resp = self._submit(pa, amount="2300", account_number=bad, bank="")
+        self.assertEqual(resp["screen"], TRANSFER_FORM)
+        self.assertIn("Pick the bank", resp["data"]["error"])
+
+    def test_every_chat_guard_still_holds_on_the_form(self):
+        from .flows import TRANSFER_FORM
+
+        pa = self._pa()
+        self.assertIn("10 digits",
+                      self._submit(pa, amount="2300", account_number="123", bank="gtb")["data"]["error"])
+        self.assertIn("Minimum",
+                      self._submit(pa, amount="10", account_number="0123456789", bank="gtb")["data"]["error"])
+        resp = self._submit(pa, amount="999999999", account_number="0123456789", bank="gtb")
+        self.assertEqual(resp["screen"], TRANSFER_FORM)               # limit / balance refusal
+
+    def test_an_account_with_no_pin_is_refused_not_shown_a_pin_pad(self):
+        """The chat path refuses through _arm_confirm; chaining past it would
+        raise a PIN screen the customer has no way to satisfy."""
+        from .flows import SUCCESS_SCREEN
+
+        self.user.transaction_pin = ""
+        self.user.save(update_fields=["transaction_pin"])
+        pa = self._pa()
+        with patch("utility.providers.payout_resolve_account",
+                   return_value={"success": True, "name": "Ada Eze"}):
+            resp = self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertIn("set pin", resp["data"]["message"].lower())
+        self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())
+
+    def test_the_whole_transfer_completes_in_one_session(self):
+        from .flows import SUCCESS_SCREEN
+
+        pa = self._pa()
+        before = get_or_create_wallet(self.user).balance
+        with patch("utility.providers.payout_resolve_account",
+                   return_value={"success": True, "name": "Ada Eze"}):
+            self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
+        done = self._submit(pa, pin="1234")
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("2300"))
