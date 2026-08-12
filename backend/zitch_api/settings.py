@@ -492,7 +492,7 @@ WHATSAPP = {
     "VERIFY_TOKEN": os.environ.get("WHATSAPP_VERIFY_TOKEN", ""),
     "APP_SECRET": os.environ.get("WHATSAPP_APP_SECRET", ""),
     "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
-    "ALLOW_CHAT_SIGNUP": False,  # resolved after _PROD is known below
+    "ALLOW_CHAT_SIGNUP": True,  # resolved from the environment below
 }
 
 # Public-facing links shown in the WhatsApp menu and help. Env-overridable so a
@@ -607,9 +607,14 @@ if _PROD and _wa_mode == "sandbox":
 
     raise ImproperlyConfigured("WHATSAPP_MODE=sandbox is forbidden in production.")
 WHATSAPP["MODE"] = _wa_mode
-WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool(
-    "WHATSAPP_ALLOW_CHAT_SIGNUP", not _PROD and _wa_mode == "sandbox"
-)
+# Opening an account IS the first thing a new number asks the channel for, so it
+# is on by default — in production too. What used to keep it off was the PIN, and
+# the PIN is no longer collected here: `_pin_in_chat_allowed()` is dev/test-only,
+# so a live deploy either takes the PIN through the encrypted Flow or creates the
+# account without one (unspendable until the app sets it). That guard does not
+# depend on this switch, which is why turning signup on cannot put a PIN in a
+# thread. Set the env var to false to send new numbers to the app instead.
+WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool("WHATSAPP_ALLOW_CHAT_SIGNUP", True)
 # Webhook commands are queued in production and run through the same worker path —
 # inline by default only for local development/tests. The env override exists for
 # deployments where NO background execution can be trusted: on a hobby-tier host the

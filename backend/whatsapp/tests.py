@@ -2069,6 +2069,65 @@ class ChatAccountSetupTests(TestCase):
         self.assertIn("Add money", self.last_reply())
 
 
+class ChatSignupEntryTests(TestCase):
+    """Opening an account is what a new number came here to do.
+
+    The channel used to answer every first message by naming the app, because
+    chat signup shipped switched off. It is on by default now, and the way in is
+    what people actually type — "i want to open account here" — not only the
+    digit *1*.
+    """
+
+    def setUp(self):
+        self.client = Client()
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    # A settings dict with no ALLOW_CHAT_SIGNUP key at all: what a deploy that
+    # never sets the env var gets. The default has to be "yes, here".
+    WA = {"MODE": "sandbox", "VERIFY_TOKEN": "", "TOKEN": "", "APP_SECRET": "",
+          "BASE_URL": "x", "PHONE_NUMBER_ID": "", "BUSINESS_NUMBER": ""}
+
+    @override_settings(WHATSAPP=WA)
+    def test_a_new_number_is_offered_an_account_here_not_sent_to_the_app(self):
+        m = "2349090000041"
+        self.inbound("hi", "e1", msisdn=m)
+        r = self.last_reply(m)
+        self.assertIn("create a new account", r.lower())
+        self.assertNotIn("Link WhatsApp", r)
+
+    @override_settings(WHATSAPP=WA)
+    def test_saying_it_in_words_starts_the_signup(self):
+        # Verbatim from the thread that reported this: a plain sentence, no digit.
+        for i, phrase in enumerate(["i want to open account here", "How do I create an account?",
+                                    "let me register", "i want an account", "can i signup here",
+                                    "i want to open a zitch account"]):
+            m = f"234909000005{i}"
+            self.inbound(phrase, f"e2-{i}", msisdn=m)
+            self.assertTrue(WaOnboarding.objects.filter(msisdn=m).exists(),
+                            f"{phrase!r} did not start a signup")
+            self.assertNotIn("Link WhatsApp", self.last_reply(m))
+
+    @override_settings(WHATSAPP=WA)
+    def test_already_having_an_account_still_goes_to_linking(self):
+        # Names an account, wants the opposite of a signup — the link answer is
+        # tested first for exactly this.
+        for i, phrase in enumerate(["i already have an account", "link my account", "log in",
+                                    "i already registered", "my existing zitch account"]):
+            m = f"234909000006{i}"
+            self.inbound(phrase, f"e3-{i}", msisdn=m)
+            self.assertIn("Link WhatsApp", self.last_reply(m))
+            self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
+
+    @override_settings(WHATSAPP={**WA, "ALLOW_CHAT_SIGNUP": False})
+    def test_a_deploy_can_still_send_new_numbers_to_the_app(self):
+        m = "2349090000070"
+        self.inbound("i want to open account here", "e4", msisdn=m)
+        self.assertIn("zitch app", self.last_reply(m).lower())
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
+
+
 class SignupPinPrivacyTests(TestCase):
     """The signup PIN must never become a chat message. WhatsApp gives a business
     no way to delete or expire a message it received — there is no view-once for
