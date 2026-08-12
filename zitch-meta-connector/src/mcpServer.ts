@@ -17,6 +17,7 @@ import { TOOL_REGISTRY } from './tools/registry.js';
 
 export interface RequestMeta {
   keyFingerprint: string;
+  authMethod?: string;
   ip: string | undefined;
 }
 

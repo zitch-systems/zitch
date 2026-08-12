@@ -28,6 +28,7 @@ import {
 } from './rateLimit.js';
 import { buildMcpServer } from './mcpServer.js';
 import { buildRestRouter } from './rest.js';
+import { buildOAuthRouter } from './oauth/router.js';
 
 const config = loadConfig();
 
@@ -67,6 +68,15 @@ startRateLimiterSweep(limiter);
 const ipLimiter = new RateLimiter(config.rateLimitWindowMs, config.ipRateLimitMaxRequests);
 startRateLimiterSweep(ipLimiter);
 
+// The OAuth endpoints sit BEFORE the authentication middleware, because
+// authenticating is what they are for — a client with no token has to be able
+// to reach /oauth/authorize and /oauth/token to get one, and an MCP client
+// that has never seen this server has to be able to read the .well-known
+// metadata to discover them. They are still behind the per-IP rate limiter:
+// unauthenticated by design is not the same as unmetered, and /oauth/authorize
+// takes a passphrase, so it is exactly the endpoint worth throttling.
+app.use(ipRateLimitMiddleware(ipLimiter), buildOAuthRouter(config));
+
 const authenticated = [
   ipRateLimitMiddleware(ipLimiter),
   requireApiKey(config),
@@ -76,6 +86,7 @@ const authenticated = [
 app.post('/mcp', ...authenticated, async (req, res) => {
   const requestMeta = {
     keyFingerprint: (res.locals.keyFingerprint as string | undefined) ?? '(none)',
+    authMethod: res.locals.authMethod as string | undefined,
     ip: req.ip,
   };
   const server = buildMcpServer(config, requestMeta);

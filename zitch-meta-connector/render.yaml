@@ -42,6 +42,19 @@ services:
       # Generate with: openssl rand -hex 32
       - key: CONNECTOR_API_KEY
         sync: false
+      # --- OAuth 2.1 (Claude web custom connectors) ---
+      # Optional. OAuth works with none of these set: clients register
+      # dynamically, the consent screen accepts CONNECTOR_API_KEY as the
+      # operator passphrase, and tokens are signed with a key derived from it.
+      # Set OAUTH_LOGIN_PASSWORD to separate "who may approve a browser
+      # sign-in" from "what a script uses as its API key".
+      - key: OAUTH_LOGIN_PASSWORD
+        sync: false
+      # Pinning the public origin is not required behind Render (it is read
+      # from X-Forwarded-Proto/Host), but it makes every advertised OAuth URL
+      # explicit rather than dependent on proxy headers.
+      - key: PUBLIC_BASE_URL
+        value: "https://zitch-meta-connector.onrender.com"
       # --- Everything below has a safe default in src/config.ts; declared
       # here only so the values are visible and editable from the dashboard
       # without reading the source. ---

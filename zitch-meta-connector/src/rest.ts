@@ -47,6 +47,7 @@ export function buildRestRouter(config: Config): Router {
       const meta = {
         tool: tool.name,
         keyFingerprint: (res.locals.keyFingerprint as string | undefined) ?? '(none)',
+        authMethod: res.locals.authMethod as string | undefined,
         ip: req.ip,
       };
       try {

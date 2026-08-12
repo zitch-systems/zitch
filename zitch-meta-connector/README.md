@@ -51,13 +51,73 @@ project does not do" below).
   business configuration (Zitch's own WhatsApp number and templates) or aggregate, non-PII
   analytics.
 
+## Authentication: OAuth 2.1, or a plain API key
+
+Two credential types are accepted, because two very different callers need in:
+
+| Caller | Credential |
+|---|---|
+| **Claude web custom connectors** | OAuth 2.1 access token — its UI can only sign in through a browser redirect flow |
+| **Scripts, curl, health probes, a future GPT Action** | `CONNECTOR_API_KEY` directly — none of these can run a browser flow |
+
+Both land on the same read-only tools, with the same rate limits and the same audit logging.
+Neither ever exposes `META_ACCESS_TOKEN`: **an OAuth token authenticates the caller *to this
+connector* and is never itself a Meta credential.**
+
+### Connecting Claude
+
+In Claude → Settings → Connectors → *Add custom connector*, give it:
+
+```
+https://zitch-meta-connector.onrender.com/mcp
+```
+
+That is all it needs. Claude discovers everything else on its own: the `401` from `/mcp` carries a
+`WWW-Authenticate` header pointing at this server's protected-resource metadata, Claude reads the
+metadata, registers itself as a client, and opens the sign-in page. You'll be asked for the
+**operator passphrase** — `OAUTH_LOGIN_PASSWORD`, or `CONNECTOR_API_KEY` if you haven't set one.
+Approve, and Claude holds a token from then on.
+
+### The OAuth endpoints
+
+| Endpoint | What it is |
+|---|---|
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 authorization-server metadata |
+| `GET /.well-known/oauth-protected-resource` | RFC 9728 protected-resource metadata |
+| `POST /oauth/register` | RFC 7591 dynamic client registration |
+| `GET /oauth/authorize` | sign-in + consent screen |
+| `POST /oauth/authorize` | approve → redirects back with an authorization code |
+| `POST /oauth/token` | `authorization_code` and `refresh_token` grants |
+
+Design notes worth knowing before you change any of it:
+
+- **PKCE is mandatory and S256-only.** `plain` is refused outright — it protects against nothing
+  an attacker who can read the authorization request can't defeat, and OAuth 2.1 drops it.
+- **Client registration is stateless.** The `client_id` *is* a signed token carrying that client's
+  own metadata, and the `client_secret` is derived from it. Nothing is stored, so a client
+  registered before a redeploy still works after one — an in-memory registry would silently force
+  Claude to re-register on every deploy.
+- **Authorization codes are the one stateful thing**, precisely because they must be single-use,
+  and "already redeemed?" is not a question a self-contained token can answer. They live ~60 seconds.
+- **Not a JWT, deliberately.** These tokens carry no client-supplied `alg` header, which is the
+  root of the whole algorithm-confusion family of bugs. One algorithm, fixed in code.
+- **Redirect URIs are allowlisted by host** (`claude.ai`, `claude.com`, loopback by default).
+  Registration is unauthenticated — that's what makes it work for Claude — so without that
+  allowlist anyone could register a client pointing at their own callback and turn this into an
+  open redirector.
+- **Revocation is key rotation.** Tokens are stateless and there is no denylist, so a refresh
+  token stays valid until it expires (see the header comment in `src/oauth/tokens.ts` for the full
+  trade-off). Rotating `CONNECTOR_API_KEY` or `OAUTH_SIGNING_KEY` invalidates *every* outstanding
+  token instantly — that is the revocation mechanism.
+
 ## Security model
 
 - **Authentication**: every request to `/mcp` and `/rest/*` — not just the first one on a
-  connection — must carry `CONNECTOR_API_KEY`, as `Authorization: Bearer <key>` or
-  `X-Connector-Api-Key: <key>`. Compared with `crypto.timingSafeEqual` (`src/auth.ts`) to avoid a
-  timing side-channel on a secret this replayable. `/healthz` is the only unauthenticated route,
-  and it returns no configuration or secret material.
+  connection — must present either an OAuth access token or `CONNECTOR_API_KEY` (as
+  `Authorization: Bearer <key>` or `X-Connector-Api-Key: <key>`). Secrets are compared with
+  `crypto.timingSafeEqual` (`src/auth.ts`) to avoid a timing side-channel. `/healthz` and the
+  OAuth endpoints are the only unauthenticated routes — the latter necessarily so, since
+  authenticating is what they're *for* — and they are still behind the per-IP rate limiter.
 - **Rate limiting**: a fixed-window limiter (`src/rateLimit.ts`), 30 requests/minute per API-key
   fingerprint by default, configurable via `RATE_LIMIT_WINDOW_MS` / `RATE_LIMIT_MAX_REQUESTS`.
   In-memory and per-process — this is sized for a small admin/maintenance workload, not a public
@@ -241,7 +301,14 @@ src/
   schemas.ts        zod input validation for every tool
   mcpServer.ts        Builds a stateless McpServer + registers all tools
   rest.ts        Plain REST mirror of the same tools (for a future GPT Action)
-  index.ts        Express app: wires auth -> rate limit -> audit -> tool execution
+  index.ts        Express app: wires OAuth -> rate limit -> auth -> audit -> tool execution
+  oauth/
+    router.ts     The OAuth 2.1 endpoints (metadata, register, authorize, token)
+    sign.ts     HMAC-signed tokens (no client-supplied `alg`, by design)
+    clients.ts     Stateless dynamic client registration + redirect allowlist
+    codes.ts     Single-use authorization codes + PKCE S256
+    tokens.ts     Access/refresh tokens, audience binding, and their limits
+    consent.ts     The sign-in / consent page
   tools/
     registry.ts     Single source of truth: name, schema, handler per tool
     webhookStatus.ts, phoneNumberConfig.ts, messageTemplates.ts,

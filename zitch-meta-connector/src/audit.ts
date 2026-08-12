@@ -15,6 +15,12 @@ export interface AuditEvent {
   tool: string;
   keyFingerprint: string;
   ip: string | undefined;
+  /** Which credential type the caller used — 'api_key' (a direct
+   * CONNECTOR_API_KEY holder, e.g. a script or health probe) or 'oauth' (a
+   * browser-authorized client such as Claude). Worth recording separately:
+   * "was that call a person in Claude, or an automated key holder?" is the
+   * first question anyone asks of one of these log lines. */
+  authMethod?: string;
   outcome: 'success' | 'error' | 'denied';
   durationMs: number;
   errorMessage?: string;
