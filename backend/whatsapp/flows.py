@@ -745,7 +745,7 @@ def _submit_email(pa, data: dict) -> dict:
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
-    from .router import _clear_actions, run_flow_execution
+    from .router import _clear_actions, authorise_flow_execution
 
     pa = resolve_flow_token(token)
     if pa is None:
@@ -778,7 +778,10 @@ def _submit_pin(token: str, data: dict) -> dict:
         return _pin_screen(summary, error=message, screen=PIN_RETRY)
 
     try:
-        outcome = run_flow_execution(pa, user)
+        # Hands off to the queue in production and runs in-process in dev/test —
+        # either way this returns fast enough for Meta's 10-second data-exchange
+        # deadline, which executing a payout inline did not.
+        outcome = authorise_flow_execution(pa, user)
     except Exception:  # never leak a stack to the Flow; the money paths are idempotent
         log.exception("flow execution failed for pa=%s", pa.id)
         _clear_actions(pa.msisdn)

@@ -56,6 +56,14 @@ log = logging.getLogger("whatsapp")
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
 PIN_TTL = timedelta(minutes=2)         # ...and once it is armed and waiting for the PIN
+#: How long an AUTHORISED payment may take to settle. Not a customer-facing
+#: window at all — it is the room the queue has to retry a slow rail before the
+#: row is considered abandoned, so it is generous where the other two are tight.
+EXECUTION_TTL = timedelta(minutes=30)
+#: State of an action whose PIN passed and whose money is now moving in the
+#: worker. Deliberately not one of _AWAITING_PIN_STATES: nothing more is being
+#: asked of the customer.
+EXECUTING_STATE = "executing"
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
 
 def _links() -> dict:
@@ -780,12 +788,17 @@ def _announce_timeout(msisdn: str) -> bool:
     customer who steps away mid-payment comes back to a thread that says what
     happened, rather than to silence and a payment of unknown status.
     """
-    stale = PendingAction.objects.filter(
-        msisdn=msisdn, expires_at__lt=timezone.now()).order_by("-created").first()
+    # An AUTHORISED payment is never announced here. "Nothing was charged" is
+    # the one thing we cannot promise about a row whose money may already be
+    # moving in the worker, and deleting it would erase the only record of a
+    # payment that has to be reconciled rather than forgotten.
+    expired = PendingAction.objects.filter(
+        msisdn=msisdn, expires_at__lt=timezone.now()).exclude(state=EXECUTING_STATE)
+    stale = expired.order_by("-created").first()
     if stale is None:
         return False
     armed = stale.state in _AWAITING_PIN_STATES
-    PendingAction.objects.filter(msisdn=msisdn, expires_at__lt=timezone.now()).delete()
+    expired.delete()
     mins = int((PIN_TTL if armed else FLOW_TTL).total_seconds() // 60)
     what = "That payment wasn't confirmed in time" if armed else "That request timed out"
     reply(msisdn, f"⌛ {what} — it expired after {mins} minute{'' if mins == 1 else 's'} "
@@ -2669,6 +2682,13 @@ def _is_new_command(text: str) -> bool:
 
 
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    if pa.state == EXECUTING_STATE:
+        # Authorised and in the worker's hands. Every other branch below can end
+        # in _clear_actions, and clearing THIS row would delete a payment the
+        # customer has already confirmed and been told is on its way — so it is
+        # answered here and nowhere else.
+        return reply(msisdn, "⏳ Your payment is going through — I'll send the receipt "
+                             "here as soon as it lands.")
     if pa.state == FLOW_FORM_STATE:
         # The transfer form is open. Same escape hatch as the PIN screen below:
         # an unsubmitted form has moved no money, so a clear new instruction
@@ -3911,6 +3931,47 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
 # AFTER verifying the PIN, so a Flow-confirmed action runs the exact same money
 # path as the chat PIN path.
 # --------------------------------------------------------------------------- #
+def authorise_flow_execution(pa: PendingAction, user) -> str:
+    """The PIN just passed. Get the money OFF Meta's clock.
+
+    A Flows data-exchange must be answered within 10 seconds or the customer is
+    shown "Couldn't load content. Try again later." — and executing a transfer
+    here means a name enquiry, a payout to the bank rail, a rendered receipt, a
+    media upload and two Graph sends, all in sequence. That is routinely more
+    than ten seconds, so the customer was shown a failure for a payment that had
+    in fact gone through, with the money already gone.
+
+    So the endpoint answers as soon as the PIN is verified, and the payment runs
+    where every chat-confirmed payment has always run: the durable queue, with
+    its lease, retries and dead-letter. The outcome arrives in the chat, which is
+    where the receipt was always going to land.
+
+    Inline mode (dev, tests, and any host with no background execution at all)
+    keeps running it in-process, exactly as the webhook does — see
+    WHATSAPP_PROCESS_INLINE.
+    """
+    if getattr(settings, "WHATSAPP_PROCESS_INLINE", False):
+        return run_flow_execution(pa, user)
+
+    from .jobs import drain_in_background, enqueue_flow_execution
+
+    # Held for the worker: `executing` says authorised-not-yet-done, and the
+    # deadline is pushed out because the short PIN window governs how long the
+    # customer has to CONFIRM, not how long the rail has to settle.
+    pa.state = EXECUTING_STATE
+    pa.expires_at = timezone.now() + EXECUTION_TTL
+    pa.save(update_fields=["state", "expires_at"])
+    enqueue_flow_execution(pa)
+    # Same safety net the webhook uses for a worker that isn't running, and off
+    # the request thread so Meta's answer is not held up by it. Not under the
+    # test runner, where the suite drives the queue itself and a second thread
+    # would only race it.
+    if not getattr(settings, "TESTING", False):
+        drain_in_background()
+    return ("✅ Confirmed. I'm completing your payment now — the receipt will "
+            "arrive in this chat in a few seconds.")
+
+
 @db_transaction.atomic
 def run_flow_execution(pa: PendingAction, user) -> str:
     # Token resolution and PIN verification happen before this call. Re-read and
@@ -3920,11 +3981,15 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         pk=pa.pk,
         user_id=user.pk,
         msisdn=pa.msisdn,
-        state__in=(FLOW_PIN_STATE, "pin"),
+        state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
     ).first()
     if live is None:
         return "This request expired or was cancelled. Start again in the chat."
-    if live.expired:
+    # An action already authorised is past the point where expiry means anything:
+    # the PIN was accepted inside the window, and the clock that ran out was the
+    # one measuring how long the customer had to confirm. Dropping it here would
+    # discard a payment the customer was told was on its way.
+    if live.expired and live.state != EXECUTING_STATE:
         live.delete()
         return "This request expired or was cancelled. Start again in the chat."
 

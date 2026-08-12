@@ -85,6 +85,28 @@ def enqueue_inbound(*, message_id: str, msisdn: str, logged_text: str,
     return row, created
 
 
+def enqueue_flow_execution(pa) -> tuple[WaMessageLog, bool]:
+    """Queue an authorised payment for the worker.
+
+    Rides the inbound queue rather than inventing a second one: the lease, the
+    backoff, the attempt cap and the dead-letter are exactly what money movement
+    needs, and they are already written and tested here.
+
+    Keyed on the pending action, so a Flow submitted twice — a customer tapping
+    Confirm again after Meta showed them an error — enqueues ONE job. (The payout
+    is separately idempotent on the same id; this stops the second job existing
+    at all rather than relying on that.)
+    """
+    return enqueue_inbound(
+        message_id=f"flowexec-{pa.pk}",
+        msisdn=pa.msisdn,
+        # No customer text: this row is an instruction to ourselves, and the log
+        # is read by operators.
+        logged_text=f"[flow] execute {pa.action_type}",
+        payload={"execute_action": pa.pk, "user_id": pa.user_id},
+    )
+
+
 def discard_inbound(*, message_id: str, msisdn: str, logged_text: str,
                     reason: str) -> WaMessageLog:
     """Record a deliberately dropped message as terminal (for rate-limit evidence)."""
@@ -148,13 +170,39 @@ def _claim_inbound(pk: int):
         return row, "claimed"
 
 
+def _execute_authorised_action(action_id: int, user_id) -> None:
+    """Run a payment whose PIN already passed in the secure Flow.
+
+    A missing action is success, not failure: it means the payment already ran
+    (this job replayed after its lease, or the customer's Confirm reached us
+    twice). Raising there would retry a completed payment, and the whole point of
+    doing this in the queue is that a retry is cheap and safe.
+    """
+    from django.contrib.auth import get_user_model
+
+    from .models import PendingAction
+    from .router import run_flow_execution
+
+    pa = PendingAction.objects.filter(pk=action_id).first()
+    if pa is None:
+        log.info("wa_flow_execution_already_done action=%s", action_id)
+        return
+    user = get_user_model().objects.filter(pk=user_id or pa.user_id).first()
+    if user is None:
+        log.warning("wa_flow_execution_no_user action=%s", action_id)
+        return
+    run_flow_execution(pa, user)
+
+
 def process_inbound_message(pk: int, *, raise_errors=False) -> str:
     row, disposition = _claim_inbound(pk)
     if row is None:
         return disposition
     try:
         payload = _decrypt(row.processing_payload)
-        if payload.get("flow_reply"):
+        if payload.get("execute_action"):
+            _execute_authorised_action(int(payload["execute_action"]), payload.get("user_id"))
+        elif payload.get("flow_reply"):
             pass
         elif not payload.get("is_text"):
             reply(row.msisdn, 'I can only read text messages for now. Reply "menu" for options.')
