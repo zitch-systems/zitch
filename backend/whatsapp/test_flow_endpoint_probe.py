@@ -26,6 +26,25 @@ class FlowEndpointRecordingTests(TestCase):
         parts = (raw.split("|", 3) + ["", "", "", ""])[:4]
         return {"at": parts[0], "action": parts[1], "screen": parts[2], "error": parts[3]}
 
+    def test_a_ping_never_overwrites_the_last_customer_exchange(self):
+        """Meta pings every couple of minutes; the record that explains a failed
+        Confirm must survive them or forensics have a two-minute shelf life."""
+        from whatsapp.views import FLOW_EXCHANGE_KEY
+
+        with patch("whatsapp.flows_crypto.decrypt_request",
+                   return_value=({"action": "data_exchange", "data": {}}, b"k" * 16, b"i" * 16)), \
+             patch("whatsapp.flows.handle_flow_request",
+                   return_value={"screen": "SUCCESS", "data": {"message": "x"}}), \
+             patch("whatsapp.flows_crypto.encrypt_response", return_value="ok"):
+            self._post()
+        with patch("whatsapp.flows_crypto.decrypt_request",
+                   return_value=({"action": "ping"}, b"k" * 16, b"i" * 16)), \
+             patch("whatsapp.flows_crypto.encrypt_response", return_value="ok"):
+            self._post()
+        exchange = SystemSetting.get(FLOW_EXCHANGE_KEY, "")
+        self.assertIn("data_exchange", exchange)            # survived the ping
+        self.assertIn("ping", SystemSetting.get(FLOW_ENDPOINT_KEY, ""))
+
     def test_a_healthy_call_records_the_action_and_the_screen_answered(self):
         with patch("whatsapp.flows_crypto.decrypt_request",
                    return_value=({"action": "ping"}, b"k" * 16, b"i" * 16)), \

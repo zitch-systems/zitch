@@ -136,8 +136,27 @@ def health(_request):
         # customer reproduces, Meta never reached us (cold start, signature,
         # networking). If it moves and carries an `error`, that is the reason.
         "whatsapp_last_flow_endpoint": _whatsapp_last_flow_endpoint(),
+        # The same reading restricted to CUSTOMER exchanges. The row above is
+        # overwritten by Meta's routine pings within minutes, which erased the
+        # one record that explained a failed Confirm; this one survives them.
+        "whatsapp_last_flow_exchange": _whatsapp_last_flow_exchange(),
     }
     return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+
+
+def _whatsapp_last_flow_exchange():
+    """The last INIT/data_exchange Meta sent us — ping-proof."""
+    try:
+        from whatsapp.models import SystemSetting
+        from whatsapp.views import FLOW_EXCHANGE_KEY
+
+        raw = SystemSetting.get(FLOW_EXCHANGE_KEY, "")
+        if not raw:
+            return {}
+        parts = (raw.split("|", 3) + ["", "", "", ""])[:4]
+        return {"at": parts[0], "action": parts[1], "screen": parts[2], "error": parts[3]}
+    except Exception:  # noqa: BLE001 — a health probe never raises
+        return {}
 
 
 def _whatsapp_last_flow_endpoint():

@@ -203,6 +203,13 @@ def flow_endpoint(request):
 FLOW_ENDPOINT_KEY = "wa_last_flow_endpoint"
 
 
+#: The last CUSTOMER exchange (INIT/data_exchange), kept separately: Meta pings
+#: the endpoint every couple of minutes, and a last-write-only record meant the
+#: one interesting row — what we answered when a customer's Confirm failed —
+#: was overwritten by routine pings within minutes of the incident it explained.
+FLOW_EXCHANGE_KEY = "wa_last_flow_exchange"
+
+
 def record_flow_endpoint(action: str, screen: str, error: str = "") -> None:
     """Park the last endpoint call where /healthz can report it. Carries the
     action, the screen answered, and any failure — never the decrypted payload,
@@ -211,10 +218,12 @@ def record_flow_endpoint(action: str, screen: str, error: str = "") -> None:
 
     from .models import SystemSetting
 
+    row = "|".join((timezone.now().isoformat(timespec="seconds"),
+                    action or "?", screen or "", str(error)[:120]))[:255]
     try:
-        SystemSetting.set(FLOW_ENDPOINT_KEY,
-                          "|".join((timezone.now().isoformat(timespec="seconds"),
-                                    action or "?", screen or "", str(error)[:120]))[:255])
+        SystemSetting.set(FLOW_ENDPOINT_KEY, row)
+        if action not in ("ping", "?"):
+            SystemSetting.set(FLOW_EXCHANGE_KEY, row)
     except Exception:  # noqa: BLE001 — diagnostics never break the endpoint
         logging.getLogger("whatsapp").debug("could not record flow endpoint call", exc_info=True)
 
