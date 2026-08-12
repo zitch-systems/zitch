@@ -203,3 +203,83 @@ class WhatsAppSimulationCommandTests(TestCase):
         self.command("simulate deposit 50000")
         self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
         self.assertIn("disabled", self.last_reply().lower())
+
+
+@override_settings(WEMA=_SIM_ON, ALLOW_PRODUCTION_SIMULATION=True,
+                   TESTING=False, DEBUG=False, TERMII=_REAL_TERMII)
+class SimulatedIdentityLadderTests(TestCase):
+    """The walkthrough as specified: BVN keeps its OTP round on the NEXT PAGE of
+    the same flow, NIN verifies directly, both speak plainly ("Your BVN has been
+    verified" — no simulation banner), and a completed ladder MINTS the personal
+    account number."""
+
+    def setUp(self):
+        self.user = User.objects.create(
+            username=PHONE, phone=PHONE, email="ladder@zitch.test",
+            first_name="Ada", last_name="Test",
+            phone_verified=True, email_verified=True)
+        get_or_create_wallet(self.user)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+
+    def _pa(self, kind):
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state=FLOW_ID_STATE,
+            payload={"id_kind": kind, "attempted": ["phone", "email"]},
+            expires_at=timezone.now() + timedelta(minutes=10))
+
+    def _submit(self, pa, value):
+        from .flows import handle_flow_request, sign_identity_token
+
+        with patch("whatsapp.router.send_text", return_value={"success": True}), \
+             patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            return handle_flow_request({"action": "data_exchange",
+                                        "flow_token": sign_identity_token(pa),
+                                        "data": {"number": value}})
+
+    def test_bvn_runs_the_otp_on_the_next_page_and_speaks_plainly(self):
+        from .flows import IDENTITY_CHAIN, SUCCESS_SCREEN
+
+        pa = self._pa("bvn")
+        with patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            resp = self._submit(pa, "22222222222")
+        self.assertEqual(resp["screen"], IDENTITY_CHAIN)     # next page, same flow
+        self.assertEqual(sms.call_args[0][0], PHONE)          # code to their line
+        code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)              # the code decides
+
+        pa.refresh_from_db()
+        done = self._submit(pa, code)
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertIn("Your BVN has been verified", done["data"]["message"])
+        self.assertNotIn("simulation", done["data"]["message"])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+
+    def test_nin_verifies_directly_with_the_plain_message(self):
+        pa = self._pa("nin")
+        with patch("whatsapp.router.send_sms") as sms:
+            self._submit(pa, "33333333333")
+        sms.assert_not_called()                               # no OTP for NIN
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.nin_verified)
+        replies = "\n".join(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).values_list("text", flat=True))
+        self.assertIn("Your NIN has been verified", replies)
+        self.assertNotIn("in simulation", replies)
+
+    def test_a_completed_ladder_mints_the_account_number(self):
+        self.user.bvn_verified = True
+        self.user.save(update_fields=["bvn_verified"])
+        pa = self._pa("nin")
+        with patch("whatsapp.router.send_sms"):
+            self._submit(pa, "33333333333")
+        wallet = get_or_create_wallet(self.user)
+        wallet.refresh_from_db()
+        self.assertTrue(wallet.account_number)                # minted
+        replies = "\n".join(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).values_list("text", flat=True))
+        self.assertIn("account number is ready", replies)
+        self.assertIn(wallet.account_number, replies)

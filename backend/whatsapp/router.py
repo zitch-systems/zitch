@@ -1750,6 +1750,23 @@ def _kyc_finish(pa: PendingAction, user, msisdn: str) -> None:
     if pending:
         tail = (f"\n\n⏳ Your {pending.upper()} is with our team for review — we'll message you "
                 "when it's approved.")
+    # A completed identity ladder mints the personal account number, because
+    # that is what the customer verified FOR. Instant in simulation (mock
+    # NUBAN); in live mode the bank requires its own SMS round, so the ladder
+    # points at it rather than silently launching another flow.
+    if user.bvn_verified and user.nin_verified:
+        wallet = get_or_create_wallet(user)
+        if not wallet.account_number:
+            if _chat_simulation_allowed():
+                from accounts.views import _simulate_provision_account
+
+                acct = _simulate_provision_account(user)
+                if acct:
+                    tail += (f"\n\n🏦 Your personal Zitch account number is ready: "
+                             f"*{acct}*\nFund your wallet by bank transfer to it any time.")
+            elif wallet_views._wema_funding_enabled():
+                tail += ("\n\n🏦 One last step: reply *6* to open your personal Zitch "
+                         "account number — the bank sends its own SMS code to finish.")
     reply(msisdn, "🎉 *Thanks!* Here's where you stand:\n\n" + _kyc_status_lines(user)
           + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction." + tail)
 
@@ -2036,14 +2053,22 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
         # A per-user marker preserves the support/audit shape without turning a
         # tester's accidental real BVN/NIN into stored identity data.
         setattr(user, last4_field, f"{user.pk:04d}"[-4:])
+        user.save(update_fields=[hash_field, last4_field])
+        log.warning("wa_simulated_identity_verified user=%s kind=%s", user.pk, kind)
+        # The BVN keeps its OTP round even in simulation — the walkthrough must
+        # rehearse the same pages production uses. The code goes to the
+        # customer's own phone (the stand-in for the line on the BVN record,
+        # which a simulation does not have). NIN has no OTP step by design.
+        if kind == "bvn":
+            otp_error = _kyc_send_identity_otp(pa, user, kind, user.phone or "")
+            if otp_error is None:
+                return "otp"
+        # No SMS channel (or NIN): verify directly rather than blocking a demo
+        # on an undeliverable code.
         setattr(user, f"{kind}_verified", True)
         user.recompute_tier()
-        user.save(update_fields=[hash_field, last4_field, f"{kind}_verified", "tier"])
-        log.warning("wa_simulated_identity_verified user=%s kind=%s", user.pk, kind)
-        reply(
-            msisdn,
-            f"✅ {kind.upper()} verified in simulation — no live identity provider was contacted.",
-        )
+        user.save(update_fields=[f"{kind}_verified", "tier"])
+        reply(msisdn, f"✅ Your {kind.upper()} has been verified.")
         return _kyc_next(pa, user, msisdn)
 
     if result.get("invalid"):
@@ -2193,11 +2218,12 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
         _touch(pa, payload=pa.payload)
         return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
     setattr(user, f"{kind}_verified", True)
-    user.save(update_fields=[f"{kind}_verified"])
+    user.recompute_tier()
+    user.save(update_fields=[f"{kind}_verified", "tier"])
     for key in ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to", "id_otp_kind"):
         pa.payload.pop(key, None)
     _touch(pa, payload=pa.payload)
-    return "ok", f"{kind.upper()} verified ✅"
+    return "ok", f"✅ Your {kind.upper()} has been verified."
 
 
 def _do_account_details(user, msisdn: str) -> None:
