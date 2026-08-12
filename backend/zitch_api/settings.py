@@ -193,6 +193,23 @@ USER_LOGIN_LOCKOUT_SECONDS = int(os.environ.get("USER_LOGIN_LOCKOUT_SECONDS", "9
 # re-enables it. In production, back the cache with Redis (or rate-limit at the
 # edge) for accurate limits across workers.
 TESTING = "test" in sys.argv
+if TESTING:
+    # A checked-out repo or CI environment may contain real provider keys.  Tests
+    # must never turn fixture data into a live SMS/email/WhatsApp/bank request;
+    # provider-specific tests mock the HTTP call they mean to exercise.
+    TEST_RUNNER = "common.test_runner.NoNetworkDiscoverRunner"
+# Bound JSON/KYC uploads before parsing. The KYC UI caps decoded images at about
+# 2 MiB; 4 MiB leaves base64 + JSON overhead without allowing unbounded bodies.
+API_MAX_BODY_BYTES = int(os.environ.get("API_MAX_BODY_BYTES", str(4 * 1024 * 1024)))
+DATA_UPLOAD_MAX_MEMORY_SIZE = API_MAX_BODY_BYTES
+# Current mobile clients use Authorization: Bearer. Body tokens are retained only
+# for local/test compatibility because bodies are routinely captured by WAF and
+# error telemetry while auth headers receive special redaction.
+ALLOW_BODY_ACCESS_TOKEN = env_bool("ALLOW_BODY_ACCESS_TOKEN", DEBUG or TESTING)
+# The stock Django admin is a password-only surface. Keep it available in local
+# development/tests, but require an explicit break-glass opt-in on a deployed
+# host; normal operations use the RBAC + TOTP operator portal instead.
+DJANGO_ADMIN_ENABLED = env_bool("DJANGO_ADMIN_ENABLED", DEBUG or TESTING)
 # Force-off under tests regardless of any RATELIMIT_ENABLE in the environment /
 # .env, so a dev's local rate-limit setting can't bleed shared cache counts into
 # unrelated test cases (RateLimitTests opts back in via override_settings).
@@ -516,6 +533,9 @@ WHATSAPP_FLOW = {
 LLM = {
     "API_KEY": os.environ.get("LLM_API_KEY", ""),
     "MODEL": os.environ.get("LLM_MODEL", ""),
+    # Save-time DNS validation cannot prevent rebinding after the check. Built-in
+    # provider endpoints cover production without making the app an SSRF client.
+    "ALLOW_CUSTOM_ENDPOINT": env_bool("LLM_ALLOW_CUSTOM_ENDPOINT", DEBUG or TESTING),
 }
 
 # FX rail — Fincra (multi-currency conversion). Blank SECRET_KEY => MOCK mode

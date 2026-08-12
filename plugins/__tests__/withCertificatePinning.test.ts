@@ -6,7 +6,7 @@ const PIN_B = 'sha256/BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=';
 const NOW = new Date('2026-07-30T00:00:00Z');
 
 const valid = {
-  domains: ['api.zitch.ng', 'zitch-api.onrender.com'],
+  domains: ['api.zitch.ng'],
   pins: [PIN_A, PIN_B],
   expiration: '2027-01-01',
 };
@@ -65,9 +65,7 @@ describe('buildXml', () => {
 
   it('pins every configured domain in one domain-config', () => {
     expect(xml).toContain('<domain includeSubdomains="false">api.zitch.ng</domain>');
-    // The WAF-block fallback host must be pinned too, or a fallback request silently
-    // escapes pinning — which is exactly when an attacker would want it to.
-    expect(xml).toContain('<domain includeSubdomains="false">zitch-api.onrender.com</domain>');
+    expect(xml).not.toContain('zitch-api.onrender.com');
   });
 
   it('emits the digests without the sha256/ prefix, as Android expects', () => {

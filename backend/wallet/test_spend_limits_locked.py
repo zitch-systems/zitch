@@ -15,7 +15,7 @@ from django.test import TestCase, override_settings
 
 from common.http import daily_kind_for, spend_limit_error
 from wallet.models import Transaction, Wallet
-from wallet.services import LimitExceeded, debit, get_or_create_wallet
+from wallet.services import LimitExceeded, debit, get_or_create_wallet, transfer
 from wallet.tests import make_user
 
 
@@ -125,3 +125,24 @@ class BankTierCapHoldsUnderTheLockTests(TestCase):
             reference="BT-1", meta={"bank": "Wema Bank"})
         with self.assertRaises(LimitExceeded):
             debit(self.user, Decimal("2000"), "Transfer to Jane", meta={"bank": "Wema Bank"})
+
+
+@override_settings(VELOCITY_MAX_OUT_10MIN=0)
+class InternalTransferEnforcesCapsUnderBothWalletLocksTests(TestCase):
+    def setUp(self):
+        self.sender, _ = make_user("08044440004", "p2p-lock@zitch.app", tier=2)
+        self.recipient, _ = make_user("08044440005", "p2p-recipient@zitch.app", tier=2)
+        Wallet.objects.filter(user=self.sender).update(balance=Decimal("5000000"))
+
+    def test_internal_transfer_cannot_race_past_the_daily_cap(self):
+        Transaction.objects.create(
+            user=self.sender, service="Transfer to Previous", amount=self.sender.daily_transfer_limit,
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="P2P-CAP-1",
+        )
+        before_sender = Wallet.objects.get(user=self.sender).balance
+        before_recipient = Wallet.objects.get(user=self.recipient).balance
+        with self.assertRaises(LimitExceeded):
+            transfer(self.sender, self.recipient, Decimal("1000"))
+        self.assertEqual(Wallet.objects.get(user=self.sender).balance, before_sender)
+        self.assertEqual(Wallet.objects.get(user=self.recipient).balance, before_recipient)

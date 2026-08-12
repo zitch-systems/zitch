@@ -1800,7 +1800,12 @@ class InlineOverrideTests(TestCase):
     def test_inline_processing_answers_within_the_webhook_request(self):
         """One signed webhook POST, no worker, no drain thread — the reply must
         already be in the OUT log when the response returns."""
-        with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True):
+        # This test owns the queue/inline contract, not Meta egress. Keep the
+        # transport explicit so a developer's live .env can never send the
+        # fixture message during the suite.
+        with override_settings(WHATSAPP=self.WA, WHATSAPP_PROCESS_INLINE=True), \
+             patch("whatsapp.router.send_text",
+                   return_value={"success": True, "message_id": "wamid.test-out"}):
             res = self._post_hi()
         self.assertEqual(res.status_code, 200)
         row = WaMessageLog.objects.filter(direction=WaMessageLog.IN,
@@ -3223,6 +3228,16 @@ class PinResetTests(TestCase):
         resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_flow_token(self._armed()),
                                     "data": {"pin": "2468"}})
         self.assertIn("6 digits", resp["data"]["error"])
+
+    def test_predictable_pin_is_refused_before_confirmation(self):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        pa = self._armed()
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_flow_token(pa),
+                                    "data": {"pin": "123456"}})
+        self.assertIn("less predictable", resp["data"]["error"])
+        pa.refresh_from_db()
+        self.assertNotIn("new_pin_hash", pa.payload)
 
     def test_setting_a_pin_clears_the_reset_demand(self):
         from whatsapp.flows import handle_flow_request, sign_flow_token

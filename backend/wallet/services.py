@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import secrets
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q, Sum
@@ -199,13 +199,24 @@ def credit(user, amount, service: str, meta: dict | None = None, reference: str 
 
 
 @db_transaction.atomic
-def refund(txn: Transaction) -> None:
-    """Reverse a failed debit and mark the row Failed."""
-    wallet = Wallet.objects.select_for_update().get(user=txn.user)
-    wallet.balance += txn.amount
+def refund(txn: Transaction) -> bool:
+    """Reverse a PENDING debit exactly once and mark it Failed.
+
+    The transaction row is the state-machine lock. Locking only the wallet lets
+    two failure handlers both credit it, and lets a stale request refund a row a
+    callback already settled Successful. Returns True only for the caller that
+    actually performed the transition.
+    """
+    current = Transaction.objects.select_for_update().select_related("user").get(pk=txn.pk)
+    if current.transaction_status != Transaction.PENDING:
+        return False
+    wallet = Wallet.objects.select_for_update().get(user=current.user)
+    wallet.balance += current.amount
     wallet.save(update_fields=["balance", "updated"])
+    current.transaction_status = Transaction.FAILED
+    current.save(update_fields=["transaction_status"])
     txn.transaction_status = Transaction.FAILED
-    txn.save(update_fields=["transaction_status"])
+    return True
 
 
 @db_transaction.atomic
@@ -259,6 +270,8 @@ def settle_or_refund(txn: Transaction, result: dict) -> str:
     wallet.save(update_fields=["balance", "updated"])
     meta.pop("reconcile", None)
     meta["failure"] = result.get("message", "")
+    if result.get("status"):
+        meta["failure_status"] = result["status"]
     txn.meta = meta
     txn.transaction_status = Transaction.FAILED
     txn.save(update_fields=["transaction_status", "meta"])
@@ -454,7 +467,17 @@ def settle_funding(reference: str, verified_amount=None) -> Transaction | None:
     if intent.credited:
         return None  # already funded — idempotent no-op
 
-    amount = Decimal(str(verified_amount)) if verified_amount is not None else intent.amount
+    try:
+        amount = Decimal(str(verified_amount)) if verified_amount is not None else intent.amount
+    except (InvalidOperation, TypeError, ValueError):
+        log.warning("funding_settlement_invalid_amount ref=%s amount=%r", reference, verified_amount)
+        return None
+    if not amount.is_finite() or amount <= 0:
+        log.warning("funding_settlement_invalid_amount ref=%s amount=%r", reference, verified_amount)
+        return None
+    # A rail may confirm a partial payment, but it must never be able to inflate
+    # the wallet above the amount the customer actually initiated.
+    amount = min(amount, intent.amount)
     txn = credit(intent.user, amount, "Wallet top-up", meta={"reference": reference}, reference=reference)
 
     intent.status = FundingIntent.PAID
@@ -666,19 +689,28 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     if sw.balance < amount:
         raise InsufficientFunds("Insufficient wallet balance")
 
+    # `debit()` enforces these under its wallet lock. Internal P2P transfers
+    # mutate both wallets directly, so they need the same check here or two
+    # concurrent sends can both pass the view-level daily/velocity pre-check.
+    from common.http import spend_limit_error
+    recipient_name = (recipient.get_full_name() or recipient.phone or "Zitch user").strip()
+    service = f"Transfer to {recipient_name}"
+    breach = spend_limit_error(sender, amount, service)
+    if breach:
+        raise LimitExceeded(breach)
+
     ref = make_reference("ZTRF")
     sw.balance -= amount
     rw.balance += amount
     sw.save(update_fields=["balance", "updated"])
     rw.save(update_fields=["balance", "updated"])
 
-    recipient_name = (recipient.get_full_name() or recipient.phone or "Zitch user").strip()
     sender_name = (sender.get_full_name() or sender.phone or "Zitch user").strip()
 
     try:
         with db_transaction.atomic():  # savepoint: contain the unique violation
             debit_txn = Transaction.objects.create(
-                user=sender, service=f"Transfer to {recipient_name}", amount=amount,
+                user=sender, service=service, amount=amount,
                 direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
                 reference=ref, meta={"to": recipient.phone, "note": note},
                 idempotency_key=idempotency_key,

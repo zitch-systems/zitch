@@ -1,5 +1,4 @@
 import {
-  FALLBACK_API_URL,
   PRIMARY_API_URL,
   resolveApiBaseUrl,
 } from '../apiConfig';
@@ -7,7 +6,9 @@ import {
 describe('resolveApiBaseUrl', () => {
   it('allows only the production API origins in release builds', () => {
     expect(resolveApiBaseUrl(PRIMARY_API_URL, false)).toBe(PRIMARY_API_URL);
-    expect(resolveApiBaseUrl(`${FALLBACK_API_URL}/`, false)).toBe(FALLBACK_API_URL);
+    // The provider-assigned Render origin bypasses the public WAF and must never
+    // be accepted by a release build, even as an HTTPS override.
+    expect(resolveApiBaseUrl('https://zitch-api.onrender.com/', false)).toBe(PRIMARY_API_URL);
     expect(resolveApiBaseUrl('https://evil.example', false)).toBe(PRIMARY_API_URL);
     expect(resolveApiBaseUrl('http://api.zitch.ng', false)).toBe(PRIMARY_API_URL);
   });

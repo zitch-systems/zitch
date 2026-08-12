@@ -336,6 +336,13 @@ class FlowEndpointTests(TestCase):
                                 content_type="application/json")
         self.assertEqual(res.status_code, 421)
 
+    def test_oversized_flow_envelope_is_rejected_before_crypto(self):
+        with override_settings(WHATSAPP_FLOW={"PRIVATE_KEY": self.priv_pem}):
+            res = Client().post(
+                "/webhooks/whatsapp/flow", data=b"x" * (1024 * 1024 + 1),
+                content_type="application/json")
+        self.assertEqual(res.status_code, 413)
+
     def test_signature_enforced_when_secret_set(self):
         # Meta signs Flows data-exchange requests like webhook callbacks; the
         # envelope encryption alone doesn't authenticate the sender (anyone with
@@ -1031,6 +1038,18 @@ class SignupFormFlowTests(TestCase):
         self.assertFalse(u.email_verified)                    # no email rail here
         self.assertTrue(u.phone_verified)                     # same number as the chat
         self.assertTrue(u.check_transaction_pin("246810"))
+
+    def test_signup_rejects_predictable_pin_without_leaving_the_chained_screen(self):
+        from .flows import PIN_CHAIN
+
+        ob = self._ob()
+        self._submit(ob, first_name="Ngozi", last_name="Ade", email="weak-pin@example.com")
+        self._submit(ob, phone="08099990001")
+        rejected = self._submit(ob, pin="123456")
+        self.assertEqual(rejected["screen"], PIN_CHAIN)
+        self.assertIn("less predictable", rejected["data"]["error"])
+        ob.refresh_from_db()
+        self.assertNotIn("flow_pin_hash", ob.payload)
 
     def test_a_different_account_phone_is_stored_unverified(self):
         from .flows import SUCCESS_SCREEN

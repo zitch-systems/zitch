@@ -173,7 +173,7 @@ const Me = () => {
   ];
   const security: Row[] = [
     { icon: 'insurance', title: 'Security Center', sub: 'Protect your funds', go: () => router.push('/securitysetup') },
-    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 4-digit PIN', go: () => router.push('/resetpin') },
+    { icon: 'lock', title: 'Change Transaction PIN', sub: 'Update your 6-digit PIN', go: () => router.push('/resetpin') },
   ];
   const explore: Row[] = [
     { icon: 'invite', title: 'Zitch Junior', sub: 'Create an account for your child', badge: 'New', hot: true, go: () => router.push('/junior') },
@@ -277,7 +277,7 @@ const Me = () => {
         onClose={() => setPinOpen(false)}
         onComplete={enablePay}
         title="Pay with biometrics?"
-        subtitle="Enter your 4-digit PIN to approve payments with biometrics too. Skip to use it for sign-in only."
+        subtitle="Enter your 6-digit PIN to approve payments with biometrics too. Skip to use it for sign-in only."
       />
     </Screen>
   );

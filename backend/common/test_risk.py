@@ -187,11 +187,9 @@ class NewDeviceStepUpTests(TestCase):
         self._attach()
         self.assertIsNone(send_limit_error(self.user, Decimal("60000")))
 
-    def test_no_device_header_is_a_deliberate_hole_not_a_gate(self):
-        # Older builds and the WhatsApp channel have no device to report. Gating on a
-        # missing header would break them; requiring it is a client-rollout decision.
+    def test_http_client_cannot_bypass_step_up_by_stripping_device_headers(self):
         self._attach(device_id=None, info=None)
-        self.assertIsNone(send_limit_error(self.user, Decimal("60000")))
+        self.assertIn("verify your face", send_limit_error(self.user, Decimal("60000")))
 
     def test_a_non_http_caller_has_no_device_and_is_unaffected(self):
         # The WhatsApp router and the crons call the same helper with no request.

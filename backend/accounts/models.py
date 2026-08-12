@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 from datetime import timedelta
 from decimal import Decimal
@@ -13,6 +14,33 @@ from django.db.models.functions import Lower
 from django.utils import timezone
 
 log = logging.getLogger("zitch.security")
+
+
+def transaction_pin_rejection(pin: str) -> str:
+    """Return a customer-safe reason when a newly chosen PIN is unacceptable.
+
+    This policy lives server-side because the mobile warning is only a usability
+    aid: an attacker can call the API directly, and WhatsApp creates the same PIN
+    through a separate encrypted Flow. Existing legacy PIN hashes remain
+    verifiable; the rule applies only when a customer chooses a new PIN.
+    """
+    if not re.fullmatch(r"\d{6}", pin or ""):
+        return "Your PIN must be exactly 6 digits"
+
+    # Block repeated blocks (000000, 121212, 123123) and cyclic straight runs
+    # (123456, 654321, 789012). These are among the first guesses made against a
+    # short numeric secret and defeat much of the value of the attempt lockout.
+    for width in range(1, len(pin)):
+        if len(pin) % width == 0 and pin[:width] * (len(pin) // width) == pin:
+            return "Choose a less predictable PIN; repeated or sequential digits are not allowed"
+    digits = [int(char) for char in pin]
+    ascending = all((digits[index] - digits[index - 1]) % 10 == 1
+                    for index in range(1, len(digits)))
+    descending = all((digits[index - 1] - digits[index]) % 10 == 1
+                     for index in range(1, len(digits)))
+    if ascending or descending:
+        return "Choose a less predictable PIN; repeated or sequential digits are not allowed"
+    return ""
 
 
 def hash_identifier(value: str) -> str:

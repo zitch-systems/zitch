@@ -1,10 +1,9 @@
 """Small helpers for JSON POST views without pulling in DRF.
 
-The Expo app sends JSON bodies. Authenticated calls pass the token either as an
-`Authorization: Bearer <token>` header (preferred) or, for older builds, an
-`access_token` field in the body — `require_user` accepts both. These helpers
-parse the body, resolve the user, and standardise error shapes so views stay
-tiny.
+The Expo app sends JSON bodies and authenticated calls pass the token in the
+`Authorization: Bearer` header. A body-token compatibility switch exists only
+for local/test builds; production keeps credentials out of request bodies and
+the logs/analytics systems that commonly capture them.
 """
 import functools
 import json
@@ -12,6 +11,8 @@ import logging
 from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
+from django.core.exceptions import RequestDataTooBig
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -451,39 +452,69 @@ def fail(message, status=400, **extra):
     return JsonResponse({"message": message, **extra}, status=status)
 
 
+def parse_json_object(request, *, limit: int | None = None):
+    """Return ``(dict, None)`` or ``(None, error_response)`` for JSON input.
+
+    The customer and operator APIs share this parser so the privileged back
+    office cannot drift from the public API's size and content-type boundary.
+    """
+    limit = int(limit or getattr(settings, "API_MAX_BODY_BYTES", 4 * 1024 * 1024))
+    try:
+        declared = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > limit:
+        return None, fail("Payload too large", status=413)
+    try:
+        body = request.body or b""
+    except RequestDataTooBig:
+        return None, fail("Payload too large", status=413)
+    if len(body) > limit:
+        return None, fail("Payload too large", status=413)
+    content_type = (request.content_type or "").lower()
+    if body and not (content_type == "application/json" or content_type.endswith("+json")):
+        return None, fail("Content-Type must be application/json", status=415)
+    try:
+        data = json.loads(body or b"{}")
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return None, fail("Invalid JSON body", status=400)
+    if not isinstance(data, dict):
+        return None, fail("Invalid request body", status=400)
+    return data, None
+
+
 def api(view):
-    """Decorator: POST-only, JSON body parsed into `request.data` (a dict)."""
+    """POST-only, size-bounded JSON parsed into ``request.data``."""
 
     @csrf_exempt
     @functools.wraps(view)
     def wrapper(request, *args, **kwargs):
         if request.method != "POST":
             return fail("Method not allowed", status=405)
-        try:
-            request.data = json.loads(request.body or b"{}")
-        except (ValueError, TypeError):
-            return fail("Invalid JSON body", status=400)
-        if not isinstance(request.data, dict):
-            return fail("Invalid request body", status=400)
+        request.data, error = parse_json_object(request)
+        if error is not None:
+            return error
         return view(request, *args, **kwargs)
 
     return wrapper
 
 
 def resolve_token(request) -> str:
-    """The access token from the `Authorization: Bearer` header, falling back to
-    the body `access_token` (older app builds send it there)."""
+    """Resolve a bearer token; body fallback is non-production compatibility."""
     auth = request.headers.get("Authorization", "")
     if auth[:7].lower() == "bearer ":
         return auth[7:].strip()
-    return (getattr(request, "data", None) or {}).get("access_token", "")
+    if getattr(settings, "ALLOW_BODY_ACCESS_TOKEN", False):
+        return (getattr(request, "data", None) or {}).get("access_token", "")
+    return ""
 
 
 def require_user(view):
     """Decorator: resolves the request's access token (Bearer header or body)
     to a User.
 
-    Apply *below* @api so request.data is available. Injects `request.user_obj`.
+    Apply *below* @api so request.data is available for non-production legacy
+    compatibility. Injects `request.user_obj`.
     """
 
     @functools.wraps(view)

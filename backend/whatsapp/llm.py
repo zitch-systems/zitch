@@ -100,6 +100,10 @@ K_KEY = "llm_api_key_enc"
 K_BASE_URL = "llm_base_url"
 
 
+def custom_endpoint_allowed() -> bool:
+    return bool((getattr(settings, "LLM", {}) or {}).get("ALLOW_CUSTOM_ENDPOINT", False))
+
+
 # --------------------------------------------------------------------------- #
 # base-URL validation (SSRF)
 # --------------------------------------------------------------------------- #
@@ -113,11 +117,9 @@ def base_url_error(url: str) -> str | None:
     classic prize, since on many hosts it hands out instance credentials.
 
     So: HTTPS only (the key is a bearer token on the wire), and the host must
-    resolve to public addresses only. Resolution is checked at save time, which
-    catches the honest mistakes and the obvious attacks; it is not a defence
-    against DNS that changes answer after the check (a rebinding attack), which
-    needs a pinned-IP transport to close properly and is worth doing if this
-    endpoint ever becomes self-service rather than super-admin-only.
+    resolve to public addresses only. Resolution is checked at save time. Since
+    that cannot stop DNS rebinding after the check, production disables custom
+    endpoints altogether and permits only the code-owned provider registry.
     """
     import ipaddress
     import socket
@@ -223,6 +225,10 @@ def active_config() -> dict:
     model = (SystemSetting.get(K_MODEL, "") or env.get("MODEL") or spec["default_model"]).strip()
     api_key = stored_api_key() or (env.get("API_KEY") or "").strip()
     base_url = (SystemSetting.get(K_BASE_URL, "") or spec["base_url"] or "").strip().rstrip("/")
+    if provider == "custom" and not custom_endpoint_allowed():
+        # A stale custom configuration fails closed after a production hardening
+        # deploy, even before an operator revisits the settings page.
+        api_key = ""
     return {
         "provider": provider if provider in PROVIDERS else "anthropic",
         "label": spec["label"],
@@ -309,7 +315,9 @@ def _call_openai(system: str, user_text: str, tools: list, cfg: dict) -> dict | 
 
     import requests
 
-    resp = requests.post(
+    # Bandit cannot infer that the validated numeric cfg value below is a
+    # requests timeout; the call is intentionally bounded.
+    resp = requests.post(  # nosec B113
         f"{cfg['base_url']}/chat/completions",
         headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": "application/json"},
         json={

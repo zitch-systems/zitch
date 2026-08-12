@@ -609,6 +609,16 @@ class AiProviderConfigTests(PortalTestCase):
                                                           "base_url": "https://llm.example.com/v1"},
                                        token=self.admin).status_code, 200)
 
+    @override_settings(LLM={"API_KEY": "", "MODEL": "", "ALLOW_CUSTOM_ENDPOINT": False})
+    def test_production_refuses_custom_model_endpoints_even_when_public(self):
+        with patch("socket.getaddrinfo",
+                   return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            res = self.post("ai-config-save", {
+                "provider": "custom", "model": "m",
+                "base_url": "https://llm.example.com/v1",
+            }, token=self.admin)
+        self.assertEqual(res.status_code, 403)
+
     def test_a_custom_endpoint_cannot_be_aimed_inside_the_deployment(self):
         """A configurable base URL makes the backend an HTTP client pointed
         wherever an operator says, carrying customer text and a bearer header.

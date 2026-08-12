@@ -111,7 +111,7 @@ const SetThumbprint = () => {
         onClose={() => setPinOpen(false)}
         onComplete={enablePay}
         title={`Approve payments with ${label}?`}
-        subtitle={`Enter your 4-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
+        subtitle={`Enter your 6-digit PIN to approve payments with ${label} too. You can skip and just use it to sign in.`}
       />
     </Screen>
   );

@@ -70,6 +70,7 @@ def health(_request):
         # instead of refusing to start. So "the app answered /healthz" is NOT
         # proof Redis is wired — this is the only thing that is.
         "redis": _redis_status(),
+        "django_admin_enabled": bool(getattr(settings, "DJANGO_ADMIN_ENABLED", False)),
         # The chat channel belongs here for the same reason as every rail above:
         # this is the only endpoint an operator can read without a login, and a
         # silent WhatsApp bot is indistinguishable from a healthy one everywhere
@@ -702,8 +703,9 @@ urlpatterns = [
     # unreachable and only /healthz answered. Same checks, same functions, admin's own
     # staff-session auth instead of a shared bearer token. Registered BEFORE admin/ so
     # it resolves rather than being swallowed by the admin catch-all.
-    path("admin/diagnostics/", admin.site.admin_view(diagnostics_view), name="diagnostics"),
-    path("admin/", admin.site.urls),
+    *([path("admin/diagnostics/", admin.site.admin_view(diagnostics_view), name="diagnostics"),
+       path("admin/", admin.site.urls)]
+      if getattr(settings, "DJANGO_ADMIN_ENABLED", False) else []),
     # Meta calls this exact path (no /api prefix, no trailing slash).
     path("webhooks/whatsapp", whatsapp_webhook),
     # WhatsApp Flows data-exchange endpoint (encrypted secure PIN submit).

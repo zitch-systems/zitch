@@ -11,7 +11,10 @@ import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
 import { isTrivialPin } from '@/lib/format';
 
-const PIN_LEN = 4;
+// The backend enforces six digits for every newly-created transaction PIN.
+// Keeping this in sync is security-critical: a four-digit client both weakens
+// the secret and leaves a newly-onboarded customer unable to authorise money.
+const PIN_LEN = 6;
 
 const SetPin = () => {
   const { c } = useTheme();
@@ -102,7 +105,7 @@ const SetPin = () => {
           <ZMark size={44} />
         </View>
         <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1, marginTop: 20 }}>
-          {confirm === null ? 'Create a 4-digit PIN' : 'Confirm your PIN'}
+          {confirm === null ? 'Create a 6-digit PIN' : 'Confirm your PIN'}
         </Text>
         <Text style={{ fontSize: 14, color: err ? c.red : c.ink3, marginTop: 6, textAlign: 'center', fontFamily: err ? font.bold : font.regular }}>
           {err ? errMsg : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}

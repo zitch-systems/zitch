@@ -24,6 +24,7 @@ from .models import FundingIntent, Wallet, WemaProvisioningAttempt
 from .services import (
     DuplicateTransaction,
     InsufficientFunds,
+    LimitExceeded,
     attach_existing_bank_account,
     ensure_reserved_account,
     existing_for_key,
@@ -776,6 +777,8 @@ def transfer_send(request):
         return idempotent_replay(existing_for_key(sender, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
         return fail("Insufficient wallet balance", status=402)
+    except LimitExceeded as exc:
+        return fail(str(exc), status=403, code="limit_exceeded")
 
     wallet = get_or_create_wallet(sender)
     return ok(success=True, wallet=str(wallet.balance), reference=debit_txn.reference, message="Money sent")

@@ -201,11 +201,10 @@ const LinkWhatsApp = () => {
         onClose={() => setPinOpen(false)}
         onComplete={generate}
         title="Confirm it's you"
-        subtitle="Enter your 4-digit PIN to generate a WhatsApp link code."
+        subtitle="Enter your 6-digit PIN to generate a WhatsApp link code."
       />
     </Screen>
   );
 };
 
 export default LinkWhatsApp;
-

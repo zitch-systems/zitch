@@ -13,7 +13,8 @@ PNG_1PX = base64.b64decode(
 PNG_DATA_URL = "data:image/png;base64," + base64.b64encode(PNG_1PX).decode()
 
 
-@override_settings(MEDIA_ROOT="/tmp/zitch-test-media")
+# Test-only isolated filesystem; no attacker-controlled path reaches this value.
+@override_settings(MEDIA_ROOT="/tmp/zitch-test-media")  # nosec B108
 class AvatarUploadTests(TestCase):
     def setUp(self):
         self.client = Client()

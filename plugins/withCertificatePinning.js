@@ -8,14 +8,10 @@
 // the pinned host fails on every installed copy, and a shipped mobile app has no
 // remote kill switch. The recovery is a store release, which takes days.
 //
-// Zitch's two API hosts make that risk concrete:
+// Zitch's API host makes that risk concrete:
 //
 //   * `api.zitch.ng` sits behind a CDN/WAF whose certificate we do not control or
 //     get told about before it rotates (see lib/netPatch.ts).
-//   * `zitch-api.onrender.com` is the documented WAF-block fallback, and Render
-//     issues Let's Encrypt certificates that rotate roughly every 60 days with a
-//     FRESH KEY each time. Let's Encrypt explicitly advises against pinning to
-//     their intermediates.
 //
 // So pinning either host to the key it happens to serve today schedules an outage.
 // The prerequisite is not code, it is control of the key: a custom certificate whose
@@ -31,7 +27,7 @@
 // In app.json:
 //
 //     ["./plugins/withCertificatePinning", {
-//       "domains": ["api.zitch.ng", "zitch-api.onrender.com"],
+//       "domains": ["api.zitch.ng"],
 //       "pins": ["sha256/PRIMARY_SPKI_BASE64", "sha256/BACKUP_SPKI_BASE64"],
 //       "expiration": "2027-01-01"
 //     }]

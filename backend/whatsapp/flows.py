@@ -531,19 +531,18 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
     """Set-then-confirm across two data_exchange round-trips on the SAME published
     screen, so the signup PIN is typed into the encrypted Flow and never becomes a
     chat message. The first submit holds only a hash; the second must match it."""
-    import re
-
+    from accounts.models import transaction_pin_rejection
     from django.contrib.auth.hashers import check_password, make_password
 
     from .router import finish_onboarding_from_flow
 
     pin = str(data.get("pin", "")).strip()
-    if not re.fullmatch(r"\d{6}", pin):
-        return _pin_screen(_ob_summary(ob), error="Your PIN must be exactly 6 digits.",
-                           screen=_flow_screen(ob, PIN_SCREEN))
-
     held = ob.payload.get("flow_pin_hash") or ""
     if not held:
+        rejected = transaction_pin_rejection(pin)
+        if rejected:
+            return _pin_screen(_ob_summary(ob), error=rejected.rstrip(".") + ".",
+                               screen=_flow_screen(ob, PIN_SCREEN))
         ob.payload["flow_pin_hash"] = make_password(pin)   # never the raw PIN
         ob.save(update_fields=["payload"])
         return _confirm_pin_screen()
@@ -879,7 +878,7 @@ def _set_pin_screen(pa, error: str = "") -> dict:
     return _pin_screen({"amount": "Create a 6-digit PIN",
                         "recipient": "",
                         "details": "You'll enter it again to confirm"},
-                       error=error)
+                       error=error, screen=_flow_screen(pa, PIN_SCREEN))
 
 
 def _submit_new_pin(pa, user, pin: str) -> dict:
@@ -890,17 +889,16 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     Mirrors the signup PIN deliberately — one shape for "choose a PIN", whether
     it is the first one or a replacement.
     """
-    import re
-
+    from accounts.models import transaction_pin_rejection
     from django.contrib.auth.hashers import make_password
 
     from .router import _clear_actions, reply
 
-    if not re.fullmatch(r"\d{6}", pin):
-        return _set_pin_screen(pa, error="Your PIN must be exactly 6 digits.")
-
     held = pa.payload.get("new_pin_hash") or ""
     if not held:
+        rejected = transaction_pin_rejection(pin)
+        if rejected:
+            return _set_pin_screen(pa, error=rejected.rstrip(".") + ".")
         pa.payload["new_pin_hash"] = make_password(pin)   # never the raw PIN
         pa.save(update_fields=["payload"])
         return _set_pin_screen(pa)

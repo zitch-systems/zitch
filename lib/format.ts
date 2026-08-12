@@ -40,15 +40,24 @@ export const formatAmountInput = (raw: string): string => {
 };
 
 /**
- * Rejects trivially-guessable transaction PINs at setup: all-same digits
- * (0000, 1111…) and straight ascending/descending runs (1234, 4321, 0123…).
+ * Rejects trivially-guessable transaction PINs at setup: repeated blocks
+ * (000000, 121212, 123123) and cyclic ascending/descending runs
+ * (123456, 654321, 789012…).
  * These dominate real-world PIN choices and hand a thief with the unlocked
  * phone a strong head start within the server's 5-try lockout window.
  */
 export const isTrivialPin = (pin: string): boolean => {
   if (!/^\d{4,}$/.test(pin)) return false; // not a complete numeric PIN — let other checks handle it
-  if (/^(\d)\1+$/.test(pin)) return true; // all identical digits
-  const ascending = pin.split('').every((d, i) => i === 0 || +d === +pin[i - 1] + 1);
-  const descending = pin.split('').every((d, i) => i === 0 || +d === +pin[i - 1] - 1);
+  for (let width = 1; width < pin.length; width += 1) {
+    if (pin.length % width === 0 && pin.slice(0, width).repeat(pin.length / width) === pin) {
+      return true;
+    }
+  }
+  const ascending = pin
+    .split('')
+    .every((d, i) => i === 0 || (+d - +pin[i - 1] + 10) % 10 === 1);
+  const descending = pin
+    .split('')
+    .every((d, i) => i === 0 || (+pin[i - 1] - +d + 10) % 10 === 1);
   return ascending || descending;
 };

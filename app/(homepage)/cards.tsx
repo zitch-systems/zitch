@@ -50,17 +50,12 @@ const Cards = () => {
     if (!reveal) return;
     const sub = AppState.addEventListener('change', (s) => { if (s !== 'active') setReveal(null); });
     const t = setTimeout(() => setReveal(null), 60 * 1000);
-    // Screenshots are allowed app-wide on purpose (receipts, support), but a
-    // full PAN + CVV on screen is the one place that policy costs something:
-    // an in-foreground recorder captures it inside the 60s window, which the
-    // timeout and the background-clear above cannot reach. Block capture for
-    // exactly as long as the details are visible, then hand the app-wide
-    // policy straight back.
+    // Defence in depth for a full PAN/CVV. The root already blocks capture for
+    // every financial screen; do not re-enable it when these details disappear.
     if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     return () => {
       sub.remove();
       clearTimeout(t);
-      if (Platform.OS !== 'web') ScreenCapture.allowScreenCaptureAsync().catch(() => {});
     };
   }, [reveal]);
 
@@ -213,4 +208,3 @@ const Cards = () => {
 };
 
 export default Cards;
-

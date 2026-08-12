@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import hmac
 import logging
 import secrets
@@ -21,8 +23,9 @@ from common.ratelimit import (
 log = logging.getLogger("zitch.security")
 from utility import wema
 from utility.providers import (
-    kyc_verify_address, kyc_verify_face, kyc_verify_id_document, kyc_verify_nin_document,
-    send_email, send_sms, verify_bvn, verify_nin,
+    email_live, kyc_verify_address, kyc_verify_face, kyc_verify_id_document,
+    kyc_verify_nin_document, mock_disabled_in_prod, send_email, send_sms, sms_live,
+    verify_bvn, verify_nin,
 )
 from wallet.models import Wallet
 from wallet.services import get_or_create_wallet, wema_account_reference
@@ -374,14 +377,14 @@ def set_transaction_pin(request):
     account ``password`` — so a stolen session token alone can't overwrite the
     PIN that gates money movement.
     """
-    import re
-
+    from accounts.models import transaction_pin_rejection
     from common.http import evaluate_transaction_pin
 
     user = request.user_obj
     pin = (request.data.get("pin") or "").strip()
-    if not re.fullmatch(r"\d{6}", pin):
-        return fail("Your PIN must be exactly 6 digits")
+    rejected = transaction_pin_rejection(pin)
+    if rejected:
+        return fail(rejected, code="weak_pin")
     if user.transaction_pin:
         old_pin = (request.data.get("old_pin") or "").strip()
         password = request.data.get("password") or ""
@@ -816,6 +819,123 @@ _KYC_BVN_TTL = 600  # seconds an unconfirmed BVN code stays valid
 _KYC_BVN_MAX_ATTEMPTS = 5  # wrong OTP guesses before the pending code is burned
 
 
+def _pending_identity_fernet():
+    """Short-lived encryption for a BVN/NIN awaiting its ownership OTP.
+
+    The user model deliberately retains only keyed hashes and last-four digits.
+    A raw value is needed once, after the OTP, to atomically claim that hash and
+    provision the bank account. Keep it encrypted in the shared cache for ten
+    minutes instead of placing plaintext identity data in Redis.
+    """
+    from cryptography.fernet import Fernet
+
+    digest = hashlib.sha256(
+        b"zitch-pending-identity-v1\0" + settings.SECRET_KEY.encode()
+    ).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _pending_identity_encrypt(kind: str, raw: str) -> str:
+    return _pending_identity_fernet().encrypt(f"{kind}:{raw}".encode()).decode()
+
+
+def _pending_identity_decrypt(kind: str, token: str) -> str:
+    from cryptography.fernet import InvalidToken
+
+    try:
+        clear = _pending_identity_fernet().decrypt((token or "").encode()).decode()
+    except (InvalidToken, UnicodeDecodeError):
+        return ""
+    prefix = f"{kind}:"
+    return clear[len(prefix):] if clear.startswith(prefix) else ""
+
+
+def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict):
+    """Send an ownership OTP without weakening live identity proof.
+
+    A real provider result sends only to the line on the BVN/NIN record. In the
+    explicitly simulated/dev path there is no provider line, so the tester's
+    registered phone and email are used and the configured rails still send real
+    messages. The two modes can never fall into one another silently.
+    """
+    simulated = bool(result.get("mock") and not mock_disabled_in_prod())
+    destination = (user.phone or "").strip() if simulated else (result.get("phone") or "").strip()
+    if not destination:
+        return fail(
+            f"The identity provider did not return a phone for this {kind.upper()}. "
+            "Please contact support for review.",
+            status=503,
+            code="identity_phone_unavailable",
+        )
+
+    # Provider wrappers return a mock success when unconfigured. That is useful
+    # in local tests but a production simulation is intended to exercise actual
+    # delivery, so refuse to pretend a code was sent there.
+    require_real_delivery = not settings.DEBUG and not getattr(settings, "TESTING", False)
+    if require_real_delivery and not sms_live():
+        return fail("SMS verification is temporarily unavailable.", status=503)
+    if require_real_delivery and simulated and user.email and not email_live():
+        return fail("Email verification is temporarily unavailable.", status=503)
+
+    code = _otp_code()
+    message = (f"Zitch: {code} is your {kind.upper()} verification code. "
+               "It expires in 10 minutes. Never share it.")
+    sms_result = send_sms(destination, message)
+    email_result = {"success": True}
+    if simulated and user.email:
+        email_result = send_email(
+            user.email,
+            f"Your Zitch {kind.upper()} verification code",
+            message,
+            html=_branded_email(
+                f"Verify your {kind.upper()}",
+                "Enter this code in the Zitch app to finish the simulated identity check.",
+                code=code,
+                note="If you didn't start this verification, secure your account and contact support.",
+            ),
+        )
+    if not sms_result.get("success") or not email_result.get("success"):
+        return fail("We could not deliver the verification code. Please try again.", status=503)
+
+    cache.set(
+        f"kyc_identity:{kind}:{user.id}",
+        {
+            "code_hash": OTP.hash_code(code),
+            "identity": _pending_identity_encrypt(kind, raw),
+            "attempts": 0,
+        },
+        _KYC_BVN_TTL,
+    )
+    masked = f"•••••{destination[-4:]}"
+    channel = "phone and email" if simulated and user.email else f"registered phone {masked}"
+    return ok(success=True, otp_required=True, delivery=channel,
+              message=f"We sent a verification code to your {channel}.")
+
+
+def _confirm_identity_ownership_challenge(user, kind: str, otp: str):
+    cache_key = f"kyc_identity:{kind}:{user.id}"
+    pending = cache.get(cache_key)
+    if not pending:
+        return None, fail(f"Your code expired — start {kind.upper()} verification again", status=400)
+    if not hmac.compare_digest(pending.get("code_hash", ""), OTP.hash_code(otp)):
+        attempts = int(pending.get("attempts", 0)) + 1
+        if attempts >= _KYC_BVN_MAX_ATTEMPTS:
+            cache.delete(cache_key)
+            return None, fail("Too many incorrect attempts — start verification again",
+                              status=429, code="too_many_attempts")
+        pending["attempts"] = attempts
+        cache.set(cache_key, pending, _KYC_BVN_TTL)
+        return None, fail(
+            f"Incorrect code. {_KYC_BVN_MAX_ATTEMPTS - attempts} attempt(s) left.",
+            status=400,
+        )
+    raw = _pending_identity_decrypt(kind, pending.get("identity", ""))
+    cache.delete(cache_key)
+    if not raw:
+        return None, fail("This verification could not be recovered. Please start again.", status=400)
+    return raw, None
+
+
 @api
 @ratelimit("kyc_bvn_start", limit=5, window=300)
 @require_user
@@ -837,18 +957,7 @@ def kyc_bvn_start(request):
     result = verify_bvn(bvn, name=user.get_full_name() or "", mobile=user.phone or "")
     if not result.get("success"):
         return fail(result.get("message", "BVN verification failed"), status=400)
-    code = _otp_code()
-    cache.set(f"kyc_bvn:{user.id}", {"code": code, "bvn": bvn}, _KYC_BVN_TTL)
-    msg = f"Your Zitch BVN verification code is {code}"
-    send_sms(user.phone or "", msg)
-    if user.email:
-        send_email(user.email, "Your Zitch BVN code", msg,
-                   html=_branded_email("Verify your BVN",
-                                       "Enter this code in the app to confirm your BVN.",
-                                       code=code,
-                                       note="If you didn't start BVN verification, ignore this email."))
-    return ok(success=True, otp_required=True,
-              message="We sent a verification code to your phone and email.")
+    return _start_identity_ownership_challenge(user, "bvn", bvn, result)
 
 
 @api
@@ -861,28 +970,14 @@ def kyc_bvn_confirm(request):
     gate = _email_gate(user)
     if gate:
         return gate
-    otp = (request.data.get("otp") or "").strip()
-    cache_key = f"kyc_bvn:{user.id}"
-    pending = cache.get(cache_key)
-    if not pending:
-        return fail("Your code expired — start BVN verification again", status=400)
-    if otp != pending["code"]:
-        # Cap wrong guesses: the OTP is only 6 digits, so without a counter a
-        # stolen session could brute-force it inside the 10-minute window. After
-        # _KYC_BVN_MAX_ATTEMPTS the pending code is burned and the user restarts.
-        attempts = int(pending.get("attempts", 0)) + 1
-        if attempts >= _KYC_BVN_MAX_ATTEMPTS:
-            cache.delete(cache_key)
-            return fail("Too many incorrect attempts — start BVN verification again",
-                        status=429, code="too_many_attempts")
-        pending["attempts"] = attempts
-        cache.set(cache_key, pending, _KYC_BVN_TTL)
-        left = _KYC_BVN_MAX_ATTEMPTS - attempts
-        return fail(f"Incorrect code. {left} attempt(s) left.", status=400)
-    cache.delete(cache_key)
-    if not _save_verified_identity(user, "bvn", pending["bvn"]):
+    bvn, error = _confirm_identity_ownership_challenge(
+        user, "bvn", (request.data.get("otp") or "").strip()
+    )
+    if error:
+        return error
+    if not _save_verified_identity(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
-    _reserve_wallet_account(user, bvn=pending["bvn"])
+    _reserve_wallet_account(user, bvn=bvn)
     return ok(success=True, message="BVN verified", **_kyc_state(user))
 
 
@@ -895,6 +990,12 @@ def kyc_bvn(request):
     gate = _email_gate(user)
     if gate:
         return gate
+    if mock_disabled_in_prod():
+        return fail(
+            "BVN ownership requires a verification code. Update the app and use the BVN verification flow.",
+            status=409,
+            code="ownership_challenge_required",
+        )
     bvn = (request.data.get("bvn") or "").strip()
     if _identity_owned_by_another_user(user, "bvn", bvn):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
@@ -933,6 +1034,31 @@ def kyc_nin(request):
         doc = kyc_verify_nin_document(image)
         if not doc.get("success"):
             return fail(doc.get("message", "Couldn't verify your NIN document"), status=400)
+    # Keep the fast mock path only for local/test suites. A production deploy —
+    # including the explicit simulation environment — exercises the same OTP
+    # state machine as live KYC, with the destination policy above.
+    if not settings.DEBUG and not getattr(settings, "TESTING", False):
+        return _start_identity_ownership_challenge(user, "nin", nin, result)
+    if not _save_verified_identity(user, "nin", nin):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    _reserve_wallet_account(user, nin=nin)
+    return ok(success=True, message="NIN verified", **_kyc_state(user))
+
+
+@api
+@ratelimit("kyc_nin_confirm", limit=20, window=300)
+@require_user
+def kyc_nin_confirm(request):
+    """Confirm control of the phone registered against the NIN."""
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    nin, error = _confirm_identity_ownership_challenge(
+        user, "nin", (request.data.get("otp") or "").strip()
+    )
+    if error:
+        return error
     if not _save_verified_identity(user, "nin", nin):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     _reserve_wallet_account(user, nin=nin)

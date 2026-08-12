@@ -6,7 +6,6 @@ the server-side RBAC matrix and append to the immutable AuditLog. The portal is
 served same-origin from `/portal/`, so these are plain bearer-token JSON calls
 (no cookies / CSRF).
 """
-import json
 from datetime import timedelta
 from decimal import Decimal
 
@@ -15,7 +14,7 @@ from django.db.models import Q, Sum
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import fail, ok, resolve_token
+from common.http import fail, ok, parse_json_object, resolve_token
 from common.ratelimit import ratelimit
 
 from .auth import ROLES, staff_endpoint, staff_role, audit, CAN
@@ -314,10 +313,9 @@ def login(request):
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
-    try:
-        data = json.loads(request.body or b"{}")
-    except (ValueError, TypeError):
-        return fail("Invalid JSON body", status=400)
+    data, error = parse_json_object(request, limit=64 * 1024)
+    if error is not None:
+        return error
 
     from accounts.models import AccessToken, User
     from common.http import mask_pii
@@ -1270,6 +1268,7 @@ def mfa_status(request):
               required=_mfa_required_for(request.staff))
 
 
+@ratelimit("ops_mfa_enroll", limit=10, window=300)
 @staff_endpoint(methods=("POST",))
 def mfa_enroll(request):
     """POST {} — issue a fresh secret and the otpauth:// URI to scan.
@@ -1306,6 +1305,7 @@ def mfa_enroll(request):
               message="Scan this in your authenticator, then confirm with a code.")
 
 
+@ratelimit("ops_mfa_confirm", limit=10, window=300)
 @staff_endpoint(methods=("POST",))
 def mfa_confirm(request):
     """POST {code} — prove the secret was stored, and turn the factor on."""
@@ -1329,6 +1329,7 @@ def mfa_confirm(request):
     return ok(success=True, message="Two-factor authentication is on for your account.")
 
 
+@ratelimit("ops_mfa_disable", limit=10, window=300)
 @staff_endpoint(methods=("POST",))
 def mfa_disable(request):
     """POST {code} — turn the factor off, proving possession first.

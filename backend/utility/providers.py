@@ -477,13 +477,28 @@ def _prembly_headers() -> dict:
     }
 
 
+def _kyc_mock_or_unavailable() -> dict:
+    """Return a simulated pass only on an explicitly non-live deployment.
+
+    These checks lift KYC tiers and clear the face step-up on large payments. A
+    missing provider in production must therefore be an outage, never a pass.
+    ``WEMA_SIMULATION`` remains the deliberate end-to-end test exception.
+    """
+    if mock_disabled_in_prod():
+        return {
+            "success": False,
+            "message": "Identity verification is temporarily unavailable. Please try again later.",
+        }
+    return {"success": True, "mock": True}
+
+
 def kyc_verify_nin_document(image: str) -> dict:
     """Verify an uploaded NIN slip / ID image (OCR + match). MOCK accepts
     offline; LIVE must call Prembly's document endpoint and fail closed without
     a real pass. VERIFY-BEFORE-LIVE: confirm the exact endpoint/field names on
     the Prembly dashboard before relying on this."""
     if not _prembly_live():
-        return {"success": True, "mock": True}
+        return _kyc_mock_or_unavailable()
     if not image:
         return {"success": False, "message": "Upload your NIN slip to continue"}
     try:
@@ -506,7 +521,7 @@ def kyc_verify_face(selfie: str = "") -> dict:
     genuine verification once a provider is configured.
     """
     if not _prembly_live():
-        return {"success": True, "mock": True}
+        return _kyc_mock_or_unavailable()
     if not selfie:
         return {"success": False, "message": "A selfie capture is required for face verification"}
     try:
@@ -526,7 +541,7 @@ def kyc_verify_address(address: str, document: str = "") -> dict:
     call the KYC provider's address / proof-of-address endpoint and fail closed
     without a real pass. VERIFY-BEFORE-LIVE: confirm the endpoint/fields first."""
     if not _prembly_live():
-        return {"success": True, "mock": True}
+        return _kyc_mock_or_unavailable()
     if not (address or document):
         return {"success": False, "message": "Enter your residential address"}
     try:
@@ -546,7 +561,7 @@ def kyc_verify_id_document(image: str, doc_type: str = "") -> dict:
     licence / voter's card / NIN slip. MOCK accepts offline; LIVE must call the
     provider's document-analysis endpoint and fail closed. VERIFY-BEFORE-LIVE."""
     if not _prembly_live():
-        return {"success": True, "mock": True}
+        return _kyc_mock_or_unavailable()
     if not image:
         return {"success": False, "message": "Upload a clear photo of your ID document"}
     try:

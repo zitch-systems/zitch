@@ -23,8 +23,10 @@ const ResetPin = () => {
   const [pin2, setPin2] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // Existing pre-migration accounts may still have a legacy four-digit current
+  // PIN, but every replacement must be exactly six digits.
   const authOk = useOldPin ? oldPin.length >= 4 : password.length >= 8;
-  const canSubmit = authOk && pin.length >= 4 && pin === pin2;
+  const canSubmit = authOk && pin.length === 6 && pin === pin2;
 
   const submit = async () => {
     if (pin !== pin2) {
@@ -32,7 +34,7 @@ const ResetPin = () => {
       return;
     }
     if (isTrivialPin(pin)) {
-      notify('Error', 'Choose a less guessable PIN (avoid 0000, 1234, repeated or sequential digits).');
+      notify('Error', 'Choose a less guessable PIN (avoid repeated or sequential digits).');
       return;
     }
     setBusy(true);
@@ -61,8 +63,8 @@ const ResetPin = () => {
       <Header title="Change transaction PIN" onBack={() => router.back()} />
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 2, marginBottom: 22, fontFamily: font.regular }}>
         {useOldPin
-          ? 'Enter your current 4-digit PIN, then choose a new one.'
-          : 'Confirm your account password, then choose a new 4-digit PIN.'}
+          ? 'Enter your current PIN, then choose a new 6-digit PIN.'
+          : 'Confirm your account password, then choose a new 6-digit PIN.'}
       </Text>
 
       <View style={{ gap: 16 }}>
@@ -70,10 +72,10 @@ const ResetPin = () => {
           <Field
             label="Current PIN"
             value={oldPin}
-            onChangeText={(v) => setOldPin(v.replace(/\D/g, '').slice(0, 4))}
+            onChangeText={(v) => setOldPin(v.replace(/\D/g, '').slice(0, 6))}
             secureTextEntry
             keyboardType="number-pad"
-            maxLength={4}
+            maxLength={6}
             placeholder="Enter your current PIN"
             prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
           />
@@ -90,20 +92,20 @@ const ResetPin = () => {
         <Field
           label="New PIN"
           value={pin}
-          onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, 4))}
+          onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, 6))}
           secureTextEntry
           keyboardType="number-pad"
-          maxLength={4}
-          placeholder="4-digit PIN"
+          maxLength={6}
+          placeholder="6-digit PIN"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
           label="Confirm new PIN"
           value={pin2}
-          onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, 4))}
+          onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, 6))}
           secureTextEntry
           keyboardType="number-pad"
-          maxLength={4}
+          maxLength={6}
           placeholder="Re-enter PIN"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />

@@ -12,11 +12,10 @@ Role resolution (identical to portal.roles — one matrix, two mounts):
   default — read_only (least privilege) for any other staff user.
 """
 import functools
-import json
 
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import fail, resolve_token
+from common.http import fail, parse_json_object, resolve_token
 
 ROLE_SUPER = "super_admin"
 ROLE_FINANCE = "finance"
@@ -70,12 +69,9 @@ def staff_endpoint(*, methods=("GET", "POST"), perm=None):
             if request.method not in methods:
                 return fail("Method not allowed", status=405)
             if request.method == "POST":
-                try:
-                    request.data = json.loads(request.body or b"{}")
-                except (ValueError, TypeError):
-                    return fail("Invalid JSON body", status=400)
-                if not isinstance(request.data, dict):
-                    return fail("Invalid request body", status=400)
+                request.data, error = parse_json_object(request, limit=64 * 1024)
+                if error is not None:
+                    return error
             else:
                 request.data = {}
 

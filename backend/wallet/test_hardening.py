@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 
 from common.http import check_velocity
 from wallet.models import Transaction, Wallet
-from wallet.services import credit, debit
+from wallet.services import credit, debit, refund, settle_or_refund
 from wallet.tests import make_user
 
 
@@ -37,11 +37,22 @@ class IntegrityCheckTests(TestCase):
         self.assertIn("MISMATCH", err)
 
     def test_failed_debit_refund_still_reconciles(self):
-        from wallet.services import refund
         txn = debit(self.user, Decimal("1000"), "Transfer to ADA")
         refund(txn)  # money returned, row FAILED — excluded from the OUT sum
         out, _ = self._run()
         self.assertIn("0 mismatch(es)", out)
+
+    def test_duplicate_refund_credits_the_wallet_only_once(self):
+        txn = debit(self.user, Decimal("1000"), "Transfer to ADA")
+        self.assertTrue(refund(txn))
+        self.assertFalse(refund(txn))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
+
+    def test_stale_failure_cannot_refund_a_transaction_already_settled(self):
+        txn = debit(self.user, Decimal("1000"), "Transfer to ADA")
+        self.assertEqual(settle_or_refund(txn, {"success": True}), "success")
+        self.assertFalse(refund(txn))
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("4000"))
 
 
 class VelocityGuardTests(TestCase):

@@ -761,6 +761,7 @@ def ai_config(request):
              "needs_base_url": pid == "custom", "key_url": spec["key_url"],
              "base_url": spec["base_url"]}
             for pid, spec in llm.PROVIDERS.items()
+            if pid != "custom" or llm.custom_endpoint_allowed()
         ],
         provider=cfg["provider"],
         model=cfg["model"],
@@ -782,6 +783,8 @@ def ai_config_save(request):
     provider = (request.data.get("provider") or "").strip()
     if provider not in llm.PROVIDERS:
         return fail("Unknown provider")
+    if provider == "custom" and not llm.custom_endpoint_allowed():
+        return fail("Custom model endpoints are disabled in production.", status=403)
     spec = llm.PROVIDERS[provider]
     model = (request.data.get("model") or "").strip() or spec["default_model"]
     base_url = (request.data.get("base_url") or "").strip().rstrip("/")

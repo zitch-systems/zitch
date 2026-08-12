@@ -4,9 +4,8 @@ import { getToken, clearSession } from '@/lib/secureStore';
 import { touchActivity } from '@/lib/session';
 // Importing this also installs the global fetch guard: it stamps the app
 // User-Agent on every API request (covers the screens that call fetch()
-// directly, not just apiPost) and retries edge/WAF-blocked calls against the
-// Render fallback host. USER_AGENT is reused here so an explicit apiPost
-// header and the guard agree.
+// directly, not just apiPost). USER_AGENT is reused here so an explicit apiPost
+// header and the guard agree. WAF refusals are never routed around the edge.
 import { USER_AGENT, isEdgeBlockMessage } from '@/lib/netPatch';
 import { deviceHeaders } from '@/lib/deviceIntegrity';
 
@@ -86,9 +85,8 @@ export async function apiJson<T = any>(path: string, body: Record<string, any> =
     const text = await res.text();
     try {
       const parsed = JSON.parse(text) as any;
-      // Both the edge and the fallback host blocked us (the fetch guard already
-      // retried): replace the WAF's raw block-page message ("You are not
-      // authorized to access this resource") with something a user can act on.
+      // Replace the WAF's raw block-page message ("You are not authorized to
+      // access this resource") with something a user can act on.
       if (res.status === 403 && isEdgeBlockMessage(parsed?.message)) {
         return {
           ...parsed,
@@ -172,4 +170,3 @@ export async function publicJson<T = any>(
 export function newIdempotencyKey(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
 }
-
