@@ -1,7 +1,21 @@
 node_modules/
 dist/
+
+# Local env files — never commit real secrets (.env.example is the template,
+# and the only one that should ever be tracked).
 .env
+.env.local
+.env.*.local
 .env.*
 !.env.example
+
+# Key material / credential files, in case any land here for local testing.
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+*.secret
+
 *.log
 coverage/
