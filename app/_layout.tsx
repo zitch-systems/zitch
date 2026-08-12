@@ -62,13 +62,12 @@ const RootLayout = () => {
     }
   }, [fontsLoaded, error]);
 
-  // Screenshots and screen recording are ALLOWED app-wide (product decision):
-  // users need to capture receipts, account details and support screens to share
-  // them. Older builds called preventScreenCaptureAsync() here; the explicit
-  // allow below undoes any capture block a previous session left set on the
-  // window, so an app update takes effect without a device restart.
+  // Financial screens contain balances, identity details and PIN entry. Block OS
+  // screenshots, recordings and sensitive recents thumbnails by default. Receipts
+  // remain shareable through the app's explicit receipt export, which creates a
+  // deliberately-scoped artefact instead of exposing whatever is on screen.
   useEffect(() => {
-    if (Platform.OS !== 'web') ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+    if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     // Drop any money PIN left cached by older builds when biometric pay is off.
     reconcileCachedPin().catch(() => {});
   }, []);

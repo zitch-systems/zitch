@@ -75,6 +75,10 @@ def attach_device(request, user) -> dict:
     authentication boundary and read wherever the user is already available.
     """
     device = parse_device(request)
+    # Distinguish an HTTP client that stripped/omitted the headers from a real
+    # non-HTTP caller (WhatsApp router/cron). Without this marker, an attacker can
+    # bypass the new-device step-up simply by deleting X-Zitch-Device.
+    device["http_request"] = True
     device["ip"] = _client_ip(request)
     user.zitch_device = device
     return device
@@ -206,10 +210,10 @@ def new_device_step_up_error(user, amount) -> "str | None":
       * the amount is under the threshold — everyday spending on a new phone must not
         require a selfie;
       * the user is already face-verified — the step-up has nothing left to ask;
-      * the device is known, or the client sent no device header at all. The second is
-        a deliberate hole: gating on a missing header would break older builds and
-        the WhatsApp channel, which have no device to report. Closing it means
-        requiring the header, which is a client-rollout decision, not a code one.
+      * the device is known; or
+      * this is a non-HTTP caller such as the WhatsApp router. An HTTP request that
+        omits the device header is treated as an unknown device, otherwise removing
+        one attacker-controlled header would bypass the control entirely.
     """
     from django.conf import settings
 
@@ -218,13 +222,17 @@ def new_device_step_up_error(user, amount) -> "str | None":
     threshold = getattr(settings, "RISK_NEW_DEVICE_FACE_THRESHOLD", None)
     if not threshold or threshold <= 0:
         return None
-    device = device_for(user)
-    if not device.get("id"):
-        return None
     if user.face_verified:
         return None
     if amount < threshold:
         return None
+    device = device_for(user)
+    if not device:
+        return None  # genuine non-HTTP caller (WhatsApp/cron)
+    if not device.get("id"):
+        log.warning("missing_device_header_step_up user=%s amount=%s", user.pk, amount)
+        return ("For your security, verify your face before sending this much from an "
+                "unrecognised device.")
     if KnownDevice.objects.filter(user=user, device_id=device["id"]).exists():
         return None
     log.warning("new_device_step_up user=%s device=%s amount=%s",

@@ -115,10 +115,14 @@ class TransactionAlertTests(TestCase):
         sms.assert_not_called()
 
     def test_a_settled_debit_that_later_reverses_says_so(self):
-        """`refund` flips the existing row to Failed rather than writing a new
-        one, so without this the customer is told money left and never told it
-        came back — worse than not alerting at all."""
-        from .services import refund
+        """A provider-confirmed reversal flips the settled row to Failed rather
+        than writing a new one, so the customer must be told money came back.
+
+        The generic ``refund`` deliberately refuses settled rows: a stale
+        request failure must not undo a callback-confirmed payout.  A late bank
+        reversal goes through the reference-bound ``reverse_transfer`` path.
+        """
+        from .services import reverse_transfer
 
         credit(self.user, Decimal("10000"), "funding")
         with self.captureOnCommitCallbacks(execute=True):
@@ -128,7 +132,7 @@ class TransactionAlertTests(TestCase):
 
         with patch("utility.providers.send_email") as email:
             with self.captureOnCommitCallbacks(execute=True):
-                refund(txn)
+                reverse_transfer(txn.reference)
         email.assert_called_once()
         self.assertIn("Reversal", email.call_args[0][1])
         self.assertIn("returned to your Zitch account", email.call_args[0][2])

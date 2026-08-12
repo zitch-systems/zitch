@@ -59,6 +59,25 @@ services:
         sync: false
       - key: TOKEN_TTL_HOURS
         value: "24"
+      - key: ADMIN_TOKEN_TTL_HOURS
+        value: "2"
+      - key: ALLOW_BODY_ACCESS_TOKEN
+        value: "false"
+      - key: API_MAX_BODY_BYTES
+        value: "4194304"
+      - key: LLM_ALLOW_CUSTOM_ENDPOINT
+        value: "false"
+      - key: DJANGO_ADMIN_ENABLED
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "true"
+      # Enrol super-admin/finance authenticators first, then set this true in the
+      # dashboard. It is dashboard-owned so a Blueprint sync cannot lock every
+      # operator out before the two-step enrolment is complete.
+      - key: OPS_REQUIRE_MFA
+        sync: false
+      - key: OPS_REQUIRE_DUAL_APPROVAL
+        value: "true"
       # Origins allowed to call the API cross-origin (Expo web build /
       # browser-based dashboards). Native React Native does not enforce CORS,
       # so the mobile app is unaffected. Add new origins here as needed.

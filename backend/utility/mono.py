@@ -235,12 +235,13 @@ def verify_webhook(payload: dict, signature: str) -> bool:
 
     Mono signs webhooks with a shared secret you set in the dashboard, sent as the
     header value; we constant-time compare it to MONO['WEBHOOK_SECRET']. Fails
-    closed in production when no secret is set (an unsigned callback could credit a
-    wallet on a funding event); dev/test accept so local webhook testing works.
+    closed on every deployed host when no secret is set (including an end-to-end
+    simulation: fake money is still customer data and must not be attacker-mutable);
+    only local development/tests accept unsigned callbacks.
     """
     secret = settings.MONO.get("WEBHOOK_SECRET", "")
     if not secret:
-        return not mock_disabled_in_prod()
+        return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
     return hmac.compare_digest(str(signature or ""), secret)
 
 

@@ -48,8 +48,12 @@ const Kyc = () => {
   const [bvn, setBvn] = useState('');
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
+  const [bvnDelivery, setBvnDelivery] = useState('your registered phone');
   const [nin, setNin] = useState('');
   const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
+  const [ninOtp, setNinOtp] = useState('');
+  const [ninSent, setNinSent] = useState(false);
+  const [ninDelivery, setNinDelivery] = useState('your registered phone');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('');
@@ -86,8 +90,48 @@ const Kyc = () => {
     setBusy(true);
     try {
       const res = await apiJson('/api/kyc/bvn/start/', { bvn });
-      if (res.success) { setBvnSent(true); notify('Code sent', 'Enter the code we sent to your phone and email.'); }
+      if (res.success) {
+        setBvnDelivery(res.delivery || 'your registered phone');
+        setBvnSent(true);
+        notify('Code sent', res.message || 'Enter the verification code.');
+      }
       else notify('Error', res.message || 'Could not start BVN verification');
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+
+  // --- NIN: provider + document check -> ownership code -> confirm ---
+  const startNin = async () => {
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/kyc/nin/', { nin, nin_image: ninImage });
+      if (res.success && res.otp_required) {
+        setNinDelivery(res.delivery || 'your registered phone');
+        setNinSent(true);
+        notify('Code sent', res.message || 'Enter the verification code.');
+      } else if (res.success) {
+        // Local development keeps its provider mock immediate; production and
+        // production-simulation always take the ownership challenge above.
+        setStatus(res);
+        setNin('');
+        setNinImage('');
+        notify('Success', 'NIN verified');
+      } else notify('Error', res.message || 'NIN verification failed');
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+  const confirmNin = async () => {
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/kyc/nin/confirm/', { otp: ninOtp });
+      if (res.success) {
+        setStatus(res);
+        setNinSent(false);
+        setNin('');
+        setNinImage('');
+        setNinOtp('');
+        notify('Success', 'NIN verified');
+      } else notify('Error', res.message || 'Incorrect code');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
@@ -234,7 +278,7 @@ const Kyc = () => {
           </>
         ) : (
           <>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to your phone & email.</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to {bvnDelivery}.</Text>
             <Field value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
             <View style={{ height: 10 }} />
             <Btn label="Confirm BVN" size="md" disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
@@ -244,11 +288,23 @@ const Kyc = () => {
       </KycRow>
 
       <KycRow icon="user" title="NIN" sub="Number + a photo of your NIN slip" done={!!status?.nin_verified}>
-        <Field value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit NIN" />
-        <View style={{ height: 10 }} />
-        <Btn label={ninImage ? 'NIN slip added ✓' : 'Upload your NIN slip'} icon="copy" size="md" variant="outline" disabled={busy} onPress={pickNinSlip} />
-        <View style={{ height: 10 }} />
-        <Btn label="Verify NIN" size="md" disabled={busy || nin.length !== 11 || !ninImage} onPress={() => submit('/api/kyc/nin/', { nin, nin_image: ninImage }, 'NIN')} />
+        {!ninSent ? (
+          <>
+            <Field value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit NIN" />
+            <View style={{ height: 10 }} />
+            <Btn label={ninImage ? 'NIN slip added ✓' : 'Upload your NIN slip'} icon="copy" size="md" variant="outline" disabled={busy} onPress={pickNinSlip} />
+            <View style={{ height: 10 }} />
+            <Btn label="Send verification code" size="md" disabled={busy || nin.length !== 11 || !ninImage} onPress={startNin} />
+          </>
+        ) : (
+          <>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to {ninDelivery}.</Text>
+            <Field value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
+            <View style={{ height: 10 }} />
+            <Btn label="Confirm NIN" size="md" disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
+            <Text onPress={() => { setNinSent(false); setNinOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text>
+          </>
+        )}
       </KycRow>
 
       <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>

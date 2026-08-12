@@ -109,6 +109,11 @@ class MonoSimulationTests(SimpleTestCase):
             self.assertTrue(mono.initiate_directpay(5000, "ZMONO-1", email="a@b.com")["success"])
             self.assertEqual(mono.mono_diagnostics()["status"], "simulation")
 
+    def test_simulation_does_not_open_unsigned_webhook(self):
+        with override_settings(MONO={**self.NOKEY, "SIMULATION": True,
+                                     "WEBHOOK_SECRET": ""}):
+            self.assertFalse(mono.verify_webhook({"event": "payment_received"}, ""))
+
 
 @override_settings(DEBUG=False, TESTING=False,
                    MONO={**MONO_LIVE, "SECRET_KEY": "", "SIMULATION": True})
@@ -165,11 +170,32 @@ class BanklinkEndpointTests(TestCase):
         r = self.client.post("/api/banklink/webhook/", data=json.dumps(event),
                              content_type="application/json")
         self.assertEqual(r.status_code, 200)
+        # A success label without a settled amount is incomplete evidence. It
+        # leaves the intent pending rather than minting the requested balance.
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0"))
+        event["data"]["amount"] = 500000
+        self.client.post("/api/banklink/webhook/", data=json.dumps(event),
+                         content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
         # redelivered webhook does not double-credit
         self.client.post("/api/banklink/webhook/", data=json.dumps(event),
                          content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
+
+    @override_settings(MONO=MONO_LIVE)
+    def test_webhook_authenticates_before_parsing_body(self):
+        r = self.client.post(
+            "/api/banklink/webhook/", data=b"{" + b"x" * 1000,
+            content_type="application/json", HTTP_MONO_WEBHOOK_SECRET="wrong")
+        self.assertEqual(r.status_code, 401)
+
+    @override_settings(MONO=MONO_LIVE)
+    def test_webhook_rejects_non_object_event_data(self):
+        r = self.client.post(
+            "/api/banklink/webhook/",
+            data=json.dumps({"event": "mono.events.payment_received", "data": []}),
+            content_type="application/json", HTTP_MONO_WEBHOOK_SECRET="whsec")
+        self.assertEqual(r.status_code, 400)
 
     def test_webhook_credits_settled_amount_not_requested_amount(self):
         # Mono reports a SMALLER settled amount (kobo) than the user requested —

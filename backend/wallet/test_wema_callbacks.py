@@ -62,6 +62,13 @@ class WemaCallbackAuthTests(TestCase):
         self.assertEqual(self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}}).status_code, 200)
         self.assertEqual(self._post("/webhooks/wema/account/new-token", {"data": {}}).status_code, 200)
 
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "SIMULATION": True, "CALLBACK_TOKEN": "",
+                             "CALLBACK_TOKEN_PREV": ""})
+    def test_deployed_simulation_still_requires_callback_secret(self):
+        r = self._post("/webhooks/wema/account/anything", {"data": {}})
+        self.assertEqual(r.status_code, 403)
+
 
 @override_settings(WEMA=WEMA_CB, PAYMENT_PROVIDER="wema")
 class WemaAccountCallbackTests(TestCase):

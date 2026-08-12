@@ -17,7 +17,7 @@ from common.http import unverified_error
 from .forex import FxError, create_fx_quote
 from .models import CurrencyWallet, FundingIntent, Transaction, Wallet
 from .services import (LimitExceeded, credit, debit, get_or_create_wallet,
-                       settle_reserved_funding)
+                       settle_funding, settle_reserved_funding)
 
 User = get_user_model()
 
@@ -387,6 +387,29 @@ class FundVerifyOwnershipTests(TestCase):
             data=json.dumps({"access_token": tok_b, "reference": "ZPAYOWN0001"}),
             content_type="application/json")
         self.assertEqual(res.status_code, 404)
+
+
+class FundingSettlementAmountTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user("08088800003", "fc@zitch.test")
+
+    def _intent(self, reference):
+        return FundingIntent.objects.create(
+            user=self.user, reference=reference, amount=Decimal("5000"))
+
+    def test_provider_cannot_credit_above_intent(self):
+        self._intent("ZPAYCAP0001")
+        settle_funding("ZPAYCAP0001", Decimal("9000"))
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("5000"))
+
+    def test_invalid_provider_amount_does_not_credit(self):
+        for index, amount in enumerate(("NaN", "not-money", Decimal("-1")), start=1):
+            ref = f"ZPAYBAD000{index}"
+            intent = self._intent(ref)
+            self.assertIsNone(settle_funding(ref, amount))
+            intent.refresh_from_db()
+            self.assertFalse(intent.credited)
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("0"))
 
 
 class FxLimitParityTests(TestCase):

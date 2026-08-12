@@ -81,6 +81,23 @@ class AdminApiTests(TestCase):
             {"username": "ada", "password": "pw12345"}), content_type="application/json")
         self.assertEqual(res.status_code, 403)
 
+    def test_operator_json_boundary_rejects_wrong_type_and_oversize(self):
+        self.admin.set_password("pw12345"); self.admin.save()
+        wrong_type = self.client.post(
+            "/api/admin/login", data='{"username":"amara","password":"pw12345"}',
+            content_type="text/plain")
+        self.assertEqual(wrong_type.status_code, 415)
+
+        oversized = self.client.post(
+            "/api/admin/login", data=json.dumps({"padding": "x" * (64 * 1024)}),
+            content_type="application/json")
+        self.assertEqual(oversized.status_code, 413)
+
+        protected = self.client.post(
+            "/api/admin/logout", data='{}', content_type="text/plain",
+            HTTP_AUTHORIZATION=f"Bearer {self.admin_token}")
+        self.assertEqual(protected.status_code, 415)
+
     def test_me_and_bootstrap_require_token(self):
         res = self.client.get("/api/admin/me")
         self.assertEqual(res.status_code, 401)

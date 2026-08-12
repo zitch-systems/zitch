@@ -11,7 +11,15 @@ from unittest import mock
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from utility.providers import issue_card, mock_disabled_in_prod, simulation_mode
+from utility.providers import (
+    issue_card,
+    kyc_verify_address,
+    kyc_verify_face,
+    kyc_verify_id_document,
+    kyc_verify_nin_document,
+    mock_disabled_in_prod,
+    simulation_mode,
+)
 
 _SIM = {"SIMULATION": True}
 _LIVE = {"SIMULATION": False}
@@ -48,6 +56,33 @@ class ProviderUnblockTests(SimpleTestCase):
         res = issue_card("Ada Test", "cust_1")
         self.assertTrue(res["success"] and res.get("mock"))
         self.assertTrue(res["card_token"])
+
+
+class KycProviderFailClosedTests(SimpleTestCase):
+    """Missing biometric/document KYC credentials can never lift a live tier."""
+
+    PREMBLY_OFF = {"BASE_URL": "https://api.prembly.com", "API_KEY": "", "APP_ID": ""}
+
+    @override_settings(DEBUG=False, TESTING=False, WEMA=_LIVE, PREMBLY=PREMBLY_OFF)
+    def test_every_kyc_evidence_check_fails_closed_in_live_production(self):
+        results = (
+            kyc_verify_face("image"),
+            kyc_verify_address("1 Main Street", "document"),
+            kyc_verify_nin_document("document"),
+            kyc_verify_id_document("document", "passport"),
+        )
+        self.assertTrue(all(not result["success"] for result in results))
+        self.assertTrue(all(not result.get("mock") for result in results))
+
+    @override_settings(DEBUG=False, TESTING=False, WEMA=_SIM, PREMBLY=PREMBLY_OFF)
+    def test_explicit_simulation_keeps_the_end_to_end_kyc_walkthrough(self):
+        results = (
+            kyc_verify_face("image"),
+            kyc_verify_address("1 Main Street", "document"),
+            kyc_verify_nin_document("document"),
+            kyc_verify_id_document("document", "passport"),
+        )
+        self.assertTrue(all(result["success"] and result.get("mock") for result in results))
 
 
 _LIVE_DIAG = {"base_url": "https://api.alat.ng", "channel_id_set": True,

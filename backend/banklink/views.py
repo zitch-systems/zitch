@@ -8,6 +8,7 @@ short-lived auth code reaches us here. Funding reuses the wallet's FundingIntent
 import json
 import logging
 
+from django.core.exceptions import RequestDataTooBig
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
@@ -25,6 +26,7 @@ from transfers.services import detect_account_banks, execute_payout, PayoutError
 from .models import LinkedBankAccount
 
 log = logging.getLogger("banklink")
+MONO_WEBHOOK_BODY_MAX = 1024 * 1024
 
 
 def _linked_id(data) -> int | None:
@@ -270,34 +272,54 @@ def webhook(request):
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
-    try:
-        event = json.loads(request.body or b"{}")
-    except (ValueError, TypeError):
-        return fail("Invalid payload", status=400)
+    # Mono authenticates with a shared-secret header, not a body signature. Check
+    # that boundary before parsing attacker-controlled JSON, then bound the body.
     signature = request.headers.get("mono-webhook-secret", "")
-    if not mono.verify_webhook(event, signature):
+    if not mono.verify_webhook({}, signature):
         log.warning("mono_webhook_bad_signature has_header=%s", bool(signature))
         return fail("Invalid signature", status=401)
+    try:
+        declared = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        declared = 0
+    if declared > MONO_WEBHOOK_BODY_MAX:
+        return fail("Payload too large", status=413)
+    try:
+        raw_body = request.body or b"{}"
+    except RequestDataTooBig:
+        return fail("Payload too large", status=413)
+    if len(raw_body) > MONO_WEBHOOK_BODY_MAX:
+        return fail("Payload too large", status=413)
+    if (request.content_type or "").lower() != "application/json":
+        return fail("Content-Type must be application/json", status=415)
+    try:
+        event = json.loads(raw_body)
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return fail("Invalid payload", status=400)
+    if not isinstance(event, dict):
+        return fail("Invalid payload", status=400)
 
-    etype = (event.get("event") or "").lower()
-    data = event.get("data", {}) or {}
+    etype = str(event.get("event") or "").lower()
+    data = event.get("data")
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return fail("Invalid payload", status=400)
     if "payment" in etype and ("success" in etype or "received" in etype):
         reference = data.get("reference", "") or data.get("merchant_ref", "")
         if reference:
             # Credit what Mono actually settled, never the user-requested intent
-            # amount: a partial debit (or a replayed/forged event, given the
-            # shared-secret webhook model) must not be able to credit more than was
-            # really paid. Clamp to the requested amount so we also never over-credit
-            # above the intent; a missing/garbled amount falls back to the intent
-            # amount (settle_funding default).
+            # amount. A missing or malformed settlement amount is not proof that
+            # money arrived; leave the intent pending for investigation instead of
+            # manufacturing the requested balance from an incomplete callback.
             raw_amount = data.get("amount")
             paid = mono._naira(raw_amount) if raw_amount is not None else None
             intent = FundingIntent.objects.filter(reference=reference).first()
             if paid and paid > 0 and intent is not None:
                 settle_funding(reference, verified_amount=min(intent.amount, paid))
+                log.info("mono_funding_settled ref=%s paid=%s", reference, paid)
             else:
-                settle_funding(reference)  # idempotent; uses the FundingIntent amount
-            log.info("mono_funding_settled ref=%s paid=%s", reference, paid)
+                log.warning("mono_funding_unsettled ref=%s reason=missing_verified_amount", reference)
     elif "account" in etype and ("connected" in etype or "updated" in etype):
         account_id = data.get("id", "") or data.get("account", "")
         LinkedBankAccount.objects.filter(mono_account_id=account_id).update(

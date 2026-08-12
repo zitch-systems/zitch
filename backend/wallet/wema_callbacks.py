@@ -54,7 +54,6 @@ from common.http import mask_pii
 from common.ratelimit import client_ip
 from utility import wema as wema_provider
 from utility.alerts import alert
-from utility.providers import mock_disabled_in_prod
 
 from .models import Transaction
 from .services import is_bank_payout, provision_wema_account, settle_or_refund
@@ -101,13 +100,16 @@ def _token_ok(supplied: str) -> bool:
     rotation has an overlap window). Whitespace is stripped on both sides because a
     pasted dashboard value routinely carries a trailing newline.
 
-    With NO token configured: allowed in dev/test/simulation, refused in production —
-    the same fail-closed posture as the Mono webhook secret.
+    With NO token configured: allowed only in local development/tests and refused
+    on every deployed host, including simulation. Fake balances and KYC state are
+    still customer data and cannot be left publicly attacker-mutable.
     """
     current = (_conf("CALLBACK_TOKEN", "") or "").strip()
     previous = (_conf("CALLBACK_TOKEN_PREV", "") or "").strip()
     if not current and not previous:
-        return not mock_disabled_in_prod()
+        from django.conf import settings
+
+        return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
     supplied = (supplied or "").strip()
     return any(hmac.compare_digest(supplied, known) for known in (current, previous) if known)
 

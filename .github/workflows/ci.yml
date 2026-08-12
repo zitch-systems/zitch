@@ -39,6 +39,8 @@ jobs:
         working-directory: backend
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.11"
@@ -80,11 +82,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
       # Secret scan — gitleaks as a pinned release binary (not the marketplace
       # action, which the org's GitHub-authored-only actions policy would block
-      # and which needs a license key for orgs). The default shallow checkout
-      # means this scans the current tree + tip commit, which is the contract:
-      # no new secret lands on main. Blocking.
+      # and which needs a license key for orgs). Full history is checked out so a
+      # secret cannot remain recoverable in an earlier commit while the tip scans
+      # clean. Blocking.
       - name: Secret scan (gitleaks)
         run: |
           set -euo pipefail
@@ -101,7 +105,7 @@ jobs:
       - name: pip-audit
         run: |
           pip install --quiet pip-audit
-          pip-audit -r backend/requirements.txt --no-deps
+          pip-audit -r backend/requirements.txt
   app:
     name: App (Expo)
     runs-on: ubuntu-latest
@@ -114,13 +118,15 @@ jobs:
       - name: Use npm 11 audit client
         run: npm install --global npm@11.6.2
       - run: npm ci
-      # Audit the installed production tree. Lockfile-only auditing hits npm's
-      # retired quick endpoint and can reject an otherwise valid dependency tree.
-      - name: npm audit (production critical)
+      # Audit the installed production tree. The wrapper permits only explicitly
+      # mitigated, expiring build-parser advisories; every other high/critical
+      # finding still fails. Lockfile-only auditing hits npm's retired quick
+      # endpoint and can reject an otherwise valid dependency tree.
+      - name: npm audit (production high + critical)
         run: |
           audit_status=0
           for attempt in 1 2 3; do
-            if audit_output="$(npm audit --omit=dev --audit-level=critical 2>&1)"; then
+            if audit_output="$(npm run audit:security 2>&1)"; then
               printf '%s\n' "$audit_output"
               exit 0
             else
@@ -132,7 +138,8 @@ jobs:
             fi
             [ "$attempt" -eq 3 ] || sleep 5
           done
-          echo "WARNING: npm advisory service unavailable after 3 attempts; no advisory result was returned."
+          echo "ERROR: npm advisory service unavailable after 3 attempts; failing closed."
+          exit "$audit_status"
       - name: Expo dependency compatibility
         run: npx expo install --check
       - name: Expo project health

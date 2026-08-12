@@ -22,6 +22,7 @@ urlpatterns = [
     path("kyc/bvn/start/", views.kyc_bvn_start),
     path("kyc/bvn/confirm/", views.kyc_bvn_confirm),
     path("kyc/nin/", views.kyc_nin),
+    path("kyc/nin/confirm/", views.kyc_nin_confirm),
     path("kyc/face/", views.kyc_face),
     path("kyc/address/", views.kyc_address),
     path("kyc/id/", views.kyc_id_document),

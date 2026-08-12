@@ -14,13 +14,15 @@
     "test:ci": "jest --runInBand",
     "typecheck": "tsc --noEmit",
     "doctor": "expo-doctor",
+    "audit:security": "node scripts/check-npm-audit.mjs",
     "check:browser-assets": "node scripts/check-browser-assets.mjs",
     "test:e2e": "bash scripts/maestro.sh"
   },
   "jest": {
     "preset": "jest-expo",
     "moduleNameMapper": {
-      "^@/(.*)$": "<rootDir>/$1"
+      "^@/(.*)$": "<rootDir>/$1",
+      "^uuid$": "<rootDir>/node_modules/uuid/dist/cjs/index.js"
     }
   },
   "dependencies": {
@@ -80,6 +82,10 @@
     "jest-expo": "~57.0.4",
     "react-test-renderer": "^19.2.3",
     "typescript": "~6.0.3"
+  },
+  "overrides": {
+    "image-size": "1.2.1",
+    "uuid": "11.1.1"
   },
   "private": true
 }

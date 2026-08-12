@@ -16,7 +16,7 @@ from wallet.services import (
     InsufficientFunds,
     LimitExceeded,
     debit,
-    refund,
+    settle_or_refund,
 )
 
 from .models import Bank, Beneficiary
@@ -343,12 +343,17 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         outcome = "failed"
 
     if outcome == "success":
-        # Confirmed sent — settle now and clear the reconcile flag.
-        meta = dict(txn.meta or {})
-        meta.pop("reconcile", None)
-        txn.meta = meta
-        txn.transaction_status = Transaction.SUCCESS
-        txn.save(update_fields=["transaction_status", "meta"])
+        # Confirmed sent — settle through the locked state machine. A concurrent
+        # callback/reconciler may already have resolved the row; never overwrite
+        # its terminal state from this request's stale in-memory object.
+        settled = settle_or_refund(txn, {"success": True, "status": result.get("status", "")})
+        if settled != "success":
+            log.critical("payout_state_conflict ref=%s provider=success ledger=%s",
+                         txn.reference, settled)
+            raise PayoutError(
+                "state_conflict",
+                "The bank response conflicted with the ledger. Your transaction is under review.",
+            )
     elif outcome == "pending":
         # Accepted-but-queued (PENDING/PROCESSING), OR an AMBIGUOUS outcome — a send
         # timeout / lost response on the non-idempotent transfer POST, where Wema may
@@ -368,19 +373,22 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         # so after the fact, with no shell and no log access, a failed payout was
         # indistinguishable from any other failed payout. It is the single most
         # useful field when a rail starts rejecting transfers.
-        meta = dict(txn.meta or {})
-        meta.pop("reconcile", None)
-        meta["failure"] = result.get("message", "") or "Transfer failed"
-        if result.get("status"):
-            meta["failure_status"] = result["status"]
-        txn.meta = meta
-        txn.save(update_fields=["meta"])
-        refund(txn)
-        raise PayoutError("provider", result.get("message", "Transfer failed"))
+        settled = settle_or_refund(
+            txn,
+            {"success": False,
+             "message": result.get("message", "") or "Transfer failed",
+             "status": result.get("status", "")},
+        )
+        # A verified callback/reconciler can win before this stale failure
+        # response returns. Its success is authoritative; refunding would create
+        # free money after the recipient was paid.
+        if settled != "success":
+            raise PayoutError("provider", result.get("message", "Transfer failed"))
 
     # Auto-save / dedupe the beneficiary for next time.
     Beneficiary.objects.get_or_create(
         user=user, account_number=account_number, bank_name=bank.name,
         defaults={"name": name, "bank_code": bank.bank_code, "color": bank.color or "#0FA295"},
     )
+    txn.refresh_from_db()
     return txn

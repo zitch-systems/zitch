@@ -8,12 +8,26 @@ RATELIMIT_ENABLE setting, which is off under tests so it can't pollute
 unrelated cases (a dedicated test re-enables it).
 """
 import functools
+import hashlib
+import hmac
 import ipaddress
 
 from django.conf import settings
 from django.core.cache import cache
 
 from .http import fail
+
+
+def opaque_cache_identifier(scope: str, value: str) -> str:
+    """Keyed, non-reversible cache component for an IP/email/phone.
+
+    Redis keys are visible to operators, monitoring agents and backups. They must
+    not become a second plaintext customer directory. HMAC (rather than a plain
+    hash) also prevents enumerating Nigeria's small phone-number space offline.
+    """
+    key = str(getattr(settings, "SECRET_KEY", "") or "zitch-cache-key").encode()
+    message = f"{scope}\0{(value or '').strip().lower()}".encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()[:32]
 
 
 def client_ip(request) -> str:
@@ -51,7 +65,7 @@ def ratelimit(scope: str, limit: int, window: int):
         @functools.wraps(view)
         def wrapper(request, *args, **kwargs):
             if getattr(settings, "RATELIMIT_ENABLE", True):
-                key = f"rl:{scope}:{client_ip(request)}"
+                key = f"rl:{scope}:{opaque_cache_identifier(scope, client_ip(request))}"
                 cache.add(key, 0, window)  # seed only if absent (sets the TTL)
                 try:
                     count = cache.incr(key)
@@ -75,7 +89,7 @@ def ratelimit(scope: str, limit: int, window: int):
 # are counted in the cache under a per-identifier key that expires after the
 # lockout window, so the lock auto-clears — no unlock step needed.
 def _lockout_key(scope: str, identifier: str) -> str:
-    return f"login-lock:{scope}:{(identifier or '').strip().lower()}"
+    return f"login-lock:{scope}:{opaque_cache_identifier('login-' + scope, identifier)}"
 
 
 def login_locked(scope: str, identifier: str, max_fails: int | None = None) -> bool:

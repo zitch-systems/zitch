@@ -75,11 +75,18 @@ describe('isTrivialPin', () => {
     expect(isTrivialPin('9999')).toBe(true);
   });
 
+  it('rejects repeated blocks', () => {
+    expect(isTrivialPin('121212')).toBe(true);
+    expect(isTrivialPin('123123')).toBe(true);
+  });
+
   it('rejects straight ascending/descending runs', () => {
     expect(isTrivialPin('1234')).toBe(true);
     expect(isTrivialPin('0123')).toBe(true);
     expect(isTrivialPin('4321')).toBe(true);
     expect(isTrivialPin('3210')).toBe(true);
+    expect(isTrivialPin('789012')).toBe(true);
+    expect(isTrivialPin('210987')).toBe(true);
   });
 
   it('accepts non-trivial PINs', () => {

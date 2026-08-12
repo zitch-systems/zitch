@@ -16,7 +16,7 @@ from betting.models import BettingPlatform
 from exams.models import ExamProduct
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
-from common.ratelimit import client_ip
+from common.ratelimit import _lockout_key, client_ip
 
 from .models import OTP, AccessToken
 
@@ -239,6 +239,17 @@ class CredentialSecurityTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("135790"))
 
+    def test_new_pin_policy_is_enforced_by_the_api(self):
+        user = User.objects.create(username="08040000006", phone="08040000006",
+                                   email="pin-policy@zitch.test")
+        token = AccessToken.issue(user).key
+        for weak_pin in ("123456", "654321", "789012", "000000", "121212", "123123"):
+            res, body = self.post("/api/set-transaction-pin/", {
+                "access_token": token, "pin": weak_pin})
+            self.assertEqual((res.status_code, body.get("code")), (400, "weak_pin"))
+        user.refresh_from_db()
+        self.assertFalse(user.transaction_pin)
+
     def test_changing_existing_pin_requires_current_pin_or_password(self):
         # A token alone must not be enough to OVERWRITE an existing PIN (else the
         # brute-force lockout is moot — an attacker would just reset the PIN).
@@ -248,19 +259,19 @@ class CredentialSecurityTests(TestCase):
         user.save()
         token = AccessToken.issue(user).key
         # No proof at all -> rejected.
-        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "999999"})
+        res, body = self.post("/api/set-transaction-pin/", {"access_token": token, "pin": "975310"})
         self.assertEqual((res.status_code, body.get("code")), (403, "current_pin_required"))
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
         # A WRONG current PIN is rejected too.
         res, body = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "999999", "old_pin": "0000"})
+            "access_token": token, "pin": "975310", "old_pin": "0000"})
         self.assertEqual(res.status_code, 403)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("1234"))  # unchanged
         # With the CURRENT PIN, the change goes through.
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "999999", "old_pin": "1234"})
+            "access_token": token, "pin": "975310", "old_pin": "1234"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("999999"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("975310"))
         # The account password remains a valid fallback (forgot-PIN recovery).
         res, _ = self.post("/api/set-transaction-pin/", {
             "access_token": token, "pin": "432100", "password": "Passw0rd123"})
@@ -278,12 +289,12 @@ class CredentialSecurityTests(TestCase):
         user.save()
         token = AccessToken.issue(user).key
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "567890", "password": "Passw0rd123"})
+            "access_token": token, "pin": "567891", "password": "Passw0rd123"})
         self.assertEqual(res.status_code, 200)
         u = User.objects.get(pk=user.pk)
         self.assertEqual(u.pin_failed_attempts, 0)
         self.assertIsNone(u.pin_locked_until)
-        self.assertTrue(u.check_transaction_pin("567890"))
+        self.assertTrue(u.check_transaction_pin("567891"))
 
     def test_update_info_rejects_phone_collision_cleanly(self):
         make_user("08010000001", "a@zitch.test")
@@ -462,11 +473,15 @@ class KycTierTests(TestCase):
 
     def test_bvn_otp_flow(self):
         # Redesigned flow: enter BVN -> code sent -> confirm code -> verified.
-        from django.core.cache import cache
-        r1, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
+        # Like every OTP test, pin the CSPRNG output; the cache contains only a
+        # keyed code hash and encrypted identity, never either plaintext value.
+        with patch("accounts.views._otp_code", return_value="654321"):
+            r1, _ = self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
         self.assertEqual(r1.status_code, 200)
-        code = cache.get(f"kyc_bvn:{self.user.id}")["code"]
-        r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": code})
+        pending = cache.get(f"kyc_identity:bvn:{self.user.id}")
+        self.assertNotIn("654321", str(pending))
+        self.assertNotIn("12345678901", str(pending))
+        r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(body["tier"], 0)  # BVN alone (NIN still pending) -> Tier 0
         self.assertTrue(User.objects.get(pk=self.user.pk).bvn_verified)
@@ -481,16 +496,15 @@ class KycTierTests(TestCase):
         # The 6-digit code is brute-forceable inside its 10-min window without a
         # cap: after 5 wrong guesses the pending code is burned (429) and the
         # right code no longer works until the user restarts.
-        from django.core.cache import cache
-        self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
-        real = cache.get(f"kyc_bvn:{self.user.id}")["code"]
+        with patch("accounts.views._otp_code", return_value="654321"):
+            self.post("/api/kyc/bvn/start/", {"access_token": self.token, "bvn": "12345678901"})
         for _ in range(4):
             r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
             self.assertEqual(r.status_code, 400)
         r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "000000"})
         self.assertEqual(r.status_code, 429)  # 5th wrong guess burns the code
         # Even the correct code is now rejected — the pending entry is gone.
-        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": real})
+        r, _b = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
         self.assertEqual(r.status_code, 400)
         self.assertFalse(User.objects.get(pk=self.user.pk).bvn_verified)
 
@@ -595,6 +609,12 @@ class RateLimitTests(TestCase):
             for i in range(8):
                 self.assertEqual(self.send(f"070200000{i:02d}").status_code, 200)
 
+    def test_login_cache_keys_do_not_expose_customer_identifiers(self):
+        key = _lockout_key("user", "ada.customer@example.com")
+        self.assertNotIn("ada.customer", key)
+        self.assertNotIn("example.com", key)
+        self.assertEqual(key, _lockout_key("user", "ADA.CUSTOMER@example.com"))
+
 
 class FullJourneyE2ETests(TestCase):
     """One chained journey through the whole stack — onboarding -> sign in ->
@@ -626,7 +646,7 @@ class FullJourneyE2ETests(TestCase):
         tok = b["access_token"]
         self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123")[0], 200)
         self.assertEqual(self.post("/api/set-password/", email=P, password="hacked12345")[0], 401)  # no token
-        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="123456")[0], 200)
+        self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="246810")[0], 200)
         s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123")
         self.assertEqual(s, 200)
         tok = b["access_token"]
@@ -655,7 +675,7 @@ class FullJourneyE2ETests(TestCase):
 
         # --- spend + history shape the app depends on ---
         self.assertEqual(self.post("/api/utility/buyairtime/", access_token=tok, amount="1000",
-                                   network="1", phone=P, transaction_pin="123456")[0], 200)
+                                   network="1", phone=P, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/wallet_balance/", access_token=tok)[1]["wallet"], "49000.00")
         txns = self.post("/api/user-transaction-history/", access_token=tok)[1]["all_site_transactions"]
         self.assertTrue({"service", "amount", "transaction_status", "date"} <= set(txns[0]))
@@ -665,14 +685,14 @@ class FullJourneyE2ETests(TestCase):
         get_or_create_wallet(recip)
         self.assertEqual(self.post("/api/transfer/resolve/", access_token=tok, identifier=R)[0], 200)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="5000", transaction_pin="123456")[0], 200)
+                                   amount="5000", transaction_pin="246810")[0], 200)
         self.assertEqual(get_or_create_wallet(recip).balance, Decimal("5000"))
 
         # --- tier limits ---
         _credit(user_obj, Decimal("200000"), "Wallet top-up")
         # Tier 1 caps at ₦50k/txn, so a ₦150k transfer is blocked...
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="123456")[0], 403)
+                                   amount="150000", transaction_pin="246810")[0], 403)
         # ...face + address raise the user to Tier 2 (₦200k), which also satisfies
         # the >=₦100k face step-up, so the same transfer now goes through.
         self.post("/api/kyc/face/", access_token=tok, selfie="MOCK")
@@ -680,24 +700,24 @@ class FullJourneyE2ETests(TestCase):
                                    address="12 Allen Avenue", city="Ikeja", state="Lagos",
                                    document="ZmFrZQ==")[1]["tier"], 2)
         self.assertEqual(self.post("/api/transfer/send/", access_token=tok, identifier=R,
-                                   amount="150000", transaction_pin="123456")[0], 200)
+                                   amount="150000", transaction_pin="246810")[0], 200)
 
         # --- loan, savings, card, betting, exam ---
         self.assertEqual(self.post("/api/loans/request/", access_token=tok, amount="100000",
-                                   tenure_days=30, transaction_pin="123456")[0], 200)
+                                   tenure_days=30, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/loans/repay/", access_token=tok, amount="200000",
-                                   transaction_pin="123456")[1]["loan"]["status"], "repaid")
+                                   transaction_pin="246810")[1]["loan"]["status"], "repaid")
         self.assertEqual(self.post("/api/savings/create/", access_token=tok, amount="10000",
-                                   days=90, transaction_pin="123456")[0], 200)
+                                   days=90, transaction_pin="246810")[0], 200)
         self.assertGreaterEqual(len(self.post("/api/savings/list/", access_token=tok)[1]["plans"]), 1)
         self.assertEqual(self.post("/api/cards/create/", access_token=tok)[0], 200)
         self.assertEqual(self.post("/api/cards/fund/", access_token=tok, amount="5000",
-                                   transaction_pin="123456")[1]["card"]["balance"], "5000.00")
-        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="123456")[0], 200)
+                                   transaction_pin="246810")[1]["card"]["balance"], "5000.00")
+        self.assertEqual(self.post("/api/cards/details/", access_token=tok, transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/betting/fund/", access_token=tok, platform="bet9ja",
-                                   user_id="ZB99999", amount="1000", transaction_pin="123456")[0], 200)
+                                   user_id="ZB99999", amount="1000", transaction_pin="246810")[0], 200)
         self.assertEqual(self.post("/api/exams/buy/", access_token=tok, exam="waec",
-                                   quantity=1, phone=P, transaction_pin="123456")[0], 200)
+                                   quantity=1, phone=P, transaction_pin="246810")[0], 200)
 
         # --- name lookups require auth ---
         self.assertEqual(self.post("/api/utility/validate_meter/", disco="1", meter="1234567890")[0], 401)

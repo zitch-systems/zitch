@@ -7,8 +7,9 @@ import { Platform } from 'react-native';
  *
  * The access token is a credential, so on native platforms it is kept in the
  * OS keychain / keystore via expo-secure-store instead of the unencrypted
- * AsyncStorage. expo-secure-store has no web implementation, so we fall back to
- * AsyncStorage on web (where the app is non-sensitive preview only).
+ * AsyncStorage. expo-secure-store has no web implementation, so browser sessions
+ * are memory-only: a reload signs out rather than leaving a bearer credential in
+ * local storage where any later XSS or browser-profile copy can recover it.
  */
 const TOKEN_KEY = 'access_token';
 const isWeb = Platform.OS === 'web';
@@ -19,6 +20,17 @@ const isWeb = Platform.OS === 'web';
 // take the option — only the write sets the item's accessibility class.
 const KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
+
+// Unlike the session token, the transaction PIN directly authorises money.
+// Bind its keychain item to the OS authentication ACL as well as to this device.
+// The separate biometric-only prompt in the payment UI remains defence in depth;
+// even if that JavaScript check is hooked, the keystore will not release the PIN
+// without a fresh system authentication.
+const TXN_PIN_KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
+  ...KEYCHAIN_OPTS,
+  requireAuthentication: true,
+  authenticationPrompt: 'Authenticate to use your Zitch transaction PIN',
 };
 
 // In-memory cache of the access token. getToken() is on the hot path of every
@@ -32,7 +44,8 @@ let cachedToken: string | null | undefined;
 export async function saveToken(token: string): Promise<void> {
   cachedToken = token;
   if (isWeb) {
-    await AsyncStorage.setItem(TOKEN_KEY, token);
+    // Erase a token left by a pre-hardening build; never persist the replacement.
+    await AsyncStorage.removeItem(TOKEN_KEY);
     return;
   }
   await SecureStore.setItemAsync(TOKEN_KEY, token, KEYCHAIN_OPTS);
@@ -40,9 +53,12 @@ export async function saveToken(token: string): Promise<void> {
 
 export async function getToken(): Promise<string | null> {
   if (cachedToken !== undefined) return cachedToken;
-  const token = isWeb
-    ? await AsyncStorage.getItem(TOKEN_KEY)
-    : await SecureStore.getItemAsync(TOKEN_KEY);
+  if (isWeb) {
+    await AsyncStorage.removeItem(TOKEN_KEY);
+    cachedToken = null;
+    return null;
+  }
+  const token = await SecureStore.getItemAsync(TOKEN_KEY);
   cachedToken = token;
   return token;
 }
@@ -74,13 +90,16 @@ const HAS_TXN_PIN_KEY = 'z-has-pin';
 
 export async function saveTransactionPin(pin: string): Promise<void> {
   if (isWeb) return; // don't persist the money PIN in unencrypted web storage
-  await SecureStore.setItemAsync(TXN_PIN_KEY, pin, KEYCHAIN_OPTS);
+  if (!/^\d{6}$/.test(pin)) {
+    throw new Error('A six-digit transaction PIN is required');
+  }
+  await SecureStore.setItemAsync(TXN_PIN_KEY, pin, TXN_PIN_KEYCHAIN_OPTS);
   await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');
 }
 
 export async function getTransactionPin(): Promise<string | null> {
   if (isWeb) return null;
-  return SecureStore.getItemAsync(TXN_PIN_KEY);
+  return SecureStore.getItemAsync(TXN_PIN_KEY, TXN_PIN_KEYCHAIN_OPTS);
 }
 
 /** Whether a money PIN is cached for biometric pay — a non-secret boolean, so
@@ -88,15 +107,10 @@ export async function getTransactionPin(): Promise<string | null> {
 export async function hasTransactionPin(): Promise<boolean> {
   if (isWeb) return false;
   if ((await AsyncStorage.getItem(HAS_TXN_PIN_KEY)) === '1') return true;
-  // One-time migration for sessions whose PIN was cached before this flag
-  // existed: if a PIN is already in the keychain, record the marker so future
-  // checks never touch the secret again (and the biometric shortcut keeps
-  // working for those users).
-  const existing = await SecureStore.getItemAsync(TXN_PIN_KEY);
-  if (existing) {
-    await AsyncStorage.setItem(HAS_TXN_PIN_KEY, '1');
-    return true;
-  }
+  // A pre-hardening item without this marker was written without an OS-auth ACL.
+  // Never silently migrate or read that secret: remove it and ask the customer to
+  // enable biometric payments again, which writes a freshly protected item.
+  await SecureStore.deleteItemAsync(TXN_PIN_KEY);
   return false;
 }
 

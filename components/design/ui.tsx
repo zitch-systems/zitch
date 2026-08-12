@@ -517,7 +517,7 @@ export const Sheet = ({
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = 4, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
+export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   // Biometric "pay" shortcut: shown only when the user enabled biometrics, the
@@ -716,7 +716,7 @@ export const PinSheet = ({
   onClose,
   onComplete,
   title = 'Enter your PIN',
-  subtitle = 'Confirm this transaction with your 4-digit PIN',
+  subtitle = 'Confirm this transaction with your 6-digit PIN',
   busy = false,
   error,
   autoBiometric = false,
@@ -799,4 +799,3 @@ export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPre
     </Wrap>
   );
 };
-

@@ -14,12 +14,13 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
+from django.core.exceptions import RequestDataTooBig
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import api, evaluate_transaction_pin, fail, ok, require_user
-from common.ratelimit import ratelimit
+from common.ratelimit import opaque_cache_identifier, ratelimit
 
 from .flows import resolve_approve_token
 from .models import Broadcast, BroadcastRecipient, ConversationState, WhatsAppLink
@@ -29,6 +30,7 @@ from .router import is_awaiting_bvn, is_awaiting_pin, reply
 
 LINK_CODE_TTL = timedelta(minutes=30)
 WHATSAPP_WEBHOOK_BODY_MAX = 1024 * 1024
+WHATSAPP_FLOW_BODY_MAX = 1024 * 1024
 
 
 @csrf_exempt
@@ -130,13 +132,26 @@ def flow_endpoint(request):
     if request.method != "POST":
         return HttpResponse(status=405)
 
+    try:
+        declared_size = int(request.META.get("CONTENT_LENGTH") or 0)
+    except (TypeError, ValueError):
+        declared_size = 0
+    if declared_size > WHATSAPP_FLOW_BODY_MAX:
+        return JsonResponse({"success": False, "message": "Payload too large"}, status=413)
+    try:
+        raw_body = request.body or b"{}"
+    except RequestDataTooBig:
+        return JsonResponse({"success": False, "message": "Payload too large"}, status=413)
+    if len(raw_body) > WHATSAPP_FLOW_BODY_MAX:
+        return JsonResponse({"success": False, "message": "Payload too large"}, status=413)
+
     # Meta signs Flows data-exchange requests exactly like webhook callbacks
     # (X-Hub-Signature-256 over the raw body, keyed on the app secret) — verify
     # them the same way. The envelope encryption alone doesn't authenticate the
     # sender (anyone holding our PUBLIC key can produce a decryptable body), so
     # without this check the endpoint accepts forged PIN submissions from any
     # origin. Mock mode (channel not live) accepts unsigned, as on the webhook.
-    if not verify_signature(request.body, request.headers.get("X-Hub-Signature-256", "")):
+    if not verify_signature(raw_body, request.headers.get("X-Hub-Signature-256", "")):
         record_flow_endpoint("?", "", "signature rejected")
         return JsonResponse({"success": False, "message": "Invalid signature"}, status=401)
 
@@ -144,7 +159,7 @@ def flow_endpoint(request):
     from .flows_crypto import FlowDecryptError, decrypt_request, encrypt_response
 
     try:
-        body = json.loads(request.body or b"{}")
+        body = json.loads(raw_body)
     except (ValueError, TypeError):
         record_flow_endpoint("?", "", "body was not JSON")
         return HttpResponse(status=400)
@@ -325,7 +340,7 @@ def _inbound_throttled(msisdn: str) -> bool:
         return False
     from django.core.cache import cache
 
-    key = f"wa:in:{msisdn}"
+    key = f"wa:in:{opaque_cache_identifier('whatsapp-inbound', msisdn)}"
     cache.add(key, 0, 60)
     try:
         return cache.incr(key) > 30
