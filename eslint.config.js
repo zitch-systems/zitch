@@ -15,6 +15,7 @@ module.exports = defineConfig([
       'landing/**',
       'landing-legacy/**',
       'node_modules/**',
+      'zitch-meta-connector/**',
     ],
   },
 ]);

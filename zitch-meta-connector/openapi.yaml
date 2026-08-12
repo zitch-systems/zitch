@@ -1,0 +1,343 @@
+openapi: 3.1.0
+info:
+  title: Zitch Meta Connector
+  version: "1.0.0"
+  description: >
+    Read-only maintenance/configuration tools for the Zitch WhatsApp Cloud API
+    and Meta Business API. This is the REST mirror of the connector's MCP
+    tools (see /mcp), provided so the same read-only logic can be wired up as
+    a ChatGPT GPT Action without re-implementing anything. Every endpoint is
+    read-only: none of them create, modify, delete, or rotate anything at
+    Meta, and none of them can reach a Zitch customer's PIN, biometric
+    enrollment, balance, transaction history, or personal data — this
+    connector only ever talks to the Meta Graph API, never the Zitch backend
+    or database.
+servers:
+  - url: https://REPLACE_WITH_YOUR_DEPLOYED_HOST/rest
+    description: Production (replace with your actual deployment host)
+  - url: http://localhost:8787/rest
+    description: Local development
+
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+
+paths:
+  /:
+    get:
+      operationId: listTools
+      summary: List available tools
+      description: Returns the name, REST path, and description of every tool this connector exposes.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        path: { type: string }
+                        description: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /check-whatsapp-webhook-status:
+    get:
+      operationId: checkWhatsAppWebhookStatus
+      summary: Check WhatsApp webhook status
+      description: >
+        Reports which app(s) are subscribed to the WhatsApp Business Account's
+        webhook events and which event fields each is subscribed to.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookStatusResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /check-whatsapp-phone-number-config:
+    get:
+      operationId: checkWhatsAppPhoneNumberConfig
+      summary: Check WhatsApp phone-number configuration
+      description: Reads Zitch's own outbound WhatsApp number configuration.
+      parameters:
+        - name: phoneNumberId
+          in: query
+          required: false
+          description: Phone number ID to inspect. Defaults to META_PHONE_NUMBER_ID.
+          schema: { type: string, pattern: "^\\d{1,32}$" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PhoneNumberConfigResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /list-whatsapp-message-templates:
+    get:
+      operationId: listWhatsAppMessageTemplates
+      summary: List WhatsApp message templates
+      description: Lists the WABA's message templates with approval status, category, language, and quality score.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - name: after
+          in: query
+          required: false
+          description: Opaque pagination cursor from a previous response.
+          schema: { type: string, maxLength: 2048 }
+        - name: nameFilter
+          in: query
+          required: false
+          description: Case-sensitive exact template name to filter on.
+          schema: { type: string, maxLength: 512 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessageTemplatesResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /inspect-failed-message-deliveries:
+    get:
+      operationId: inspectFailedMessageDeliveries
+      summary: Inspect failed message deliveries
+      description: >
+        Aggregate daily sent/delivered counts for a bounded recent window.
+        Meta's Graph API does not expose a per-message failure log — see the
+        response's `note` field for the exact limitation.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+        - name: lookbackHours
+          in: query
+          required: false
+          description: How far back to look, in hours (1-720). Defaults to 24.
+          schema: { type: integer, minimum: 1, maximum: 720 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FailedDeliveriesResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /inspect-webhook-events:
+    get:
+      operationId: inspectWebhookEvents
+      summary: Inspect webhook event configuration
+      description: >
+        Lists which webhook event types (fields) are currently configured per
+        subscribed app. This is current configuration, not a historical
+        delivery log — see the response's `note` field for the exact
+        limitation.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEventsResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /verify-meta-credentials:
+    get:
+      operationId: verifyMetaCredentials
+      summary: Verify Meta API credentials
+      description: >
+        Confirms META_ACCESS_TOKEN is valid and can read the configured WABA
+        and phone number. Never returns the token itself.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerifyCredentialsResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Connector-Api-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: CONNECTOR_API_KEY as a Bearer token. Required on every request.
+
+  parameters:
+    WabaId:
+      name: wabaId
+      in: query
+      required: false
+      description: WhatsApp Business Account ID. Defaults to META_WABA_ID.
+      schema: { type: string, pattern: "^\\d{1,32}$" }
+
+  responses:
+    BadRequest:
+      description: Invalid input.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: invalid_input }
+              message: { type: string }
+    Unauthorized:
+      description: Missing or invalid CONNECTOR_API_KEY.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: unauthorized }
+              message: { type: string }
+    RateLimited:
+      description: Too many requests.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: rate_limited }
+              message: { type: string }
+    MetaApiError:
+      description: The Meta Graph API returned an error or was unreachable.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string, example: meta_api_error }
+              message: { type: string }
+
+  schemas:
+    WebhookStatusResult:
+      type: object
+      properties:
+        wabaId: { type: string }
+        subscribed: { type: boolean }
+        subscribedApps:
+          type: array
+          items:
+            type: object
+            properties:
+              appName: { type: string }
+              subscribedFields:
+                type: array
+                items: { type: string }
+
+    PhoneNumberConfigResult:
+      type: object
+      properties:
+        phoneNumberId: { type: string }
+        displayPhoneNumber: { type: string }
+        verifiedName: { type: string }
+        codeVerificationStatus: { type: string }
+        qualityRating: { type: string }
+        messagingLimitTier: { type: string }
+        platformType: { type: string }
+        isOfficialBusinessAccount: { type: boolean }
+        nameStatus: { type: string }
+
+    MessageTemplatesResult:
+      type: object
+      properties:
+        wabaId: { type: string }
+        nextCursor: { type: string }
+        templates:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              status: { type: string }
+              category: { type: string }
+              language: { type: string }
+              qualityScore: { type: string }
+              rejectedReason: { type: string }
+
+    FailedDeliveriesResult:
+      type: object
+      properties:
+        wabaId: { type: string }
+        windowHours: { type: integer }
+        granularity: { type: string }
+        note: { type: string }
+        dailyBreakdown:
+          type: array
+          items:
+            type: object
+            properties:
+              periodStart: { type: string, format: date-time }
+              periodEnd: { type: string, format: date-time }
+              sent: { type: integer }
+              delivered: { type: integer }
+              undeliveredApprox: { type: integer }
+
+    WebhookEventsResult:
+      type: object
+      properties:
+        wabaId: { type: string }
+        note: { type: string }
+        configuredEventTypes:
+          type: array
+          items: { type: string }
+        perApp:
+          type: array
+          items:
+            type: object
+            properties:
+              appName: { type: string }
+              fields:
+                type: array
+                items: { type: string }
+
+    VerifyCredentialsResult:
+      type: object
+      properties:
+        allValid: { type: boolean }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              resource: { type: string, enum: [waba, phone_number] }
+              ok: { type: boolean }
+              httpStatus: { type: integer }
+              metaErrorType: { type: string }
+              message: { type: string }
