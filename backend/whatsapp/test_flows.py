@@ -244,6 +244,152 @@ class FlowsHandlerTests(TestCase):
 # --------------------------------------------------------------------------- #
 # router arming + chat guard
 # --------------------------------------------------------------------------- #
+@override_settings(WHATSAPP_PROCESS_INLINE=False)
+class FlowExecutionOffMetasClockTests(TestCase):
+    """Meta gives a data-exchange 10 seconds. Executing a transfer inside one
+    means a name enquiry, a payout to the bank rail, a rendered receipt, a media
+    upload and two Graph sends, in sequence — routinely longer than that, and the
+    customer is shown "Couldn't load content. Try again later." for a payment
+    that went through.
+
+    So the endpoint answers as soon as the PIN is verified and the payment runs
+    in the durable queue, where every chat-confirmed payment has always run.
+    These tests run with inline processing OFF, which is production's setting —
+    the rest of the suite runs inline, so without this class the queued path
+    would never be exercised.
+    """
+
+    def setUp(self):
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
+        self.user = _make_user()
+
+    def submit_pin(self, pa, pin="1234"):
+        from .flows import handle_flow_request
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(pa),
+                                    "data": {"pin": pin}})
+
+    def jobs_for(self, pa):
+        return WaMessageLog.objects.filter(wa_message_id=f"flowexec-{pa.pk}")
+
+    def test_the_endpoint_answers_without_touching_the_bank_rail(self):
+        # The regression guard: no payout may happen while Meta is waiting.
+        from .flows import SUCCESS_SCREEN
+        from whatsapp import router
+
+        pa = _transfer_action(self.user)
+        before = get_or_create_wallet(self.user).balance
+        with patch.object(router, "execute_payout") as payout:
+            resp = self.submit_pin(pa)
+        payout.assert_not_called()
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
+
+    def test_the_customer_is_told_it_is_on_its_way(self):
+        resp = self.submit_pin(_transfer_action(self.user))
+        self.assertIn("Confirmed", resp["data"]["message"])
+        self.assertIn("receipt", resp["data"]["message"].lower())
+
+    def test_the_authorised_payment_is_queued_and_then_paid(self):
+        from .jobs import process_inbound_message
+
+        pa = _transfer_action(self.user)
+        before = get_or_create_wallet(self.user).balance
+        self.submit_pin(pa)
+
+        job = self.jobs_for(pa).get()                       # durable, one row
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "executing")
+        self.assertGreater(pa.expires_at, timezone.now() + timedelta(minutes=5))
+
+        self.assertEqual(process_inbound_message(job.pk), "processed")
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
+        self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())   # consumed
+        receipts = [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT)]
+        self.assertTrue(any("Transfer receipt" in t for t in receipts))
+
+    def test_confirming_twice_queues_one_payment(self):
+        # Meta showed an error and the customer tapped Confirm again. That must
+        # not become two transfers, and must not become two jobs.
+        pa = _transfer_action(self.user)
+        self.submit_pin(pa)
+        self.submit_pin(pa)
+        self.assertEqual(self.jobs_for(pa).count(), 1)
+
+    def test_a_replayed_job_pays_nothing_a_second_time(self):
+        from .jobs import process_inbound_message
+
+        pa = _transfer_action(self.user)
+        before = get_or_create_wallet(self.user).balance
+        self.submit_pin(pa)
+        job = self.jobs_for(pa).get()
+        process_inbound_message(job.pk)
+        paid = get_or_create_wallet(self.user).balance
+        self.assertEqual(paid, before - Decimal("5000"))
+
+        # A finished job has its payload wiped, so re-running it cannot reach the
+        # money path at all — it dead-letters instead of paying again.
+        WaMessageLog.objects.filter(pk=job.pk).update(processed_at=None, processing_started_at=None)
+        self.assertEqual(process_inbound_message(job.pk), "dead_letter")
+        self.assertEqual(get_or_create_wallet(self.user).balance, paid)
+
+    def test_executing_an_action_that_already_ran_is_a_no_op(self):
+        # The second line of defence, for a job that outlived its action by any
+        # route: no row, nothing to pay, no exception to retry on.
+        from .jobs import _execute_authorised_action
+
+        pa = _transfer_action(self.user)
+        before = get_or_create_wallet(self.user).balance
+        stale_id, user_id = pa.pk, self.user.pk
+        pa.delete()
+        _execute_authorised_action(stale_id, user_id)
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
+
+    def test_the_confirm_window_does_not_kill_a_payment_already_authorised(self):
+        # The 2-minute clock measures how long the customer has to CONFIRM. Once
+        # they have, a slow rail must not turn into a dropped payment.
+        from .jobs import process_inbound_message
+
+        pa = _transfer_action(self.user)
+        before = get_or_create_wallet(self.user).balance
+        self.submit_pin(pa)
+        job = self.jobs_for(pa).get()
+        PendingAction.objects.filter(pk=pa.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1))
+
+        process_inbound_message(job.pk)
+        self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
+
+    def test_a_settling_payment_is_never_announced_as_not_charged(self):
+        # The timeout notice promises "nothing was charged". That promise cannot
+        # be made about a payment whose money may already be moving, and the row
+        # is the only record left to reconcile it against.
+        from .router import _announce_timeout
+
+        pa = _transfer_action(self.user)
+        self.submit_pin(pa)
+        PendingAction.objects.filter(pk=pa.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1))
+
+        self.assertFalse(_announce_timeout(MSISDN))
+        self.assertTrue(PendingAction.objects.filter(pk=pa.pk).exists())
+
+    def test_a_message_while_it_settles_does_not_cancel_it(self):
+        # Every other in-flow branch can end in _clear_actions; clearing THIS row
+        # would delete a payment the customer was told was on its way.
+        from .router import handle_inbound
+
+        pa = _transfer_action(self.user)          # _make_user already linked MSISDN
+        self.submit_pin(pa)
+        handle_inbound(MSISDN, "balance")
+        self.assertTrue(PendingAction.objects.filter(pk=pa.pk).exists())
+        last = WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
+        self.assertIn("going through", last.text)
+
+
 class FlowArmingTests(TestCase):
     def setUp(self):
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
