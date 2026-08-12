@@ -1,0 +1,62 @@
+# Render Blueprint for zitch-meta-connector — deliberately its OWN Blueprint
+# file, separate from the root /render.yaml that defines Zitch's live banking
+# services. This connector shares no deploy pipeline, scaling policy, or
+# on-call rotation with them (see README.md, "What this project does not
+# do"), and syncing it must never touch that file or those services.
+#
+# In Render: New + > Blueprint > select this repo > when asked for the
+# Blueprint file path, enter "zitch-meta-connector/render.yaml" (Render
+# otherwise looks for one at the repo root, which is the banking services'
+# file). Render then creates exactly the one service below.
+#
+# Every secret is declared with `sync: false` — Render will prompt for it in
+# the dashboard during setup and store it as an encrypted service secret; the
+# value is never written to this file or to git.
+services:
+  - type: web
+    name: zitch-meta-connector
+    runtime: node
+    rootDir: zitch-meta-connector
+    # `starter`, not `free`: the free plan sleeps after 15 minutes idle, and
+    # this connector's clients (Claude's remote-connector integration, a
+    # future GPT Action) expect an HTTPS endpoint to respond promptly rather
+    # than eat a ~30-60s cold-start on the first call after a quiet period.
+    # Nothing here is money-movement-critical the way the banking services
+    # are (see the root render.yaml's comment on that same field), so this is
+    # about response latency, not correctness.
+    plan: starter
+    buildCommand: "npm ci && npm run build"
+    # Render injects PORT; src/index.ts already binds to it (config.port,
+    # default 8787 only applies when PORT is unset, e.g. running locally).
+    startCommand: "npm start"
+    healthCheckPath: /healthz
+    envVars:
+      # --- Meta / WhatsApp Cloud API — fill in via the Render dashboard ---
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_WABA_ID
+        sync: false
+      - key: META_PHONE_NUMBER_ID
+        sync: false
+      # --- Connector auth — fill in via the Render dashboard ---
+      # Generate with: openssl rand -hex 32
+      - key: CONNECTOR_API_KEY
+        sync: false
+      # --- Everything below has a safe default in src/config.ts; declared
+      # here only so the values are visible and editable from the dashboard
+      # without reading the source. ---
+      - key: META_GRAPH_API_VERSION
+        value: "v21.0"
+      - key: META_GRAPH_API_BASE_URL
+        value: "https://graph.facebook.com"
+      - key: GRAPH_TIMEOUT_MS
+        value: "10000"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: "30"
+      # Pre-auth, IP-keyed budget (throttles wrong/missing-key floods too —
+      # see rateLimit.ts). Must stay >= RATE_LIMIT_MAX_REQUESTS; config.ts
+      # refuses to boot otherwise.
+      - key: IP_RATE_LIMIT_MAX_REQUESTS
+        value: "60"

@@ -169,25 +169,41 @@ The image is a multi-stage build (`Dockerfile`): TypeScript is compiled in a `no
 build stage, and the runtime stage installs only production dependencies and runs as a
 non-root user (`connector`, uid 10001). It ships a `HEALTHCHECK` against `/healthz`.
 
-### Render (or any platform that builds from a Dockerfile / repo subdirectory)
+### Render
 
-This project deliberately is **not** wired into the root `render.yaml` — that file defines
+This project deliberately is **not** wired into the root `/render.yaml` — that file defines
 Zitch's live banking services, and this connector has no reason to share a deploy pipeline,
-scaling policy, or on-call rotation with them. To deploy it as its own Render Web Service:
+scaling policy, or on-call rotation with them. It has its own Blueprint instead:
+[`render.yaml`](./render.yaml), scoped to exactly one service.
 
-1. Create a new Web Service pointing at this repo, with **Root Directory** set to
-   `zitch-meta-connector`.
-2. Environment: **Docker** (it will pick up the `Dockerfile` in this directory automatically), or
-   Node with build command `npm ci && npm run build` and start command `npm start`.
-3. Set the four required environment variables (`META_ACCESS_TOKEN`, `META_WABA_ID`,
-   `META_PHONE_NUMBER_ID`, `CONNECTOR_API_KEY`) as **secrets** in the service's environment group
-   — never commit them.
-4. Health check path: `/healthz`.
+**Deploy via the Blueprint (recommended — build/start config lives in source, not clicked
+together in a dashboard):**
+
+1. In Render: **New +** → **Blueprint** → select this repo.
+2. When Render asks for the Blueprint file, it defaults to a root-level `render.yaml` — override
+   the path to **`zitch-meta-connector/render.yaml`**. (If your Render account/plan doesn't
+   support a non-root Blueprint path, use the manual setup below instead — the values are
+   identical.)
+3. Render creates one Web Service, `zitch-meta-connector`, reading `rootDir: zitch-meta-connector`,
+   `runtime: node`, `buildCommand: npm ci && npm run build`, `startCommand: npm start`,
+   `healthCheckPath: /healthz`, on the `starter` plan (not `free` — see the comment in
+   `render.yaml` on why: a free-tier cold start would stall the first call after any quiet
+   period).
+4. Render prompts for the secrets marked `sync: false` in the Blueprint —
+   `META_ACCESS_TOKEN`, `META_WABA_ID`, `META_PHONE_NUMBER_ID`, `CONNECTOR_API_KEY`
+   (`openssl rand -hex 32` for the last one). Everything else already has a value in the
+   Blueprint and is editable from the dashboard afterward without touching source.
 5. Once deployed, the MCP endpoint is `https://<your-service>.onrender.com/mcp`.
 
-The same pattern applies to Fly.io, a bare VM behind a reverse proxy, or any other container
-host — the `Dockerfile` and `/healthz` endpoint are the only platform-specific integration
-points.
+**Manual setup (equivalent, no Blueprint):** New + → Web Service → this repo → **Root Directory**
+`zitch-meta-connector` → **Runtime** Node → **Build Command** `npm ci && npm run build` →
+**Start Command** `npm start` → **Health Check Path** `/healthz` → add the same four secrets
+above as environment variables.
+
+**Docker, on Render or elsewhere:** the same service also builds from the `Dockerfile` in this
+directory if you'd rather run it as a container (on Render, choose **Runtime: Docker** instead of
+Node when creating the Web Service — everything else above still applies). The same pattern works
+on Fly.io, a bare VM behind a reverse proxy, or any other container host.
 
 ### Generating `META_ACCESS_TOKEN`
 
@@ -233,4 +249,6 @@ src/
 test/            Unit tests for auth, rate limiting, redaction, schemas, config
 openapi.yaml        REST API spec for a future ChatGPT GPT Action
 Dockerfile        Multi-stage production image
+render.yaml        Render Blueprint for this service alone (see "Production deployment")
+.node-version        Pins the Node version Render (and any nvm/fnm-based local setup) builds with
 ```
