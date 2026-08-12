@@ -52,7 +52,7 @@ Observed in workspace `tea-d8entvernols73agg0rg` without reproducing any secret:
 
 | Component | Observed | Required before public launch |
 |---|---|---|
-| Web service `zitch main app` | Free plan, one instance, bare gunicorn start, health path `/`, inline WhatsApp processing enabled | Paid non-sleeping service, reviewed gunicorn command, `/healthz`, checked deploys, web inline processing off after worker validation |
+| Web service `zitch main app` | Free plan, one instance, bare gunicorn start, health path `/`, inline WhatsApp processing enabled | Repository-level Gunicorn defaults now make the bare command bounded/threaded after deploy. Paid non-sleeping service, dashboard `/healthz`, checked deploys, and web inline processing off still require topology approval/validation. |
 | WhatsApp worker | No worker service exists | Provision the paid `zitch-whatsapp-worker`, prove leases/retries/dead-letter and zero growing backlog |
 | PostgreSQL | Basic 256 MiB / 1 GiB, no HA, no pool; live configuration does not evidence an empty public allowlist | Disable public access, use private connections, validate backups and restore, define HA/capacity/RPO/RTO |
 | Redis/Key Value | Starter, persistence off; reachable by the app | Retain for ephemeral limits/challenges only, restrict external access, monitor evictions/availability; durable WhatsApp work remains in Postgres |
