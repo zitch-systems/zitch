@@ -99,10 +99,10 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
             send_sms(user.phone, _sms_alert(txn, reversal=reversal))
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_sms_failed ref=%s", txn.reference)
-    _whatsapp_alert(txn, subject, body)
+    _whatsapp_alert(txn, subject, body, reversal=reversal)
 
 
-def _whatsapp_alert(txn, subject: str, body: str) -> None:
+def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> None:
     """Alert the customer where they actually bank, for a WhatsApp customer.
 
     Costs nothing per message and lands in the thread they already use, which
@@ -110,11 +110,24 @@ def _whatsapp_alert(txn, subject: str, body: str) -> None:
     alert to someone who signed up on WhatsApp and has never opened the app is a
     notification nobody reads.
 
+    The original debit/credit notice is skipped when the transaction itself was
+    done ON WhatsApp: the flow that ran the transfer/purchase already sent a
+    receipt and a "balance is now" line into that same chat (see `reply_receipt`
+    in whatsapp/router.py), so this alert would just be the same movement
+    announced twice in one thread. A transaction started elsewhere (the app, the
+    operator console) still gets this — it is the only notice that customer sees
+    in WhatsApp. A REVERSAL is never skipped, even on a WhatsApp-channel
+    transaction: it happens later, out of band (a settlement callback, a
+    reconciler), and nothing else in the original chat ever told the customer
+    their money came back.
+
     Best-effort in every direction: no link, no send; a failure is logged and
     never propagates, because an alert must not be able to roll back the ledger
     write that triggered it.
     """
     if not _alerts_on("whatsapp"):
+        return
+    if not reversal and _meta(txn).get("channel") == "whatsapp":
         return
     try:
         from whatsapp.models import WhatsAppLink

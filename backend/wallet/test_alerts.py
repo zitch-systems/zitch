@@ -147,3 +147,65 @@ class TransactionAlertTests(TestCase):
             with self.captureOnCommitCallbacks(execute=True):
                 refund(txn)
         email.assert_not_called()
+
+
+@override_settings(TXN_ALERTS={"EMAIL": True, "SMS": False, "WHATSAPP": True})
+class WhatsAppChannelAlertTests(TestCase):
+    """A WhatsApp-originated transfer/purchase already gets a receipt and a
+    "balance is now" line inside the same chat (whatsapp/router.py
+    `reply_receipt`). The generic post-save alert must not repeat that as a
+    second "Debit alert" message in the same thread — but it must still reach
+    every other channel, and it must still fire on a later reversal, since
+    nothing else in that chat ever announces one."""
+
+    def setUp(self):
+        from whatsapp.models import WhatsAppLink
+
+        self.user = _user()
+        self.link = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn="2348012340000", status=WhatsAppLink.ACTIVE)
+
+    def test_a_whatsapp_channel_debit_does_not_duplicate_in_chat(self):
+        credit(self.user, Decimal("10000"), "funding")
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply") as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn = debit(self.user, Decimal("1000"), "Transfer to Ada",
+                           meta={"channel": "whatsapp"})
+                txn.transaction_status = Transaction.SUCCESS
+                txn.save(update_fields=["transaction_status"])
+        email.assert_called_once()
+        wa_reply.assert_not_called()
+
+    def test_a_non_whatsapp_channel_debit_still_alerts_in_chat(self):
+        """A transfer made in the app still reaches a linked WhatsApp customer —
+        that chat never saw a receipt for it."""
+        credit(self.user, Decimal("10000"), "funding")
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply") as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn = debit(self.user, Decimal("1000"), "Transfer to Ada")
+                txn.transaction_status = Transaction.SUCCESS
+                txn.save(update_fields=["transaction_status"])
+        email.assert_called_once()
+        wa_reply.assert_called_once()
+        self.assertIn("Debit alert", wa_reply.call_args[0][1])
+
+    def test_a_reversed_whatsapp_channel_debit_still_alerts_in_chat(self):
+        """The reversal happens later, out of band — the original chat never
+        says the money came back unless this does."""
+        from .services import reverse_transfer
+
+        credit(self.user, Decimal("10000"), "funding")
+        with self.captureOnCommitCallbacks(execute=True):
+            txn = debit(self.user, Decimal("1000"), "transfer", meta={"channel": "whatsapp"})
+            txn.transaction_status = Transaction.SUCCESS
+            txn.save(update_fields=["transaction_status"])
+
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply") as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                reverse_transfer(txn.reference)
+        email.assert_called_once()
+        wa_reply.assert_called_once()
+        self.assertIn("Reversal", wa_reply.call_args[0][1])

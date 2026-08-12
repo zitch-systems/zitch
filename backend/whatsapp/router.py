@@ -2883,7 +2883,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         # Stable key per flow: a re-sent "pin" message can't double-pay.
         txn = execute_payout(
             user, amount, pa.payload["account"], bank, confirmed_name,
-            idempotency_key=f"wa-{pa.id}",
+            idempotency_key=f"wa-{pa.id}", channel="whatsapp",
         )
     except PayoutError as exc:
         _clear_actions(msisdn)
@@ -3009,8 +3009,9 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         reply(msisdn, msg)
         return msg
     try:
+        purchase_meta = {**pa.payload.get("meta", {}), "channel": "whatsapp"}
         status, txn, result = run_provider_purchase(
-            user, amount, label, pa.payload.get("meta", {}), provider_call,
+            user, amount, label, purchase_meta, provider_call,
             idempotency_key=f"wa-{pa.id}",
         )
     except InsufficientFunds:
