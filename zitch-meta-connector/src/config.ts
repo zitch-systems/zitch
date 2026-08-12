@@ -7,6 +7,9 @@
  * META_ACCESS_TOKEN — is ever handed back to a caller. See redact.ts for the
  * belt-and-braces guard against that leaking through a log line or an error.
  */
+import { createHmac } from 'node:crypto';
+
+import type { StaticClient } from './oauth/clients.js';
 
 export interface Config {
   metaAccessToken: string;
@@ -35,6 +38,29 @@ export interface Config {
    * reviewable change here — not a silent side effect of adding a file.
    */
   readOnly: true;
+
+  // --- OAuth 2.1 (see src/oauth/) -----------------------------------------
+  /** Public origin, e.g. https://zitch-meta-connector.onrender.com. When
+   * unset it is derived per-request from X-Forwarded-Proto/Host, which is
+   * correct behind Render's proxy; set it explicitly if this ever sits behind
+   * something that does not send those. */
+  publicBaseUrl: string | undefined;
+  /** Signs client_ids, authorization-request blobs, and access/refresh
+   * tokens. Defaults to a value DERIVED from connectorApiKey rather than
+   * equal to it, so the two secrets are never interchangeable; the practical
+   * consequence is that rotating CONNECTOR_API_KEY also invalidates every
+   * outstanding OAuth token, which is the behaviour you want from a rotation. */
+  oauthSigningKey: string;
+  /** What the operator types on the consent screen. Defaults to
+   * connectorApiKey so OAuth works with no extra configuration. */
+  oauthLoginPassword: string;
+  /** Hosts a redirect_uri may point at. Registration is unauthenticated (that
+   * is what makes Dynamic Client Registration work for Claude), so this list
+   * is the only thing stopping this service being used as an open redirector. */
+  oauthAllowedRedirectHosts: readonly string[];
+  /** Optional pre-shared client, for clients that cannot do dynamic
+   * registration. Unset means DCR is the only way in. */
+  oauthStaticClient: StaticClient | undefined;
 }
 
 function requireEnv(name: string): string {
@@ -50,6 +76,40 @@ function requireEnv(name: string): string {
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : undefined;
+}
+
+/** Comma-separated list env var; undefined when unset so a caller can apply
+ * its own default. Empty entries are dropped rather than becoming "". */
+function listEnv(name: string): string[] | undefined {
+  const raw = optionalEnv(name);
+  if (!raw) return undefined;
+  const items = raw.split(',').map((item) => item.trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
+/** The optional pre-shared OAuth client. Both halves must be present, and the
+ * secret must be long enough to be worth having — a half-configured client is
+ * a configuration mistake, not a usable fallback, so it fails at boot. */
+function staticClient(): StaticClient | undefined {
+  const clientId = optionalEnv('OAUTH_CLIENT_ID');
+  const clientSecret = optionalEnv('OAUTH_CLIENT_SECRET');
+  if (!clientId && !clientSecret) return undefined;
+  if (!clientId || !clientSecret) {
+    throw new Error('OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET must be set together, or neither.');
+  }
+  if (clientSecret.length < 24) {
+    throw new Error(
+      'OAUTH_CLIENT_SECRET is too short (< 24 chars) — generate one with `openssl rand -hex 32`.',
+    );
+  }
+  return {
+    clientId,
+    clientSecret,
+    redirectUris: listEnv('OAUTH_REDIRECT_URIS') ?? [
+      'https://claude.ai/api/mcp/auth_callback',
+      'https://claude.com/api/mcp/auth_callback',
+    ],
+  };
 }
 
 function intEnv(name: string, fallback: number): number {
@@ -104,6 +164,20 @@ export function loadConfig(): Config {
     rateLimitMaxRequests: intEnv('RATE_LIMIT_MAX_REQUESTS', 30),
     ipRateLimitMaxRequests: intEnv('IP_RATE_LIMIT_MAX_REQUESTS', 60),
     readOnly: true,
+    publicBaseUrl: optionalEnv('PUBLIC_BASE_URL'),
+    oauthSigningKey:
+      optionalEnv('OAUTH_SIGNING_KEY') ??
+      createHmac('sha256', connectorApiKey).update('zitch-meta-connector/oauth-signing').digest('hex'),
+    oauthLoginPassword: optionalEnv('OAUTH_LOGIN_PASSWORD') ?? connectorApiKey,
+    oauthAllowedRedirectHosts: listEnv('OAUTH_ALLOWED_REDIRECT_HOSTS') ?? [
+      // Claude's custom-connector callbacks, plus loopback for local client
+      // development. Anything else has to be added deliberately.
+      'claude.ai',
+      'claude.com',
+      'localhost',
+      '127.0.0.1',
+    ],
+    oauthStaticClient: staticClient(),
   };
   if (cached.ipRateLimitMaxRequests < cached.rateLimitMaxRequests) {
     throw new Error(

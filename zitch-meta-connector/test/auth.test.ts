@@ -19,6 +19,11 @@ function fakeConfig(apiKey: string): Config {
     rateLimitMaxRequests: 1,
     ipRateLimitMaxRequests: 1,
     readOnly: true,
+    publicBaseUrl: undefined,
+    oauthSigningKey: 'oauth-signing-key-for-tests-0000',
+    oauthLoginPassword: 'operator-passphrase-for-tests-00',
+    oauthAllowedRedirectHosts: ['claude.ai'],
+    oauthStaticClient: undefined,
   };
 }
 
@@ -72,5 +77,18 @@ describe('checkAuth', () => {
   it('is case-sensitive and exact — no partial/prefix match', () => {
     const result = checkAuth(fakeReq({ authorization: `Bearer ${FIXTURE_KEY_UPPER}` }), config);
     expect(result.ok).toBe(false);
+  });
+
+  it('reports which credential type authenticated, for the audit trail', () => {
+    expect(checkAuth(fakeReq({ authorization: `Bearer ${FIXTURE_KEY}` }), config).method).toBe('api_key');
+    expect(checkAuth(fakeReq({}), config).method).toBe('none');
+  });
+
+  it('rejects a well-formed but unsigned bearer token without throwing', () => {
+    // Shaped like one of our signed tokens (two dot-separated segments) so it
+    // reaches the OAuth verification path rather than being dismissed early.
+    const shaped = `${Buffer.from('{"typ":"access"}').toString('base64url')}.${Buffer.from('nope').toString('base64url')}`;
+    expect(() => checkAuth(fakeReq({ authorization: `Bearer ${shaped}` }), config)).not.toThrow();
+    expect(checkAuth(fakeReq({ authorization: `Bearer ${shaped}` }), config).ok).toBe(false);
   });
 });
