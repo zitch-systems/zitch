@@ -55,7 +55,7 @@ User = get_user_model()
 log = logging.getLogger("whatsapp")
 
 FLOW_TTL = timedelta(minutes=5)        # idle window for an in-progress flow
-PIN_TTL = timedelta(minutes=1)         # ...and once it is armed and waiting for the PIN
+PIN_TTL = timedelta(minutes=2)         # ...and once it is armed and waiting for the PIN
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
 
 def _links() -> dict:
@@ -811,6 +811,11 @@ def _flow_deadline(state: str):
     payment that will execute on six digits, and an armed payment left sitting in
     an unattended chat is the thing worth cutting short: whoever picks the phone
     up next should find an expired flow, not a live one.
+
+    The armed window is deliberately not as short as it could be. The production
+    path is the secure Flow's PIN pad — tap the card, wait for the native form,
+    type six digits — and a window that expires mid-typing does not protect
+    anyone, it just makes customers start over and type their PIN twice.
     """
     return timezone.now() + (PIN_TTL if state in _AWAITING_PIN_STATES else FLOW_TTL)
 
