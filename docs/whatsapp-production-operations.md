@@ -302,6 +302,32 @@ shape of a leaked code being tried from an attacker's WhatsApp, and leaving it
 live would let them keep trying from other numbers. The owner mints a fresh one
 in the app.
 
+### How long a flow stays open
+
+Two windows, both idle timers reset by the customer's own messages
+(`_flow_deadline` in `router.py` is the single place either is decided):
+
+| The flow is… | Window | Constant |
+| --- | --- | --- |
+| still collecting details (amount, meter, package…) | **5 minutes** | `FLOW_TTL` |
+| armed and waiting for the PIN — the chat PIN/SMS-code step **and** the secure Flow's PIN pad | **2 minutes** | `PIN_TTL` |
+
+The armed window is the shorter one because an armed flow executes on six
+digits, and one left in an unattended chat is what a found phone would reach.
+It is not shorter still because the production path is the Flow's PIN pad — tap
+the card, wait for the native form, type six digits — and a window that expires
+mid-typing protects nobody while making customers start over.
+
+The Flow endpoint re-checks the same deadline (`resolve_flow_token`), so a PIN
+pad left open past the window submits into nothing.
+
+**A timeout is announced, not silent.** Expired flows used to be deleted on the
+next read, so a payment mid-confirm simply vanished and the following message
+was answered as if nothing had been in progress — which is what support hears as
+"did my payment go through?". The customer is now told what expired and that
+nothing was charged. A message that is not a PIN still gets its normal answer
+after the notice.
+
 ### The PIN, end to end (audited)
 
 Every place a PIN can exist in this channel, and what holds there:

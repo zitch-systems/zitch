@@ -2512,7 +2512,7 @@ class ReceiptPrivacyTests(TestCase):
 
 class FlowTimeoutTests(TestCase):
     """Two clocks, because a half-typed request and an armed payment are not the
-    same risk: 5 minutes while a flow is still collecting details, 1 minute once
+    same risk: 5 minutes while a flow is still collecting details, 2 minutes once
     it is waiting for the PIN that will execute it."""
 
     def setUp(self):
@@ -2548,11 +2548,11 @@ class FlowTimeoutTests(TestCase):
         self.inbound("me", f"{tag}c")                 # own number
         self.inbound("500", f"{tag}d")                # amount -> arms the confirm
 
-    def test_an_armed_payment_has_one_minute(self):
+    def test_an_armed_payment_has_two_minutes(self):
         self.arm_airtime("t2")
         pa = self.action()
         self.assertEqual(pa.state, "pin")
-        self.assertEqual(self.window(pa), 1)
+        self.assertEqual(self.window(pa), 2)
 
     def test_the_clock_shortens_at_the_moment_it_arms(self):
         self.inbound("airtime", "t6")
@@ -2560,7 +2560,7 @@ class FlowTimeoutTests(TestCase):
         self.inbound("me", "t8")
         self.assertEqual(self.window(self.action()), 5)   # still collecting
         self.inbound("500", "t9")
-        self.assertEqual(self.window(self.action()), 1)   # armed
+        self.assertEqual(self.window(self.action()), 2)   # armed
 
     def test_a_pin_after_the_window_pays_nothing_and_says_so(self):
         self.arm_airtime("t10")
@@ -2581,13 +2581,13 @@ class FlowTimeoutTests(TestCase):
 
     @patch("whatsapp.router.send_flow", return_value={"success": True})
     @patch("whatsapp.router.flows_live", return_value=True)
-    def test_the_secure_pin_pad_is_on_the_same_one_minute_clock(self, _live, _flow):
-        # The Flow's PIN pad is the production path, so it must not be the one
-        # that keeps a payment armed for five minutes.
+    def test_the_secure_pin_pad_is_on_the_same_short_clock(self, _live, _flow):
+        # The Flow's PIN pad is the production path — the one the window has to
+        # be long enough for — so it must not be the one left on five minutes.
         self.arm_airtime("t17")
         pa = self.action()
         self.assertEqual(pa.state, FLOW_PIN_STATE)
-        self.assertEqual(self.window(pa), 1)
+        self.assertEqual(self.window(pa), 2)
 
     def test_an_expired_flow_cannot_be_resumed_through_the_secure_flow(self):
         # The Flow endpoint resolves its token against the same deadline, so a
