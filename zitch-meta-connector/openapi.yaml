@@ -187,6 +187,202 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /list-whatsapp-flows:
+    get:
+      operationId: listWhatsAppFlows
+      summary: List WhatsApp Flows
+      description: >
+        The WABA's Flows (interactive multi-screen forms) with publish status
+        and categories. Distinct from message templates.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlowsListResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /inspect-whatsapp-flow:
+    get:
+      operationId: inspectWhatsAppFlow
+      summary: Inspect a WhatsApp Flow
+      description: >
+        One Flow's status, categories and validation_errors (what Meta refuses
+        a publish on), plus its existing preview URL.
+      parameters:
+        - name: flowId
+          in: query
+          required: true
+          schema: { type: string, pattern: "^\\d{1,32}$" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlowDetailResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /get-published-flow-screens:
+    get:
+      operationId: getPublishedFlowScreens
+      summary: Get a published Flow's screens and routing
+      description: >
+        Screen inventory and routing model of the Flow JSON Meta has actually
+        published, including routing roots (the only screens a Flow may open
+        on), dangling routes and unreachable screens. The full Flow JSON is
+        deliberately not returned - it embeds the logo as base64.
+      parameters:
+        - name: flowId
+          in: query
+          required: true
+          schema: { type: string, pattern: "^\\d{1,32}$" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FlowScreensResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /get-waba-details:
+    get:
+      operationId: getWabaDetails
+      summary: Get WhatsApp Business Account details
+      description: Account name, timezone, template namespace, review and verification status.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wabaId: { type: string }
+                  name: { type: string }
+                  timezoneId: { type: string }
+                  messageTemplateNamespace: { type: string }
+                  accountReviewStatus: { type: string }
+                  businessVerificationStatus: { type: string }
+                  ownershipType: { type: string }
+                  currency: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /list-whatsapp-phone-numbers:
+    get:
+      operationId: listWhatsAppPhoneNumbers
+      summary: List WhatsApp phone numbers
+      description: Every number on the WABA with quality rating, verification and messaging tier.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wabaId: { type: string }
+                  phoneNumbers:
+                    type: array
+                    items: { $ref: "#/components/schemas/PhoneNumberConfigResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /get-whatsapp-business-profile:
+    get:
+      operationId: getWhatsAppBusinessProfile
+      summary: Get the public WhatsApp business profile
+      description: The profile customers see on the business. Business-authored content, not customer data.
+      parameters:
+        - name: phoneNumberId
+          in: query
+          required: false
+          schema: { type: string, pattern: "^\\d{1,32}$" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  phoneNumberId: { type: string }
+                  about: { type: string }
+                  address: { type: string }
+                  description: { type: string }
+                  email: { type: string }
+                  websites: { type: array, items: { type: string } }
+                  vertical: { type: string }
+                  profilePictureUrl: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
+  /get-conversation-analytics:
+    get:
+      operationId: getConversationAnalytics
+      summary: Get conversation volume and cost
+      description: >
+        Aggregate conversation counts and billing over a bounded window,
+        grouped by category. Aggregate totals only - no recipients, no message
+        content, no per-customer detail.
+      parameters:
+        - $ref: "#/components/parameters/WabaId"
+        - name: lookbackHours
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 720 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  wabaId: { type: string }
+                  windowHours: { type: integer }
+                  totals:
+                    type: object
+                    properties:
+                      conversations: { type: integer }
+                      cost: { type: number }
+                  byCategory:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        category: { type: string }
+                        conversations: { type: integer }
+                        cost: { type: number }
+                  dataPoints: { type: integer }
+                  note: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -326,6 +522,54 @@ components:
               fields:
                 type: array
                 items: { type: string }
+
+    FlowsListResult:
+      type: object
+      properties:
+        wabaId: { type: string }
+        flows:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+              status: { type: string }
+              categories: { type: array, items: { type: string } }
+              updatedAt: { type: string }
+
+    FlowDetailResult:
+      type: object
+      properties:
+        flowId: { type: string }
+        name: { type: string }
+        status: { type: string }
+        categories: { type: array, items: { type: string } }
+        updatedAt: { type: string }
+        validationErrors: { type: array, items: { type: string } }
+        previewUrl: { type: string }
+        previewExpiresAt: { type: string }
+
+    FlowScreensResult:
+      type: object
+      properties:
+        flowId: { type: string }
+        flowJsonVersion: { type: string }
+        dataApiVersion: { type: string }
+        screens: { type: array, items: { type: string } }
+        terminalScreens: { type: array, items: { type: string } }
+        routingRootScreens:
+          type: array
+          items: { type: string }
+          description: >
+            Screens with no incoming route - the only ones a Flow may open on.
+            Opening on any other screen is rejected with error 131009.
+        routingModel:
+          type: object
+          additionalProperties: { type: array, items: { type: string } }
+        danglingRoutes: { type: array, items: { type: string } }
+        unreachableScreens: { type: array, items: { type: string } }
+        note: { type: string }
 
     VerifyCredentialsResult:
       type: object

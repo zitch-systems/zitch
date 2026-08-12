@@ -1,6 +1,6 @@
 /**
  * Builds one McpServer instance per HTTP request (stateless mode — no
- * sessionIdGenerator), registering all six read-only tools from the shared
+ * sessionIdGenerator), registering every read-only tool from the shared
  * registry. Stateless is deliberate: every request is independently
  * authenticated (see auth.ts) and every tool call is a fresh, idempotent
  * Graph API read, so there is no session state worth keeping between

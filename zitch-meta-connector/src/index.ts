@@ -29,6 +29,7 @@ import {
 import { buildMcpServer } from './mcpServer.js';
 import { buildRestRouter } from './rest.js';
 import { buildOAuthRouter } from './oauth/router.js';
+import { TOOL_REGISTRY } from './tools/registry.js';
 
 const config = loadConfig();
 
@@ -56,7 +57,10 @@ app.get('/healthz', (_req, res) => {
     status: 'ok',
     service: 'zitch-meta-connector',
     readOnly: config.readOnly,
-    toolsExposed: 6,
+    // Read from the registry rather than hardcoded: a literal here silently
+    // goes stale the moment a tool is added, and this endpoint is exactly what
+    // someone checks to confirm a deploy shipped what they expected.
+    toolsExposed: TOOL_REGISTRY.length,
   });
 });
 
