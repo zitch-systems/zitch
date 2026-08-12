@@ -1562,7 +1562,52 @@ def _start_pin_reset(user, msisdn: str) -> None:
                              "your PIN authorises payments, so we confirm it's really you.\n\n"
                              "Reply *8* to verify now.")
     _clear_actions(msisdn)
-    pa = _new_flow(user, msisdn, "setpin", FLOW_PIN_STATE, {"pin_attempts": 0})
+    # The verified flags prove who the account belongs to; they do not prove who
+    # is HOLDING this chat today. A messenger session outlives a SIM swap, and a
+    # PIN reset hands over the credential that moves money — so the reset opens
+    # on a live SMS code to the account phone, and only the code advances to the
+    # PIN pair (same flow session, next page). Dev/test deploys skip the code:
+    # they have no SMS rail and the suite exercises the pair directly.
+    payload = {"pin_attempts": 0}
+    skip_otp = getattr(settings, "TESTING", False) or settings.DEBUG
+    if not skip_otp:
+        code = _kyc_test_code(user) or f"{secrets.randbelow(10**6):06d}"
+        if not sms_live() and not _kyc_test_code(user):
+            # "Must" means must: no deliverable code, no chat reset. The app has
+            # its own authentication and stays available.
+            return reply(msisdn, "🔐 We couldn't send the confirmation SMS just now, so the "
+                                 "PIN can't be reset here. Please try again shortly, or set "
+                                 "your PIN in the Zitch app (Me → Security).")
+        if not _kyc_test_code(user):
+            sent = send_sms(user.phone or "",
+                            f"Zitch: {code} is your PIN reset code. It expires in 10 minutes. "
+                            "Never share it.")
+            if not sent.get("success"):
+                return reply(msisdn, "🔐 We couldn't send the confirmation SMS just now, so the "
+                                     "PIN can't be reset here. Please try again shortly, or set "
+                                     "your PIN in the Zitch app (Me → Security).")
+        payload.update({
+            "pin_reset_otp_hash": make_password(code),
+            "pin_reset_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
+            "pin_reset_otp_attempts": 0,
+            "flow_screen": CODE_SCREEN,
+        })
+    pa = _new_flow(user, msisdn, "setpin", FLOW_PIN_STATE, payload)
+    if payload.get("pin_reset_otp_hash"):
+        masked = f"•••••{(user.phone or '')[-4:]}"
+        if flows_live() and send_flow(
+                msisdn, sign_flow_token(pa),
+                header="Reset your PIN", body="Confirm it's you, then choose your new PIN — "
+                                             "all on the secure screen.",
+                screen=CODE_SCREEN,
+                screen_data={"summary": f"Enter the code we sent by SMS to {masked}",
+                             "label": "PIN reset code", "error": ""},
+                cta="Reset PIN").get("success"):
+            return reply(msisdn, "🔐 We sent a code by SMS. Enter it on the secure screen above, "
+                                 "then choose your new *6-digit PIN*.")
+        _clear_actions(msisdn)
+        return reply(msisdn, "🔐 Secure PIN entry isn't available right now. "
+                             "Please set your PIN in the Zitch app (Me → Security).")
     if flows_live() and send_flow(
             msisdn, sign_flow_token(pa),
             header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",

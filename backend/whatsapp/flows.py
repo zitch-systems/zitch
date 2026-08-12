@@ -756,6 +756,11 @@ def _submit_pin(token: str, data: dict) -> dict:
     summary = _pa_screen_fields(pa)
 
     if pa.action_type == "setpin":
+        if pa.payload.get("pin_reset_otp_hash"):
+            # The reset's code page posts its digits as "number" (the code
+            # screens' field); the PIN pages post "pin". While the code is
+            # unproven, the submission IS the code.
+            return _submit_pin_reset_code(pa, user, str(data.get("number", "") or pin))
         return _submit_new_pin(pa, user, pin)
 
     ok, code, message = evaluate_transaction_pin(user, pin)
@@ -871,8 +876,53 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     return _pin_screen(fields, screen=PIN_CHAIN)
 
 
+def _pin_reset_code_screen(pa, error: str = "") -> dict:
+    """The live proof-of-possession before a PIN reset: the SMS code page. Error
+    renders land on CODE_RETRY so the masked box comes back empty."""
+    masked = f"•••••{(pa.user.phone or '')[-4:]}"
+    return _identity_screen("pin_reset", error=error, label="PIN reset code",
+                            summary=f"Enter the code we sent by SMS to {masked}",
+                            screen=CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN))
+
+
+def _submit_pin_reset_code(pa, user, code: str) -> dict:
+    """Check the reset code; only a match reaches the create/confirm pair."""
+    from django.contrib.auth.hashers import check_password
+    from django.utils import timezone
+
+    from .router import _clear_actions, _touch
+
+    digits = "".join(ch for ch in str(code) if ch.isdigit())
+    if len(digits) != 6:
+        return _pin_reset_code_screen(pa, error="The code is exactly 6 digits — check the SMS.")
+    exp = pa.payload.get("pin_reset_otp_exp", "")
+    if exp and timezone.now() > timezone.datetime.fromisoformat(exp):
+        _clear_actions(pa.msisdn)
+        return _success_screen("That code expired. Reply *reset pin* in the chat to start again.")
+    if not check_password(digits, pa.payload.get("pin_reset_otp_hash", "")):
+        attempts = int(pa.payload.get("pin_reset_otp_attempts") or 0) + 1
+        pa.payload["pin_reset_otp_attempts"] = attempts
+        pa.save(update_fields=["payload"])
+        if attempts >= 3:
+            _clear_actions(pa.msisdn)
+            return _success_screen("That's 3 incorrect codes — the PIN reset was cancelled. "
+                                   "Reply *reset pin* in the chat to start again.")
+        return _pin_reset_code_screen(pa, error=f"That code isn't right. {3 - attempts} attempt(s) left.")
+    # Possession proven: the create/confirm pair arrives on the SAME session's
+    # next page.
+    for key in ("pin_reset_otp_hash", "pin_reset_otp_exp", "pin_reset_otp_attempts"):
+        pa.payload.pop(key, None)
+    pa.payload["flow_screen"] = PIN_CHAIN
+    _touch(pa, payload=pa.payload)
+    return _set_pin_screen(pa)
+
+
 def _set_pin_screen(pa, error: str = "") -> dict:
-    """Create on PIN_SCREEN; confirm on PIN_CONFIRM, whose form starts empty."""
+    """The reset's code page while the code is unproven; then create on the
+    session's PIN page (PIN_CHAIN when chained from the code, the PIN_SCREEN
+    root on a direct set); confirm on PIN_CONFIRM, whose form starts empty."""
+    if pa.payload.get("pin_reset_otp_hash"):
+        return _pin_reset_code_screen(pa, error=error)
     if pa.payload.get("new_pin_hash"):
         return _confirm_pin_screen(error=error)
     return _pin_screen({"amount": "Create a 6-digit PIN",

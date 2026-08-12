@@ -307,3 +307,92 @@ class WrongPinRetriesOnAnEmptyScreenTests(TestCase):
                                     "flow_token": sign_flow_token(self.pa),
                                     "data": {"pin": "1234"}})
         self.assertEqual(done["screen"], SUCCESS_SCREEN)
+
+
+@override_settings(TESTING=False, DEBUG=False)
+class PinResetOtpTests(TestCase):
+    """A PIN reset must prove CURRENT possession of the phone, not historical
+    flags: the reset opens on a live SMS code, and only the code advances — on
+    the same session's next page — to the create/confirm pair."""
+
+    def setUp(self):
+        self.user = _make_user()
+
+    def _reset(self):
+        from whatsapp.router import _start_pin_reset
+
+        sent = {}
+
+        def capture(msisdn, token, **kw):
+            sent.update(kw, token=token)
+            return {"success": True}
+
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", side_effect=capture), \
+             patch("whatsapp.router.reply"), \
+             patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
+            _start_pin_reset(self.user, MSISDN)
+        code = sms.call_args[0][1].split("Zitch: ")[1][:6]
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="setpin")
+        return pa, code, sent
+
+    def _submit(self, pa, **data):
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        with patch("whatsapp.router.reply"):
+            return handle_flow_request({"action": "data_exchange",
+                                        "flow_token": sign_flow_token(pa), "data": data})
+
+    def test_the_reset_opens_on_the_code_page_not_the_pin_pad(self):
+        from whatsapp.flows import CODE_SCREEN
+
+        pa, code, sent = self._reset()
+        self.assertEqual(sent["screen"], CODE_SCREEN)
+        self.assertIn("PIN reset code", sent["screen_data"]["label"])
+        self.assertNotIn(code, str(sent))                    # code never in the flow send
+
+    def test_only_the_code_reaches_the_pin_pair_and_the_reset_completes(self):
+        from whatsapp.flows import CODE_RETRY, PIN_CHAIN, PIN_CONFIRM, SUCCESS_SCREEN
+
+        pa, code, _ = self._reset()
+        wrong = self._submit(pa, number="000000")
+        self.assertEqual(wrong["screen"], CODE_RETRY)         # empty box, reason stated
+        pa.refresh_from_db()
+        ok = self._submit(pa, number=code)
+        self.assertEqual(ok["screen"], PIN_CHAIN)             # same session, next page
+        pa.refresh_from_db()
+        self.assertNotIn("pin_reset_otp_hash", pa.payload)    # single-use
+        first = self._submit(pa, pin="246810")
+        self.assertEqual(first["screen"], PIN_CONFIRM)
+        done = self._submit(pa, pin="246810")
+        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("246810"))
+
+    def test_three_wrong_codes_cancel_the_reset(self):
+        from whatsapp.flows import CODE_RETRY, SUCCESS_SCREEN
+
+        pa, code, _ = self._reset()
+        for _ in range(2):
+            self.assertEqual(self._submit(pa, number="000000")["screen"], CODE_RETRY)
+            pa.refresh_from_db()
+        third = self._submit(pa, number="000000")
+        self.assertEqual(third["screen"], SUCCESS_SCREEN)
+        self.assertIn("cancelled", third["data"]["message"])
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged
+
+    def test_no_sms_channel_refuses_the_chat_reset_outright(self):
+        from whatsapp.router import _start_pin_reset
+
+        replies = []
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow") as flow, \
+             patch("whatsapp.router.reply", side_effect=lambda m, t, **k: replies.append(t)), \
+             patch("whatsapp.router.sms_live", return_value=False):
+            _start_pin_reset(self.user, MSISDN)
+        flow.assert_not_called()                              # no pad without the code
+        self.assertIn("can't be reset here", "\n".join(replies))
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN,
+                                                      action_type="setpin").exists())

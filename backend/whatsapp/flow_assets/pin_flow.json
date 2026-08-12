@@ -64,9 +64,11 @@
     ],
     "CODE_SCREEN": [
       "CODE_RETRY",
+      "PIN_CHAIN",
       "SUCCESS"
     ],
     "CODE_RETRY": [
+      "PIN_CHAIN",
       "SUCCESS"
     ]
   },
