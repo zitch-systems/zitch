@@ -23,7 +23,11 @@
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1",
       "^uuid$": "<rootDir>/node_modules/uuid/dist/cjs/index.js"
-    }
+    },
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "<rootDir>/zitch-meta-connector/"
+    ]
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
