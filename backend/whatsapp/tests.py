@@ -722,6 +722,8 @@ class AiIntentTests(TestCase):
         row = WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("-created").first()
         return row.text if row else ""
 
+    receipt_text = ChannelTests.receipt_text
+
     def _stub(self, intent):
         return patch("whatsapp.ai.extract_intent", return_value=intent)
 
@@ -776,6 +778,89 @@ class AiIntentTests(TestCase):
             self.inbound("tell me a joke", "c1")
         # Falls back to the main menu (which lists the core actions).
         self.assertIn("Check balance", self.last_reply())
+
+    # --- a bill that arrives already filled in -------------------------------
+    # Reported from a real thread: "Load my nepa bill. 2000010657 5,000 to IKEDC"
+    # was answered with "Which disco?", then "Prepaid or postpaid?" — the disco,
+    # the meter and the amount all thrown away and asked for again.
+
+    def _bill(self, **inp):
+        return self._stub({"name": "pay_bill", "input": {"category": "electricity", **inp}})
+
+    def test_a_bill_that_names_everything_goes_straight_to_confirm(self):
+        with self._bill(biller="IKEDC", customer_id="2000010657",
+                        variation="prepaid", amount=5000):
+            self.inbound("Load my nepa bill. 2000010657 5,000 to IKEDC", "pb1")
+        r = self.last_reply()
+        self.assertIn("Confirm electricity", r)
+        self.assertIn("Ikeja", r)             # IKEDC resolved to the disco
+        self.assertIn("2000010657", r)        # the meter they gave
+        self.assertIn("5,000", r)             # the amount they gave
+        self.assertNotIn("Which disco?", r)
+
+    def test_the_only_question_left_is_the_one_they_did_not_answer(self):
+        # No prepaid/postpaid in the message — that one still has to be asked
+        # (it cannot be guessed), but nothing else is.
+        with self._bill(biller="IKEDC", customer_id="2000010657", amount=5000):
+            self.inbound("Load my nepa bill. 2000010657 5,000 to IKEDC", "pb2")
+        self.assertIn("Prepaid or postpaid?", self.last_reply())
+        self.inbound("1", "pb3")
+        r = self.last_reply()
+        self.assertIn("Confirm electricity", r)   # straight to confirm, not "Which disco?"
+        self.assertIn("2000010657", r)
+        self.assertIn("5,000", r)
+
+    def test_a_prefilled_bill_still_needs_the_pin(self):
+        # Pre-filling changes which questions get asked, never which checks run.
+        with self._bill(biller="IKEDC", customer_id="2000010657",
+                        variation="prepaid", amount=3000):
+            self.inbound("pay 3k ikedc prepaid 2000010657", "pb4")
+        self.assertIn("Confirm electricity", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))  # nothing yet
+        self.inbound("1234", "pb5")                        # the PIN still has to be given
+        self.assertIn("Electricity receipt", self.receipt_text())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("47000"))
+
+    def test_a_disco_named_at_the_prompt_is_understood(self):
+        # The alias table also serves customers typing at the menu itself.
+        self.inbound("electricity", "pb6")
+        self.assertIn("Which disco?", self.last_reply())
+        self.inbound("IKEDC", "pb7")
+        self.assertIn("Prepaid or postpaid?", self.last_reply())
+
+    def test_nepa_alone_names_no_disco(self):
+        # "nepa" means electricity, not a company. Guessing one from it would put
+        # the wrong meter in front of a payment, so it must still ask.
+        with self._bill(biller="nepa", customer_id="2000010657", amount=5000):
+            self.inbound("load my nepa bill 2000010657 5000", "pb8")
+        self.assertIn("Which disco?", self.last_reply())
+
+    def test_an_unverifiable_meter_is_asked_for_again_not_looped(self):
+        with patch("whatsapp.router.vtu_verify_customer",
+                   return_value={"success": False}):
+            with self._bill(biller="IKEDC", customer_id="2000010657",
+                            variation="prepaid", amount=5000):
+                self.inbound("pay ikedc 2000010657 5k prepaid", "pb9")
+            self.assertIn("Couldn't validate that meter", self.last_reply())
+            # The bad number is dropped: the next message is read as a new meter
+            # rather than re-verifying the one that just failed.
+            pa = PendingAction.objects.get(msisdn=MSISDN)
+            self.assertEqual(pa.state, "meter")
+            self.assertNotIn("meter", pa.payload)
+
+    def test_a_named_cable_provider_and_card_skip_their_questions(self):
+        CablePlan.objects.create(provider="2", name="DStv Compact",
+                                 cable_plan_code="dstv-compact",
+                                 price=Decimal("9000"), active=True)
+        with self._stub({"name": "pay_bill",
+                         "input": {"category": "cabletv", "biller": "DSTV",
+                                   "customer_id": "1234567890"}}):
+            self.inbound("renew my dstv 1234567890", "cb1")
+        self.assertIn("DStv Compact", self.last_reply())   # provider question skipped
+        self.inbound("1", "cb2")                            # pick the package
+        r = self.last_reply()
+        self.assertIn("Confirm cable", r)                   # smartcard never asked for
+        self.assertIn("1234567890", r)
 
     def test_parsed_intent_is_recorded(self):
         with self._stub({"name": "check_balance", "input": {}}):
@@ -2423,6 +2508,100 @@ class ReceiptPrivacyTests(TestCase):
         self.assertIn("From: ADA EZE", receipt)
         self.assertNotIn("New balance", receipt)
         self.assertIn("balance", out[-1].lower())      # balance is the message after
+
+
+class FlowTimeoutTests(TestCase):
+    """Two clocks, because a half-typed request and an armed payment are not the
+    same risk: 5 minutes while a flow is still collecting details, 1 minute once
+    it is waiting for the PIN that will execute it."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#000", active=True)
+
+    inbound = ChannelTests.inbound
+    last_reply = ChannelTests.last_reply
+
+    def action(self):
+        return PendingAction.objects.filter(msisdn=MSISDN).order_by("-created").first()
+
+    def window(self, pa):
+        """Minutes from now until this flow goes stale (rounded to the minute)."""
+        return round((pa.expires_at - timezone.now()).total_seconds() / 60)
+
+    def expire(self, pa):
+        """Push the deadline just past — what the passage of time would do."""
+        pa.expires_at = timezone.now() - timedelta(seconds=1)
+        pa.save(update_fields=["expires_at"])
+
+    def test_a_flow_collecting_details_has_five_minutes(self):
+        self.inbound("2", "t1")                      # send money -> asks the amount
+        self.assertEqual(self.window(self.action()), 5)
+
+    def arm_airtime(self, tag):
+        """Walk an airtime purchase up to its confirm — the shortest armed flow."""
+        self.inbound("airtime", f"{tag}a")
+        self.inbound("1", f"{tag}b")                  # MTN
+        self.inbound("me", f"{tag}c")                 # own number
+        self.inbound("500", f"{tag}d")                # amount -> arms the confirm
+
+    def test_an_armed_payment_has_one_minute(self):
+        self.arm_airtime("t2")
+        pa = self.action()
+        self.assertEqual(pa.state, "pin")
+        self.assertEqual(self.window(pa), 1)
+
+    def test_the_clock_shortens_at_the_moment_it_arms(self):
+        self.inbound("airtime", "t6")
+        self.inbound("1", "t7")
+        self.inbound("me", "t8")
+        self.assertEqual(self.window(self.action()), 5)   # still collecting
+        self.inbound("500", "t9")
+        self.assertEqual(self.window(self.action()), 1)   # armed
+
+    def test_a_pin_after_the_window_pays_nothing_and_says_so(self):
+        self.arm_airtime("t10")
+        self.expire(self.action())
+        self.inbound("1234", "t14")                  # the right PIN, too late
+        self.assertIn("wasn't confirmed in time", self.last_reply())
+        self.assertEqual(get_or_create_wallet(self.user).balance, Decimal("50000"))
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN).exists())
+
+    def test_a_timed_out_flow_says_so_and_still_answers_the_new_message(self):
+        self.inbound("2", "t15")                     # transfer, mid-collection
+        self.expire(self.action())
+        self.inbound("1", "t16")                     # balance
+        out = [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("created")]
+        self.assertTrue(any("timed out" in t for t in out))
+        self.assertIn("balance", out[-1].lower())    # the new message is still answered
+
+    @patch("whatsapp.router.send_flow", return_value={"success": True})
+    @patch("whatsapp.router.flows_live", return_value=True)
+    def test_the_secure_pin_pad_is_on_the_same_one_minute_clock(self, _live, _flow):
+        # The Flow's PIN pad is the production path, so it must not be the one
+        # that keeps a payment armed for five minutes.
+        self.arm_airtime("t17")
+        pa = self.action()
+        self.assertEqual(pa.state, FLOW_PIN_STATE)
+        self.assertEqual(self.window(pa), 1)
+
+    def test_an_expired_flow_cannot_be_resumed_through_the_secure_flow(self):
+        # The Flow endpoint resolves its token against the same deadline, so a
+        # PIN pad left open past the window submits into nothing.
+        from .flows import resolve_flow_token, sign_flow_token
+
+        self.arm_airtime("t21")
+        pa = self.action()
+        pa.state = FLOW_PIN_STATE          # as the Flow path would have left it
+        pa.save(update_fields=["state"])
+        token = sign_flow_token(pa)
+        self.assertIsNotNone(resolve_flow_token(token))
+        self.expire(pa)
+        self.assertIsNone(resolve_flow_token(token))
 
 
 class LinkCodeTests(TestCase):

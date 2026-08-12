@@ -2,7 +2,7 @@
 // screen can make a request, so even direct fetch() call sites aren't edge-blocked
 // as anonymous bots.
 import "@/lib/netPatch";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AppState, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
@@ -16,6 +16,7 @@ import { WalletProvider } from "@/lib/wallet";
 import { MonoLauncherProvider } from "@/lib/mono";
 import { NotifyHost } from "@/components/design/Notify";
 import { enforceIdleTimeout, enforceHardExpiry, isSessionLocked, lockIfAwayTooLong, markBackgrounded, isExternalActivityActive } from "@/lib/session";
+import { FONT_WAIT_MS, splashReady } from "@/lib/boot";
 import { getToken } from "@/lib/secureStore";
 import { reconcileCachedPin } from "@/lib/biometrics";
 
@@ -34,7 +35,10 @@ InputAny.defaultProps = InputAny.defaultProps || {};
 InputAny.defaultProps.style = [textBase, InputAny.defaultProps.style];
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
-SplashScreen.preventAutoHideAsync();
+// The rejection is swallowed: this races the native splash's own lifecycle and
+// rejects if it has already gone, and an unhandled rejection at module scope is
+// not a reason for the app to fail to open.
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 const RootStack = () => {
   const { theme, c } = useTheme();
@@ -54,13 +58,24 @@ const RootStack = () => {
 const RootLayout = () => {
   // The whole app uses Inter (see lib/theme `font`). Only these are loaded.
   const [fontsLoaded, error] = useFonts(appFonts);
+  const [fontWaitOver, setFontWaitOver] = useState(false);
+  // Fonts may delay the first paint, never prevent it — see lib/boot.
+  const ready = splashReady(fontsLoaded, error, fontWaitOver);
 
   useEffect(() => {
-    if (error) throw error;
-    if (fontsLoaded) {
-      SplashScreen.hideAsync();
-    }
-  }, [fontsLoaded, error]);
+    const timer = setTimeout(() => setFontWaitOver(true), FONT_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    // A font that will not load is a cosmetic problem. Throwing here made it a
+    // fatal one — and fatal at the worst possible moment, before the splash was
+    // ever hidden, so the app simply never opened.
+    if (error) console.warn("[zitch] font load failed; using system fonts", error);
+    // Unconditionally hide once ready, and never let hideAsync's own rejection
+    // (already hidden / not yet prevented) escape as a boot crash.
+    if (ready) SplashScreen.hideAsync().catch(() => {});
+  }, [ready, error]);
 
   // Financial screens contain balances, identity details and PIN entry. Block OS
   // screenshots, recordings and sensitive recents thumbnails by default. Receipts
@@ -77,7 +92,14 @@ const RootLayout = () => {
   // foreground, and on a short repeating timer so it also fires while the app
   // stays open and idle. Active use keeps the stamp fresh via authenticated API
   // calls, so the timer only trips after a real stretch of inactivity.
+  // Gated on `ready`: until then this component renders null, so there is no
+  // navigator mounted and router.replace() would throw "Attempted to navigate
+  // before mounting the Root Layout component" — from an un-awaited async
+  // function, i.e. as an unhandled rejection, with the lock bounce silently lost.
+  // Effects run child-first, so by the time this one fires the Stack below is
+  // mounted and the redirect lands.
   useEffect(() => {
+    if (!ready) return;
     // App lock: re-opening the app (or returning from background) requires a
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
@@ -89,26 +111,29 @@ const RootLayout = () => {
       await enforceIdleTimeout();
       if (await isSessionLocked()) router.replace("/signin");
     };
-    check();
+    // Storage or the router failing is not a reason to take the app down with
+    // it: the lock is re-checked on every foreground and on the timer below.
+    const safeCheck = () => { check().catch(() => {}); };
+    safeCheck();
     const sub = AppState.addEventListener("change", (s) => {
       if (s === "background") {
         // Stamp the time we left so we can re-lock on return ONLY if the user
         // was away at least a minute. Skip while an in-app picker/camera is up,
         // so uploading a photo never bounces to the unlock screen.
         if (isExternalActivityActive()) return;
-        getToken().then((t) => { if (t) markBackgrounded(); });
+        getToken().then((t) => { if (t) markBackgrounded(); }).catch(() => {});
       } else if (s === "active") {
-        check();
+        safeCheck();
       }
     });
-    const timer = setInterval(check, 30 * 1000);
+    const timer = setInterval(safeCheck, 30 * 1000);
     return () => {
       sub.remove();
       clearInterval(timer);
     };
-  }, []);
+  }, [ready]);
 
-  if (!fontsLoaded && !error) {
+  if (!ready) {
     return null;
   }
 
