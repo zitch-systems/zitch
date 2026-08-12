@@ -19,7 +19,7 @@ if [ -n "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
     --role super_admin \
     --password "$DJANGO_SUPERUSER_PASSWORD" \
     --email "${DJANGO_SUPERUSER_EMAIL:-admin@zitch.ng}"
-  echo "==> Admin bootstrap OK. Sign in at /admin/ as '$ADMIN_USERNAME' (or its email) with DJANGO_SUPERUSER_PASSWORD."
+  echo "==> Operator bootstrap OK. Sign in at /portal/ as '$ADMIN_USERNAME' (or its email) with DJANGO_SUPERUSER_PASSWORD."
 else
   # Loud on purpose. This used to skip in silence, which is indistinguishable in
   # the deploy log from a successful bootstrap — so the first sign anything was
