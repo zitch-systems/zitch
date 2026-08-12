@@ -97,10 +97,24 @@ once the service is up, and why both now have their own counter above.
 
 ## Chat signup (onboarding new customers in WhatsApp)
 
-`WHATSAPP_ALLOW_CHAT_SIGNUP=true` lets a brand-new number open an account in the
-chat: first name, last name, email, 4-digit PIN. The account is created at the
-**unverified floor** (internal tier 0 — ₦20,000/txn, the regulatory Tier-1
-equivalent) with **no app password** and the email stored **unverified**.
+A brand-new number opens its account **in the chat** — name, email, phone, PIN —
+and this is **on by default, production included**. `WHATSAPP_ALLOW_CHAT_SIGNUP=false`
+is the kill switch: set it and new numbers are told to sign up in the app instead.
+
+The switch is safe to leave on because it does not decide where the PIN is typed;
+`_pin_in_chat_allowed()` does, and that one is dev/test-only. A live deploy takes
+the PIN through the **encrypted Flow**, and if Flows are not configured it creates
+the account **with no PIN at all** rather than ask for one in a thread that keeps
+it forever — nothing that spends money works until the app sets it.
+
+The way in is the digit *1* **or plain words** — "i want to open an account",
+"how do i sign up", "let me register". `CREATE_INTENT` in `router.py` matches a
+create verb near an account noun in either order; `LINK_INTENT` is tested first,
+so "i already have an account" still gets the linking answer.
+
+The account is created at the **unverified floor** (internal tier 0 — ₦20,000/txn,
+the regulatory Tier-1 equivalent) with **no app password** and the email stored
+**unverified** unless its code round-tripped inside the signup Flow.
 
 Raising limits is deliberately app-only, and both contact channels are re-proven
 on the way:

@@ -304,8 +304,11 @@ services:
         sync: false
       - key: WHATSAPP_QUEUE_KEY_PREV
         sync: false
+      # New numbers open their account in the chat. The PIN still never appears
+      # there: live deploys take it through the encrypted Flow, or create the
+      # account without one for the app to set.
       - key: WHATSAPP_ALLOW_CHAT_SIGNUP
-        value: "false"
+        value: "true"
       # Optional encrypted WhatsApp Flow used for transaction confirmation.
       - key: WHATSAPP_FLOW_ID
         sync: false

@@ -182,10 +182,41 @@ ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
 
 
 def _chat_signup_allowed() -> bool:
+    """Whether a brand-new number may open its account here. On unless a deploy
+    turns it off — the PIN is kept out of the thread by `_pin_in_chat_allowed()`,
+    which is a separate guard, so this switch is about where signup happens, not
+    about whether a secret can land in the transcript."""
     cfg = getattr(settings, "WHATSAPP", {}) or {}
-    if "ALLOW_CHAT_SIGNUP" in cfg:
-        return bool(cfg.get("ALLOW_CHAT_SIGNUP"))
-    return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
+    return bool(cfg.get("ALLOW_CHAT_SIGNUP", True))
+
+
+# What someone types when they mean "open an account". The menu answer is *1*,
+# but almost nobody replies with a digit to a greeting — they say what they want
+# ("i want to open account here"), and matching only an exact phrase list sent
+# every one of those back the same welcome, which reads as the bot refusing.
+# A verb near an account word in either order, plus the standalone asks.
+_ACCOUNT_NOUN = r"(?:account|acct|wallet|profile)"
+_CREATE_VERB = (r"(?:create|creating|open|opening|start|register|registration|new|make"
+                r"|set\s*up|sign\s*up|signup|join|want|need)")
+CREATE_INTENT = re.compile(
+    rf"\b{_CREATE_VERB}\b[^.?!]{{0,30}}\b{_ACCOUNT_NOUN}\b"
+    rf"|\b{_ACCOUNT_NOUN}\b[^.?!]{{0,20}}\b{_CREATE_VERB}\b"
+    # Verbs that need no object to be unambiguous — "let me register", "how do
+    # I sign up". LINK_INTENT is tried first, so "i have registered" still goes
+    # to linking (and the past tense misses this \b-bounded match anyway).
+    rf"|\b(?:sign\s*up|signup|register|get\s+started|onboard)\b",
+    re.I,
+)
+# Checked FIRST, so "i already have an account" and "link my account" keep going
+# to the linking answer rather than starting a signup they don't need.
+LINK_INTENT = re.compile(
+    r"\b(?:link|connect|attach)\b[^.?!]{0,30}\b(?:account|whatsapp|zitch|number)\b"
+    r"|\b(?:i|we)\s+(?:already\s+)?have\s+(?:an?\s+|my\s+)?(?:zitch\s+)?(?:account|acct|wallet)\b"
+    r"|\b(?:existing|old)\s+(?:zitch\s+)?(?:account|acct|wallet)\b"
+    r"|\b(?:i|we)\s+(?:have\s+)?(?:already\s+)?(?:registered|signed\s*up)\b"
+    r"|^\s*(?:log\s*in|login|sign\s*in|signin)\s*[.!]?\s*$",
+    re.I,
+)
 
 
 def _local_phone(msisdn: str) -> str:
@@ -1142,10 +1173,14 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
         return send_menu(msisdn)
 
     # 3. Brand-new number: offer to create an account or link an existing one.
-    if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started"):
-        return _start_onboarding(msisdn)
-    if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in"):
+    # Link is tested first — "i already have an account" names an account but is
+    # asking for the opposite of a signup.
+    if low in ("2", "link", "link account", "i have an account", "sign in", "login", "log in") \
+            or LINK_INTENT.search(low):
         return reply(msisdn, "To connect an existing account, open the Zitch app → *Settings → Link WhatsApp*, get your code, and send it here.")
+    if low in ("1", "create", "create account", "sign up", "signup", "register", "open account", "new", "get started") \
+            or CREATE_INTENT.search(low):
+        return _start_onboarding(msisdn)
 
     # 4. Default welcome (with the create/link choices).
     intro = UNLINKED if _chat_signup_allowed() else UNLINKED_APP_ONLY
