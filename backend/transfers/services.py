@@ -264,13 +264,17 @@ class PayoutError(Exception):
 
 
 def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
-                   note: str = "", idempotency_key: str = "") -> Transaction:
+                   note: str = "", idempotency_key: str = "", channel: str = "") -> Transaction:
     """Debit the wallet, send the payout, settle/refund, and save the beneficiary.
 
     The caller must already have verified the PIN + tier limits and resolved
     `name` via the provider's name-enquiry. Raises PayoutError on a duplicate,
     insufficient funds, or a provider failure (wallet auto-refunded). Returns the
     settled (Successful) ledger transaction.
+
+    `channel`, when set to "whatsapp", is stamped onto the ledger row's meta so
+    the post-save alert knows the customer already saw a receipt and a balance
+    line in that same chat and does not need a second "Debit alert" message.
     """
     # A NUBAN minted while the rail was mocked exists nowhere at the bank, but it is
     # still on the wallet once live keys are set — and it is what we send as the
@@ -316,7 +320,7 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             # money debited, never settled or reversed. Cleared below only on a
             # definitively delivered result.
             meta={"account": account_number, "bank": bank.name, "note": note,
-                  "reconcile": True},
+                  "reconcile": True, "channel": channel},
             idempotency_key=idempotency_key,
         )
     except DuplicateTransaction:
