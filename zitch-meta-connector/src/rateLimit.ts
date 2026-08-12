@@ -1,7 +1,20 @@
 /**
- * Fixed-window rate limiter, keyed by the caller's key fingerprint (falling
- * back to remote IP for unauthenticated requests, so a flood of bad-auth
- * requests can't dodge the limiter by omitting a key).
+ * Fixed-window rate limiter. Applied in TWO places, deliberately in this
+ * order (see index.ts):
+ *
+ *   1. `ipRateLimitMiddleware`, keyed by remote IP, runs BEFORE auth. A
+ *      request that fails authentication is rejected before it ever reaches
+ *      the API-key check — which means it never gets a `keyFingerprint`, and
+ *      would sail straight past a limiter that only looked at that. Without
+ *      this pre-auth stage, unlimited wrong-key or no-key requests could be
+ *      thrown at the service all day with no throttling at all: cheap
+ *      per-request (a JSON parse and a constant-time compare), but free
+ *      volume is still an open brute-force/DoS door on a service whose only
+ *      access control IS that one key. This closes it, regardless of whether
+ *      the caller ever presents a valid key.
+ *   2. `rateLimitMiddleware`, keyed by the authenticated key's fingerprint,
+ *      runs AFTER auth succeeds — the original, finer-grained per-caller
+ *      budget for legitimate traffic.
  *
  * In-memory and per-process by design: this connector is meant to run as a
  * single small instance in front of a low-volume admin/maintenance workload,
@@ -52,15 +65,34 @@ export class RateLimiter {
   }
 }
 
-export function rateLimitMiddleware(config: Config, limiter: RateLimiter) {
+function respondRateLimited(res: Response, retryAfterMs: number): void {
+  res.status(429).json({
+    error: 'rate_limited',
+    message: `Too many requests. Retry after ${Math.ceil(retryAfterMs / 1000)}s.`,
+  });
+}
+
+/** Post-auth limiter: keyed by the authenticated caller's key fingerprint. */
+export function rateLimitMiddleware(_config: Config, limiter: RateLimiter) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const key = (res.locals.keyFingerprint as string | undefined) || req.ip || 'unknown';
     const result = limiter.consume(key);
     if (!result.allowed) {
-      res.status(429).json({
-        error: 'rate_limited',
-        message: `Too many requests. Retry after ${Math.ceil(result.retryAfterMs / 1000)}s.`,
-      });
+      respondRateLimited(res, result.retryAfterMs);
+      return;
+    }
+    next();
+  };
+}
+
+/** Pre-auth limiter: keyed by remote IP alone, since no key has been
+ * validated (or even necessarily presented) yet at this point in the chain.
+ * Must run before `requireApiKey` — see the module comment above. */
+export function ipRateLimitMiddleware(limiter: RateLimiter) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const result = limiter.consume(req.ip || 'unknown');
+    if (!result.allowed) {
+      respondRateLimited(res, result.retryAfterMs);
       return;
     }
     next();

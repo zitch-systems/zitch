@@ -5,8 +5,12 @@
  *   GET  /healthz     — unauthenticated liveness probe (no config/secrets in the response)
  *
  * Every request to /mcp and /rest/* passes through, in order: JSON body
- * limits -> API key auth -> rate limiting -> audit-logged tool execution.
- * See auth.ts, rateLimit.ts, audit.ts for each stage.
+ * limits -> per-IP rate limiting (pre-auth) -> API key auth -> per-key rate
+ * limiting (post-auth) -> audit-logged tool execution. The IP-keyed stage
+ * runs BEFORE auth specifically so a flood of wrong/missing-key requests
+ * gets throttled too, not just successfully authenticated traffic — see the
+ * module comment in rateLimit.ts. auth.ts, rateLimit.ts, audit.ts cover each
+ * stage in detail.
  */
 import { randomUUID } from 'node:crypto';
 
@@ -16,7 +20,12 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { loadConfig } from './config.js';
 import { registerSecret } from './redact.js';
 import { requireApiKey } from './auth.js';
-import { RateLimiter, rateLimitMiddleware, startRateLimiterSweep } from './rateLimit.js';
+import {
+  RateLimiter,
+  ipRateLimitMiddleware,
+  rateLimitMiddleware,
+  startRateLimiterSweep,
+} from './rateLimit.js';
 import { buildMcpServer } from './mcpServer.js';
 import { buildRestRouter } from './rest.js';
 
@@ -53,7 +62,16 @@ app.get('/healthz', (_req, res) => {
 const limiter = new RateLimiter(config.rateLimitWindowMs, config.rateLimitMaxRequests);
 startRateLimiterSweep(limiter);
 
-const authenticated = [requireApiKey(config), rateLimitMiddleware(config, limiter)];
+// Separate limiter/budget so a burst of bad-auth traffic and a legitimate
+// authenticated caller's own budget can never share (and drain) one bucket.
+const ipLimiter = new RateLimiter(config.rateLimitWindowMs, config.ipRateLimitMaxRequests);
+startRateLimiterSweep(ipLimiter);
+
+const authenticated = [
+  ipRateLimitMiddleware(ipLimiter),
+  requireApiKey(config),
+  rateLimitMiddleware(config, limiter),
+];
 
 app.post('/mcp', ...authenticated, async (req, res) => {
   const requestMeta = {

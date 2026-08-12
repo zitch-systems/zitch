@@ -17,6 +17,7 @@ function fakeConfig(apiKey: string): Config {
     graphTimeoutMs: 1000,
     rateLimitWindowMs: 1000,
     rateLimitMaxRequests: 1,
+    ipRateLimitMaxRequests: 1,
     readOnly: true,
   };
 }

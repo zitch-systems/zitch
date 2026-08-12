@@ -14,7 +14,13 @@ function setValidEnv(): void {
 
 describe('loadConfig', () => {
   beforeEach(() => {
-    for (const key of [...REQUIRED_VARS, 'PORT', 'RATE_LIMIT_MAX_REQUESTS']) {
+    for (const key of [
+      ...REQUIRED_VARS,
+      'PORT',
+      'RATE_LIMIT_MAX_REQUESTS',
+      'IP_RATE_LIMIT_MAX_REQUESTS',
+      'META_GRAPH_API_BASE_URL',
+    ]) {
       originalEnv[key] = process.env[key];
       delete process.env[key];
     }
@@ -54,13 +60,38 @@ describe('loadConfig', () => {
     const config = loadConfig();
     expect(config.port).toBe(8787);
     expect(config.rateLimitMaxRequests).toBe(30);
+    expect(config.ipRateLimitMaxRequests).toBe(60);
     expect(config.graphTimeoutMs).toBe(10_000);
+  });
+
+  it('rejects an IP rate limit budget smaller than the per-key budget', () => {
+    setValidEnv();
+    process.env.RATE_LIMIT_MAX_REQUESTS = '50';
+    process.env.IP_RATE_LIMIT_MAX_REQUESTS = '10';
+    expect(() => loadConfig()).toThrow(/IP_RATE_LIMIT_MAX_REQUESTS/);
   });
 
   it('rejects a non-positive-integer override', () => {
     setValidEnv();
     process.env.RATE_LIMIT_MAX_REQUESTS = 'not-a-number';
     expect(() => loadConfig()).toThrow(/positive integer/);
+  });
+
+  it('defaults the Graph API base URL to HTTPS', () => {
+    setValidEnv();
+    expect(loadConfig().graphApiBaseUrl).toBe('https://graph.facebook.com');
+  });
+
+  it('accepts an HTTPS override of the Graph API base URL', () => {
+    setValidEnv();
+    process.env.META_GRAPH_API_BASE_URL = 'https://graph.example.test';
+    expect(loadConfig().graphApiBaseUrl).toBe('https://graph.example.test');
+  });
+
+  it('refuses a non-HTTPS Graph API base URL — the access token travels in a header on every request', () => {
+    setValidEnv();
+    process.env.META_GRAPH_API_BASE_URL = 'http://graph.facebook.com';
+    expect(() => loadConfig()).toThrow(/https/i);
   });
 
   it('caches the config across calls (does not re-read env)', () => {
