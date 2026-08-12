@@ -269,6 +269,12 @@ class AccessToken(models.Model):
     key = models.CharField(max_length=64, unique=True, db_index=True)  # sha256 hex of the token
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="tokens")
     scope = models.CharField(max_length=8, choices=SCOPES, default=APP, db_index=True)
+    # New mobile sessions are bound to the per-install keychain identifier sent on
+    # the request that authenticated them.  Existing rows remain unbound so this can
+    # deploy without signing every tester out; every newly issued app token is bound.
+    # The identifier is not a hardware ID or a secret, but requiring the same value
+    # stops a bearer copied out of logs/storage from working on a different client.
+    device_id = models.CharField(max_length=64, blank=True, default="")
     created = models.DateTimeField(auto_now_add=True)
 
     @staticmethod
@@ -276,7 +282,7 @@ class AccessToken(models.Model):
         return hashlib.sha256((raw or "").encode()).hexdigest()
 
     @classmethod
-    def issue(cls, user, scope: str = APP) -> "AccessToken":
+    def issue(cls, user, scope: str = APP, device_id: str = "") -> "AccessToken":
         """Create a session token. The DB stores only the hash; the returned
         instance carries the RAW token on `.key` (in memory, unsaved) for the
         caller to hand to the client — do not re-save the instance afterwards.
@@ -285,12 +291,15 @@ class AccessToken(models.Model):
         with `scope=AccessToken.ADMIN` so they resolve only on staff endpoints
         and inherit the shorter admin TTL."""
         raw = secrets.token_hex(32)
-        tok = cls.objects.create(key=cls._hash(raw), user=user, scope=scope)
+        bound_device = (device_id or "").strip()[:64] if scope == cls.APP else ""
+        tok = cls.objects.create(key=cls._hash(raw), user=user, scope=scope,
+                                 device_id=bound_device)
         tok.key = raw  # transient: expose the raw token to the caller without persisting it
         return tok
 
     @classmethod
-    def resolve(cls, key: str, required_scope: str | None = None):
+    def resolve(cls, key: str, required_scope: str | None = None,
+                device_id: str | None = None):
         """Resolve a raw token to its user, or None if it is unknown, expired,
         out of scope, or belongs to a deactivated account.
 
@@ -306,6 +315,15 @@ class AccessToken(models.Model):
             return None
         if required_scope is not None and tok.scope != required_scope:
             return None
+        # `None` is the trusted non-HTTP compatibility path used by internal code and
+        # tests. HTTP always supplies a string (possibly empty), so stripping the
+        # header cannot bypass a binding.
+        if tok.device_id and device_id is not None:
+            presented_device = (device_id or "").strip()[:64]
+            if not hmac.compare_digest(tok.device_id, presented_device):
+                log.warning("session_device_mismatch user=%s token=%s", tok.user_id,
+                            tok.pk)
+                return None
         if tok.scope == cls.ADMIN:
             ttl_hours = getattr(settings, "ADMIN_TOKEN_TTL_HOURS", 2)
         else:
@@ -446,17 +464,15 @@ class OperatorTotp(models.Model):
     than a customer's. Customers are protected by the transaction PIN instead, which is
     a second factor on the thing that matters (money) rather than on sign-in.
 
-    The secret is stored as base32, not encrypted. That matches django-otp and every
-    comparable implementation, and the honest reason is that encrypting it here would
-    be theatre: the key would have to live in the same environment as the database
-    credentials, so an attacker who can read this table can read the key too. It is
-    listed in `SENSITIVE_FIELDS` for the data-export path and never leaves the server
-    after enrolment.
+    The seed is application-encrypted before it reaches the database.  That does not
+    defeat a fully compromised app host, but it materially protects SQL-only access,
+    copied backups and accidental query exports.  Key material lives outside the
+    database and supports a first-writes/rest-decrypt rotation list.
     """
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                                 related_name="operator_totp")
-    secret = models.CharField(max_length=64)
+    secret = models.CharField(max_length=255)
     # Enrolment is two-step: a secret is issued, then proved with a live code. An
     # unconfirmed row must NOT gate login, or a half-finished enrolment locks the
     # operator out of the portal with no way back in.
@@ -465,6 +481,40 @@ class OperatorTotp(models.Model):
     last_step = models.BigIntegerField(default=0)
     created = models.DateTimeField(auto_now_add=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    def plaintext_secret(self) -> str:
+        """Return the seed in memory, failing closed if ciphertext is damaged."""
+        from cryptography.fernet import InvalidToken
+
+        from .secret_fields import decrypt_operator_totp
+
+        try:
+            return decrypt_operator_totp(self.secret)
+        except InvalidToken:
+            log.error("operator_totp_decrypt_failed user=%s", self.user_id)
+            return ""
+
+    def save(self, *args, **kwargs):
+        # Centralize encryption in the model so admin scripts and future call sites
+        # cannot accidentally persist a raw seed.  Include the field when a narrow
+        # update_fields save (e.g. burning a TOTP step) also upgrades legacy plaintext.
+        from cryptography.fernet import InvalidToken
+
+        from .secret_fields import decrypt_operator_totp, encrypt_operator_totp
+
+        try:
+            # Decrypt+encrypt also rotates a ciphertext written under an older key
+            # whenever the operator next consumes a code and burns last_step.
+            encrypted = encrypt_operator_totp(decrypt_operator_totp(self.secret))
+        except InvalidToken:
+            # Preserve damaged ciphertext for incident analysis.  Authentication
+            # already fails closed in plaintext_secret().
+            encrypted = self.secret
+        changed = encrypted != self.secret
+        self.secret = encrypted
+        if changed and kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = set(kwargs["update_fields"]) | {"secret"}
+        return super().save(*args, **kwargs)
 
     def __str__(self):
         state = "confirmed" if self.confirmed else "pending"

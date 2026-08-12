@@ -1285,7 +1285,7 @@ def mfa_enroll(request):
     if row and row.confirmed:
         from accounts.totp import verify
         code = (request.data.get("code") or "")
-        step = verify(row.secret, code, after_step=row.last_step)
+        step = verify(row.plaintext_secret(), code, after_step=row.last_step)
         if step is None:
             return fail("Enter a current code from your existing authenticator to replace it.",
                         status=403, code="mfa_code_required")
@@ -1317,7 +1317,8 @@ def mfa_confirm(request):
     row = OperatorTotp.objects.filter(user=request.staff).first()
     if row is None:
         return fail("Start enrolment first", status=400, code="not_enrolled")
-    step = verify(row.secret, request.data.get("code") or "", after_step=row.last_step)
+    step = verify(row.plaintext_secret(), request.data.get("code") or "",
+                  after_step=row.last_step)
     if step is None:
         return fail("That code is not valid. Check your device clock and try the next code.",
                     status=403, code="mfa_invalid")
@@ -1344,7 +1345,8 @@ def mfa_disable(request):
     row = OperatorTotp.objects.filter(user=request.staff, confirmed=True).first()
     if row is None:
         return ok(success=True, message="Two-factor authentication was not enabled.")
-    if verify(row.secret, request.data.get("code") or "", after_step=row.last_step) is None:
+    if verify(row.plaintext_secret(), request.data.get("code") or "",
+              after_step=row.last_step) is None:
         return fail("Enter a current code to turn two-factor off.", status=403,
                     code="mfa_invalid")
     row.delete()
@@ -1394,7 +1396,7 @@ def _mfa_login_error(user, code):
     if not code:
         return fail("Enter the code from your authenticator app.", status=401,
                     code="mfa_required")
-    step = verify(row.secret, code, after_step=row.last_step)
+    step = verify(row.plaintext_secret(), code, after_step=row.last_step)
     if step is None:
         return fail("That code is not valid or has already been used.", status=401,
                     code="mfa_invalid")

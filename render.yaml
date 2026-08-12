@@ -76,6 +76,10 @@ services:
       # operator out before the two-step enrolment is complete.
       - key: OPS_REQUIRE_MFA
         sync: false
+      # Optional dedicated application-layer encryption key for operator TOTP
+      # seeds. Blank falls back to DJANGO_SECRET_KEY; rotation accepts NEW,OLD.
+      - key: TOTP_ENCRYPTION_KEYS
+        sync: false
       - key: OPS_REQUIRE_DUAL_APPROVAL
         value: "true"
       # Origins allowed to call the API cross-origin (Expo web build /

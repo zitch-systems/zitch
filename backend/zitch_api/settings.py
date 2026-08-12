@@ -359,6 +359,14 @@ RISK_NEW_DEVICE_FACE_THRESHOLD = Decimal(
 # admin_api.views._mfa_required_for. An operator who HAS enrolled is always challenged
 # regardless of this flag.
 OPS_REQUIRE_MFA = env_bool("OPS_REQUIRE_MFA", False)
+# Application-layer encryption for operator TOTP seeds.  Comma-separated, current
+# write key first and old decrypt-only keys after it.  Defaulting to SECRET_KEY keeps
+# deployments safe on upgrade; production can move to a dedicated KMS-managed value
+# with an overlap window.
+TOTP_ENCRYPTION_KEYS = [
+    value.strip() for value in os.environ.get("TOTP_ENCRYPTION_KEYS", "").split(",")
+    if value.strip()
+] or [SECRET_KEY]
 # Maker/checker on registered high-risk operator actions. Broadcast campaigns opt in
 # unconditionally; this flag additionally enables the manual-credit workflow.
 OPS_REQUIRE_DUAL_APPROVAL = env_bool("OPS_REQUIRE_DUAL_APPROVAL", False)

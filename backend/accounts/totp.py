@@ -59,6 +59,8 @@ def verify(secret: str, code: str, *, after_step: int = 0, at: float | None = No
     Constant-time comparison, so a wrong code cannot be narrowed digit by digit from
     response timing.
     """
+    if not isinstance(secret, str) or not secret:
+        return None
     code = (code or "").strip().replace(" ", "")
     if not code.isdigit() or len(code) != DIGITS:
         return None
@@ -66,8 +68,13 @@ def verify(secret: str, code: str, *, after_step: int = 0, at: float | None = No
     for step in range(now - DRIFT_STEPS, now + DRIFT_STEPS + 1):
         if step <= after_step:
             continue  # already used, or a replay of an older code
-        if hmac.compare_digest(code_for(secret, step), code):
-            return step
+        try:
+            if hmac.compare_digest(code_for(secret, step), code):
+                return step
+        except (ValueError, TypeError, base64.binascii.Error):
+            # Corrupt or undecryptable stored material must fail closed instead of
+            # turning an operator login into a 500.
+            return None
     return None
 
 
