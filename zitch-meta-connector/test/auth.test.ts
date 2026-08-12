@@ -25,24 +25,29 @@ function fakeReq(headers: Record<string, string>): any {
   return { header: (name: string) => headers[name.toLowerCase()] };
 }
 
+// Deliberately low-entropy (repeated-character) fixture values rather than a
+// realistic-looking random key: a plausible-looking secret in test source is
+// exactly what a repo-wide secret scanner (gitleaks et al.) is built to catch,
+// and a false positive there is a real CI failure to chase down later.
+const FIXTURE_KEY = 'a'.repeat(28);
+const FIXTURE_KEY_UPPER = 'A'.repeat(28);
+const FIXTURE_KEY_SHORT = 'a'.repeat(10);
+
 describe('checkAuth', () => {
-  const config = fakeConfig('correct-key-0123456789abcdef');
+  const config = fakeConfig(FIXTURE_KEY);
 
   it('accepts a matching Bearer token', () => {
-    const result = checkAuth(fakeReq({ authorization: 'Bearer correct-key-0123456789abcdef' }), config);
+    const result = checkAuth(fakeReq({ authorization: `Bearer ${FIXTURE_KEY}` }), config);
     expect(result.ok).toBe(true);
   });
 
   it('accepts a matching X-Connector-Api-Key header', () => {
-    const result = checkAuth(
-      fakeReq({ 'x-connector-api-key': 'correct-key-0123456789abcdef' }),
-      config,
-    );
+    const result = checkAuth(fakeReq({ 'x-connector-api-key': FIXTURE_KEY }), config);
     expect(result.ok).toBe(true);
   });
 
   it('rejects a wrong key', () => {
-    const result = checkAuth(fakeReq({ authorization: 'Bearer wrong-key' }), config);
+    const result = checkAuth(fakeReq({ authorization: `Bearer ${'b'.repeat(28)}` }), config);
     expect(result.ok).toBe(false);
   });
 
@@ -53,18 +58,18 @@ describe('checkAuth', () => {
   });
 
   it('rejects a key that differs only in length (no crash, no false positive)', () => {
-    const result = checkAuth(fakeReq({ authorization: 'Bearer correct-key' }), config);
+    const result = checkAuth(fakeReq({ authorization: `Bearer ${FIXTURE_KEY_SHORT}` }), config);
     expect(result.ok).toBe(false);
   });
 
   it('never returns more than a 6-char fingerprint', () => {
-    const result = checkAuth(fakeReq({ authorization: 'Bearer correct-key-0123456789abcdef' }), config);
+    const result = checkAuth(fakeReq({ authorization: `Bearer ${FIXTURE_KEY}` }), config);
     expect(result.keyFingerprint.length).toBeLessThanOrEqual(6);
     expect(result.keyFingerprint).not.toContain(config.connectorApiKey);
   });
 
   it('is case-sensitive and exact — no partial/prefix match', () => {
-    const result = checkAuth(fakeReq({ authorization: 'Bearer correct-key-0123456789ABCDEF' }), config);
+    const result = checkAuth(fakeReq({ authorization: `Bearer ${FIXTURE_KEY_UPPER}` }), config);
     expect(result.ok).toBe(false);
   });
 });
