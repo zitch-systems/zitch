@@ -44,11 +44,11 @@ services:
         value: "https://api.zitch.ng"
       # Bootstrap the back-office super admin. The free tier has no shell, so
       # build.sh running seed_ops on each deploy is the ONLY way in — and it is
-      # gated on PASSWORD being non-empty, so leaving this blank means /admin/
-      # has no account at all and every login is refused. Declared here (rather
+      # gated on PASSWORD being non-empty, so leaving this blank means /portal/
+      # has no operator account and every login is refused. Declared here (rather
       # than only in build.sh) so the fields are visible in the Render dashboard
       # instead of being invisible unless you read the build script.
-      # Sign in with the USERNAME below, or with the EMAIL — both work.
+      # Sign in at /portal/ with the USERNAME below, or with the EMAIL — both work.
       # Re-deploying with a new PASSWORD resets it, which is the recovery path
       # if it is ever lost.
       - key: DJANGO_SUPERUSER_USERNAME
@@ -75,6 +75,10 @@ services:
       # dashboard. It is dashboard-owned so a Blueprint sync cannot lock every
       # operator out before the two-step enrolment is complete.
       - key: OPS_REQUIRE_MFA
+        sync: false
+      # Optional dedicated application-layer encryption key for operator TOTP
+      # seeds. Blank falls back to DJANGO_SECRET_KEY; rotation accepts NEW,OLD.
+      - key: TOTP_ENCRYPTION_KEYS
         sync: false
       - key: OPS_REQUIRE_DUAL_APPROVAL
         value: "true"

@@ -37,6 +37,11 @@ from .models import OTP, AccessToken, User, hash_identifier
 from common.emails import branded_message as _branded_email  # noqa: E402
 
 
+def _session_device_id(request) -> str:
+    """Per-install identifier to bind a newly issued customer session."""
+    return (request.headers.get("X-Zitch-Device") or "").strip()[:64]
+
+
 def _otp_on_cooldown(phone: str) -> bool:
     """True if a code was issued for this phone within the resend cooldown,
     to stop OTP-flooding / rapid brute-force of a victim's number."""
@@ -98,7 +103,7 @@ def signin(request):
     # and it is what makes the new-device step-up on a large spend meaningful.
     from common.risk import evaluate_login
     evaluate_login(request, user)
-    token = AccessToken.issue(user)
+    token = AccessToken.issue(user, device_id=_session_device_id(request))
     return ok(access_token=token.key, message="Signed in")
 
 
@@ -197,7 +202,7 @@ def verify_otp(request):
         user.last_name = last_name or user.last_name
         user.save(update_fields=["first_name", "last_name"])
     get_or_create_wallet(user)
-    token = AccessToken.issue(user)
+    token = AccessToken.issue(user, device_id=_session_device_id(request))
     return ok(access_token=token.key, message="Verified")
 
 
@@ -316,7 +321,7 @@ def password_reset(request):
     user.set_password(password)
     user.save(update_fields=["password"])
     user.tokens.all().delete()  # a password reset invalidates every prior session
-    token = AccessToken.issue(user)
+    token = AccessToken.issue(user, device_id=_session_device_id(request))
     return ok(access_token=token.key, message="Password reset")
 
 

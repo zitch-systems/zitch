@@ -32,6 +32,7 @@ activation and independent settlement evidence are required.
 | Mono funding | A “payment received” callback with no settled amount credited the customer's requested amount; malformed event/data shapes could reach callback logic. | Missing/malformed/non-positive amounts leave the intent pending. Verified amounts are capped at the original intent. Webhook secret is checked before body parsing, including in deployed simulation, and event/data must be JSON objects. |
 | Internal transfers | Zitch-to-Zitch transfers mutated wallets directly and could race past locked daily/velocity limits. | Spend limits are re-evaluated while both wallet rows are locked. |
 | API auth | Legacy access tokens in JSON bodies could enter WAF/error telemetry; operator endpoints had a separate unbounded/content-type-agnostic parser. | Production accepts bearer headers only. Customer payloads are capped at 4 MiB; operator JSON at 64 KiB; JSON content type and object shape are enforced consistently. |
+| Session replay | A copied customer bearer token could be replayed from another client for the remainder of its TTL. | Newly issued customer sessions are bound server-side to the authenticating install ID; omitting or changing the device header invalidates a bound token. Existing tokens remain unbound only for the rollout window. |
 | Request abuse | WhatsApp Flow envelopes and some webhook paths lacked an explicit small body boundary. | WhatsApp webhook and encrypted Flow envelopes are limited to 1 MiB; Mono is limited to 1 MiB; Wema's existing authenticated body limit remains. |
 | Risk step-up | Removing `X-Zitch-Device` bypassed the new-device face step-up. | HTTP requests without a device ID are unknown devices; genuine non-HTTP WhatsApp/cron callers remain distinguishable. |
 | Cache privacy | Rate-limit/login keys exposed raw IP/email/phone values to Redis operators and backups. | Identifiers are now scoped keyed HMACs, preventing recovery and offline enumeration. |
@@ -40,7 +41,8 @@ activation and independent settlement evidence are required.
 | Mobile capture | Balances, identity screens and PIN entry could be captured app-wide. | Native screen capture/recording is blocked globally. Explicit receipt export remains available. |
 | Edge bypass | On a WAF 403 the app retried the same request against the Render-assigned origin, bypassing the edge policy and risking duplicate money POSTs. | Release builds use only `https://api.zitch.ng`; WAF refusals are never rerouted. |
 | LLM SSRF | A configurable custom model endpoint remained an avoidable DNS-rebinding/SSRF surface. | Custom endpoints are disabled by default in production; the portal rejects/filters them. The model still cannot execute money movement. |
-| Operator attack surface | Stock Django admin is password-only; MFA endpoints themselves lacked a narrow rate limit. | Public deployments now leave `/admin/` unmounted by default. Normal operations use the RBAC/TOTP portal. MFA enrol/confirm/disable are rate-limited. `OPS_REQUIRE_MFA` must be enabled after enrolment. |
+| Operator attack surface | Stock Django admin is password-only; MFA endpoints themselves lacked a narrow rate limit; TOTP seeds were plaintext in SQL/backups. | Public deployments now leave `/admin/` unmounted by default. Normal operations use the RBAC/TOTP portal. MFA enrol/confirm/disable are rate-limited. TOTP seeds are Fernet-encrypted with rotation support and fail closed when damaged. `OPS_REQUIRE_MFA` must be enabled after enrolment. |
+| Mobile nonces | Install IDs and money-operation idempotency keys used `Math.random()`, which is not a cryptographic generator. | Expo Crypto now generates both values from the operating system CSPRNG; idempotency keys are UUIDv4 nonces. |
 | Test safety | A developer/CI environment containing real provider keys could let fixture data trigger live HTTP. | The Django test runner blocks unmocked `requests` network calls. Provider-contract tests must explicitly mock their transport. |
 | Supply chain | CI scanned shallow Git history, skipped transitive Python dependencies and failed open when npm advisories were unavailable. | Full-history secret scan, transitive `pip-audit`, high/critical npm gating and fail-closed advisory outages are configured. Two unpatched `image-size` build-parser advisories have a narrow, expiring mitigation: vulnerable formats are disabled in Metro and absent from the repository. |
 
@@ -50,7 +52,7 @@ Observed in workspace `tea-d8entvernols73agg0rg` without reproducing any secret:
 
 | Component | Observed | Required before public launch |
 |---|---|---|
-| Web service `zitch main app` | Free plan, one instance, bare gunicorn start, health path `/`, inline WhatsApp processing enabled | Paid non-sleeping service, reviewed gunicorn command, `/healthz`, checked deploys, web inline processing off after worker validation |
+| Web service `zitch main app` | Free plan, one instance, bare gunicorn start, health path `/`, inline WhatsApp processing enabled | Repository-level Gunicorn defaults now make the bare command bounded/threaded after deploy. Paid non-sleeping service, dashboard `/healthz`, checked deploys, and web inline processing off still require topology approval/validation. |
 | WhatsApp worker | No worker service exists | Provision the paid `zitch-whatsapp-worker`, prove leases/retries/dead-letter and zero growing backlog |
 | PostgreSQL | Basic 256 MiB / 1 GiB, no HA, no pool; live configuration does not evidence an empty public allowlist | Disable public access, use private connections, validate backups and restore, define HA/capacity/RPO/RTO |
 | Redis/Key Value | Starter, persistence off; reachable by the app | Retain for ephemeral limits/challenges only, restrict external access, monitor evictions/availability; durable WhatsApp work remains in Postgres |
@@ -114,10 +116,10 @@ eligible to merge.
    fraud and reconciliation paging, incident response, key rotation, penetration
    testing, DAST/load/abuse tests from an allowlisted environment, and an
    independent review of licensing, CBN/NDPR/PCI obligations. Add a reproducible,
-   hash-pinned Python dependency lock/SBOM. Define retention and application-layer
-   encryption/KMS treatment for operator TOTP seeds and sensitive transaction
-   metadata, and validate server-side customer session expiry/revocation policy
-   rather than relying only on the client's idle lock.
+   hash-pinned Python dependency lock/SBOM. Move the new TOTP encryption material to
+   a dedicated KMS-managed key, define retention/encryption treatment for sensitive
+   transaction metadata, and validate the chosen customer session TTL/revocation
+   policy operationally rather than relying only on the client's idle lock.
 
 ## Adversarial testing boundary
 

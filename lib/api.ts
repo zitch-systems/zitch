@@ -1,4 +1,5 @@
 import { router } from 'expo-router';
+import * as Crypto from 'expo-crypto';
 import baseUrl from '@/components/configFiles/apiConfig';
 import { getToken, clearSession } from '@/lib/secureStore';
 import { touchActivity } from '@/lib/session';
@@ -168,5 +169,8 @@ export async function publicJson<T = any>(
  * it across retries of that same attempt.
  */
 export function newIdempotencyKey(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}-${Math.random().toString(36).slice(2, 10)}`;
+  // A money-operation key is an unguessable nonce, not just a likely-unique UI
+  // correlation value.  CSPRNG UUIDs prevent another client from predicting a key
+  // and pre-claiming it against an idempotency bucket.
+  return Crypto.randomUUID();
 }

@@ -23,6 +23,36 @@ from .models import OTP, AccessToken
 User = get_user_model()
 
 
+class DeviceBoundSessionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create(username="bound", phone="08035550000")
+
+    def test_bound_token_resolves_only_for_the_authenticating_install(self):
+        raw = AccessToken.issue(self.user, device_id="install-a").key
+        self.assertEqual(AccessToken.resolve(raw, device_id="install-a"), self.user)
+        self.assertIsNone(AccessToken.resolve(raw, device_id="install-b"))
+        self.assertIsNone(AccessToken.resolve(raw, device_id=""))
+        # Internal non-HTTP callers retain the existing model API. The HTTP auth
+        # boundary never passes None, so a remote client cannot select this path.
+        self.assertEqual(AccessToken.resolve(raw), self.user)
+
+    def test_unbound_legacy_token_remains_valid_during_rollout(self):
+        raw = AccessToken.issue(self.user).key
+        self.assertEqual(AccessToken.resolve(raw, device_id="new-client"), self.user)
+
+    def test_authenticated_endpoint_enforces_the_binding(self):
+        raw = AccessToken.issue(self.user, device_id="install-a").key
+        payload = json.dumps({"access_token": raw})
+        allowed = self.client.post("/api/wallet_balance/", data=payload,
+                                   content_type="application/json",
+                                   HTTP_X_ZITCH_DEVICE="install-a")
+        refused = self.client.post("/api/wallet_balance/", data=payload,
+                                   content_type="application/json",
+                                   HTTP_X_ZITCH_DEVICE="install-b")
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(refused.status_code, 401)
+
+
 class OnboardingOtpTests(TestCase):
     def setUp(self):
         self.client = Client()

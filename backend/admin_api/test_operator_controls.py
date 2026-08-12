@@ -95,7 +95,11 @@ class MfaEnrolmentTests(TestCase):
         self.assertIn("otpauth://totp/", res.json()["otpauth_uri"])
         # Unconfirmed must NOT gate login — a half-finished enrolment locking an
         # operator out of the portal is the worst outcome here.
-        self.assertFalse(OperatorTotp.objects.get(user=self.op).confirmed)
+        stored = OperatorTotp.objects.get(user=self.op)
+        self.assertFalse(stored.confirmed)
+        self.assertTrue(stored.secret.startswith("enc:v1:"))
+        self.assertNotIn(secret, stored.secret)
+        self.assertEqual(stored.plaintext_secret(), secret)
 
         res = self._post("mfa/confirm", {"code": code_for(secret, current_step())})
         self.assertEqual(res.status_code, 200)
@@ -108,6 +112,12 @@ class MfaEnrolmentTests(TestCase):
         self.assertEqual(res.json()["code"], "mfa_invalid")
         self.assertFalse(OperatorTotp.objects.get(user=self.op).confirmed)
 
+    def test_corrupt_encrypted_seed_fails_closed(self):
+        self._post("mfa/enroll")
+        OperatorTotp.objects.filter(user=self.op).update(secret="enc:v1:not-a-token")
+        res = self._post("mfa/confirm", {"code": "123456"})
+        self.assertEqual((res.status_code, res.json()["code"]), (403, "mfa_invalid"))
+
     def test_re_enrolling_a_confirmed_factor_needs_a_current_code(self):
         # Otherwise a hijacked operator session could swap the factor for one the
         # attacker controls, making it decorative.
@@ -118,7 +128,7 @@ class MfaEnrolmentTests(TestCase):
         res = self._post("mfa/enroll")
         self.assertEqual(res.status_code, 403)
         self.assertEqual(res.json()["code"], "mfa_code_required")
-        self.assertEqual(OperatorTotp.objects.get(user=self.op).secret, secret)
+        self.assertEqual(OperatorTotp.objects.get(user=self.op).plaintext_secret(), secret)
 
     def test_disabling_needs_a_current_code(self):
         secret = self._post("mfa/enroll").json()["secret"]

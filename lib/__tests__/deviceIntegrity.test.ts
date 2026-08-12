@@ -9,6 +9,11 @@ jest.mock('expo-secure-store', () => ({
   WHEN_UNLOCKED_THIS_DEVICE_ONLY: 'whenUnlockedThisDeviceOnly',
 }));
 
+jest.mock('expo-crypto', () => ({
+  getRandomBytes: jest.fn((count: number) =>
+    Uint8Array.from({ length: count }, (_, index) => (index * 17 + 3) % 256)),
+}));
+
 jest.mock('expo-device', () => ({
   osVersion: '14',
   modelName: 'Pixel 7',

@@ -521,7 +521,11 @@ def require_user(view):
     def wrapper(request, *args, **kwargs):
         from accounts.models import AccessToken
 
-        user = AccessToken.resolve(resolve_token(request))
+        # App tokens issued by current clients are bound to the install identifier
+        # that performed authentication.  Passing an empty value is deliberate: a
+        # caller cannot bypass the binding by stripping the header.
+        device_id = (request.headers.get("X-Zitch-Device") or "").strip()[:64]
+        user = AccessToken.resolve(resolve_token(request), device_id=device_id)
         if user is None:
             return fail("Invalid or expired session", status=401)
         request.user_obj = user
