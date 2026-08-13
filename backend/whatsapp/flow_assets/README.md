@@ -57,11 +57,39 @@ public key.
   customer has to type correctly only breeds typos. It still never reaches the
   chat. Submitting it mails the code and moves to `IDENTITY_SCREEN` on the same
   open Flow.
-- `SUCCESS` — terminal screen showing the outcome (`message`).
+- `SUCCESS` — terminal screen showing the outcome as a `status` heading
+  (`✅ Successful` / `⏳ Pending` / `❌ Not completed` / `Done`) over the
+  `message` detail. The heading is the point: the screen used to render only the
+  sentence, so a settled transfer, a queued one and a refused one all looked
+  alike at a glance. `whatsapp/router.py`'s `Outcome` carries the tag from
+  whichever executor produced the line.
+
+  **`⏳ Pending` is the honest answer for most confirmed payments, not a
+  placeholder.** Meta gives a data-exchange 10 seconds; a payout takes longer,
+  so the PIN is verified, the payment is queued, and the Flow closes *before the
+  rail has answered*. Nothing that runs inside those 10 seconds can know the
+  outcome, so a screen that always said "successful" would be asserting
+  something nobody has established — on a banking channel, the worst available
+  lie. The settled result arrives in the chat as the receipt.
 
 All four KYC steps therefore behave the same way: phone is the only one whose
 code still arrives in the thread, because the SMS itself is the proof of SIM
 possession and there is nothing to hide from the customer's own device.
+
+### What the Flow JSON cannot do
+
+Asked for and deliberately absent, so nobody re-litigates them from scratch:
+
+- **Auto-closing the terminal screen after N seconds.** Flow JSON's actions are
+  `navigate`, `complete`, `data_exchange`, `update_data` and `open_url`, and all
+  five are user-triggered. There is no timer, delay, or auto-navigate primitive,
+  so `SUCCESS` closes when the customer taps **Done**.
+- **A spinner / rotating logo while a submit is in flight.** There is no
+  animation, spinner, or progress component. WhatsApp's own Footer button
+  already renders a native busy state for the duration of a `data_exchange`,
+  which is the only loading indicator available.
+
+Both would need Meta to add components; neither is achievable in this file.
 
 The endpoint drives these dynamically from `whatsapp/flows.py`; keep the screen
 ids and field names in sync if you edit the JSON.

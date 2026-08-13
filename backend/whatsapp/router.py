@@ -545,6 +545,11 @@ def _send_identity_flow(pa: PendingAction, kind: str, fallback_state: str = "") 
         return False
     pa.payload["id_kind"] = kind
     pa.payload["flow_screen"] = IDENTITY_SCREEN          # opens on the root, not the twin
+    # Where this step goes if its answer arrives in the CHAT instead. Recorded at
+    # arm time rather than re-derived: the same value already picks the chat
+    # state on a send failure below, and _accept_identity_in_chat needs it for a
+    # customer who simply typed the number rather than tapping the screen.
+    pa.payload["id_fallback_state"] = fallback_state or kind
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)   # persist so the token resolves
     which = kind.upper()
     res = send_flow(
@@ -750,6 +755,18 @@ def is_awaiting_bvn(msisdn: str) -> bool:
         return False
     if pa.action_type == "add_account" and pa.state == "bvn":
         return True
+    # An identity Flow is OPEN. The secure screen is where the number is meant to
+    # go, but the chat is where some customers put it anyway — and it is now read
+    # rather than refused, so it has to be masked here too. It always should have
+    # been: the log wrote the number in clear either way, and refusing to act on
+    # it never stopped it arriving.
+    #
+    # Only the 11-digit identity NUMBER needs adding here: a bare 6-digit code
+    # is already masked by the webhook's shape rule, and the email address is
+    # not a secret.
+    if pa.state == FLOW_ID_STATE:
+        return (str(pa.payload.get("id_kind", "")).lower() in ("bvn", "nin")
+                and not pa.payload.get("id_otp_hash"))
     # The chat KYC flow collects a BVN/NIN too; the same masking must cover it or
     # an identity number typed there would land in the log in clear.
     return pa.action_type == "kyc" and pa.state in ("bvn", "nin")
@@ -2713,6 +2730,76 @@ def _is_new_command(text: str) -> bool:
     return True
 
 
+#: What to tell someone who has just put a secret in their own chat history.
+#: WhatsApp has no view-once for text and lets only the SENDER delete, so this
+#: is the only remedy that exists — and it is worth more than a refusal to read.
+_DELETE_TIP = ("\n\n_Please delete your message (press and hold → Delete → Delete for "
+               "everyone) — WhatsApp only lets the sender do this._")
+
+
+def _identity_fallback_state(pa: PendingAction) -> str:
+    """The chat state an armed identity step answers in when its value arrives
+    in the thread rather than the Flow — the same state `_send_identity_flow`
+    falls back to when the dispatch itself fails."""
+    kind = str(pa.payload.get("id_kind", "bvn")).lower()
+    if kind == ACCOUNT_OTP:
+        return "otp"
+    if kind == "email":
+        return "email" if pa.payload.get("id_step") == "code" else "email_address"
+    return str(pa.payload.get("id_fallback_state") or kind)
+
+
+def _identity_answer_typed(pa: PendingAction, text: str) -> bool:
+    """Whether this message IS the value the open identity step is waiting for.
+
+    Shape-checked per step rather than "anything that isn't a command": an
+    11-digit BVN and a 6-digit code are unmistakable, and an email address is
+    the one step whose answer contains letters — so it has to be recognised
+    before the new-instruction escape hatch, which would otherwise read it as a
+    change of subject.
+    """
+    kind = str(pa.payload.get("id_kind", "bvn")).lower()
+    val = (text or "").strip()
+    if kind == "email" and pa.payload.get("id_step") != "code":
+        return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", val))
+    if any(ch.isalpha() for ch in val):
+        return False
+    digits = re.sub(r"\D", "", val)
+    if not digits:
+        return False
+    # 11 for the identity number itself; 6 for every code that follows one.
+    wanted = 11 if (kind in ("bvn", "nin") and not pa.payload.get("id_otp_hash")) else 6
+    return len(digits) == wanted
+
+
+def _accept_identity_in_chat(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """Process an identity answer that was typed into the chat with its Flow open.
+
+    Every branch here routes into the SAME function the chat fallback uses, so
+    the two entry points cannot drift on validation, on attempt budgets, or on
+    what a failure does to the pending action.
+    """
+    kind = str(pa.payload.get("id_kind", "bvn")).lower()
+    val = text.strip()
+    secret = not (kind == "email" and pa.payload.get("id_step") != "code")
+
+    # The identity challenge code (the SMS that name-matches a BVN/NIN). It has
+    # no chat state at all — it is only ever armed on a deploy with Flows live —
+    # so it is checked here, mirroring flows._submit_identity_otp exactly.
+    if kind not in (ACCOUNT_OTP, "email") and pa.payload.get("id_otp_hash"):
+        status, message = kyc_flow_identity_otp(pa, val)
+        if status == "retry":
+            return reply(msisdn, "⚠️ " + message)
+        reply(msisdn, message + (_DELETE_TIP if secret else ""))
+        return None if status == "stop" else _kyc_next(pa, user, msisdn)
+
+    _touch(pa, state=_identity_fallback_state(pa), payload=pa.payload)
+    if secret:
+        reply(msisdn, "🔐 Got it — I'll use what you typed." + _DELETE_TIP)
+    handler = _advance_add_account if pa.action_type == "add_account" else _advance_kyc
+    return handler(pa, user, msisdn, val)
+
+
 def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if pa.state == EXECUTING_STATE:
         # Authorised and in the worker's hands. Every other branch below can end
@@ -2752,12 +2839,12 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         return reply(msisdn, f"🔐 Tap *{cta}* on the secure screen I sent to enter your PIN — "
                              "it stays private and never appears in this chat. Or reply \"cancel\".")
     if pa.state == FLOW_ID_STATE:
-        # Identity Flow open. Refusing to read a number typed here is the point:
-        # accepting it would put in the transcript exactly what the Flow exists to
-        # keep out of it.
+        # Identity Flow open. Three different things arrive here and only one of
+        # them used to get an answer.
         kind = str(pa.payload.get("id_kind", "bvn")).lower()
-        if kind == ACCOUNT_OTP:
-            if text.strip().lower() == "resend":
+        low = text.strip().lower()
+        if low == "resend":
+            if kind == ACCOUNT_OTP:
                 res = wema_provider.resend_wallet_otp(
                     user.phone or "", pa.payload.get("tracking_id", ""),
                     bvn=bool(pa.payload.get("using_bvn")))
@@ -2765,20 +2852,46 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
                     return reply(msisdn, "📲 Code re-sent — enter it on the secure screen.")
                 return reply(msisdn, "⚠️ " + (res.get("message")
                                               or "Couldn't resend the code — try again shortly."))
-            return reply(msisdn, "📲 Please enter the SMS code on the secure screen I sent — "
-                                 "it stays private and never appears in this chat. "
-                                 "Or reply \"cancel\".")
-        if kind == "email":
-            # "resend" is the one word we act on: an expired code with no way to
-            # ask for another would strand the customer inside a dead Flow.
-            if text.strip().lower() == "resend" and pa.payload.get("id_step") == "code":
+            if kind == "email" and pa.payload.get("id_step") == "code":
+                # An expired code with no way to ask for another would strand the
+                # customer inside a dead Flow.
                 return _kyc_send_email_code(pa, user, msisdn)
+            # No code to re-send at this step. Answered rather than falling
+            # through: "resend" is plainly about the step in progress, and the
+            # new-instruction hatch below would read it as abandoning it.
+            return reply(msisdn, "There's no code to re-send at this step — "
+                                 "enter what I asked for above, or reply \"cancel\".")
+        if _identity_answer_typed(pa, text):
+            # They typed it into the chat anyway. Refusing to READ it does not
+            # un-send it: the number is already in the customer's own history,
+            # and answering "use the secure screen" adds a dead end on top of an
+            # exposure that has already happened — the loop in the screenshot,
+            # where the same line came back to three different messages. So the
+            # value is processed exactly as the no-Flows fallback processes it,
+            # and the reply says how to delete the message.
+            return _accept_identity_in_chat(pa, user, msisdn, text)
+        if _is_new_command(text):
+            # The same escape hatch the PIN screen and the transfer form have,
+            # and missing here for no reason: an unfinished verification has
+            # changed nothing, so "send 500 to Mutumin" is a new instruction
+            # rather than one more thing to answer with "tap the secure screen".
+            _clear_actions(msisdn)
+            reply(msisdn, "Okay — leaving that verification.")
+            return handle_inbound(msisdn, text)
+        if kind == ACCOUNT_OTP:
+            return reply(msisdn, "📲 That isn't the 6-digit code. Enter it on the secure screen "
+                                 "I sent, or type it here — either works. Or reply \"cancel\".")
+        if kind == "email":
             what = "email code" if pa.payload.get("id_step") == "code" else "email address"
-            return reply(msisdn, f"📧 Please enter your {what} on the secure screen I sent — "
-                                 "it stays private and never appears in this chat. "
+            return reply(msisdn, f"📧 That doesn't look like your {what}. Enter it on the secure "
+                                 "screen I sent, or type it here — either works. "
                                  "Or reply \"cancel\".")
-        return reply(msisdn, f"🪪 Please enter your {kind.upper()} on the secure screen I sent — "
-                             "it stays private and never appears in this chat. Or reply \"cancel\".")
+        # An armed challenge means the screen is waiting for the SMS code that
+        # name-matches the number, not for the number again.
+        wanted = "the 6-digit code we sent you" if pa.payload.get("id_otp_hash") \
+            else f"your 11-digit {kind.upper()}"
+        return reply(msisdn, f"🪪 That isn't {wanted}. Enter it on the secure screen I sent, "
+                             "or type it here — either works. Or reply \"cancel\".")
     handler = {
         "transfer": _advance_transfer,
         "airtime": _advance_airtime,
@@ -2997,6 +3110,33 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
     return _exec_transfer(pa, user, msisdn)
 
 
+#: The three things that can have happened to money by the time a Flow closes,
+#: plus the untagged default. The Flow's terminal screen shows one of them as its
+#: heading, so "we tried" and "it worked" stop looking identical to the customer.
+OUTCOME_SUCCESS = "success"
+OUTCOME_PENDING = "pending"
+OUTCOME_FAILED = "failed"
+
+
+class Outcome(str):
+    """An executor's closing line, tagged with what actually happened to the money.
+
+    A plain `str` everywhere one is already used — the chat line, the approve
+    API's `message`, the existing assertions — with one extra attribute the Flow
+    endpoint reads to pick its terminal heading. A subclass rather than a tuple
+    precisely so nothing that consumes these strings has to change, and so an
+    executor that returns a bare string still renders correctly: untagged reads
+    as `done`, which is what it has always meant.
+    """
+
+    status = "done"
+
+    def __new__(cls, text: str, status: str = "done"):
+        obj = super().__new__(cls, text)
+        obj.status = status
+        return obj
+
+
 def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     """Execute a PIN-confirmed transfer (called by the chat PIN path AND the
     secure Flow endpoint). Sends the chat receipt and returns a short outcome
@@ -3005,13 +3145,13 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         _clear_actions(msisdn)
         msg = "Too many transactions in a short time. Please wait a few minutes and try again."
         reply(msisdn, msg)
-        return msg
+        return Outcome(msg, OUTCOME_FAILED)
     amount = Decimal(pa.payload["amount"])
     bank = Bank.objects.filter(bank_code=pa.payload["bank_code"]).first()
     if bank is None:
         _clear_actions(msisdn)
         reply(msisdn, "Something went wrong. Reply \"menu\" to start over.")
-        return "Transfer could not be completed."
+        return Outcome("Transfer could not be completed.", OUTCOME_FAILED)
     # Re-run the name enquiry immediately before paying, exactly as the app does
     # (transfers.views.bank_transfer). The name shown at the "bank" step can be
     # minutes old by the time the PIN comes back, and routing is purely by
@@ -3028,7 +3168,7 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
             msg = (f"This account now belongs to {fresh_name}, not {confirmed_name.upper()}. "
                    "Nothing was sent — please check the account number and start again.")
             reply(msisdn, msg)
-            return msg
+            return Outcome(msg, OUTCOME_FAILED)
         confirmed_name = fresh_name or confirmed_name
     try:
         # Stable key per flow: a re-sent "pin" message can't double-pay.
@@ -3040,12 +3180,12 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         _clear_actions(msisdn)
         if exc.kind == "insufficient":
             reply(msisdn, "Insufficient balance — transfer cancelled.")
-            return "Insufficient balance — transfer cancelled."
+            return Outcome("Insufficient balance — transfer cancelled.", OUTCOME_FAILED)
         if exc.kind == "duplicate":
             reply(msisdn, "That transfer was already processed.")
-            return "That transfer was already processed."
+            return Outcome("That transfer was already processed.", OUTCOME_FAILED)
         reply(msisdn, f"Transfer failed: {exc.message}")
-        return f"Transfer failed: {exc.message}"
+        return Outcome(f"Transfer failed: {exc.message}", OUTCOME_FAILED)
 
     _clear_actions(msisdn)
 
@@ -3069,10 +3209,10 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         line = (f"⏳ Your transfer of {_money(amount)} to {pa.payload['name'].upper()} "
                 f"is processing — we'll confirm once it settles. Ref {txn.reference}.")
         reply(msisdn, line)
-        return line
+        return Outcome(line, OUTCOME_PENDING)
 
     wallet = get_or_create_wallet(user)
-    return reply_receipt(msisdn, "Transfer receipt", [
+    reply_receipt(msisdn, "Transfer receipt", [
         ("To", pa.payload["name"].upper()),
         ("Bank", pa.payload["bank_name"]),
         ("Account", pa.payload["account"]),
@@ -3080,6 +3220,12 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         ("Reference", txn.reference),
         ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
     ], ref=txn.reference, user=user, balance_after=wallet.balance)
+    # A settled transfer is the one case that may be CALLED successful, and it is
+    # now said rather than inferred: this used to return whatever reply_receipt
+    # gave back, which run_flow_execution turned into a bare "Done ✅" — the same
+    # words a cancelled transfer closed on.
+    return Outcome(f"{_money(amount)} sent to {pa.payload['name'].upper()} — "
+                   f"the receipt is in your chat.", OUTCOME_SUCCESS)
 
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
@@ -3105,6 +3251,18 @@ def _begin_bank_transfer(user, msisdn: str, amount: Decimal, acct: str, bank_que
     if _blocked_from_spending(user, msisdn):
         return True
     matches = _match_banks(bank_query)
+    # The NUBAN carries its own bank code in the check digit, so a message that
+    # names no bank is not missing anything — "send 1000 to Mutumin 2217940528"
+    # was answered with the guided form purely because `bank_query` had no bank
+    # name in it, which reads as the assistant ignoring a complete instruction.
+    # The checksum resolves it, and the name enquiry below is the real safety
+    # net either way. It also NARROWS an ambiguous name match: _match_banks does
+    # substring matching over a whole sentence, so several banks matching is
+    # common and the account number can only belong to one of them.
+    nuban = nuban_bank_candidates(acct)
+    if nuban:
+        narrowed = [b for b in matches if b.code in {c.code for c in nuban}]
+        matches = narrowed or (matches if matches else nuban)
     if not matches:
         return False
     if amount < MIN_TRANSFER:
@@ -3236,17 +3394,17 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     if send_msg:
         _clear_actions(msisdn)
         _limit_reply(msisdn, user, send_msg)
-        return send_msg
+        return Outcome(send_msg, OUTCOME_FAILED)
     bill_limit_msg = daily_limit_error(user, amount, "bill")
     if bill_limit_msg:
         _clear_actions(msisdn)
         _limit_reply(msisdn, user, bill_limit_msg)
-        return bill_limit_msg
+        return Outcome(bill_limit_msg, OUTCOME_FAILED)
     if velocity_exceeded(user):  # same fraud brake the app enforces (parity)
         _clear_actions(msisdn)
         msg = "Too many transactions in a short time. Please wait a few minutes and try again."
         reply(msisdn, msg)
-        return msg
+        return Outcome(msg, OUTCOME_FAILED)
     try:
         purchase_meta = {**pa.payload.get("meta", {}), "channel": "whatsapp"}
         status, txn, result = run_provider_purchase(
@@ -3256,20 +3414,22 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     except InsufficientFunds:
         _clear_actions(msisdn)
         reply(msisdn, "Insufficient balance — cancelled.")
-        return "Insufficient balance — cancelled."
+        return Outcome("Insufficient balance — cancelled.", OUTCOME_FAILED)
     except LimitExceeded as exc:
         _clear_actions(msisdn)
         reply(msisdn, str(exc))
-        return str(exc)
+        return Outcome(str(exc), OUTCOME_FAILED)
     except DuplicateTransaction:
         _clear_actions(msisdn)
         reply(msisdn, "That request was already processed.")
-        return "That request was already processed."
+        return Outcome("That request was already processed.", OUTCOME_FAILED)
     _clear_actions(msisdn)
     if status == "success":
         title, rows = receipt(txn, result)
-        return reply_receipt(msisdn, title, rows, ref=txn.reference,
-                             user=user, balance_after=get_or_create_wallet(user).balance)
+        reply_receipt(msisdn, title, rows, ref=txn.reference,
+                      user=user, balance_after=get_or_create_wallet(user).balance)
+        # Named rather than inferred, for the same reason as the transfer path.
+        return Outcome(f"{label} successful — the receipt is in your chat.", OUTCOME_SUCCESS)
     if status == "pending":
         # Same as the transfer path: the chat can only say "processing", so the
         # alert on the eventual settlement must not be de-duped away as an echo
@@ -3279,10 +3439,10 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         mark_awaiting_settlement(txn)
         line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
         reply(msisdn, line)
-        return line
+        return Outcome(line, OUTCOME_PENDING)
     line = f"❌ {label} failed: {result.get('message', 'please try again')}. You were not charged."
     reply(msisdn, line)
-    return line
+    return Outcome(line, OUTCOME_FAILED)
 
 
 # ---- service sub-menus (tap 1 or 2 — no need to type "airtime"/"data" etc.) ----
@@ -3822,9 +3982,13 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
         return True
     if name == "transfer":
         amt, acct, bank = p.get("amount"), p.get("account_number"), p.get("bank_name")
-        if amt and acct and bank:
+        # No bank_name is no longer a reason to fall back to the guided form:
+        # _begin_bank_transfer reads the bank off the account number's checksum
+        # when the message didn't name one, and only returns False when even
+        # that can't resolve it.
+        if amt and acct:
             try:
-                if _begin_bank_transfer(user, msisdn, Decimal(str(amt)), re.sub(r"\D", "", str(acct)), str(bank)):
+                if _begin_bank_transfer(user, msisdn, Decimal(str(amt)), re.sub(r"\D", "", str(acct)), str(bank or "")):
                     return True
             except (InvalidOperation, TypeError):
                 pass
@@ -4032,8 +4196,12 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # would only race it.
     if not getattr(settings, "TESTING", False):
         drain_in_background()
-    return ("✅ Confirmed. I'm completing your payment now — the receipt will "
-            "arrive in this chat in a few seconds.")
+    # PENDING, emphatically not success: the rail has not answered yet. The tick
+    # on this line read as "done" on the Flow's closing screen for a payment that
+    # had not been attempted, which is the one thing a banking channel must never
+    # say. The receipt in the chat is still the authoritative outcome.
+    return Outcome("Confirmed — I'm completing your payment now. The receipt will "
+                   "arrive in this chat in a few seconds.", OUTCOME_PENDING)
 
 
 @db_transaction.atomic
@@ -4048,19 +4216,22 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
     ).first()
     if live is None:
-        return "This request expired or was cancelled. Start again in the chat."
+        return Outcome("This request expired or was cancelled. Start again in the chat.",
+                       OUTCOME_FAILED)
     # An action already authorised is past the point where expiry means anything:
     # the PIN was accepted inside the window, and the clock that ran out was the
     # one measuring how long the customer had to confirm. Dropping it here would
     # discard a payment the customer was told was on its way.
     if live.expired and live.state != EXECUTING_STATE:
         live.delete()
-        return "This request expired or was cancelled. Start again in the chat."
+        return Outcome("This request expired or was cancelled. Start again in the chat.",
+                       OUTCOME_FAILED)
 
     live_user = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
     if live_user is None or not live_user.is_active:
         _clear_actions(live.msisdn)
-        return "Your Zitch account is currently suspended. Please contact support."
+        return Outcome("Your Zitch account is currently suspended. Please contact support.",
+                       OUTCOME_FAILED)
 
     pa = live
     user = live_user
@@ -4076,5 +4247,6 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     fn = executors.get(pa.action_type)
     if fn is None:
         _clear_actions(pa.msisdn)
-        return "Sorry, this action can't be completed here. Please try again in the chat."
+        return Outcome("Sorry, this action can't be completed here. Please try again in the chat.",
+                       OUTCOME_FAILED)
     return fn(pa, user, pa.msisdn) or "Done ✅"
