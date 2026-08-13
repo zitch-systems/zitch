@@ -357,7 +357,12 @@ def send_template(msisdn: str, template_name: str, params: list | None = None, l
             headers={"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"},
             timeout=15,
         )
-        return _message_result(r)
+        # Route through _log_if_rejected like every other send path. Without it
+        # an HTTP-level refusal (unapproved/paused template, parameter-count
+        # mismatch, expired token) produced no log line at all — only a
+        # per-recipient error_code on the broadcast row — so a campaign failing
+        # for a reason Meta spelled out was diagnosable only by querying rows.
+        return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
         log.warning("wa_template_send_uncertain recipient=%s error_type=%s",
                     mask_pii(msisdn), type(exc).__name__)

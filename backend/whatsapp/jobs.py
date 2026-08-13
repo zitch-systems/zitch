@@ -241,7 +241,19 @@ def process_inbound_batch(limit=20) -> int:
     ids = list(
         WaMessageLog.objects.filter(
             direction=WaMessageLog.IN, processed_at__isnull=True,
-            processing_attempts__lt=MAX_ATTEMPTS,
+        ).filter(
+            # Rows still under the attempt budget, OR a row that was claimed for
+            # its FINAL attempt and never finished. _claim_inbound increments the
+            # counter and commits BEFORE the work runs, so a hard kill (deploy,
+            # OOM, SIGKILL — not a Python exception, which is handled) leaves
+            # attempts == MAX with a stale lease. Filtering on attempts < MAX
+            # alone excluded exactly those rows forever: never retried, never
+            # dead-lettered, so the customer got no reply and the encrypted
+            # payload (which can hold a PIN/BVN) was never erased — defeating the
+            # erasure guarantee the dead-letter branch exists to provide. Letting
+            # them back in hands them to that branch, which finalises and wipes.
+            Q(processing_attempts__lt=MAX_ATTEMPTS)
+            | Q(processing_attempts__gte=MAX_ATTEMPTS, processing_started_at__lte=stale),
         ).filter(
             Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now),
         ).filter(
@@ -255,16 +267,35 @@ def process_inbound_batch(limit=20) -> int:
 
 
 def _claim_outbound(pk: int):
+    """Returns ``(row, reason)`` — mirroring _claim_inbound — so the caller can
+    tell a dead-letter apart from an ordinary skip. That distinction matters:
+    a dead-letter changes the recipient's terminal state and therefore has to
+    trigger a broadcast count refresh, which a plain skip must not."""
     now = timezone.now()
     with db_transaction.atomic():
         row = (BroadcastRecipient.objects.select_for_update()
                .select_related("broadcast").filter(pk=pk).first())
         if row is None or row.processed_at is not None or row.status != BroadcastRecipient.QUEUED:
-            return None
+            return None, "skipped"
         if row.next_attempt_at and row.next_attempt_at > now:
-            return None
+            return None, "skipped"
         if row.processing_started_at and row.processing_started_at > now - OUTBOUND_LEASE:
-            return None
+            return None, "skipped"
+        if row.processing_attempts >= MAX_ATTEMPTS:
+            # Dead-letter on claim, mirroring _claim_inbound. Without this a
+            # recipient whose FINAL send was interrupted by a hard kill stayed
+            # QUEUED with processed_at NULL forever: refresh_broadcast_counts
+            # treats any such row as still active, so the whole broadcast was
+            # pinned in SENDING and never reached DONE — no completion audit, no
+            # final counts. There is no operator recovery action on the outbound
+            # side (unlike the inbound admin "Process now"), so nothing else
+            # would ever finalise it.
+            row.status = BroadcastRecipient.FAILED
+            row.processed_at = now
+            row.processing_started_at = None
+            row.error = row.error or "dead_letter:max_attempts"
+            row.save(update_fields=["status", "processed_at", "processing_started_at", "error"])
+            return None, "dead_letter"
         row.processing_started_at = now
         row.processing_attempts += 1
         row.next_attempt_at = None
@@ -273,7 +304,7 @@ def _claim_outbound(pk: int):
                                 "next_attempt_at", "error"])
         if row.broadcast.status in {Broadcast.QUEUED, Broadcast.DRAFT}:
             Broadcast.objects.filter(pk=row.broadcast_id).update(status=Broadcast.SENDING)
-        return row
+        return row, "claimed"
 
 
 def refresh_broadcast_counts(broadcast_id: int) -> None:
@@ -312,9 +343,21 @@ def refresh_broadcast_counts(broadcast_id: int) -> None:
 
 
 def process_outbound_recipient(pk: int) -> str:
-    row = _claim_outbound(pk)
+    row, disposition = _claim_outbound(pk)
     if row is None:
-        return "skipped"
+        if disposition == "dead_letter":
+            # The claim itself moved the recipient to a terminal FAILED state, so
+            # the broadcast's counts and status are now stale. Every other path
+            # that finalises a recipient refreshes them; skipping it here would
+            # leave the broadcast pinned in SENDING with nothing left to process
+            # — the exact wedge the dead-letter branch exists to clear. Re-read
+            # the FK rather than returning the locked row, so a caller that only
+            # checks `row is None` can never mistake a dead letter for a claim.
+            broadcast_id = (BroadcastRecipient.objects.filter(pk=pk)
+                            .values_list("broadcast_id", flat=True).first())
+            if broadcast_id is not None:
+                refresh_broadcast_counts(broadcast_id)
+        return disposition
     try:
         result = send_template(
             row.wa_msisdn, row.broadcast.template_name, row.broadcast.body_params,
@@ -348,8 +391,68 @@ def process_outbound_recipient(pk: int) -> str:
                          or "provider_rejected")[:200],
         }
     BroadcastRecipient.objects.filter(pk=row.pk).update(**updates)
+    if status == BroadcastRecipient.FAILED and _is_template_level(result.get("error_code")):
+        # Meta rejected a property of the TEMPLATE, not of this recipient, so
+        # every remaining recipient will be rejected identically. Without this the
+        # campaign burned one Graph call per recipient to collect N copies of the
+        # same refusal, and the operator was left reading N identical error_codes
+        # off recipient rows to work out that the template was the problem.
+        _abandon_broadcast(row.broadcast_id, str(result.get("error_code")),
+                           result.get("error_detail", ""))
     refresh_broadcast_counts(row.broadcast_id)
     return status
+
+
+#: Graph error codes that describe the TEMPLATE rather than the recipient — the
+#: same for everyone in the audience, so retrying the rest is pure waste. Kept
+#: deliberately narrow: a recipient-level code (131026 undeliverable, 131047
+#: re-engagement, 131049 per-user quality) must NOT abandon a whole campaign, so
+#: anything not unambiguously a template property is left off this list.
+_TEMPLATE_LEVEL_ERRORS = {
+    132000,   # number of parameters does not match the template's variables
+    132001,   # template does not exist for this name + language
+    132005,   # hydrated text too long / translation not approved
+    132007,   # template format character-policy violation
+    132012,   # parameter format mismatch
+    132015,   # template is paused
+    132016,   # template is disabled
+}
+
+
+def _is_template_level(error_code) -> bool:
+    """`error_code` is Meta's int, but `_message_result` falls back to an HTTP
+    status or the string "provider_error", so this must not assume a number."""
+    try:
+        return int(error_code) in _TEMPLATE_LEVEL_ERRORS
+    except (TypeError, ValueError):
+        return False
+
+
+def _abandon_broadcast(broadcast_id: int, error_code: str, detail: str = "") -> int:
+    """Fail every not-yet-claimed recipient of a broadcast whose template Meta
+    refused. Returns how many were abandoned.
+
+    Only rows with no live lease are touched: a recipient another worker is
+    mid-send on resolves itself, and if it hits the same refusal it lands back
+    here (this is idempotent). Stealing its row would let this update race the
+    worker's own write and report a genuinely sent message as failed.
+    """
+    abandoned = (BroadcastRecipient.objects
+                 .filter(broadcast_id=broadcast_id, status=BroadcastRecipient.QUEUED,
+                         processed_at__isnull=True, processing_started_at__isnull=True)
+                 .update(status=BroadcastRecipient.FAILED, processed_at=timezone.now(),
+                         next_attempt_at=None,
+                         error=f"abandoned:template_error:{error_code}"[:200]))
+    if abandoned:
+        log.warning("wa_broadcast_abandoned broadcast=%s error_code=%s abandoned=%s detail=%r",
+                    broadcast_id, error_code, abandoned, str(detail)[:200])
+        record_audit(
+            "broadcast.abandoned", actor_type="system",
+            target=f"broadcast:{broadcast_id}",
+            after={"error_code": str(error_code), "abandoned": abandoned,
+                   "detail": str(detail)[:200]},
+        )
+    return abandoned
 
 
 def process_outbound_batch(limit=20) -> int:
@@ -358,7 +461,14 @@ def process_outbound_batch(limit=20) -> int:
     ids = list(
         BroadcastRecipient.objects.filter(
             status=BroadcastRecipient.QUEUED, processed_at__isnull=True,
-            processing_attempts__lt=MAX_ATTEMPTS,
+        ).filter(
+            # Same reclaim rule as the inbound sweep: a recipient claimed for its
+            # final attempt and then hard-killed sits at attempts == MAX with a
+            # stale lease, and filtering on attempts < MAX alone stranded it in
+            # QUEUED forever — wedging its broadcast in SENDING. Re-selecting it
+            # hands it to _claim_outbound's dead-letter branch above.
+            Q(processing_attempts__lt=MAX_ATTEMPTS)
+            | Q(processing_attempts__gte=MAX_ATTEMPTS, processing_started_at__lte=stale),
         ).filter(
             Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now),
         ).filter(

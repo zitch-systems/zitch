@@ -173,10 +173,16 @@ def _ngn_equivalent(currency: str, amount: Decimal):
         return None
 
 
-def execute_fx(user, quote_ref: str, idempotency_key: str = "") -> FxQuote:
+def execute_fx(user, quote_ref: str, idempotency_key: str = "", channel: str = "") -> FxQuote:
     """Settle a quote within its TTL: debit source, credit target, write the
     ledger pair. The quote is locked + single-use, so a retry/race can't convert
-    twice and an expired quote is never settled at the stale rate."""
+    twice and an expired quote is never settled at the stale rate.
+
+    `channel`, when "whatsapp", is stamped on BOTH ledger rows so the post-save
+    alert knows the customer already saw the outcome in that chat — the same
+    contract execute_payout and run_provider_purchase use. Without it a chat
+    conversion sends the in-thread "✅ Converted…" line AND a separate debit
+    alert (and a credit alert) for one movement the customer already saw."""
     quote = FxQuote.objects.select_for_update().filter(quote_ref=quote_ref, user=user).first()
     if quote is None:
         raise FxError("Quote not found — please request a fresh one.")
@@ -200,11 +206,12 @@ def execute_fx(user, quote_ref: str, idempotency_key: str = "") -> FxQuote:
         user=user, service=label, amount=quote.sell_amount, currency=quote.from_currency,
         direction=Transaction.OUT, transaction_status=Transaction.SUCCESS, reference=ref,
         idempotency_key=idempotency_key,
-        meta={"to": quote.to_currency, "receive": str(quote.receive_amount), "rate": str(quote.rate)},
+        meta={"to": quote.to_currency, "receive": str(quote.receive_amount),
+              "rate": str(quote.rate), "channel": channel},
     )
     Transaction.objects.create(
         user=user, service=label, amount=quote.receive_amount, currency=quote.to_currency,
         direction=Transaction.IN, transaction_status=Transaction.SUCCESS, reference=f"{ref}-C",
-        meta={"from": quote.from_currency, "rate": str(quote.rate)},
+        meta={"from": quote.from_currency, "rate": str(quote.rate), "channel": channel},
     )
     return quote

@@ -269,8 +269,15 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
 
     The caller must already have verified the PIN + tier limits and resolved
     `name` via the provider's name-enquiry. Raises PayoutError on a duplicate,
-    insufficient funds, or a provider failure (wallet auto-refunded). Returns the
-    settled (Successful) ledger transaction.
+    insufficient funds, or a provider failure (wallet auto-refunded).
+
+    Returns the ledger transaction — **which is not always Successful**. The
+    "pending" branch below returns a row still marked Pending, both for an
+    accepted-but-queued transfer and for the ambiguous send-timeout where Wema
+    may or may not have paid. CHECK `transaction_status` before telling a
+    customer their money arrived: this docstring used to promise a settled row,
+    and the WhatsApp path believed it and issued receipts for transfers that had
+    not gone through.
 
     `channel`, when set to "whatsapp", is stamped onto the ledger row's meta so
     the post-save alert knows the customer already saw a receipt and a balance

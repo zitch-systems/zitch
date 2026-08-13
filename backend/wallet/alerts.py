@@ -119,7 +119,8 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
     in WhatsApp. A REVERSAL is never skipped, even on a WhatsApp-channel
     transaction: it happens later, out of band (a settlement callback, a
     reconciler), and nothing else in the original chat ever told the customer
-    their money came back.
+    their money came back. Neither is a row the chat could only announce as
+    "⏳ … processing" — see `mark_awaiting_settlement`.
 
     Best-effort in every direction: no link, no send; a failure is logged and
     never propagates, because an alert must not be able to roll back the ledger
@@ -127,7 +128,9 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
     """
     if not _alerts_on("whatsapp"):
         return
-    if not reversal and _meta(txn).get("channel") == "whatsapp":
+    meta = _meta(txn)
+    if (not reversal and meta.get("channel") == "whatsapp"
+            and not meta.get("wa_awaiting_settlement")):
         return
     try:
         from whatsapp.models import WhatsAppLink
@@ -140,6 +143,34 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
         reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
     except Exception:  # noqa: BLE001
         log.exception("txn_alert_whatsapp_failed ref=%s", txn.reference)
+
+
+def mark_awaiting_settlement(txn) -> None:
+    """Record that the WhatsApp chat could only tell the customer "processing".
+
+    The channel de-dupe above rests on one assumption: that the chat already
+    announced the outcome. That holds for a transfer or purchase which settled
+    synchronously — the chat sent a receipt and a balance line. It does NOT hold
+    for a row that came back PENDING: the chat said "⏳ … is processing", the row
+    settles minutes later out of band (a payout webhook, the reconciler), and the
+    settlement save is the ONLY moment an alert could fire. Suppressed there, the
+    last thing the customer ever heard about their money was "processing" —
+    strictly worse than the duplicate the de-dupe exists to prevent.
+
+    Merges onto what is in the DB rather than the in-memory copy, for the same
+    reason `_defer` does: `meta` carries provider payload another writer may have
+    added since this instance was loaded.
+    """
+    from .models import Transaction
+
+    row = Transaction.objects.filter(pk=txn.pk).first()
+    if row is None:
+        return
+    merged = dict(_meta(row))
+    if merged.get("wa_awaiting_settlement"):
+        return
+    merged["wa_awaiting_settlement"] = True
+    Transaction.objects.filter(pk=txn.pk).update(meta=merged)
 
 
 def _meta(txn) -> dict:

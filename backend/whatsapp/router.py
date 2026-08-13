@@ -1127,9 +1127,15 @@ def handle_inbound(msisdn: str, text: str) -> None:
 #: Commands that reveal money or identity to whoever is holding the phone.
 #: Deliberately reads only: a transfer already needs biometrics or the PIN to
 #: complete, so gating its FIRST message would prompt twice for one movement.
+#: EVERY synonym the dispatcher accepts for a gated read must appear here.
+#: "details"/"my details" route to _do_account_details exactly as "7" and
+#: "account details" do, so omitting them let the same PII (full name, phone,
+#: email, tier, account number) out without the idle challenge the other
+#: synonyms trigger — the gate is only as strong as its least-covered alias.
 _SENSITIVE_READS = {
     "1", "balance", "bal", "my balance", "check balance",
     "7", "account", "account details", "my account", "account number",
+    "details", "my details",
     "statement", "history", "transactions", "my transactions", "9", "recent",
 }
 _REAUTH_SETTING = "wa_reauth_idle_minutes"
@@ -2430,13 +2436,22 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
 
     This is also where the BVN genuinely gets verified: the bank name-matches it
     while creating the account, which is the only real identity check we have.
+
+    Returns one of three SENTINELS, because the Flow caller has to tell the
+    outcomes apart to pick a closing screen and they are otherwise
+    indistinguishable (every branch used to return whatever reply() gave back):
+      "otp"  — accepted, code page next.
+      "fail" — hard failure; the chat already carries the "⚠️ ..." reason and
+               the pending action is cleared. The Flow must NOT close green.
+      other  — the account was adopted/created successfully.
     """
     using_bvn = pa.payload.get("id_type") == "bvn"
     res, identity_error = wallet_views._start_wema_attempt(
         user, digits if using_bvn else "", "" if using_bvn else digits)
     if identity_error:
         _clear_actions(msisdn)
-        return reply(msisdn, f"⚠️ {identity_error}")
+        reply(msisdn, f"⚠️ {identity_error}")
+        return "fail"
     if not res.get("success"):
         # The bank may already hold an account for this customer — adopt it
         # instead of dead-ending (same recovery the app performs).
@@ -2448,7 +2463,8 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                                   intro="✅ *Found it!* Your Zitch account was already set up")
             return _kyc_continue_after_account(user, msisdn)
         _clear_actions(msisdn)
-        return reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
+        reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
+        return "fail"
     pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
     pa.payload["using_bvn"] = using_bvn
     _touch(pa, state="otp", payload=pa.payload)
@@ -3014,6 +3030,29 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         return f"Transfer failed: {exc.message}"
 
     _clear_actions(msisdn)
+
+    # execute_payout returns a PENDING row for a queued (PROCESSING) transfer
+    # AND for the ambiguous send-timeout / lost-response case where the rail may
+    # or may not have paid the recipient (transfers/services.py holds the debit
+    # rather than refunding a maybe-delivered transfer). Only a SETTLED-success
+    # row may be announced as "Successful": a receipt is a forwardable proof of
+    # payment, and issuing one for a transfer that is only pending — or may have
+    # failed — is the single worst thing a banking channel can tell a customer.
+    # Mirror _run_vtu's pending branch and the app path (transfers/views.py),
+    # which both report "processing" and let the webhook / reconciler settle it.
+    from wallet.alerts import mark_awaiting_settlement
+    from wallet.models import Transaction
+
+    if txn.transaction_status != Transaction.SUCCESS:
+        # "processing" is not an outcome, so the settlement alert has to be let
+        # through when the row finally resolves — otherwise this line is the last
+        # word the customer ever gets on the money.
+        mark_awaiting_settlement(txn)
+        line = (f"⏳ Your transfer of {_money(amount)} to {pa.payload['name'].upper()} "
+                f"is processing — we'll confirm once it settles. Ref {txn.reference}.")
+        reply(msisdn, line)
+        return line
+
     wallet = get_or_create_wallet(user)
     return reply_receipt(msisdn, "Transfer receipt", [
         ("To", pa.payload["name"].upper()),
@@ -3214,6 +3253,12 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         return reply_receipt(msisdn, title, rows, ref=txn.reference,
                              user=user, balance_after=get_or_create_wallet(user).balance)
     if status == "pending":
+        # Same as the transfer path: the chat can only say "processing", so the
+        # alert on the eventual settlement must not be de-duped away as an echo
+        # of a receipt this branch never sent.
+        from wallet.alerts import mark_awaiting_settlement
+
+        mark_awaiting_settlement(txn)
         line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
         reply(msisdn, line)
         return line
@@ -3912,7 +3957,8 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
 
 def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
     try:
-        quote = execute_fx(user, pa.payload["quote_ref"], idempotency_key=f"wa-fx-{pa.id}")
+        quote = execute_fx(user, pa.payload["quote_ref"],
+                           idempotency_key=f"wa-fx-{pa.id}", channel="whatsapp")
     except FxError as exc:
         _clear_actions(msisdn)
         reply(msisdn, exc.message)

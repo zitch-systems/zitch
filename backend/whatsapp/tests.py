@@ -3468,14 +3468,28 @@ class PinResetTests(TestCase):
         self.assertIn("6 digits", resp["data"]["error"])
 
     def test_predictable_pin_is_refused_before_confirmation(self):
-        from whatsapp.flows import handle_flow_request, sign_flow_token
+        from whatsapp.flows import PIN_RETRY, handle_flow_request, sign_flow_token
 
         pa = self._armed()
-        resp = handle_flow_request({"action": "data_exchange", "flow_token": sign_flow_token(pa),
+        token = sign_flow_token(pa)
+        resp = handle_flow_request({"action": "data_exchange", "flow_token": token,
                                     "data": {"pin": "123456"}})
         self.assertIn("less predictable", resp["data"]["error"])
         pa.refresh_from_db()
         self.assertNotIn("new_pin_hash", pa.payload)
+        # The empty twin, not a re-render of the screen we are on. WhatsApp keeps
+        # a form's value when the endpoint answers with the SAME screen id, and
+        # the box is masked — so a re-render leaves the refused PIN sitting where
+        # the customer cannot see it, one Confirm tap from being resubmitted.
+        self.assertEqual(resp["screen"], PIN_RETRY)
+        self.assertEqual(pa.payload["flow_screen"], PIN_RETRY)
+        # PIN_RETRY routes on to PIN_CONFIRM, so the reset still finishes.
+        handle_flow_request({"action": "data_exchange", "flow_token": token,
+                             "data": {"pin": "246810"}})
+        handle_flow_request({"action": "data_exchange", "flow_token": token,
+                             "data": {"pin": "246810"}})
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_transaction_pin("246810"))
 
     def test_setting_a_pin_clears_the_reset_demand(self):
         from whatsapp.flows import handle_flow_request, sign_flow_token
@@ -3807,3 +3821,327 @@ class IdentityNeverFallsBackToChatInProductionTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=False):
             handle_inbound(MSISDN, "8")
         self.assertIn("Enter your 11-digit", self._last())
+
+
+class UnsettledTransferIsNotAReceiptTests(TestCase):
+    """A receipt is a forwardable claim that the money arrived.
+
+    ``execute_payout`` returns a PENDING row in two different situations: the
+    rail accepted the transfer and is still processing it, and the ambiguous
+    send-timeout where transfers/services.py deliberately HOLDS the debit
+    because the recipient may or may not have been paid. Announcing either as
+    "Successful ✅" with a receipt image is the worst thing a banking channel
+    can tell a customer — worse in the second case, where the transfer may have
+    outright failed. The chat has to say "processing", exactly as the app path
+    (transfers/views.py) and the VTU path already do.
+    """
+
+    def setUp(self):
+        self.user, _ = make_user()
+        self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
+                                        color="#e30613", active=True)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE)
+
+    def _action(self):
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_PIN_STATE,
+            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+                     "bank_name": "GTBank", "name": "JOHN DOE", "pin_attempts": 0},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+    def _txn(self, status):
+        return Transaction.objects.create(
+            user=self.user, service="Transfer", amount=Decimal("5000"),
+            direction=Transaction.OUT, transaction_status=status,
+            reference="ZTCHPENDING001", meta={"channel": "whatsapp"},
+        )
+
+    def _run(self, status):
+        from whatsapp import router
+
+        with patch.object(router, "execute_payout", return_value=self._txn(status)), \
+             patch.object(router, "reply_receipt") as receipt:
+            line = router._exec_transfer(self._action(), self.user, MSISDN)
+        return line, receipt
+
+    def test_an_unsettled_transfer_gets_no_receipt(self):
+        # PENDING is the single status both cases land on — the rail-accepted
+        # transfer and the ambiguous timeout are indistinguishable here, which is
+        # exactly why neither may be announced as paid.
+        line, receipt = self._run(Transaction.PENDING)
+        receipt.assert_not_called()
+        self.assertIn("processing", line.lower())
+        self.assertIn("ZTCHPENDING001", line)
+        self.assertNotIn("Successful", line)
+        # And the customer actually sees it in the thread, not only the Flow.
+        self.assertTrue(WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT, text__icontains="processing").exists())
+
+    def test_a_failed_transfer_gets_no_receipt_either(self):
+        line, receipt = self._run(Transaction.FAILED)
+        receipt.assert_not_called()
+        self.assertNotIn("Successful", line)
+
+    def test_a_settled_transfer_still_gets_its_receipt(self):
+        from whatsapp import router
+
+        with patch.object(router, "execute_payout", return_value=self._txn(Transaction.SUCCESS)), \
+             patch.object(router, "reply_receipt", return_value="Transfer receipt") as receipt:
+            router._exec_transfer(self._action(), self.user, MSISDN)
+        receipt.assert_called_once()
+        self.assertEqual(receipt.call_args.args[1], "Transfer receipt")
+
+
+class GatedReadAliasCoverageTests(TestCase):
+    """The idle re-auth gate is only as strong as its least-covered alias.
+
+    Every synonym the dispatcher accepts for a sensitive read must appear in
+    _SENSITIVE_READS, or the same PII walks out through the uncovered word.
+    """
+
+    def test_every_dispatcher_alias_for_a_gated_read_is_in_the_gate(self):
+        from whatsapp.router import _SENSITIVE_READS
+
+        # Aliases the dispatcher routes to _do_account_details / balance /
+        # statement. Each leaks name, phone, email, tier, account number or
+        # transaction history, so each has to trip the challenge.
+        for alias in ("details", "my details", "account details", "my account",
+                      "account number", "7", "balance", "bal", "1",
+                      "statement", "history", "transactions", "9"):
+            self.assertIn(alias, _SENSITIVE_READS, f"{alias!r} is an ungated leak")
+
+
+class BroadcastDeadLetterUnwedgesTheBroadcastTests(TestCase):
+    """A recipient claimed for its FINAL attempt and then hard-killed (deploy,
+    OOM, SIGKILL — not a Python exception, which is handled) stayed QUEUED with
+    processed_at NULL forever. refresh_broadcast_counts treats any such row as
+    still active, so the whole broadcast was pinned in SENDING and never reached
+    DONE: no completion audit, no final counts, and no operator recovery action
+    on the outbound side to clear it.
+    """
+
+    def setUp(self):
+        from whatsapp.jobs import MAX_ATTEMPTS, OUTBOUND_LEASE
+
+        self.MAX_ATTEMPTS, self.LEASE = MAX_ATTEMPTS, OUTBOUND_LEASE
+        self.broadcast = Broadcast.objects.create(
+            template_name="hello_world", status=Broadcast.SENDING, count_queued=1)
+        self.row = BroadcastRecipient.objects.create(
+            broadcast=self.broadcast, wa_msisdn=MSISDN,
+            status=BroadcastRecipient.QUEUED,
+            processing_attempts=MAX_ATTEMPTS,
+            processing_started_at=timezone.now() - OUTBOUND_LEASE - timedelta(minutes=1),
+        )
+
+    def test_the_stranded_recipient_is_re_selected_by_the_sweep(self):
+        from whatsapp.jobs import process_outbound_batch
+
+        with patch("whatsapp.jobs.send_template") as send:
+            self.assertEqual(process_outbound_batch(), 1)
+        send.assert_not_called()          # dead-lettered on claim, never re-sent
+
+    def test_the_dead_letter_finalises_the_broadcast(self):
+        from whatsapp.jobs import process_outbound_recipient
+
+        with patch("whatsapp.jobs.send_template") as send:
+            self.assertEqual(process_outbound_recipient(self.row.pk), "dead_letter")
+        send.assert_not_called()
+        self.row.refresh_from_db()
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.row.status, BroadcastRecipient.FAILED)
+        self.assertIsNotNone(self.row.processed_at)
+        self.assertIn("dead_letter", self.row.error)
+        # The whole point: counts refreshed and the broadcast left SENDING.
+        self.assertEqual(self.broadcast.status, Broadcast.DONE)
+        self.assertEqual(self.broadcast.count_failed, 1)
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.completed").exists())
+
+    def test_a_live_lease_is_still_skipped_without_touching_the_broadcast(self):
+        """A plain skip must NOT refresh counts — the row is someone else's
+        in-flight work, and finalising the broadcast under it would be wrong."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        self.row.processing_started_at = timezone.now()
+        self.row.save(update_fields=["processing_started_at"])
+        self.assertEqual(process_outbound_recipient(self.row.pk), "skipped")
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.SENDING)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.status, BroadcastRecipient.QUEUED)
+
+
+class ChatConversionRaisesNoDuplicateAlertTests(TestCase):
+    """A conversion the customer ran in the chat already showed them the outcome
+    in that thread. Without a channel stamp on BOTH ledger rows the post-save
+    alert fired a debit alert AND a credit alert for the one movement they had
+    just watched happen — the same duplication the transfer/VTU paths stamp
+    `channel: whatsapp` to suppress."""
+
+    def test_execute_fx_stamps_the_channel_on_both_rows(self):
+        from wallet.forex import execute_fx
+        from wallet.models import CurrencyWallet, FxQuote
+
+        user, _ = make_user()
+        CurrencyWallet.objects.create(user=user, currency="USD", balance=Decimal("100"))
+        quote = FxQuote.objects.create(
+            user=user, quote_ref="fxq-1", from_currency="USD", to_currency="NGN",
+            sell_amount=Decimal("10"), receive_amount=Decimal("15000"),
+            rate=Decimal("1500"), expires_at=timezone.now() + timedelta(minutes=5))
+        with patch("wallet.forex.fx_execute", return_value={"success": True}):
+            execute_fx(user, quote.quote_ref, channel="whatsapp")
+        rows = Transaction.objects.filter(service__startswith="Convert")
+        self.assertEqual(rows.count(), 2)                      # the debit and the credit
+        for txn in rows:
+            self.assertEqual(txn.meta.get("channel"), "whatsapp", txn.direction)
+
+
+class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
+    """The secure Flow's closing screen and the chat must not contradict.
+
+    When the bank refuses the ID — or name-matches it to someone else, or is
+    unreachable — ``_account_submit_identity`` clears the pending action and puts
+    a "⚠️ ..." line in the chat. The Flow branch used to fall through to the
+    shared "BVN received ✅ — see the chat for what's next" screen, so the
+    customer watched their secure form close green on a failure the very next
+    message denied. Unlike the KYC branch there is no review queue here that
+    would make "received" true.
+    """
+
+    def setUp(self):
+        from whatsapp.flows import FLOW_ID_STATE
+
+        self.user, _ = make_user()
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="add_account", state=FLOW_ID_STATE,
+            payload={"id_type": "bvn", "id_kind": "bvn"},
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+
+    def _submit(self):
+        from whatsapp.flows import handle_flow_request, sign_identity_token
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_identity_token(self.pa),
+                                    "data": {"number": "12345678901"}})
+
+    def _assert_failure_screen(self, resp):
+        body = json.dumps(resp, ensure_ascii=False)
+        self.assertNotIn("received ✅", body)
+        self.assertIn("couldn't", body.lower())
+        # The chat carries the reason, and the action is gone either way.
+        self.assertFalse(PendingAction.objects.filter(pk=self.pa.pk).exists())
+
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_a_refused_identity_closes_on_the_failure_screen(self, start):
+        start.return_value = ({}, "That BVN doesn't match the name on this account.")
+        self._assert_failure_screen(self._submit())
+
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account", return_value=None)
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_an_unrecoverable_bank_error_closes_on_the_failure_screen(self, start, _adopt):
+        start.return_value = ({"success": False, "message": "Account setup failed."}, None)
+        self._assert_failure_screen(self._submit())
+
+    @patch("whatsapp.router.wallet_views._adopt_existing_wema_account")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    def test_an_adopted_account_is_still_a_success(self, start, adopt):
+        """The one path that returns a dict AND means success — which is why the
+        failure signal had to become an explicit sentinel rather than a type check."""
+        start.return_value = ({"success": False, "message": "already exists"}, None)
+        adopt.return_value = {"success": True}
+        give_account(self.user, "9912345678")
+        body = json.dumps(self._submit(), ensure_ascii=False)
+        self.assertIn("received ✅", body)
+
+
+class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
+    """A template-level refusal is the same for every recipient.
+
+    Meta rejects `132000` (parameter count), `132001` (no such template) and
+    friends on a property of the TEMPLATE, so the second recipient and the ten
+    thousandth get the identical answer. The campaign used to keep going anyway:
+    one Graph call per recipient to collect N copies of one refusal, leaving the
+    operator to read N identical error_codes off recipient rows to work out that
+    the template — not the audience — was the problem.
+    """
+
+    def setUp(self):
+        self.broadcast = Broadcast.objects.create(
+            template_name="hello_world", status=Broadcast.SENDING, count_queued=3,
+            body_params=["unexpected"])          # hello_world declares no variables
+        self.rows = [
+            BroadcastRecipient.objects.create(
+                broadcast=self.broadcast, wa_msisdn=f"23480111122{n:02d}",
+                status=BroadcastRecipient.QUEUED)
+            for n in range(3)
+        ]
+
+    def _send(self, error_code):
+        return patch("whatsapp.jobs.send_template", return_value={
+            "success": False, "error_code": error_code,
+            "error_detail": "number of parameters does not match",
+            "message": "WhatsApp provider rejected the request"})
+
+    def test_a_parameter_count_rejection_stops_the_campaign(self):
+        from whatsapp.jobs import process_outbound_recipient
+
+        with self._send(132000) as send:
+            process_outbound_recipient(self.rows[0].pk)
+        self.assertEqual(send.call_count, 1)              # one call, not three
+
+        for row in self.rows:
+            row.refresh_from_db()
+            self.assertEqual(row.status, BroadcastRecipient.FAILED)
+            self.assertIsNotNone(row.processed_at)
+        self.assertIn("132000", self.rows[1].error)
+        self.assertIn("abandoned", self.rows[1].error)
+
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.DONE)
+        self.assertEqual(self.broadcast.count_failed, 3)
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.abandoned").exists())
+
+    def test_a_recipient_level_rejection_leaves_the_rest_queued(self):
+        """131026 is "this recipient can't receive it" — the next person on the
+        list is unaffected, so abandoning the campaign would be the bug."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        with self._send(131026):
+            process_outbound_recipient(self.rows[0].pk)
+        self.rows[0].refresh_from_db()
+        self.assertEqual(self.rows[0].status, BroadcastRecipient.FAILED)
+        for row in self.rows[1:]:
+            row.refresh_from_db()
+            self.assertEqual(row.status, BroadcastRecipient.QUEUED)
+            self.assertIsNone(row.processed_at)
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.SENDING)
+        self.assertFalse(AuditLog.objects.filter(action="broadcast.abandoned").exists())
+
+    def test_a_recipient_another_worker_holds_is_not_stolen(self):
+        """Marking a leased row FAILED would race that worker's own write and
+        could report a genuinely sent message as failed. It resolves itself."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        leased = self.rows[2]
+        leased.processing_started_at = timezone.now()
+        leased.save(update_fields=["processing_started_at"])
+
+        with self._send(132001):
+            process_outbound_recipient(self.rows[0].pk)
+        leased.refresh_from_db()
+        self.assertEqual(leased.status, BroadcastRecipient.QUEUED)
+        self.assertIsNone(leased.processed_at)
+        self.rows[1].refresh_from_db()
+        self.assertEqual(self.rows[1].status, BroadcastRecipient.FAILED)   # unleased: abandoned
+
+    def test_a_non_numeric_error_code_is_not_treated_as_template_level(self):
+        from whatsapp.jobs import _is_template_level
+
+        for code in ("provider_error", None, "", "abc", 500, 131047):
+            self.assertFalse(_is_template_level(code), code)
+        for code in (132000, "132001", 132015):
+            self.assertTrue(_is_template_level(code), code)

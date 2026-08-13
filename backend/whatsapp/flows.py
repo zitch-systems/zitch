@@ -541,8 +541,20 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
     if not held:
         rejected = transaction_pin_rejection(pin)
         if rejected:
+            # Land on the empty twin, not a re-render of the screen we are on.
+            # WhatsApp keeps a form's client-side value whenever the endpoint
+            # answers with the SAME screen id, so re-rendering here would leave
+            # the refused PIN sitting in a box the customer cannot see and one
+            # Confirm tap would resubmit the identical weak PIN, looping on the
+            # same error. This is the same reason wrong-PIN uses PIN_RETRY and
+            # confirm-mismatch uses PIN_CONFIRM_RETRY; the create step was the
+            # one masked-PIN error path still missing it. PIN_RETRY is a legal
+            # forward route from both PIN_SCREEN and PIN_CHAIN and itself routes
+            # on to PIN_CONFIRM, so the confirm step stays reachable.
+            ob.payload["flow_screen"] = PIN_RETRY
+            ob.save(update_fields=["payload"])
             return _pin_screen(_ob_summary(ob), error=rejected.rstrip(".") + ".",
-                               screen=_flow_screen(ob, PIN_SCREEN))
+                               screen=PIN_RETRY)
         ob.payload["flow_pin_hash"] = make_password(pin)   # never the raw PIN
         ob.save(update_fields=["payload"])
         return _confirm_pin_screen()
@@ -592,6 +604,16 @@ def _submit_identity(pa, data: dict) -> dict:
                 # the NEXT PAGE of this same session, not a second flow message.
                 pa.refresh_from_db()
                 return _account_otp_screen(pa)
+            if outcome == "fail":
+                # A hard failure: the ID was refused, name-matched to a different
+                # person, or the provider was unreachable. _account_submit_identity
+                # has already cleared the pending action and sent a "⚠️ ..." line
+                # to the chat. Falling through to the shared "received ✅" screen
+                # would close the secure Flow on a green success the chat is
+                # simultaneously contradicting. Unlike the KYC branch, there is no
+                # review queue here that would make "received" true.
+                return _success_screen(
+                    "We couldn't finish setting up your account — see the chat for what happened.")
         else:
             outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
             if outcome == "invalid":
@@ -951,7 +973,15 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     if not held:
         rejected = transaction_pin_rejection(pin)
         if rejected:
-            return _set_pin_screen(pa, error=rejected.rstrip(".") + ".")
+            # Empty twin rather than a same-id re-render — see the matching
+            # branch in _submit_onboarding_pin for why the refused digits would
+            # otherwise stay in the masked box and be one tap from resubmission.
+            pa.payload["flow_screen"] = PIN_RETRY
+            pa.save(update_fields=["payload"])
+            return _pin_screen({"amount": "Create a 6-digit PIN",
+                                "recipient": "",
+                                "details": "You'll enter it again to confirm"},
+                               error=rejected.rstrip(".") + ".", screen=PIN_RETRY)
         pa.payload["new_pin_hash"] = make_password(pin)   # never the raw PIN
         pa.save(update_fields=["payload"])
         return _set_pin_screen(pa)
