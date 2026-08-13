@@ -289,10 +289,15 @@ def user_action(request):
         record_audit("user.unfreeze", actor=request.user_obj, target=f"user:{user.id}",
                      before=before, after={"is_active": True})
     elif action == "unlock_pin":
-        before = {"pin_locked_until": str(user.pin_locked_until or "")}
+        before = {"pin_locked_until": str(user.pin_locked_until or ""),
+                  "pin_lockout_strikes": user.pin_lockout_strikes}
         user.pin_failed_attempts = 0
         user.pin_locked_until = None
-        user.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+        # Strikes too — otherwise the next wrong-PIN run after an unlock jumps
+        # to the 24-hour tier, which is not what "unlock" means to the operator
+        # doing it or the customer on the phone to them.
+        user.pin_lockout_strikes = 0
+        user.save(update_fields=["pin_failed_attempts", "pin_locked_until", "pin_lockout_strikes"])
         record_audit("user.pin_unlock", actor=request.user_obj, target=f"user:{user.id}", before=before)
     elif action in ("ai_on", "ai_off"):
         # Per-customer AI consent. Customers can set this themselves in chat

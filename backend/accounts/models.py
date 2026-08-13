@@ -85,15 +85,36 @@ class User(AbstractUser):
     LARGE_TXN_THRESHOLD = Decimal("100000")
 
     # Transaction-PIN brute-force policy: after this many wrong PINs in a row,
-    # lock further attempts for PIN_LOCKOUT_MINUTES. A stolen session token then
-    # can't be used to guess the short PIN (10k combos) that gates money movement.
+    # lock further attempts. A stolen session token then can't be used to guess
+    # the short PIN (10k combos) that gates money movement.
+    #
+    # The lockout ESCALATES, because one round of five wrong guesses reads very
+    # differently from two. The first is what a real customer does when they have
+    # forgotten which PIN they set — an hour is enough to break an accidental
+    # loop without stranding them. Sitting out that hour and immediately burning
+    # five more is not forgetfulness; it is someone working through a keyspace,
+    # so the second lock is a day. That also changes the arithmetic for an
+    # attacker: 10k combinations at 5 per day is ~5 years, where at 5 per hour it
+    # would be ~three months.
+    #
+    # Escalation is capped at the 24-hour tier rather than growing without bound.
+    # An unbounded ladder mostly punishes the locked-out customer, and the real
+    # way out of a repeat lock is a PIN reset (verified identity + a live SMS
+    # code), which is deliberately NOT gated on the lock — see _start_pin_reset.
     PIN_MAX_ATTEMPTS = 5
-    PIN_LOCKOUT_MINUTES = 15
+    PIN_LOCKOUT_MINUTES = 60                    # first lock: one hour
+    PIN_LOCKOUT_ESCALATED_MINUTES = 24 * 60     # locked again without a correct PIN since
 
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
     transaction_pin = models.CharField(max_length=128, blank=True, default="")
     pin_failed_attempts = models.PositiveSmallIntegerField(default=0)
     pin_locked_until = models.DateTimeField(null=True, blank=True)
+    #: Consecutive lockouts with no correct PIN in between — the escalation
+    #: counter, not a lifetime tally. Cleared by a correct PIN, by setting a new
+    #: PIN, and by an operator unlock, so a customer who locks themselves out
+    #: once and then banks normally for months starts from the one-hour tier
+    #: again rather than inheriting a day-long lock from last year.
+    pin_lockout_strikes = models.PositiveSmallIntegerField(default=0)
 
     # --- KYC ---
     tier = models.PositiveSmallIntegerField(default=0)
@@ -152,6 +173,15 @@ class User(AbstractUser):
     #: working right up until it is asked to set a new one.
     PIN_LENGTH = 6
 
+    #: Everything set_transaction_pin touches. Callers that save with
+    #: update_fields MUST splat this, or the parts they omit are silently
+    #: dropped — which is exactly how a WhatsApp PIN reset used to leave the old
+    #: PIN's lockout in place, so the customer set a new PIN and still could not
+    #: spend. Naming the set once is what stops the surfaces drifting again.
+    PIN_UPDATE_FIELDS = ("transaction_pin", "pin_reset_required",
+                         "pin_failed_attempts", "pin_locked_until",
+                         "pin_lockout_strikes")
+
     def set_transaction_pin(self, raw_pin: str) -> None:
         self.transaction_pin = make_password(raw_pin)
         # Setting a PIN is what clears the reset demand, whichever surface set
@@ -159,6 +189,16 @@ class User(AbstractUser):
         # a hash cannot be measured, so the length has to be recorded when it
         # changes rather than inferred later.
         self.pin_reset_required = False
+        # A lockout is brute-force state about the PIN being REPLACED, so it
+        # cannot outlive it. Every surface that sets a PIN has already proved
+        # identity by a route the lock does not gate (the app's password, or the
+        # chat's verified-identity + live SMS code), so carrying the lock over
+        # would only punish the customer who just did the recovery we told them
+        # to do — and on the 24-hour tier that is a day of being unable to pay
+        # with a PIN they now know.
+        self.pin_failed_attempts = 0
+        self.pin_locked_until = None
+        self.pin_lockout_strikes = 0
 
     def check_transaction_pin(self, raw_pin: str) -> bool:
         if not self.transaction_pin:
@@ -180,6 +220,14 @@ class User(AbstractUser):
         """True while the transaction PIN is temporarily locked after too many
         wrong attempts (see PIN_MAX_ATTEMPTS / PIN_LOCKOUT_MINUTES)."""
         return self.pin_locked_until is not None and timezone.now() < self.pin_locked_until
+
+    @property
+    def pin_lock_is_escalated(self) -> bool:
+        """True when the CURRENT lock is a repeat one (the 24-hour tier). Surfaces
+        offer the PIN reset here: an hour is worth waiting out, a day is not, and
+        a customer on their second lock is the one who most likely cannot
+        remember the PIN at all."""
+        return self.pin_locked and self.pin_lockout_strikes >= 2
 
     @property
     def transaction_limit(self) -> Decimal:

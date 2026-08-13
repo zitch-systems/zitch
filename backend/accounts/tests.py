@@ -827,6 +827,167 @@ class TransactionPinLockoutTests(TestCase):
         self.assertEqual(self.transfer("1234")[0].status_code, 200)
 
 
+class EscalatingPinLockoutTests(TestCase):
+    """Five wrong PINs cost an hour; five more, without a correct PIN in between,
+    cost a day and are told how to get out of it.
+
+    Driven through `evaluate_transaction_pin` rather than a money endpoint on
+    purpose: that function IS the gate — the app, the chat and the encrypted
+    Flow all reach the lockout through it, so pinning the ladder here pins it
+    for every surface at once.
+    """
+
+    def setUp(self):
+        self.user, _ = make_user("08010000001", "ada@zitch.test", pin="1234", balance="20000")
+
+    def _lock(self):
+        """Burn a full round of wrong PINs and return the final refusal."""
+        from common.http import evaluate_transaction_pin
+
+        for _ in range(User.PIN_MAX_ATTEMPTS - 1):
+            evaluate_transaction_pin(self.user, "0000")
+        return evaluate_transaction_pin(self.user, "0000")
+
+    def _expire_lock(self):
+        """Serve the lock out, without serving it out."""
+        User.objects.filter(pk=self.user.pk).update(
+            pin_locked_until=timezone.now() - timedelta(seconds=1))
+        self.user.refresh_from_db()
+
+    def _held_minutes(self):
+        u = User.objects.get(pk=self.user.pk)
+        return round((u.pin_locked_until - timezone.now()).total_seconds() / 60)
+
+    def test_the_first_lock_is_one_hour(self):
+        ok, code, message = self._lock()
+        self.assertEqual((ok, code), (False, "pin_locked"))
+        self.assertAlmostEqual(self._held_minutes(), User.PIN_LOCKOUT_MINUTES, delta=1)
+        self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 1)
+        # An hour is short enough to wait out, so it is not sold as a reset.
+        self.assertIn("about an hour", message)
+        self.assertNotIn("reset", message.lower())
+
+    def test_a_second_round_after_the_first_lock_expires_costs_a_day(self):
+        self._lock()
+        self._expire_lock()
+        ok, code, message = self._lock()
+        self.assertEqual((ok, code), (False, "pin_locked"))
+        self.assertAlmostEqual(self._held_minutes(),
+                               User.PIN_LOCKOUT_ESCALATED_MINUTES, delta=1)
+        self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 2)
+        # And a day IS sold as a reset — waiting it out is not a real instruction.
+        self.assertIn("about 24 hours", message)
+        self.assertIn("reset your PIN", message)
+
+    def test_the_ladder_stops_at_a_day_rather_than_growing_without_bound(self):
+        """A third and fourth round must not compound into a week. Past the
+        escalated tier the answer is the PIN reset, not a longer sentence."""
+        for _ in range(4):
+            self._lock()
+            self._expire_lock()
+        self._lock()
+        self.assertAlmostEqual(self._held_minutes(),
+                               User.PIN_LOCKOUT_ESCALATED_MINUTES, delta=1)
+
+    def test_a_correct_pin_between_rounds_puts_the_next_lock_back_at_an_hour(self):
+        """Knowing the PIN is exactly what separates a customer who forgot it
+        from someone working through the keyspace, so it resets the ladder."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        self._expire_lock()
+        self.assertTrue(evaluate_transaction_pin(self.user, "1234")[0])
+        self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 0)
+
+        self._lock()
+        self.assertAlmostEqual(self._held_minutes(), User.PIN_LOCKOUT_MINUTES, delta=1)
+
+    def test_a_correct_pin_is_still_refused_while_the_lock_stands(self):
+        """The escalation must not have turned the lock into a warning: the
+        whole point is that no PIN — right or wrong — moves money until it ends."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        ok, code, message = evaluate_transaction_pin(self.user, "1234")
+        self.assertEqual((ok, code), (False, "pin_locked"))
+        # Re-hitting the lock quotes the time LEFT, not the tier's nominal
+        # length, and says the same thing the lock itself said.
+        self.assertIn("about an hour", message)
+
+    def test_a_wrong_pin_while_locked_does_not_extend_the_lock(self):
+        """Hammering a locked account must not push the release further out —
+        that turns a day into an unbounded lockout held open by the attacker."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        held = User.objects.get(pk=self.user.pk).pin_locked_until
+        for _ in range(10):
+            evaluate_transaction_pin(self.user, "0000")
+        u = User.objects.get(pk=self.user.pk)
+        self.assertEqual(u.pin_locked_until, held)
+        self.assertEqual(u.pin_lockout_strikes, 1)
+
+    def test_resetting_the_pin_is_the_advertised_way_out_and_actually_works(self):
+        """The escalated message promises a new PIN unlocks payments straight
+        away. Anything less makes the message a lie at the worst moment."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        self._expire_lock()
+        self._lock()                                   # 24-hour tier, still standing
+        self.assertTrue(User.objects.get(pk=self.user.pk).pin_lock_is_escalated)
+
+        self.user.set_transaction_pin("975310")
+        self.user.save(update_fields=list(User.PIN_UPDATE_FIELDS))
+
+        u = User.objects.get(pk=self.user.pk)
+        self.assertIsNone(u.pin_locked_until)
+        self.assertEqual((u.pin_failed_attempts, u.pin_lockout_strikes), (0, 0))
+        self.assertTrue(evaluate_transaction_pin(u, "975310")[0])
+
+    def test_the_escalated_flag_is_about_the_lock_standing_now(self):
+        """Surfaces offer the reset off this flag, so it must go quiet the moment
+        the lock lapses — otherwise an unlocked customer is told to reset a PIN
+        they can simply use."""
+        self._lock()
+        self._expire_lock()
+        self._lock()
+        self.assertTrue(User.objects.get(pk=self.user.pk).pin_lock_is_escalated)
+        self._expire_lock()
+        self.assertFalse(User.objects.get(pk=self.user.pk).pin_lock_is_escalated)
+
+    def test_the_gate_reports_the_new_lock_state_on_the_instance_it_was_given(self):
+        """The counting happens on a `select_for_update()` copy, so the caller's
+        own object is a different one. Callers decide what to show off it — the
+        WhatsApp surfaces read `pin_lock_is_escalated` to offer the PIN reset —
+        and stale values there are invisible: nothing errors, the offer just
+        never appears."""
+        from common.http import evaluate_transaction_pin
+
+        self._lock()
+        self.assertEqual(self.user.pin_lockout_strikes, 1)
+        self.assertTrue(self.user.pin_locked)
+        self.assertFalse(self.user.pin_lock_is_escalated)
+
+        self._expire_lock()
+        self._lock()
+        self.assertEqual(self.user.pin_lockout_strikes, 2)
+        self.assertTrue(self.user.pin_lock_is_escalated)
+
+        # And the clearing direction too, or a caller keeps showing a lock that
+        # the correct PIN it just accepted has already lifted.
+        self._expire_lock()
+        self.assertTrue(evaluate_transaction_pin(self.user, "1234")[0])
+        self.assertEqual((self.user.pin_lockout_strikes, self.user.pin_locked_until), (0, None))
+
+    def test_the_counter_still_names_the_attempts_left_before_the_lock(self):
+        from common.http import evaluate_transaction_pin
+
+        ok, code, message = evaluate_transaction_pin(self.user, "0000")
+        self.assertEqual((ok, code), (False, "pin_incorrect"))
+        self.assertIn(f"{User.PIN_MAX_ATTEMPTS - 1} attempt(s) left", message)
+
+
 class SessionRevocationTests(TestCase):
     """Tokens must be revocable server-side: logout invalidates the presented
     token, and a password change invalidates other (possibly stolen) sessions."""

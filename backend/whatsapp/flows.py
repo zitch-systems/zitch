@@ -846,6 +846,12 @@ def _submit_pin(token: str, data: dict) -> dict:
         # with the app/chat), so the PIN can't be brute-forced through the Flow.
         if code == "pin_locked":
             _clear_actions(pa.msisdn)
+            # On the repeat (24-hour) lock the shared message offers a reset;
+            # here it also has to say what to TYPE. The Flow is closing, so the
+            # instruction has to point back at the thread that outlives it —
+            # and asterisks are chat markdown, not Flow markup.
+            if user.pin_lock_is_escalated:
+                message += " Reply \"reset pin\" in the chat to choose a new one."
             return _success_screen(message)
         if code == "no_pin":
             # Unsatisfiable, and — unlike a wrong PIN — uncounted: the branch
@@ -867,7 +873,7 @@ def _submit_pin(token: str, data: dict) -> dict:
         # resubmitting them — and because the field is min-chars/max-chars 6/6,
         # a retained six-character value REFUSES new keystrokes until six
         # invisible characters are deleted. The box reads as broken, and the
-        # customer burns attempts 3-5 on it into a 15-minute cross-channel
+        # customer burns attempts 3-5 on it into a one-hour cross-channel
         # lockout they never typed. So we stop instead of re-rendering.
         #
         # This does not cost the customer attempts: every wrong PIN still
@@ -1105,8 +1111,12 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
                                          "chose on the first screen, or reply \"cancel\" "
                                          "in the chat to start over.")
 
-    user.set_transaction_pin(pin)                         # also clears pin_reset_required
-    user.save(update_fields=["transaction_pin", "pin_reset_required"])
+    # Also clears pin_reset_required AND the lockout — this reset is the
+    # documented way out of the 24-hour lock, so it has to actually let the
+    # customer pay afterwards. Omitting the lockout fields here left them locked
+    # with a PIN they had just chosen.
+    user.set_transaction_pin(pin)
+    user.save(update_fields=list(user.PIN_UPDATE_FIELDS))
     _clear_actions(pa.msisdn)
     reply(pa.msisdn, "✅ *Your new 6-digit PIN is set.* Use it to authorise payments here "
                      "and in the Zitch app — it's one PIN for both.")
