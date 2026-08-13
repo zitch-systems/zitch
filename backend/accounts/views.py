@@ -406,12 +406,13 @@ def set_transaction_pin(request):
         if not (ok_old or ok_pwd):
             return fail("Enter your current PIN to change it",
                         status=403, code="current_pin_required")
+    # set_transaction_pin also clears pin_reset_required and the whole
+    # brute-force lockout (counter, deadline and escalation strikes), so a
+    # legitimate password-authenticated PIN change isn't blocked by a stale lock
+    # against the PIN it just replaced. Saving the named set rather than a
+    # hand-written list is what keeps this in step when that method grows.
     user.set_transaction_pin(pin)
-    # Clear any brute-force lockout so a legitimate (password-authenticated) PIN
-    # change isn't blocked by a stale lock against the old PIN.
-    user.pin_failed_attempts = 0
-    user.pin_locked_until = None
-    user.save(update_fields=["transaction_pin", "pin_failed_attempts", "pin_locked_until"])
+    user.save(update_fields=list(User.PIN_UPDATE_FIELDS))
     return ok(message="Transaction PIN set")
 
 

@@ -5,7 +5,7 @@ SAME screen id. The PIN field is masked and declared min-chars/max-chars 6/6, so
 a retained six-character value is both invisible AND un-typeable: the customer
 cannot read what is in the box and cannot add a digit until they have deleted six
 characters they cannot see. The box reads as broken, and every Confirm tap spends
-another attempt from a cross-channel budget that ends in a 15-minute lockout.
+another attempt from a cross-channel budget that ends in an hour-long lockout.
 
 The module already routes the FIRST error of each masked step to a fresh twin
 (PIN_RETRY, PIN_CONFIRM_RETRY) so it arrives empty. There is no second twin — and
@@ -19,6 +19,7 @@ seeded-counter test passes happily against a counter production never writes.
 """
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -284,6 +285,151 @@ class SetPinAttemptsTests(TestCase):
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_transaction_pin("1234"))   # never set
+
+
+class EscalatedLockOffersTheResetTests(TestCase):
+    """Five wrong PINs lock the account for an hour; five more without a correct
+    PIN in between lock it for a day. A day is not something you tell a customer
+    to wait out, so on that tier every surface names the way out — and the way
+    out has to be reachable WHILE locked, or naming it is a cruelty.
+
+    The counting happens in evaluate_transaction_pin (shared with the app), so
+    these tests drive the WhatsApp wrapping around it, not the ladder itself.
+    """
+
+    def setUp(self):
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
+                            color="#e30613", active=True)
+        self.user = _user()
+
+    def _lock(self, rounds=1):
+        """Burn `rounds` full sets of wrong PINs, ageing each lock out in between
+        so the next set can actually run."""
+        from common.http import evaluate_transaction_pin
+
+        from accounts.models import User as UserModel
+
+        for i in range(rounds):
+            for _ in range(UserModel.PIN_MAX_ATTEMPTS):
+                evaluate_transaction_pin(self.user, "0000")
+            if i < rounds - 1:
+                UserModel.objects.filter(pk=self.user.pk).update(
+                    pin_locked_until=timezone.now() - timedelta(seconds=1))
+        self.user.refresh_from_db()
+
+    def _action(self):
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="transfer", state=FLOW_PIN_STATE,
+            payload={"amount": "5000", "account": "0123456789", "bank_code": "058",
+                     "bank_name": "GTBank", "name": "JOHN DOE", "flow_screen": PIN_SCREEN},
+            expires_at=timezone.now() + timedelta(minutes=5),
+        )
+
+    def _open_reset(self):
+        """Run `reset pin` with the Flow rail up. A PIN is never collected in the
+        thread, so with no rail the reset legitimately declines — which is a
+        different behaviour from the one under test here."""
+        from .router import _start_pin_reset
+
+        with patch("whatsapp.router.flows_live", return_value=True), \
+             patch("whatsapp.router.send_flow", return_value={"success": True}):
+            _start_pin_reset(self.user, MSISDN)
+
+    def _flow_message(self):
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(self._action()),
+                                    "data": {"pin": "1234"}})
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        return resp["data"]["message"]
+
+    def test_the_flow_names_the_reset_only_once_the_lock_is_a_day(self):
+        self._lock(1)
+        first = self._flow_message()
+        self.assertIn("about an hour", first)
+        self.assertNotIn("reset", first.lower())
+
+        self._lock(2)
+        second = self._flow_message()
+        self.assertIn("about 24 hours", second)
+        self.assertIn("reset pin", second)
+        # The Flow is closing, so the instruction points at the chat that
+        # outlives it — and asterisks are chat markdown, not Flow markup.
+        self.assertIn("in the chat", second)
+        self.assertNotIn("*", second)
+
+    def test_the_hint_is_there_on_the_render_that_creates_the_escalated_lock(self):
+        """The lock is created INSIDE evaluate_transaction_pin, which works on
+        its own row-locked copy of the user. Reading the escalation off the
+        caller's instance without syncing it back drops the reset offer from the
+        very message announcing the 24-hour lock — the one that most needs it,
+        and the one a hand-seeded test would never reach.
+        """
+        from common.http import evaluate_transaction_pin
+
+        from accounts.models import User as UserModel
+
+        self._lock(1)
+        UserModel.objects.filter(pk=self.user.pk).update(
+            pin_locked_until=timezone.now() - timedelta(seconds=1))
+        self.user.refresh_from_db()
+        for _ in range(UserModel.PIN_MAX_ATTEMPTS - 1):        # four of the five
+            evaluate_transaction_pin(self.user, "0000")
+
+        pa = self._action()                                    # loads user pre-lock
+        resp = handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_flow_token(pa),
+                                    "data": {"pin": "0000"}})  # the fifth lands here
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertIn("about 24 hours", resp["data"]["message"])
+        self.assertIn("reset pin", resp["data"]["message"])
+
+    def test_the_chat_names_the_reset_command_on_the_escalated_lock(self):
+        from .router import _flow_pin_ok
+
+        self._lock(2)
+        pa = self._action()
+        with patch("whatsapp.router.reply") as sent:
+            self.assertFalse(_flow_pin_ok(pa, self.user, MSISDN, "1234"))
+        body = sent.call_args[0][1]
+        self.assertIn("about 24 hours", body)
+        self.assertIn("*reset pin*", body)
+        # And the payment is torn down rather than left armed against a lock.
+        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
+
+    def test_the_reset_the_message_advertises_is_reachable_while_locked(self):
+        """The lock gates spending, not recovery. If `reset pin` were refused
+        while locked, the escalated message would be sending a customer at a
+        door we hold shut for a day."""
+        self._lock(2)
+        with patch("whatsapp.router.reply") as sent:
+            self._open_reset()
+        body = sent.call_args[0][1]
+        self.assertNotIn("locked", body.lower())
+        self.assertTrue(PendingAction.objects.filter(
+            msisdn=MSISDN, action_type="setpin").exists())
+
+    def test_the_new_pin_lifts_the_lock_and_pays_immediately(self):
+        """End to end, the promise the message makes: choose a new PIN on the
+        secure screen and payments work again — not in 24 hours."""
+        self._lock(2)
+        with patch("whatsapp.router.reply"):
+            self._open_reset()
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="setpin")
+
+        token = sign_flow_token(pa)
+        self.assertEqual(handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                              "data": {"pin": "975310"}})["screen"], PIN_CONFIRM)
+        self.assertEqual(handle_flow_request({"action": "data_exchange", "flow_token": token,
+                                              "data": {"pin": "975310"}})["screen"],
+                         SUCCESS_SCREEN)
+
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.pin_locked_until)
+        self.assertEqual(self.user.pin_lockout_strikes, 0)
+        self.assertFalse(self.user.pin_reset_required)
+        # The real proof: the shared gate accepts the new PIN right now.
+        from common.http import evaluate_transaction_pin
+        self.assertTrue(evaluate_transaction_pin(self.user, "975310")[0])
 
 
 class TheCapIsCoupledToTheScreensThatExistTests(TestCase):

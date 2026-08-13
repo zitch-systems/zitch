@@ -229,8 +229,14 @@ single highest-value control still available.
   action still be in the PIN state and unexpired. The data-exchange endpoint
   re-verifies Meta's signature on top of envelope encryption.
 - **PIN and lockout**: one implementation (`evaluate_transaction_pin`), row-locked
-  on the user, 5 attempts / 15 minutes, shared by chat, Flow and app — a lockout
-  on one surface is a lockout on all.
+  on the user, 5 attempts, shared by chat, Flow and app — a lockout on one
+  surface is a lockout on all. The lock escalates: one hour the first time, 24
+  hours if a second run of five is burned without a correct PIN in between
+  (10k combinations at 5/day is ~5 years). A correct PIN, a PIN reset, or an
+  operator unlock clears the escalation. The escalated lock names the PIN reset
+  as the way out, and that reset is deliberately not gated on the lock — it
+  proves identity by its own route (verified email + phone + BVN, then a live
+  SMS code), so a locked-out customer is never told to wait out a day.
 - **Idempotency / double-spend**: wallet row `select_for_update()` plus a DB
   unique constraint on `(user, idempotency_key)`; every WhatsApp execution path
   passes a stable key derived from the pending action, so duplicate PIN

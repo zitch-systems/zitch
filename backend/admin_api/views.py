@@ -717,10 +717,16 @@ def user_pin_unlock(request):
     u = _get_user(request.data.get("uid"))
     if u is None:
         return fail("User not found", status=404)
-    before = {"locked_until": str(u.pin_locked_until or ""), "failed_attempts": u.pin_failed_attempts}
+    before = {"locked_until": str(u.pin_locked_until or ""), "failed_attempts": u.pin_failed_attempts,
+              "strikes": u.pin_lockout_strikes}
     u.pin_failed_attempts = 0
     u.pin_locked_until = None
-    u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+    # The escalation strikes go too, or an unlocked customer's very next slip
+    # lands them straight on the 24-hour tier — an unlock that leaves the next
+    # lock harsher than the one just cleared isn't an unlock. The strike count
+    # is kept in `before` so the audit trail still shows what was forgiven.
+    u.pin_lockout_strikes = 0
+    u.save(update_fields=["pin_failed_attempts", "pin_locked_until", "pin_lockout_strikes"])
     audit(request, "user.pin_unlock", target=f"u_{u.id}", before=before, after={"locked_until": ""})
     return ok(success=True, uid=u.id)
 

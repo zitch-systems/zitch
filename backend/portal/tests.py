@@ -5,6 +5,7 @@ can never log in, read_only can read but not mutate, every mutation lands in
 the audit log, and the FX corridor pause actually stops quotes.
 """
 import json
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from django.contrib.auth.models import Group
 from unittest.mock import patch
 
 from django.test import Client, SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 
 from accounts.models import AccessToken
 from wallet.forex import FxError, create_fx_quote
@@ -128,6 +130,24 @@ class MutationTests(PortalTestCase):
         self.assertFalse(self.user.is_active)
         self.assertIsNone(AccessToken.resolve(token))
         self.assertTrue(AuditLog.objects.filter(action="user.freeze").exists())
+
+    def test_unlock_pin_clears_the_lock_and_the_escalation_strikes(self):
+        """The PIN lockout escalates — one hour, then a day for a repeat. An
+        unlock that dropped only the deadline would leave the customer one
+        wrong-PIN run from the 24-hour tier, i.e. worse off than before support
+        touched it."""
+        self.user.pin_failed_attempts = 4
+        self.user.pin_lockout_strikes = 2
+        self.user.pin_locked_until = timezone.now() + timedelta(hours=20)
+        self.user.save()
+        res = self.post("user-action", {"user_id": self.user.id, "action": "unlock_pin"},
+                        token=self.admin)
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.pin_locked_until)
+        self.assertEqual((self.user.pin_failed_attempts, self.user.pin_lockout_strikes), (0, 0))
+        entry = AuditLog.objects.filter(action="user.pin_unlock").latest("id")
+        self.assertEqual((entry.before or {}).get("pin_lockout_strikes"), 2)
 
     def test_kyc_approve_marks_flags_and_derives_tier(self):
         # A user who submitted BVN + NIN (unverified): approval marks them verified

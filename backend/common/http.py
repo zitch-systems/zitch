@@ -365,6 +365,8 @@ def evaluate_transaction_pin(user, raw_pin):
 
     The failure count and lockout live on the user row and are updated under a
     row lock, so concurrent guesses (across channels) can't slip past the cap.
+    The lock state is mirrored back onto the CALLER's `user` instance before
+    returning — see `_sync_lock_state`.
     """
     from django.db import transaction as db_transaction
 
@@ -376,29 +378,91 @@ def evaluate_transaction_pin(user, raw_pin):
     with db_transaction.atomic():
         u = User.objects.select_for_update().get(pk=user.pk)
         if u.pin_locked:
-            mins = max(1, int((u.pin_locked_until - timezone.now()).total_seconds() // 60) + 1)
-            return (False, "pin_locked",
-                    f"Transaction PIN locked after too many wrong attempts. Try again in {mins} minute(s).")
+            _sync_lock_state(user, u)
+            return False, "pin_locked", _pin_lock_message(u)
         if u.check_transaction_pin((raw_pin or "").strip()):
-            # Correct PIN: clear any accumulated failures / stale lock.
-            if u.pin_failed_attempts or u.pin_locked_until:
+            # Correct PIN: clear any accumulated failures / stale lock, AND the
+            # escalation strikes. Proving you know the PIN is what separates a
+            # customer who forgot it from someone working through the keyspace,
+            # so it is what resets the ladder back to the one-hour tier.
+            if u.pin_failed_attempts or u.pin_locked_until or u.pin_lockout_strikes:
                 u.pin_failed_attempts = 0
                 u.pin_locked_until = None
-                u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+                u.pin_lockout_strikes = 0
+                u.save(update_fields=["pin_failed_attempts", "pin_locked_until",
+                                      "pin_lockout_strikes"])
+            _sync_lock_state(user, u)
             return True, None, None
         u.pin_failed_attempts += 1
         if u.pin_failed_attempts >= User.PIN_MAX_ATTEMPTS:
             u.pin_failed_attempts = 0  # reset the counter; the lock is the gate now
-            u.pin_locked_until = timezone.now() + timedelta(minutes=User.PIN_LOCKOUT_MINUTES)
-            u.save(update_fields=["pin_failed_attempts", "pin_locked_until"])
+            # Escalate: five wrong guesses is a forgotten PIN, sitting out the
+            # first lock and burning five more is not. Strikes only advance while
+            # no correct PIN has been entered in between (see above).
+            u.pin_lockout_strikes += 1
+            minutes = (User.PIN_LOCKOUT_MINUTES if u.pin_lockout_strikes < 2
+                       else User.PIN_LOCKOUT_ESCALATED_MINUTES)
+            u.pin_locked_until = timezone.now() + timedelta(minutes=minutes)
+            u.save(update_fields=["pin_failed_attempts", "pin_locked_until",
+                                  "pin_lockout_strikes"])
             # Security event: a locked PIN means repeated wrong guesses against the
             # second factor that gates money movement — worth surfacing in logs.
-            log.warning("transaction_pin_locked user=%s", u.pk)
-            return (False, "pin_locked",
-                    f"Transaction PIN locked for {User.PIN_LOCKOUT_MINUTES} minutes after too many wrong attempts.")
+            log.warning("transaction_pin_locked user=%s strike=%s minutes=%s",
+                        u.pk, u.pin_lockout_strikes, minutes)
+            _sync_lock_state(user, u)
+            return False, "pin_locked", _pin_lock_message(u)
         u.save(update_fields=["pin_failed_attempts"])
+        _sync_lock_state(user, u)
         left = User.PIN_MAX_ATTEMPTS - u.pin_failed_attempts
         return False, "pin_incorrect", f"Incorrect transaction PIN. {left} attempt(s) left before lock."
+
+
+def _sync_lock_state(user, u) -> None:
+    """Mirror the lock fields from the row-locked copy back onto the caller's
+    instance.
+
+    Every write above lands on `u`, which `select_for_update()` fetched fresh —
+    a SEPARATE object from the `user` the caller handed in. Without this the
+    caller still holds pre-call values, so a surface asking
+    `user.pin_lock_is_escalated` to decide whether to offer the PIN reset reads
+    False on the very response that announces the 24-hour lock: the one message
+    where the offer matters most.
+
+    In-memory only. It deliberately does not save — `user` may be carrying the
+    caller's own unsaved edits, and this function's business is the three fields
+    it just read back.
+    """
+    if user is u:
+        return
+    user.pin_failed_attempts = u.pin_failed_attempts
+    user.pin_locked_until = u.pin_locked_until
+    user.pin_lockout_strikes = u.pin_lockout_strikes
+
+
+def _pin_lock_message(u) -> str:
+    """One wording for a locked PIN, whether the lock was just applied or is
+    being re-hit later, so the customer is never told two different things about
+    the same lock.
+
+    Always states the remaining time rather than the tier's nominal length: a
+    customer coming back mid-lock needs to know when they can act, not what the
+    policy is. On the escalated tier it names the way out — waiting out a day is
+    not a real instruction, and by the second lock the likeliest truth is that
+    they cannot remember the PIN at all.
+    """
+    remaining = (u.pin_locked_until or timezone.now()) - timezone.now()
+    minutes = max(1, int(remaining.total_seconds() // 60) + 1)
+    if minutes >= 120:
+        when = f"about {round(minutes / 60)} hours"
+    elif minutes >= 60:
+        when = "about an hour"
+    else:
+        when = f"{minutes} minute(s)"
+    line = f"Transaction PIN locked after too many wrong attempts. Try again in {when}."
+    if u.pin_lockout_strikes >= 2:
+        line += (" You can reset your PIN instead — we'll confirm it's you first, "
+                 "and a new PIN unlocks payments straight away.")
+    return line
 
 
 def verify_transaction_pin(user, raw_pin):

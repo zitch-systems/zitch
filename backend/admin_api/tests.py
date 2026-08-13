@@ -168,6 +168,22 @@ class AdminApiTests(TestCase):
         self.assertEqual(self.customer.pin_failed_attempts, 0)
         self.assertTrue(AuditLog.objects.filter(action="user.pin_unlock").exists())
 
+    def test_user_pin_unlock_clears_the_escalation_strikes(self):
+        """The lockout escalates (one hour, then a day). An unlock that clears
+        only the deadline leaves the customer one wrong-PIN run from the 24-hour
+        tier — the next lock harsher than the one support just forgave. The
+        strike count survives in the audit trail instead."""
+        self.customer.pin_lockout_strikes = 2
+        self.customer.pin_locked_until = timezone.now() + timedelta(hours=20)
+        self.customer.save()
+        res, _ = self.post("users/pin_unlock", self.finance_token, {"uid": self.customer.id})
+        self.assertEqual(res.status_code, 200)
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.pin_lockout_strikes, 0)
+        self.assertFalse(self.customer.pin_lock_is_escalated)
+        entry = AuditLog.objects.filter(action="user.pin_unlock").latest("id")
+        self.assertEqual((entry.before or {}).get("strikes"), 2)
+
     def test_kyc_review_approve(self):
         res, body = self.post("kyc/review", self.finance_token,
                               {"uid": self.customer.id, "decision": "approve", "type": "bvn"})
