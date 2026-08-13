@@ -4055,3 +4055,93 @@ class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
         give_account(self.user, "9912345678")
         body = json.dumps(self._submit(), ensure_ascii=False)
         self.assertIn("received ✅", body)
+
+
+class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
+    """A template-level refusal is the same for every recipient.
+
+    Meta rejects `132000` (parameter count), `132001` (no such template) and
+    friends on a property of the TEMPLATE, so the second recipient and the ten
+    thousandth get the identical answer. The campaign used to keep going anyway:
+    one Graph call per recipient to collect N copies of one refusal, leaving the
+    operator to read N identical error_codes off recipient rows to work out that
+    the template — not the audience — was the problem.
+    """
+
+    def setUp(self):
+        self.broadcast = Broadcast.objects.create(
+            template_name="hello_world", status=Broadcast.SENDING, count_queued=3,
+            body_params=["unexpected"])          # hello_world declares no variables
+        self.rows = [
+            BroadcastRecipient.objects.create(
+                broadcast=self.broadcast, wa_msisdn=f"23480111122{n:02d}",
+                status=BroadcastRecipient.QUEUED)
+            for n in range(3)
+        ]
+
+    def _send(self, error_code):
+        return patch("whatsapp.jobs.send_template", return_value={
+            "success": False, "error_code": error_code,
+            "error_detail": "number of parameters does not match",
+            "message": "WhatsApp provider rejected the request"})
+
+    def test_a_parameter_count_rejection_stops_the_campaign(self):
+        from whatsapp.jobs import process_outbound_recipient
+
+        with self._send(132000) as send:
+            process_outbound_recipient(self.rows[0].pk)
+        self.assertEqual(send.call_count, 1)              # one call, not three
+
+        for row in self.rows:
+            row.refresh_from_db()
+            self.assertEqual(row.status, BroadcastRecipient.FAILED)
+            self.assertIsNotNone(row.processed_at)
+        self.assertIn("132000", self.rows[1].error)
+        self.assertIn("abandoned", self.rows[1].error)
+
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.DONE)
+        self.assertEqual(self.broadcast.count_failed, 3)
+        self.assertTrue(AuditLog.objects.filter(action="broadcast.abandoned").exists())
+
+    def test_a_recipient_level_rejection_leaves_the_rest_queued(self):
+        """131026 is "this recipient can't receive it" — the next person on the
+        list is unaffected, so abandoning the campaign would be the bug."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        with self._send(131026):
+            process_outbound_recipient(self.rows[0].pk)
+        self.rows[0].refresh_from_db()
+        self.assertEqual(self.rows[0].status, BroadcastRecipient.FAILED)
+        for row in self.rows[1:]:
+            row.refresh_from_db()
+            self.assertEqual(row.status, BroadcastRecipient.QUEUED)
+            self.assertIsNone(row.processed_at)
+        self.broadcast.refresh_from_db()
+        self.assertEqual(self.broadcast.status, Broadcast.SENDING)
+        self.assertFalse(AuditLog.objects.filter(action="broadcast.abandoned").exists())
+
+    def test_a_recipient_another_worker_holds_is_not_stolen(self):
+        """Marking a leased row FAILED would race that worker's own write and
+        could report a genuinely sent message as failed. It resolves itself."""
+        from whatsapp.jobs import process_outbound_recipient
+
+        leased = self.rows[2]
+        leased.processing_started_at = timezone.now()
+        leased.save(update_fields=["processing_started_at"])
+
+        with self._send(132001):
+            process_outbound_recipient(self.rows[0].pk)
+        leased.refresh_from_db()
+        self.assertEqual(leased.status, BroadcastRecipient.QUEUED)
+        self.assertIsNone(leased.processed_at)
+        self.rows[1].refresh_from_db()
+        self.assertEqual(self.rows[1].status, BroadcastRecipient.FAILED)   # unleased: abandoned
+
+    def test_a_non_numeric_error_code_is_not_treated_as_template_level(self):
+        from whatsapp.jobs import _is_template_level
+
+        for code in ("provider_error", None, "", "abc", 500, 131047):
+            self.assertFalse(_is_template_level(code), code)
+        for code in (132000, "132001", 132015):
+            self.assertTrue(_is_template_level(code), code)

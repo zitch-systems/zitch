@@ -391,8 +391,68 @@ def process_outbound_recipient(pk: int) -> str:
                          or "provider_rejected")[:200],
         }
     BroadcastRecipient.objects.filter(pk=row.pk).update(**updates)
+    if status == BroadcastRecipient.FAILED and _is_template_level(result.get("error_code")):
+        # Meta rejected a property of the TEMPLATE, not of this recipient, so
+        # every remaining recipient will be rejected identically. Without this the
+        # campaign burned one Graph call per recipient to collect N copies of the
+        # same refusal, and the operator was left reading N identical error_codes
+        # off recipient rows to work out that the template was the problem.
+        _abandon_broadcast(row.broadcast_id, str(result.get("error_code")),
+                           result.get("error_detail", ""))
     refresh_broadcast_counts(row.broadcast_id)
     return status
+
+
+#: Graph error codes that describe the TEMPLATE rather than the recipient — the
+#: same for everyone in the audience, so retrying the rest is pure waste. Kept
+#: deliberately narrow: a recipient-level code (131026 undeliverable, 131047
+#: re-engagement, 131049 per-user quality) must NOT abandon a whole campaign, so
+#: anything not unambiguously a template property is left off this list.
+_TEMPLATE_LEVEL_ERRORS = {
+    132000,   # number of parameters does not match the template's variables
+    132001,   # template does not exist for this name + language
+    132005,   # hydrated text too long / translation not approved
+    132007,   # template format character-policy violation
+    132012,   # parameter format mismatch
+    132015,   # template is paused
+    132016,   # template is disabled
+}
+
+
+def _is_template_level(error_code) -> bool:
+    """`error_code` is Meta's int, but `_message_result` falls back to an HTTP
+    status or the string "provider_error", so this must not assume a number."""
+    try:
+        return int(error_code) in _TEMPLATE_LEVEL_ERRORS
+    except (TypeError, ValueError):
+        return False
+
+
+def _abandon_broadcast(broadcast_id: int, error_code: str, detail: str = "") -> int:
+    """Fail every not-yet-claimed recipient of a broadcast whose template Meta
+    refused. Returns how many were abandoned.
+
+    Only rows with no live lease are touched: a recipient another worker is
+    mid-send on resolves itself, and if it hits the same refusal it lands back
+    here (this is idempotent). Stealing its row would let this update race the
+    worker's own write and report a genuinely sent message as failed.
+    """
+    abandoned = (BroadcastRecipient.objects
+                 .filter(broadcast_id=broadcast_id, status=BroadcastRecipient.QUEUED,
+                         processed_at__isnull=True, processing_started_at__isnull=True)
+                 .update(status=BroadcastRecipient.FAILED, processed_at=timezone.now(),
+                         next_attempt_at=None,
+                         error=f"abandoned:template_error:{error_code}"[:200]))
+    if abandoned:
+        log.warning("wa_broadcast_abandoned broadcast=%s error_code=%s abandoned=%s detail=%r",
+                    broadcast_id, error_code, abandoned, str(detail)[:200])
+        record_audit(
+            "broadcast.abandoned", actor_type="system",
+            target=f"broadcast:{broadcast_id}",
+            after={"error_code": str(error_code), "abandoned": abandoned,
+                   "detail": str(detail)[:200]},
+        )
+    return abandoned
 
 
 def process_outbound_batch(limit=20) -> int:
