@@ -13,7 +13,8 @@ import type { Config } from './config.js';
 import { withAudit } from './audit.js';
 import { MetaApiError } from './metaClient.js';
 import { redactDeep } from './redact.js';
-import { TOOL_REGISTRY } from './tools/registry.js';
+import { targetOf, toolsFor } from './tools/registry.js';
+import { ConfirmationError } from './tools/writes.js';
 
 export interface RequestMeta {
   keyFingerprint: string;
@@ -27,14 +28,22 @@ export function buildMcpServer(config: Config, requestMeta: RequestMeta): McpSer
     {
       capabilities: { tools: {} },
       instructions:
-        'Read-only maintenance/configuration tools for the Zitch WhatsApp Cloud API and Meta ' +
+        'Maintenance and configuration tools for the Zitch WhatsApp Cloud API and Meta ' +
         'Business API. No customer data (PINs, biometrics, balances, transactions, personal ' +
         "data) is ever reachable through this server — it only talks to Meta's Graph API. " +
-        'No write, delete, token-rotation, or payment tools are exposed.',
+        'Messages can never be sent from here, webhook subscriptions can never be changed, ' +
+        'and no token-rotation or payment tools exist. ' +
+        (config.readOnly
+          ? 'This instance is READ-ONLY: every tool below only reads.'
+          : 'This instance has CONFIG WRITES enabled: tools named create_/update_/delete_/' +
+            'publish_/deprecate_ change live Meta configuration for a production banking ' +
+            'channel. Each requires a `confirm` argument restating the exact resource being ' +
+            'changed. Never guess that value — if the user has not named the resource ' +
+            'unambiguously, ask before calling.'),
     },
   );
 
-  for (const tool of TOOL_REGISTRY) {
+  for (const tool of toolsFor(config)) {
     server.registerTool(
       tool.name,
       {
@@ -43,7 +52,14 @@ export function buildMcpServer(config: Config, requestMeta: RequestMeta): McpSer
         inputSchema: tool.schema.shape,
       },
       async (rawArgs: unknown) => {
-        return withAudit({ tool: tool.name, ...requestMeta }, async () => {
+        const rawInput = (rawArgs ?? {}) as Record<string, unknown>;
+        return withAudit(
+          {
+            tool: tool.name,
+            ...requestMeta,
+            ...(tool.write ? { write: true, target: targetOf(rawInput) } : {}),
+          },
+          async () => {
           try {
             const input = tool.schema.parse(rawArgs ?? {});
             const result = await tool.handler(config, input);
@@ -76,6 +92,12 @@ function safeErrorMessage(err: unknown): string {
     // A zod validation error — its messages are all about the caller's input
     // shape, so safe to return as-is.
     return `Invalid input: ${err.message}`;
+  }
+  // The confirmation interlock is meant to be acted on, so the model calling
+  // the tool has to see what to correct. Contains Meta object identifiers
+  // only, never a secret.
+  if (err instanceof ConfirmationError) {
+    return err.message;
   }
   return 'Internal error handling this tool call.';
 }

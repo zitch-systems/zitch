@@ -1,9 +1,13 @@
 # zitch-meta-connector
 
 A remote, HTTPS-based [MCP](https://modelcontextprotocol.io) server that gives an AI assistant
-(Claude, or later a ChatGPT GPT Action) **read-only** maintenance and configuration visibility
-into the Zitch WhatsApp Cloud API and Meta Business API — webhook status, phone-number config,
-message templates, delivery health, and credential validity.
+(Claude, or later a ChatGPT GPT Action) maintenance and configuration access to the Zitch
+WhatsApp Cloud API and Meta Business API — webhook status, phone-number config, message
+templates, Flows, delivery health, and credential validity.
+
+**Read-only by default.** Config writes exist but are off unless explicitly enabled, and the
+connector can never send a WhatsApp message or change a webhook subscription in any mode — see
+[Config writes](#config-writes-off-by-default).
 
 It is a standalone service. It does not import, call, or modify anything in `backend/` — it
 talks only to Meta's Graph API, over the network, using its own credentials. It cannot reach a
@@ -12,8 +16,9 @@ because it has no code path into the Zitch database or API at all.
 
 ## What it exposes
 
-Thirteen read-only tools, available both as MCP tools (`POST /mcp`) and as a plain REST mirror
-(`GET /rest/*`, for a future ChatGPT GPT Action — see [openapi.yaml](./openapi.yaml)):
+Thirteen read tools (plus eight optional config-write tools, off by default), available both as
+MCP tools (`POST /mcp`) and as a plain REST mirror (reads `GET /rest/*`, writes `POST /rest/*` —
+see [openapi.yaml](./openapi.yaml)):
 
 **Webhooks and credentials**
 
@@ -74,11 +79,58 @@ to have a capability Meta doesn't provide. A true webhook-event log would have t
 Zitch's own backend event storage — deliberately out of scope for this project (see "What this
 project does not do" below).
 
+## Config writes (off by default)
+
+The connector ships **read-only**. With `META_ALLOW_WRITES=true` it additionally exposes eight
+tools that change Meta *configuration*:
+
+| Tool | Changes |
+|---|---|
+| `create_message_template` / `update_message_template` / `delete_message_template` | Message templates |
+| `update_whatsapp_business_profile` | The public business profile |
+| `create_whatsapp_flow` / `update_whatsapp_flow_json` / `publish_whatsapp_flow` | Flows — this is what removes the copy-paste-into-WhatsApp-Manager step |
+| `deprecate_whatsapp_flow` | Retires a Flow (irreversible) |
+
+**What writes can never do, in any mode.** There is no code path — not a disabled one, an absent
+one — to any of these:
+
+- **Send a WhatsApp message.** No `whatsapp_business_messaging` anywhere. Even a total compromise
+  of this service cannot send a message from Zitch's verified bank number to a customer, which is
+  the capability that turns a breach into customer-facing fraud.
+- **Change a webhook subscription.** Unsubscribing the WABA would stop every inbound customer
+  message being processed with no error surfaced anywhere — a silent outage of the live banking
+  channel. That stays a deliberate act in WhatsApp Manager.
+- **Register a phone number, rotate a token, or move money.**
+
+Two tests enforce the first two by name, so a future tool that crosses either line fails CI.
+
+### The safety model
+
+1. **Absent, not refusing.** In read-only mode write tools are not registered at all — they do not
+   appear in `tools/list`, the REST mirror, or MCP dispatch. A tool that cannot be named cannot be
+   called by mistake, and a model reading the tool list is never tempted by a capability it hasn't
+   got.
+2. **A confirmation interlock.** Every write takes a `confirm` argument that must *exactly* restate
+   the resource being changed (`confirm: "1234567890"` for `flowId: "1234567890"`). This is not
+   about a human typo — it's about an AI acting on a misread instruction. "Tidy up the old flows"
+   should not be one inference away from deprecating the Flow that PIN entry depends on. Disable
+   with `META_REQUIRE_WRITE_CONFIRMATION=false` if you must; it's on by default for a reason.
+3. **Writes are POST, never GET.** A GET that mutates is a real hazard — browser prefetch, link
+   previews and automatic retries all re-issue GETs freely. `GET` on a write path returns `405`.
+4. **Every write is audited** with `write: true`, the exact target, the caller's credential
+   fingerprint, and the outcome — one log filter answers "what changed, when, on whose credential".
+
+### Enabling it
+
+Set `META_ALLOW_WRITES=true`, and give `META_ACCESS_TOKEN` write scope at Meta
+(`whatsapp_business_management` with **Manage** rather than View-only). Note that widening the
+token widens it for anything else holding it too — a separate System User token for this connector
+keeps that blast radius contained.
+
 ## What this project does not do
 
-- **No write, delete, token-rotation, or payment tools.** Only read tools exist. `readOnly`
-  is an explicit, named field in `src/config.ts` — turning any of that on in the future is meant
-  to be a deliberate, reviewable code change, not a side effect of adding a file.
+- **No message sending, webhook changes, token rotation, or payment tools** — see above. `readOnly`
+  is an explicit, named field in `src/config.ts`, defaulting to on.
 - **Never touches Zitch's production webhook or banking code.** This is a new, isolated
   directory (`zitch-meta-connector/`) with its own `package.json`. Nothing in `backend/` was
   changed to build it.
@@ -350,7 +402,9 @@ src/
     tokens.ts     Access/refresh tokens, audience binding, and their limits
     consent.ts     The sign-in / consent page
   tools/
-    registry.ts     Single source of truth: name, schema, handler per tool
+    registry.ts     Single source of truth: name, schema, handler per tool,
+                    plus toolsFor() which hides write tools in read-only mode
+    writes.ts     The config-write tools + the confirmation interlock
     webhookStatus.ts, phoneNumberConfig.ts, messageTemplates.ts,
     failedDeliveries.ts, webhookEvents.ts, verifyCredentials.ts,
     flows.ts (Flow list/inspect/published-screens), account.ts (WABA,
