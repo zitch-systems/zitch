@@ -94,6 +94,35 @@ Both would need Meta to add components; neither is achievable in this file.
 The endpoint drives these dynamically from `whatsapp/flows.py`; keep the screen
 ids and field names in sync if you edit the JSON.
 
+## Re-publishing (`manage.py publish_flow`)
+
+Meta serves the version published in WhatsApp Manager, not this file, so every
+edit here needs a re-publish. That used to be a manual paste, which meant the
+code and the Flow shipped at different times — and they are a **contract**, not
+two copies: the endpoint must answer with exactly the properties the published
+screen declares. A mismatch shows the customer *"Couldn't load content. Try
+again later."* on every ending of the Flow, indistinguishable from a timeout.
+
+Run it where the token already is (a Render shell on the API service):
+
+```sh
+python manage.py publish_flow --dry-run   # compare this file against Meta, send nothing
+python manage.py publish_flow             # replace the DRAFT, print validation errors
+python manage.py publish_flow --publish   # ...and make it live
+```
+
+Upload and publish are two steps on purpose: uploading only replaces the draft,
+so it is safe at any time and returns the validation errors Meta would refuse a
+publish on — the risky half can be read before anyone commits to it. The command
+refuses to publish from a host that is not `WHATSAPP_MODE=live`, and refuses to
+publish at all when validation returned anything.
+
+`--dry-run` runs `providers.published_flow_report()`, which compares both the
+screen ids **and** each screen's declared `data` properties — id-only comparison
+reported a perfectly healthy Flow throughout exactly the outage described above.
+It is a three-hop Graph read, so it is deliberately *not* wired into `/healthz`;
+run it from the command when you want the answer.
+
 > **Re-publish after updating.** `IDENTITY_SCREEN` and `EMAIL_SCREEN` were added
 > after the first release, and `PIN_SCREEN` now carries the bank and account on
 > their own lines. Meta serves the version published in WhatsApp Manager, not

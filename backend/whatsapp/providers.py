@@ -399,8 +399,11 @@ def published_flow_report() -> dict:
         return {"status": "unconfigured"}
 
     asset = Path(__file__).resolve().parent / "flow_assets" / "pin_flow.json"
+    expected_props: dict = {}
     try:
-        expected = [s["id"] for s in json.loads(asset.read_text())["screens"]]
+        local_screens = json.loads(asset.read_text())["screens"]
+        expected = [s["id"] for s in local_screens]
+        expected_props = {s["id"]: set((s.get("data") or {}).keys()) for s in local_screens}
     except Exception:  # noqa: BLE001
         expected = []
 
@@ -418,18 +421,32 @@ def published_flow_report() -> dict:
 
         # The published screens live in the FLOW_JSON asset, not on the node.
         assets = requests.get(f"{base}/{flow_id}/assets", headers=headers, timeout=15)
-        published = []
+        published, published_props = [], {}
         for item in (assets.json().get("data") or []) if assets.content else []:
             if item.get("asset_type") != "FLOW_JSON" or not item.get("download_url"):
                 continue
             body = requests.get(item["download_url"], timeout=15)
-            published = [s["id"] for s in (body.json().get("screens") or [])]
+            screens = body.json().get("screens") or []
+            published = [s["id"] for s in screens]
+            published_props = {s["id"]: set((s.get("data") or {}).keys()) for s in screens}
             break
     except Exception as exc:  # noqa: BLE001 — never raise from a probe
         return {"status": "unreachable", "expected_screens": expected,
                 "detail": type(exc).__name__}
 
     missing = [s for s in expected if s not in published]
+    # A screen can be present on BOTH sides and still be one publish behind: the
+    # endpoint must supply exactly the properties the published screen declares,
+    # so adding one here (SUCCESS gaining `status`) makes Meta reject the answer
+    # with the same "Couldn't load content" the customer sees for a timeout.
+    # Comparing ids alone reported a perfectly healthy Flow through exactly that
+    # outage, which is the whole reason this probe exists — so it compares the
+    # declared property sets too. Both directions matter: a property the code
+    # sends and Meta does not declare fails, and so does the reverse.
+    drifted = sorted(
+        sid for sid in expected
+        if sid in published_props and expected_props.get(sid, set()) != published_props[sid]
+    )
     return {
         "status": str(info.get("status") or "unknown").lower(),   # published | draft | ...
         "name": info.get("name"),
@@ -438,7 +455,9 @@ def published_flow_report() -> dict:
         # The actionable line: these screens exist in the code and NOT on Meta,
         # so every send naming one of them is rejected until a re-publish.
         "missing_screens": missing,
-        "stale": bool(missing),
+        # Present on both sides, but their `data` contracts disagree.
+        "drifted_screens": drifted,
+        "stale": bool(missing or drifted),
         "validation_errors": [e.get("error_type") or e.get("message")
                               for e in (info.get("validation_errors") or [])][:5],
     }
