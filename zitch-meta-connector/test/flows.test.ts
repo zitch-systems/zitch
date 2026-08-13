@@ -8,7 +8,7 @@ import {
   listFlowsSchema,
   publishedFlowScreensSchema,
 } from '../src/schemas.js';
-import { TOOL_REGISTRY } from '../src/tools/registry.js';
+import { TOOL_REGISTRY, toolsFor } from '../src/tools/registry.js';
 import { analyseFlowJson } from '../src/tools/flows.js';
 
 describe('published Flow analysis', () => {
@@ -185,11 +185,56 @@ describe('tool registry', () => {
     }
   });
 
-  it('names no tool in a way that implies a write', () => {
-    // A guardrail on the read-only promise: if someone adds a mutating tool,
-    // the name is the first place it shows, and this fails loudly.
+  it('flags every mutating-sounding tool as write: true', () => {
+    // The guardrail that matters now writes exist: a tool named like a
+    // mutation MUST be marked `write`, because that flag is what keeps it out
+    // of read-only mode. An unflagged write tool would be exposed even on a
+    // read-only instance.
+    for (const tool of TOOL_REGISTRY) {
+      if (/^(create|update|delete|send|post|set|rotate|revoke|pay|publish|deprecate)_/.test(tool.name)) {
+        expect(tool.write, `${tool.name} looks like a write but is not flagged write:true`).toBe(true);
+      }
+    }
+  });
+
+  it('never marks a read-sounding tool as a write, or vice versa', () => {
+    for (const tool of TOOL_REGISTRY) {
+      if (/^(list|get|check|inspect|verify)_/.test(tool.name)) {
+        expect(tool.write, `${tool.name} reads but is flagged write:true`).toBeFalsy();
+      }
+    }
+  });
+
+  it('exposes NO write tool in read-only mode', () => {
+    const readOnly = toolsFor({ readOnly: true } as never);
+    expect(readOnly.some((t) => t.write)).toBe(false);
+    // ...and every one of them is back when writes are enabled.
+    const writable = toolsFor({ readOnly: false } as never);
+    expect(writable.length).toBeGreaterThan(readOnly.length);
+    expect(writable.filter((t) => t.write).length).toBe(TOOL_REGISTRY.filter((t) => t.write).length);
+  });
+
+  it('requires a confirm argument on every write tool', () => {
+    // The interlock only works if it is on the schema; a write tool without
+    // `confirm` would silently skip it.
+    for (const tool of TOOL_REGISTRY.filter((t) => t.write)) {
+      expect(Object.keys(tool.schema.shape), `${tool.name} has no confirm field`).toContain('confirm');
+    }
+  });
+
+  it('exposes no message-sending tool at all', () => {
+    // The hard line: this connector must never be able to send a WhatsApp
+    // message from Zitch's verified number, in any mode.
     for (const { name } of TOOL_REGISTRY) {
-      expect(name, name).not.toMatch(/^(create|update|delete|send|post|set|rotate|revoke|pay)_/);
+      expect(name, name).not.toMatch(/send|message_send|broadcast|notify/);
+    }
+  });
+
+  it('exposes no tool that can change webhook subscriptions', () => {
+    // Unsubscribing the WABA would stop the live banking channel processing
+    // customer messages, with no error surfaced anywhere.
+    for (const { name } of TOOL_REGISTRY) {
+      expect(name, name).not.toMatch(/subscribe|unsubscribe/);
     }
   });
 });

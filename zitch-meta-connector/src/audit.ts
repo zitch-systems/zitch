@@ -21,6 +21,14 @@ export interface AuditEvent {
    * "was that call a person in Claude, or an automated key holder?" is the
    * first question anyone asks of one of these log lines. */
   authMethod?: string;
+  /** True when this call MUTATED Meta configuration. Logged as its own field
+   * rather than left implicit in the tool name so the write history can be
+   * pulled out of a log store with one filter — "what changed, when, and on
+   * whose credential" is the question an incident review starts from. */
+  write?: boolean;
+  /** For writes: the exact resource that was changed (template name, Flow ID,
+   * phone number ID). Never a secret — these are Meta object identifiers. */
+  target?: string;
   outcome: 'success' | 'error' | 'denied';
   durationMs: number;
   errorMessage?: string;

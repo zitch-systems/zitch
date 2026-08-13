@@ -135,6 +135,140 @@ export const conversationAnalyticsSchema = z
   })
   .strict();
 
+// --- WRITE tools -----------------------------------------------------------
+// Registered only when META_ALLOW_WRITES is on. Every one carries `confirm`,
+// which must restate the exact resource being changed — see writes.ts for why
+// that interlock exists.
+const confirm = z
+  .string()
+  .min(1)
+  .max(200)
+  .describe(
+    'Safety interlock: must exactly equal the name or ID of the resource this call will ' +
+      'change. The call is refused otherwise.',
+  );
+
+const templateName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .regex(/^[a-z0-9_]+$/, 'Meta template names are lowercase letters, digits and underscores only');
+
+/** Template components are Meta's own nested structure (HEADER/BODY/FOOTER/
+ * BUTTONS). Passed through rather than re-modelled: mirroring Meta's schema
+ * here would go stale every time they add a component type, and the API is the
+ * authority on what is valid. Bounded so it cannot be used as a payload bomb. */
+const templateComponents = z
+  .array(z.record(z.string(), z.unknown()))
+  .min(1)
+  .max(20)
+  .describe('Meta message-template components array (HEADER / BODY / FOOTER / BUTTONS).');
+
+export const createMessageTemplateSchema = z
+  .object({
+    wabaId: metaId.optional(),
+    name: templateName.describe('Template name. Lowercase, digits and underscores.'),
+    language: z.string().trim().min(2).max(10).describe('Language code, e.g. en_US.'),
+    category: z
+      .enum(['AUTHENTICATION', 'MARKETING', 'UTILITY'])
+      .describe('Meta template category.'),
+    components: templateComponents,
+    confirm: confirm.describe('Must equal the template `name`.'),
+  })
+  .strict();
+
+export const updateMessageTemplateSchema = z
+  .object({
+    templateId: metaId.describe('Template ID to edit.'),
+    components: templateComponents.optional(),
+    category: z.enum(['AUTHENTICATION', 'MARKETING', 'UTILITY']).optional(),
+    confirm: confirm.describe('Must equal `templateId`.'),
+  })
+  .strict();
+
+export const deleteMessageTemplateSchema = z
+  .object({
+    wabaId: metaId.optional(),
+    name: templateName.describe('Template name to delete (removes ALL language versions).'),
+    hsmId: metaId.optional().describe('Optional specific template ID, to delete one version only.'),
+    confirm: confirm.describe('Must equal the template `name`.'),
+  })
+  .strict();
+
+export const updateBusinessProfileSchema = z
+  .object({
+    phoneNumberId: metaId.optional(),
+    about: z.string().max(139).optional(),
+    address: z.string().max(256).optional(),
+    description: z.string().max(512).optional(),
+    email: z.string().email().max(128).optional(),
+    vertical: z.string().max(64).optional(),
+    websites: z.array(z.string().url()).max(2).optional(),
+    confirm: confirm.describe('Must equal the phone number ID being updated.'),
+  })
+  .strict();
+
+export const createFlowSchema = z
+  .object({
+    wabaId: metaId.optional(),
+    name: z.string().trim().min(1).max(200).describe('Flow name.'),
+    categories: z
+      .array(
+        z.enum([
+          'SIGN_UP',
+          'SIGN_IN',
+          'APPOINTMENT_BOOKING',
+          'LEAD_GENERATION',
+          'CONTACT_US',
+          'CUSTOMER_SUPPORT',
+          'SURVEY',
+          'OTHER',
+        ]),
+      )
+      .min(1)
+      .max(8),
+    confirm: confirm.describe('Must equal the Flow `name`.'),
+  })
+  .strict();
+
+export const updateFlowJsonSchema = z
+  .object({
+    flowId: metaId.describe('Flow ID whose draft JSON to replace.'),
+    flowJson: z
+      .string()
+      .min(2)
+      // Generous, because the real pin_flow.json is ~246KB with the logo
+      // inlined as base64 — but still bounded so this cannot be a memory bomb.
+      .max(4_000_000)
+      .describe('The complete Flow JSON document, as a string.'),
+    confirm: confirm.describe('Must equal `flowId`.'),
+  })
+  .strict();
+
+export const publishFlowSchema = z
+  .object({
+    flowId: metaId.describe('Flow ID to publish. This makes it live for customers.'),
+    confirm: confirm.describe('Must equal `flowId`.'),
+  })
+  .strict();
+
+export const deprecateFlowSchema = z
+  .object({
+    flowId: metaId.describe('Flow ID to deprecate. IRREVERSIBLE.'),
+    confirm: confirm.describe('Must equal `flowId`.'),
+  })
+  .strict();
+
+export type CreateMessageTemplateInput = z.infer<typeof createMessageTemplateSchema>;
+export type UpdateMessageTemplateInput = z.infer<typeof updateMessageTemplateSchema>;
+export type DeleteMessageTemplateInput = z.infer<typeof deleteMessageTemplateSchema>;
+export type UpdateBusinessProfileInput = z.infer<typeof updateBusinessProfileSchema>;
+export type CreateFlowInput = z.infer<typeof createFlowSchema>;
+export type UpdateFlowJsonInput = z.infer<typeof updateFlowJsonSchema>;
+export type PublishFlowInput = z.infer<typeof publishFlowSchema>;
+export type DeprecateFlowInput = z.infer<typeof deprecateFlowSchema>;
+
 export type ListFlowsInput = z.infer<typeof listFlowsSchema>;
 export type InspectFlowInput = z.infer<typeof inspectFlowSchema>;
 export type PublishedFlowScreensInput = z.infer<typeof publishedFlowScreensSchema>;

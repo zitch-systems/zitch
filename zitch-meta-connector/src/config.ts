@@ -32,12 +32,24 @@ export interface Config {
    * applies. */
   ipRateLimitMaxRequests: number;
   /**
-   * Read-only is the only mode this server currently ships. It is still an
-   * explicit, named switch (rather than "true because no write tools exist")
-   * so that the day a write tool is proposed, turning it on is a deliberate,
-   * reviewable change here — not a silent side effect of adding a file.
+   * True unless META_ALLOW_WRITES is explicitly enabled. When true, write
+   * tools are not registered AT ALL — they are absent from tools/list, from
+   * the REST mirror, and from the MCP dispatch table, rather than present and
+   * refusing. A tool that cannot be named cannot be called by mistake.
+   *
+   * Default-off is the point: this connector shares a WhatsApp Business
+   * Account with the live customer banking channel, so enabling writes has to
+   * be a deliberate act of configuration, never a side effect of deploying a
+   * build that happens to contain write code.
    */
-  readOnly: true;
+  readOnly: boolean;
+  /**
+   * Write tools additionally refuse unless the caller restates the exact
+   * resource being changed. Off means the interlock is skipped — available
+   * because it is the operator's call, but it is on by default for a reason:
+   * it is what stops a misread instruction deprecating the wrong Flow.
+   */
+  requireWriteConfirmation: boolean;
 
   // --- OAuth 2.1 (see src/oauth/) -----------------------------------------
   /** Public origin, e.g. https://zitch-meta-connector.onrender.com. When
@@ -76,6 +88,17 @@ function requireEnv(name: string): string {
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name];
   return value && value.trim() ? value.trim() : undefined;
+}
+
+/** Boolean env var. Only the explicit affirmatives count — anything else
+ * (including a typo'd "ture", or an empty value) reads as the fallback, so a
+ * mistake can never accidentally switch writes ON. */
+function boolEnv(name: string, fallback: boolean): boolean {
+  const raw = optionalEnv(name)?.toLowerCase();
+  if (raw === undefined) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  throw new Error(`Environment variable ${name} must be true/false, got: ${raw}`);
 }
 
 /** Comma-separated list env var; undefined when unset so a caller can apply
@@ -163,7 +186,8 @@ export function loadConfig(): Config {
     rateLimitWindowMs: intEnv('RATE_LIMIT_WINDOW_MS', 60_000),
     rateLimitMaxRequests: intEnv('RATE_LIMIT_MAX_REQUESTS', 30),
     ipRateLimitMaxRequests: intEnv('IP_RATE_LIMIT_MAX_REQUESTS', 60),
-    readOnly: true,
+    readOnly: !boolEnv('META_ALLOW_WRITES', false),
+    requireWriteConfirmation: boolEnv('META_REQUIRE_WRITE_CONFIRMATION', true),
     publicBaseUrl: optionalEnv('PUBLIC_BASE_URL'),
     oauthSigningKey:
       optionalEnv('OAUTH_SIGNING_KEY') ??

@@ -3,15 +3,20 @@ info:
   title: Zitch Meta Connector
   version: "1.0.0"
   description: >
-    Read-only maintenance/configuration tools for the Zitch WhatsApp Cloud API
-    and Meta Business API. This is the REST mirror of the connector's MCP
-    tools (see /mcp), provided so the same read-only logic can be wired up as
-    a ChatGPT GPT Action without re-implementing anything. Every endpoint is
-    read-only: none of them create, modify, delete, or rotate anything at
-    Meta, and none of them can reach a Zitch customer's PIN, biometric
-    enrollment, balance, transaction history, or personal data — this
-    connector only ever talks to the Meta Graph API, never the Zitch backend
-    or database.
+    Maintenance and configuration tools for the Zitch WhatsApp Cloud API and
+    Meta Business API. This is the REST mirror of the connector's MCP tools
+    (see /mcp), provided so the same logic can be wired up as a ChatGPT GPT
+    Action without re-implementing anything.
+
+    GET endpoints are reads. POST endpoints are CONFIG WRITES and are only
+    present when the connector is deployed with META_ALLOW_WRITES enabled;
+    each requires a `confirm` field restating the exact resource it changes.
+
+    No endpoint can send a WhatsApp message, change a webhook subscription,
+    register a phone number, or rotate a token. None can reach a Zitch
+    customer's PIN, biometric enrollment, balance, transaction history, or
+    personal data - this connector only ever talks to the Meta Graph API,
+    never the Zitch backend or database.
 servers:
   - url: https://REPLACE_WITH_YOUR_DEPLOYED_HOST/rest
     description: Production (replace with your actual deployment host)
@@ -383,6 +388,306 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "502": { $ref: "#/components/responses/MetaApiError" }
 
+  /create-message-template:
+    post:
+      operationId: createMessageTemplate
+      summary: Create a message template
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Submits a new template to Meta for review. `confirm` must equal the template name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - name
+                  - language
+                  - category
+                  - components
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /update-message-template:
+    post:
+      operationId: updateMessageTemplate
+      summary: Edit a message template
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Edits a template's components or category; sends approved templates back to review. `confirm` must equal templateId.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - templateId
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /delete-message-template:
+    post:
+      operationId: deleteMessageTemplate
+      summary: Delete a message template
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Deletes a template by name, removing EVERY language version. `confirm` must equal the template name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - name
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /update-whatsapp-business-profile:
+    post:
+      operationId: updateWhatsAppBusinessProfile
+      summary: Update the public business profile
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Updates about/address/description/email/vertical/websites. `confirm` must equal the phone number ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /create-whatsapp-flow:
+    post:
+      operationId: createWhatsAppFlow
+      summary: Create a WhatsApp Flow
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Creates a new empty Flow in draft. `confirm` must equal the Flow name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - name
+                  - categories
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /update-whatsapp-flow-json:
+    post:
+      operationId: updateWhatsAppFlowJson
+      summary: Replace a Flow's draft JSON
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Uploads a Flow JSON document, replacing the draft. Does not go live until published. `confirm` must equal flowId.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - flowId
+                  - flowJson
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /publish-whatsapp-flow:
+    post:
+      operationId: publishWhatsAppFlow
+      summary: Publish a WhatsApp Flow
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. Makes the Flow live for customers. `confirm` must equal flowId.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - flowId
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
+  /deprecate-whatsapp-flow:
+    post:
+      operationId: deprecateWhatsAppFlow
+      summary: Deprecate a WhatsApp Flow
+      description: >
+        WRITE. Only present when the connector is deployed with
+        META_ALLOW_WRITES enabled. IRREVERSIBLE. No new session can open on this Flow afterwards. `confirm` must equal flowId.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              required:
+                  - flowId
+                  - confirm
+              properties:
+                confirm:
+                  type: string
+                  description: >
+                    Safety interlock - must exactly equal the name or ID of the
+                    resource being changed, or the call is refused.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "405":
+          description: Called with GET. Write endpoints require POST.
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "502": { $ref: "#/components/responses/MetaApiError" }
 components:
   securitySchemes:
     ApiKeyAuth:
