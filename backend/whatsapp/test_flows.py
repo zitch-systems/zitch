@@ -1185,17 +1185,32 @@ class SignupFormFlowTests(TestCase):
         self.assertTrue(u.phone_verified)                     # same number as the chat
         self.assertTrue(u.check_transaction_pin("246810"))
 
-    def test_signup_rejects_predictable_pin_without_leaving_the_chained_screen(self):
-        from .flows import PIN_CHAIN
+    def test_signup_rejects_predictable_pin_onto_the_empty_retry_twin(self):
+        """A refused signup PIN has to land on PIN_RETRY, not re-render PIN_CHAIN.
+
+        WhatsApp keeps a form's client-side value when the endpoint answers with
+        the SAME screen id, and the PIN box is masked — so a re-render leaves the
+        refused PIN sitting in a box the customer cannot read, and one Confirm tap
+        resubmits the identical weak PIN. The twin arrives empty, which is the
+        only way the customer can actually act on the error.
+        """
+        from .flows import PIN_CONFIRM, PIN_RETRY, SUCCESS_SCREEN
 
         ob = self._ob()
         self._submit(ob, first_name="Ngozi", last_name="Ade", email="weak-pin@example.com")
         self._submit(ob, phone="08099990001")
         rejected = self._submit(ob, pin="123456")
-        self.assertEqual(rejected["screen"], PIN_CHAIN)
+        self.assertEqual(rejected["screen"], PIN_RETRY)
         self.assertIn("less predictable", rejected["data"]["error"])
         ob.refresh_from_db()
         self.assertNotIn("flow_pin_hash", ob.payload)
+        self.assertEqual(ob.payload["flow_screen"], PIN_RETRY)
+
+        # PIN_CHAIN -> PIN_RETRY -> PIN_CONFIRM are all legal routes in the
+        # published flow, so recovering from the rejection still finishes signup.
+        self.assertEqual(self._submit(ob, pin="246810")["screen"], PIN_CONFIRM)
+        self.assertEqual(self._submit(ob, pin="246810")["screen"], SUCCESS_SCREEN)
+        self.assertTrue(User.objects.get(phone="08099990001").check_transaction_pin("246810"))
 
     def test_a_different_account_phone_is_stored_unverified(self):
         from .flows import SUCCESS_SCREEN

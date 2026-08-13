@@ -209,3 +209,42 @@ class WhatsAppChannelAlertTests(TestCase):
         email.assert_called_once()
         wa_reply.assert_called_once()
         self.assertIn("Reversal", wa_reply.call_args[0][1])
+
+    def test_a_whatsapp_transfer_that_only_settles_later_is_announced(self):
+        """The chat could only say "⏳ … processing", so the settlement alert is
+        the ONE moment the customer can be told the money actually left. The
+        channel de-dupe assumes a receipt was sent; here there wasn't one, and
+        suppressing this leaves "processing" as the last word forever."""
+        from .alerts import mark_awaiting_settlement
+
+        credit(self.user, Decimal("10000"), "funding")
+        with patch("whatsapp.router.reply") as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn = debit(self.user, Decimal("1000"), "Transfer to Ada",
+                            meta={"channel": "whatsapp"})
+                mark_awaiting_settlement(txn)          # what the chat's ⏳ branch does
+        wa_reply.assert_not_called()                    # nothing settled yet
+
+        with patch("utility.providers.send_email"), \
+             patch("whatsapp.router.reply") as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn.refresh_from_db()
+                txn.transaction_status = Transaction.SUCCESS
+                txn.save(update_fields=["transaction_status"])
+        wa_reply.assert_called_once()
+        self.assertIn("Debit alert", wa_reply.call_args[0][1])
+
+    def test_marking_awaiting_settlement_keeps_the_provider_payload(self):
+        """It merges onto the row in the DB, not the in-memory copy — another
+        writer's provider response must survive the flag."""
+        from .alerts import mark_awaiting_settlement
+
+        credit(self.user, Decimal("10000"), "funding")
+        with self.captureOnCommitCallbacks(execute=True):
+            txn = debit(self.user, Decimal("1000"), "transfer", meta={"channel": "whatsapp"})
+        Transaction.objects.filter(pk=txn.pk).update(
+            meta={"channel": "whatsapp", "provider_ref": "rail-99"})
+        mark_awaiting_settlement(txn)                   # txn's in-memory meta is stale
+        meta = Transaction.objects.get(pk=txn.pk).meta
+        self.assertEqual(meta["provider_ref"], "rail-99")
+        self.assertTrue(meta["wa_awaiting_settlement"])

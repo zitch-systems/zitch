@@ -42,7 +42,14 @@ def webhook(request):
         return HttpResponse(status=404)
     if request.method == "GET":
         p = request.GET
-        if p.get("hub.mode") == "subscribe" and p.get("hub.verify_token") == settings.WHATSAPP.get("VERIFY_TOKEN"):
+        # Constant-time compare, matching verify_signature and every flow-token
+        # check: a plain "==" short-circuits on the first differing byte, which
+        # is a (marginal, but avoidable) timing oracle on this public endpoint.
+        token_ok = secrets.compare_digest(
+            str(p.get("hub.verify_token") or ""),
+            str(settings.WHATSAPP.get("VERIFY_TOKEN") or ""),
+        )
+        if p.get("hub.mode") == "subscribe" and token_ok:
             return HttpResponse(p.get("hub.challenge", ""))
         return HttpResponse("forbidden", status=403)
 
@@ -273,29 +280,46 @@ def _iter_statuses(event: dict):
 
 
 def _apply_status(st: dict) -> None:
-    """Delivery callback -> update the broadcast recipient + roll up counts."""
+    """Delivery callback -> update the broadcast recipient + roll up counts.
+
+    The rank comparison is a read-modify-write, so it has to happen under a row
+    lock. Meta delivers "delivered" and "read" for the same message as separate
+    webhook POSTs, which are handled inline on separate threads; unlocked, both
+    can read the same stale status, both see their own value as an advance, and
+    the later save clobbers the earlier — dropping "read" back to "delivered".
+    Locking mirrors _claim_outbound and refresh_broadcast_counts in jobs.py.
+    """
+    from django.db import transaction as db_transaction
+
     mid, status = st.get("id", ""), st.get("status", "")
     if not mid or status not in ("sent", "delivered", "read", "failed"):
         return
-    rec = BroadcastRecipient.objects.filter(wa_message_id=mid).first()
-    if rec is None:
-        return
-    rank = {"queued": 0, "unknown": 0, "sent": 1, "delivered": 2, "read": 3}
-    current_rank = rank.get(rec.status, 0)
-    if status == "failed":
-        # A late/out-of-order failure cannot undo confirmed delivery/read.
-        if current_rank >= rank["delivered"]:
+
+    broadcast_id = None
+    with db_transaction.atomic():
+        rec = (BroadcastRecipient.objects.select_for_update()
+               .filter(wa_message_id=mid).first())
+        if rec is None:
             return
-    elif rank.get(status, 0) <= current_rank:
-        return
-    rec.status = status
-    if status == "failed":
-        errors = st.get("errors") or []
-        first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
-        rec.error = str(first_error.get("code") or "delivery_failed")[:200]
-    rec.save(update_fields=["status", "error"])
+        rank = {"queued": 0, "unknown": 0, "sent": 1, "delivered": 2, "read": 3}
+        current_rank = rank.get(rec.status, 0)
+        if status == "failed":
+            # A late/out-of-order failure cannot undo confirmed delivery/read.
+            if current_rank >= rank["delivered"]:
+                return
+        elif rank.get(status, 0) <= current_rank:
+            return
+        rec.status = status
+        if status == "failed":
+            errors = st.get("errors") or []
+            first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+            rec.error = str(first_error.get("code") or "delivery_failed")[:200]
+        rec.save(update_fields=["status", "error"])
+        broadcast_id = rec.broadcast_id
+
+    # Outside the lock: it takes its own locks and does not need this row's.
     from .jobs import refresh_broadcast_counts
-    refresh_broadcast_counts(rec.broadcast_id)
+    refresh_broadcast_counts(broadcast_id)
 
 
 # A bare 4-6 digit message is almost certainly a transaction PIN — redact it
