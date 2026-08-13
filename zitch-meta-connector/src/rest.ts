@@ -1,5 +1,5 @@
 /**
- * Plain REST mirror of the six MCP tools, at `GET/POST /rest/<tool-name>`.
+ * Plain REST mirror of every MCP tool, at `GET /rest/<tool-name>`.
  *
  * Not required for Claude (which speaks MCP directly against `/mcp`) — this
  * exists so the same read-only logic can be wired up as a ChatGPT GPT Action

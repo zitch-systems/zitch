@@ -12,17 +12,57 @@ because it has no code path into the Zitch database or API at all.
 
 ## What it exposes
 
-Six read-only tools, available both as MCP tools (`POST /mcp`) and as a plain REST mirror
+Thirteen read-only tools, available both as MCP tools (`POST /mcp`) and as a plain REST mirror
 (`GET /rest/*`, for a future ChatGPT GPT Action — see [openapi.yaml](./openapi.yaml)):
+
+**Webhooks and credentials**
 
 | Tool | What it answers |
 |---|---|
 | `check_whatsapp_webhook_status` | Which app(s) are subscribed to the WABA's webhook events, and which event fields. |
-| `check_whatsapp_phone_number_config` | Zitch's outbound number's verification status, quality rating, messaging limit tier. |
-| `list_whatsapp_message_templates` | Approved/pending/rejected message templates, with status and quality score. |
-| `inspect_failed_message_deliveries` | Aggregate sent/delivered counts per day for a bounded window. |
 | `inspect_webhook_events` | Which webhook event *types* are currently configured (not a delivery log — see below). |
 | `verify_meta_credentials` | Whether `META_ACCESS_TOKEN` can currently read the configured WABA and phone number. |
+
+**Flows** — the interactive multi-screen forms (the PIN, signup and identity ladders), *not* to be
+confused with message templates
+
+| Tool | What it answers |
+|---|---|
+| `list_whatsapp_flows` | Every Flow on the WABA, with publish status and categories. |
+| `inspect_whatsapp_flow` | One Flow's `validation_errors` — what Meta refuses a publish on — plus its preview URL. |
+| `get_published_flow_screens` | The screens and routing of the Flow Meta *actually has published*, including routing roots. |
+
+**Numbers, account and templates**
+
+| Tool | What it answers |
+|---|---|
+| `check_whatsapp_phone_number_config` | One number's verification status, quality rating, messaging limit tier. |
+| `list_whatsapp_phone_numbers` | The same, for every number on the WABA. |
+| `get_waba_details` | Account review and business verification status — what silently gates Flows and templates. |
+| `get_whatsapp_business_profile` | The public profile customers see on the business. |
+| `list_whatsapp_message_templates` | Approved/pending/rejected message templates, with status and quality score. |
+
+**Volume and delivery**
+
+| Tool | What it answers |
+|---|---|
+| `inspect_failed_message_deliveries` | Aggregate sent/delivered counts per day for a bounded window. |
+| `get_conversation_analytics` | Conversation volume and cost by category over a bounded window. |
+
+### Why the Flow tools exist
+
+The Flow JSON lives in this repo but is **published by hand** in WhatsApp Manager, so every screen
+added in code is missing on Meta's side until someone pastes and publishes. The symptom is that
+older screens keep working while the newest ones are rejected — which reads like "some features are
+broken" rather than "the Flow is one publish behind", and is indistinguishable from a bad token, an
+unverified business, or an expired session without exactly this reading.
+
+`get_published_flow_screens` also computes **routing roots**: the screens with no incoming route,
+which are the only ones a Flow may *open* on. Opening on any other screen is rejected with error
+`131009` ("screen not allowed as first screen") — a message that names the screen but not the rule,
+and the single most confusing Flow failure to debug. It flags dangling routes and unreachable
+screens too. The full Flow JSON is deliberately **not** returned: it embeds the logo as base64 and
+runs to hundreds of KB.
 
 **Two of these are honestly limited, on purpose.** Meta's Graph API does not expose a queryable
 history of past webhook deliveries or individual failed messages — webhooks are push-only and
@@ -36,7 +76,7 @@ project does not do" below).
 
 ## What this project does not do
 
-- **No write, delete, token-rotation, or payment tools.** Only six read tools exist. `readOnly`
+- **No write, delete, token-rotation, or payment tools.** Only read tools exist. `readOnly`
   is an explicit, named field in `src/config.ts` — turning any of that on in the future is meant
   to be a deliberate, reviewable code change, not a side effect of adding a file.
 - **Never touches Zitch's production webhook or banking code.** This is a new, isolated
@@ -312,7 +352,9 @@ src/
   tools/
     registry.ts     Single source of truth: name, schema, handler per tool
     webhookStatus.ts, phoneNumberConfig.ts, messageTemplates.ts,
-    failedDeliveries.ts, webhookEvents.ts, verifyCredentials.ts
+    failedDeliveries.ts, webhookEvents.ts, verifyCredentials.ts,
+    flows.ts (Flow list/inspect/published-screens), account.ts (WABA,
+    numbers, business profile, conversation analytics)
 test/            Unit tests for auth, rate limiting, redaction, schemas, config
 openapi.yaml        REST API spec for a future ChatGPT GPT Action
 Dockerfile        Multi-stage production image

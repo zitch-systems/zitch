@@ -87,6 +87,62 @@ export const inspectWebhookEventsSchema = z
 
 export const verifyMetaCredentialsSchema = z.object({}).strict();
 
+// --- Flows -----------------------------------------------------------------
+export const listFlowsSchema = z
+  .object({
+    wabaId: metaId.optional().describe('WhatsApp Business Account ID. Defaults to META_WABA_ID.'),
+    limit: pageLimit,
+  })
+  .strict();
+
+export const inspectFlowSchema = z
+  .object({
+    flowId: metaId.describe('Flow ID, from list_whatsapp_flows.'),
+  })
+  .strict();
+
+export const publishedFlowScreensSchema = z
+  .object({
+    flowId: metaId.describe('Flow ID, from list_whatsapp_flows.'),
+  })
+  .strict();
+
+// --- Account / number configuration ---------------------------------------
+export const wabaDetailsSchema = z
+  .object({
+    wabaId: metaId.optional().describe('WhatsApp Business Account ID. Defaults to META_WABA_ID.'),
+  })
+  .strict();
+
+export const listPhoneNumbersSchema = z
+  .object({
+    wabaId: metaId.optional().describe('WhatsApp Business Account ID. Defaults to META_WABA_ID.'),
+  })
+  .strict();
+
+export const businessProfileSchema = z
+  .object({
+    phoneNumberId: metaId
+      .optional()
+      .describe('Phone number ID whose public profile to read. Defaults to META_PHONE_NUMBER_ID.'),
+  })
+  .strict();
+
+export const conversationAnalyticsSchema = z
+  .object({
+    wabaId: metaId.optional().describe('WhatsApp Business Account ID. Defaults to META_WABA_ID.'),
+    lookbackHours,
+  })
+  .strict();
+
+export type ListFlowsInput = z.infer<typeof listFlowsSchema>;
+export type InspectFlowInput = z.infer<typeof inspectFlowSchema>;
+export type PublishedFlowScreensInput = z.infer<typeof publishedFlowScreensSchema>;
+export type WabaDetailsInput = z.infer<typeof wabaDetailsSchema>;
+export type ListPhoneNumbersInput = z.infer<typeof listPhoneNumbersSchema>;
+export type BusinessProfileInput = z.infer<typeof businessProfileSchema>;
+export type ConversationAnalyticsInput = z.infer<typeof conversationAnalyticsSchema>;
+
 export type CheckWebhookStatusInput = z.infer<typeof checkWebhookStatusSchema>;
 export type CheckPhoneNumberConfigInput = z.infer<typeof checkPhoneNumberConfigSchema>;
 export type ListMessageTemplatesInput = z.infer<typeof listMessageTemplatesSchema>;

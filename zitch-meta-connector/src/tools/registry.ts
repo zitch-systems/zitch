@@ -1,5 +1,5 @@
 /**
- * Single source of truth for the six tools this connector exposes — shared by
+ * Single source of truth for every tool this connector exposes — shared by
  * the MCP server registration (src/server.ts) and the plain REST mirror
  * (src/rest.ts) so both surfaces can never drift apart on name, schema, or
  * behavior. Every tool here is read-only: none of them can create, modify,
@@ -12,12 +12,19 @@ import type { z } from 'zod';
 
 import type { Config } from '../config.js';
 import {
+  businessProfileSchema,
   checkPhoneNumberConfigSchema,
   checkWebhookStatusSchema,
+  conversationAnalyticsSchema,
   inspectFailedDeliveriesSchema,
+  inspectFlowSchema,
   inspectWebhookEventsSchema,
+  listFlowsSchema,
   listMessageTemplatesSchema,
+  listPhoneNumbersSchema,
+  publishedFlowScreensSchema,
   verifyMetaCredentialsSchema,
+  wabaDetailsSchema,
 } from '../schemas.js';
 import { checkWebhookStatus } from './webhookStatus.js';
 import { checkPhoneNumberConfig } from './phoneNumberConfig.js';
@@ -25,6 +32,13 @@ import { listMessageTemplates } from './messageTemplates.js';
 import { inspectFailedDeliveries } from './failedDeliveries.js';
 import { inspectWebhookEvents } from './webhookEvents.js';
 import { verifyMetaCredentials } from './verifyCredentials.js';
+import { getPublishedFlowScreens, inspectFlow, listFlows } from './flows.js';
+import {
+  getBusinessProfile,
+  getConversationAnalytics,
+  getWabaDetails,
+  listPhoneNumbers,
+} from './account.js';
 
 export interface ToolDefinition {
   /** snake_case tool name, as it appears to an MCP client. */
@@ -100,5 +114,76 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
       'by making a minimal read against each. Never returns the token itself.',
     schema: verifyMetaCredentialsSchema,
     handler: (config: Config) => verifyMetaCredentials(config),
+  },
+  {
+    name: 'list_whatsapp_flows',
+    title: 'List WhatsApp Flows',
+    description:
+      "Lists the WABA's Flows (the interactive multi-screen forms — Zitch's PIN, signup and " +
+      'identity ladders) with their publish status and categories. Distinct from message ' +
+      'templates, which are the pre-approved message bodies.',
+    schema: listFlowsSchema,
+    handler: listFlows,
+  },
+  {
+    name: 'inspect_whatsapp_flow',
+    title: 'Inspect a WhatsApp Flow',
+    description:
+      "One Flow's status, categories, and — most usefully — its validation_errors, which are " +
+      'exactly what Meta refuses a publish on. Also returns the existing preview URL without ' +
+      'regenerating it.',
+    schema: inspectFlowSchema,
+    handler: inspectFlow,
+  },
+  {
+    name: 'get_published_flow_screens',
+    title: 'Get a published Flow\'s screens and routing',
+    description:
+      "The screen inventory and routing model of the Flow JSON Meta actually has published — " +
+      "including which screens are routing roots (the only ones a Flow may OPEN on; violating " +
+      'that is the 131009 "screen not allowed as first screen" rejection), plus any dangling ' +
+      'routes or unreachable screens. Compare the screen list against the repo\'s ' +
+      'pin_flow.json to catch a Flow that is one publish behind the code.',
+    schema: publishedFlowScreensSchema,
+    handler: getPublishedFlowScreens,
+  },
+  {
+    name: 'get_waba_details',
+    title: 'Get WhatsApp Business Account details',
+    description:
+      "The WABA's own name, timezone, template namespace, and — the ones that silently gate " +
+      'Flows, template approval and messaging limits — its account review and business ' +
+      'verification status.',
+    schema: wabaDetailsSchema,
+    handler: getWabaDetails,
+  },
+  {
+    name: 'list_whatsapp_phone_numbers',
+    title: 'List WhatsApp phone numbers',
+    description:
+      'Every number on the WABA with its quality rating, verification status, messaging limit ' +
+      'tier and display-name state — the wider view that check_whatsapp_phone_number_config ' +
+      'gives for one number.',
+    schema: listPhoneNumbersSchema,
+    handler: listPhoneNumbers,
+  },
+  {
+    name: 'get_whatsapp_business_profile',
+    title: 'Get the public WhatsApp business profile',
+    description:
+      "The profile customers see on the business: about text, description, address, email, " +
+      'websites and vertical. Business-authored content, not customer data.',
+    schema: businessProfileSchema,
+    handler: getBusinessProfile,
+  },
+  {
+    name: 'get_conversation_analytics',
+    title: 'Get conversation volume and cost',
+    description:
+      'Aggregate conversation counts and billing over a bounded window, grouped by category ' +
+      '(marketing / utility / authentication / service). Aggregate totals only — no ' +
+      'recipients, no message content, no per-customer detail.',
+    schema: conversationAnalyticsSchema,
+    handler: getConversationAnalytics,
   },
 ];
