@@ -499,6 +499,14 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     # PIN or a BACK without recomputing it from a payload that may have moved on.
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
+    # Opens on the root, not the twin — the same reset every sibling sender does.
+    # Without it this was the ONE sender that let a stale flow_screen survive: an
+    # action re-armed after the transfer form (which sets flow_screen=PIN_CHAIN)
+    # would have INIT/BACK answer PIN_CHAIN against a message opened on
+    # PIN_SCREEN, and PIN_SCREEN -> PIN_CHAIN is not a declared route. Meta
+    # refuses that navigation on the device, mid-payment.
+    pa.payload["flow_screen"] = PIN_SCREEN
+    pa.payload["flow_pin_tries"] = 0        # a fresh send is a fresh budget
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)  # persist so the token resolves
     # Hierarchy, not availability: a customer with the app is led to the
     # biometric approval and the Flow's own button becomes the fallback ("Use
@@ -1327,6 +1335,14 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
        without one and the PIN is set in the app, where it belongs.
     """
     if flows_live():
+        # Opens on the root, not the twin, and with a fresh screen budget — the
+        # signup ladder parks flow_screen on PIN_CHAIN (and PIN_RETRY after a
+        # refusal), and a stale value here would answer a screen this message did
+        # not open on.
+        ob.payload["flow_screen"] = PIN_SCREEN
+        ob.payload["pin_policy_tries"] = 0
+        ob.payload["pin_confirm_tries"] = 0
+        ob.save(update_fields=["payload"])
         _onboard_to(ob, FLOW_PIN_STATE)
         res = send_flow(
             msisdn, sign_onboarding_token(ob),

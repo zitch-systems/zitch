@@ -63,6 +63,15 @@ CODE_RETRY = "CODE_RETRY"
 #: resubmitted it — spending another of the five attempts on digits already
 #: known to be wrong, and walking the customer into a lockout they did not type.
 PIN_RETRY = "PIN_RETRY"
+#: How many times a masked PIN box may be shown in one Flow session, per step.
+#: These are SCREEN budgets before they are policy budgets. Only two distinct
+#: create-PIN ids exist (the PIN_SCREEN/PIN_CHAIN root, then PIN_RETRY) and only
+#: two confirm ids (PIN_CONFIRM, PIN_CONFIRM_RETRY), so a third render would have
+#: to repeat an id it has already used — and a repeated id is exactly what leaves
+#: the refused digits in the box. Raising either number without adding a screen
+#: puts the bug straight back; test_flow_pin_attempts pins the two together.
+_PIN_CREATE_ATTEMPTS = 2    # weak-PIN refusals per create session
+_PIN_CONFIRM_ATTEMPTS = 2   # confirm mismatches per create session
 #: And on the creation pair: a MISMATCHED confirm entry re-rendered onto
 #: PIN_CONFIRM kept the mismatched digits in its masked box, so one tap
 #: resubmitted the same mismatch forever — in a field the customer cannot even
@@ -391,10 +400,13 @@ def _confirm_pin_screen(error: str = "") -> dict:
     PIN_SCREEN — the held first entry stays authoritative and the error says how
     to start over instead (cancel in the chat).
 
-    An ERROR render always answers with the retry twin: from PIN_CONFIRM that is
-    a routed navigation, from the twin itself a same-screen re-render — legal
-    from both, so no state tracking — and either way the masked box arrives
-    EMPTY instead of holding the digits that just failed."""
+    An ERROR render answers with the retry twin. From PIN_CONFIRM that is a
+    routed navigation and the masked box arrives EMPTY. From the twin itself it
+    is a same-screen re-render, and the box does NOT arrive empty — WhatsApp
+    keeps a form's client-side value on a same-id answer, so the digits that just
+    failed are still in it. That second render is therefore capped by the CALLERS
+    (_PIN_CONFIRM_ATTEMPTS), which is where the counting has to live: this
+    function takes no container and cannot count."""
     return {"screen": PIN_CONFIRM_RETRY if error else PIN_CONFIRM,
             "data": {"amount": "Re-enter your PIN",
                      "recipient": "Type the same 6 digits again to confirm",
@@ -551,6 +563,31 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
             # one masked-PIN error path still missing it. PIN_RETRY is a legal
             # forward route from both PIN_SCREEN and PIN_CHAIN and itself routes
             # on to PIN_CONFIRM, so the confirm step stays reachable.
+            #
+            # And only ONCE. transaction_pin_rejection is a policy check with no
+            # counter of its own, so a third refusal would answer PIN_RETRY onto
+            # PIN_RETRY and retain the digits — with nothing to stop it, on a
+            # container that lives for ONBOARD_TTL (15 minutes), which makes this
+            # the most reachable instance of the retained-box trap in the module,
+            # not the least.
+            tries = int(ob.payload.get("pin_policy_tries", 0)) + 1
+            if tries >= _PIN_CREATE_ATTEMPTS:
+                # Budget spent for THIS session. Reset it rather than persisting
+                # the exhaustion: the cap exists to stop a render loop inside one
+                # open form, and client-side field state dies with the session —
+                # so re-tapping the card is a genuinely fresh, empty start and
+                # should get a fresh budget. Persisting the count would leave the
+                # signup row alive (below) pointing at a card that terminates on
+                # the customer's very next keystroke, forever.
+                ob.payload["pin_policy_tries"] = 0
+                ob.save(update_fields=["payload"])
+                # No _clear_actions: this holds a WaOnboarding, not a
+                # PendingAction, and that is not its teardown. Left intact, the
+                # signup resumes from the card or expires on its own TTL.
+                return _success_screen("That PIN isn't one we can accept — it can't be six "
+                                       "of the same digit or a run like 123456. Tap the "
+                                       "secure screen above to try again.")
+            ob.payload["pin_policy_tries"] = tries
             ob.payload["flow_screen"] = PIN_RETRY
             ob.save(update_fields=["payload"])
             return _pin_screen(_ob_summary(ob), error=rejected.rstrip(".") + ".",
@@ -560,6 +597,24 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
         return _confirm_pin_screen()
 
     if not check_password(pin, held):
+        # Capped for the same reason as the create step: the first mismatch
+        # navigates PIN_CONFIRM -> PIN_CONFIRM_RETRY and arrives empty, but a
+        # second would answer PIN_CONFIRM_RETRY onto itself and hold the digits
+        # that just failed — in a field the customer cannot read to correct.
+        # The counting lives here because _confirm_pin_screen takes no container.
+        tries = int(ob.payload.get("pin_confirm_tries", 0)) + 1
+        if tries >= _PIN_CONFIRM_ATTEMPTS:
+            # Reset the session budget, and drop the held first entry too: the
+            # customer could not reproduce it, so keeping it authoritative would
+            # make the next session unwinnable. Re-tapping the card starts the
+            # create-then-confirm pair over from an empty box.
+            ob.payload["pin_confirm_tries"] = 0
+            ob.payload.pop("flow_pin_hash", None)
+            ob.save(update_fields=["payload"])
+            return _success_screen("Those didn't match. Tap the secure screen above to "
+                                   "choose your PIN again.")
+        ob.payload["pin_confirm_tries"] = tries
+        ob.save(update_fields=["payload"])
         return _confirm_pin_screen(error="Those didn't match — enter the same PIN you "
                                          "chose on the first screen, or reply \"cancel\" "
                                          "in the chat to start over.")
@@ -767,7 +822,7 @@ def _submit_email(pa, data: dict) -> dict:
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
-    from .router import _clear_actions, authorise_flow_execution
+    from .router import PIN_FLOW_ATTEMPTS, _clear_actions, authorise_flow_execution
 
     pa = resolve_flow_token(token)
     if pa is None:
@@ -792,9 +847,46 @@ def _submit_pin(token: str, data: dict) -> dict:
         if code == "pin_locked":
             _clear_actions(pa.msisdn)
             return _success_screen(message)
-        # A fresh screen, not a re-render: see PIN_RETRY. Attempts beyond the
-        # first land back here, which is a smaller problem than the first retry
-        # silently resubmitting — by then the customer has seen the box.
+        if code == "no_pin":
+            # Unsatisfiable, and — unlike a wrong PIN — uncounted: the branch
+            # returns before evaluate_transaction_pin's atomic block, so it never
+            # touches pin_failed_attempts and can never reach the lockout that
+            # ends every other failing path. Re-rendering the pad would loop on
+            # one screen id until the token expired, for a PIN that does not
+            # exist and that no number of retries can conjure.
+            _clear_actions(pa.msisdn)
+            return _success_screen("You don't have a transaction PIN yet — reply "
+                                   "\"set pin\" in the chat to create one.")
+        # One retry, then cancel: the budget the chat rung already enforces
+        # (PIN_FLOW_ATTEMPTS, spec §7), and a SCREEN budget as much as a policy
+        # one. Attempt 1 answers PIN_RETRY — a different id, so the pad arrives
+        # empty. A second wrong PIN would have to answer PIN_RETRY *onto*
+        # PIN_RETRY, and WhatsApp keeps a form's client-side value whenever the
+        # endpoint answers with the SAME screen id. That leaves the refused
+        # digits in a box the customer cannot read, one Confirm tap from
+        # resubmitting them — and because the field is min-chars/max-chars 6/6,
+        # a retained six-character value REFUSES new keystrokes until six
+        # invisible characters are deleted. The box reads as broken, and the
+        # customer burns attempts 3-5 on it into a 15-minute cross-channel
+        # lockout they never typed. So we stop instead of re-rendering.
+        #
+        # This does not cost the customer attempts: every wrong PIN still
+        # increments the shared counter exactly as before, so the budget before
+        # lockout is unchanged. It caps the attempts spendable in ONE session,
+        # and the customer restarts in the chat with a fresh window.
+        tries = int(pa.payload.get("flow_pin_tries", 0)) + 1
+        if tries >= PIN_FLOW_ATTEMPTS:
+            _clear_actions(pa.msisdn)
+            return _success_screen(f"{message} Cancelled for your safety — start the "
+                                   "payment again in the chat.")
+        # Keep writing flow_screen: INIT/BACK re-render _flow_screen(pa, PIN_SCREEN),
+        # and answering PIN_SCREEN while the device sits on PIN_RETRY would be a
+        # backward navigation, which Meta refuses outright.
+        #
+        # A NEW key, not `pin_attempts`: that one belongs to _flow_pin_ok on the
+        # chat rung and shares this cap, so reusing it would halve the budget for
+        # a session that ever crossed rungs.
+        pa.payload["flow_pin_tries"] = tries
         pa.payload["flow_screen"] = PIN_RETRY
         pa.save(update_fields=["payload"])
         return _pin_screen(summary, error=message, screen=PIN_RETRY)
@@ -975,7 +1067,16 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
         if rejected:
             # Empty twin rather than a same-id re-render — see the matching
             # branch in _submit_onboarding_pin for why the refused digits would
-            # otherwise stay in the masked box and be one tap from resubmission.
+            # otherwise stay in the masked box and be one tap from resubmission,
+            # and why there is only one such twin to spend.
+            tries = int(pa.payload.get("pin_policy_tries", 0)) + 1
+            pa.payload["pin_policy_tries"] = tries
+            if tries >= _PIN_CREATE_ATTEMPTS:
+                # A PendingAction, so _clear_actions IS the teardown here —
+                # matching the reset-code branch above.
+                _clear_actions(pa.msisdn)
+                return _success_screen("That PIN isn't one we can accept. Reply "
+                                       "\"set pin\" in the chat to start again.")
             pa.payload["flow_screen"] = PIN_RETRY
             pa.save(update_fields=["payload"])
             return _pin_screen({"amount": "Create a 6-digit PIN",
@@ -990,7 +1091,16 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     if not check_password(pin, held):
         # Routing is forward-only, so the customer cannot be sent back to the
         # create screen — the held first entry stays authoritative and the error
-        # names the way out (cancel in the chat).
+        # names the way out (cancel in the chat). Capped at one error render, as
+        # in _submit_onboarding_pin: the second would re-render
+        # PIN_CONFIRM_RETRY onto itself and keep the mismatched digits.
+        tries = int(pa.payload.get("pin_confirm_tries", 0)) + 1
+        pa.payload["pin_confirm_tries"] = tries
+        pa.save(update_fields=["payload"])
+        if tries >= _PIN_CONFIRM_ATTEMPTS:
+            _clear_actions(pa.msisdn)
+            return _success_screen("Those didn't match. Reply \"set pin\" in the chat "
+                                   "to start again.")
         return _confirm_pin_screen(error="Those didn't match — enter the same PIN you "
                                          "chose on the first screen, or reply \"cancel\" "
                                          "in the chat to start over.")
