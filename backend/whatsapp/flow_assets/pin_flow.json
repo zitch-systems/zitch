@@ -1191,9 +1191,13 @@
       "terminal": true,
       "success": true,
       "data": {
+        "status": {
+          "type": "string",
+          "__example__": "✅ Successful"
+        },
         "message": {
           "type": "string",
-          "__example__": "✅ Transfer successful"
+          "__example__": "₦5,000.00 sent to JOHN DOE — the receipt is in your chat."
         }
       },
       "layout": {
@@ -1208,6 +1212,10 @@
           },
           {
             "type": "TextHeading",
+            "text": "${data.status}"
+          },
+          {
+            "type": "TextBody",
             "text": "${data.message}"
           },
           {

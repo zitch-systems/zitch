@@ -284,8 +284,27 @@ def _email_screen(error: str = "", summary: str = "", label: str = "") -> dict:
                      "error": error or ""}}
 
 
-def _success_screen(message: str) -> dict:
-    return {"screen": SUCCESS_SCREEN, "data": {"message": message or "Done ✅"}}
+#: The heading the terminal screen closes on, per executor outcome. The Flow's
+#: last screen used to render only the outcome SENTENCE, so a settled transfer, a
+#: queued one and a refused one all looked alike at a glance — the customer had
+#: to read a paragraph to find out whether their money had moved. The status is
+#: the heading now and the sentence is the body.
+_STATUS_HEADINGS = {
+    "success": "✅ Successful",
+    "pending": "⏳ Pending",
+    "failed": "❌ Not completed",
+    "done": "Done",
+}
+
+
+def _success_screen(message: str, status: str = "") -> dict:
+    """The terminal screen. `status` is one of router.Outcome's tags; anything
+    else (including the default) closes on the neutral "Done" heading, which is
+    right for the non-money terminals — an expired session, a signup that ended
+    in the chat — that have no transaction outcome to report."""
+    return {"screen": SUCCESS_SCREEN,
+            "data": {"status": _STATUS_HEADINGS.get(status or "done", _STATUS_HEADINGS["done"]),
+                     "message": message or "Done ✅"}}
 
 
 # --------------------------------------------------------------------------- #
@@ -826,7 +845,8 @@ def _submit_pin(token: str, data: dict) -> dict:
 
     pa = resolve_flow_token(token)
     if pa is None:
-        return _success_screen("This request expired or was already completed. Start again in the chat.")
+        return _success_screen("This request expired or was already completed. Start again "
+                               "in the chat.", status="failed")
 
     user = pa.user
     pin = str(data.get("pin", "")).strip()
@@ -852,7 +872,7 @@ def _submit_pin(token: str, data: dict) -> dict:
             # and asterisks are chat markdown, not Flow markup.
             if user.pin_lock_is_escalated:
                 message += " Reply \"reset pin\" in the chat to choose a new one."
-            return _success_screen(message)
+            return _success_screen(message, status="failed")
         if code == "no_pin":
             # Unsatisfiable, and — unlike a wrong PIN — uncounted: the branch
             # returns before evaluate_transaction_pin's atomic block, so it never
@@ -862,7 +882,7 @@ def _submit_pin(token: str, data: dict) -> dict:
             # exist and that no number of retries can conjure.
             _clear_actions(pa.msisdn)
             return _success_screen("You don't have a transaction PIN yet — reply "
-                                   "\"set pin\" in the chat to create one.")
+                                   "\"set pin\" in the chat to create one.", status="failed")
         # One retry, then cancel: the budget the chat rung already enforces
         # (PIN_FLOW_ATTEMPTS, spec §7), and a SCREEN budget as much as a policy
         # one. Attempt 1 answers PIN_RETRY — a different id, so the pad arrives
@@ -884,7 +904,7 @@ def _submit_pin(token: str, data: dict) -> dict:
         if tries >= PIN_FLOW_ATTEMPTS:
             _clear_actions(pa.msisdn)
             return _success_screen(f"{message} Cancelled for your safety — start the "
-                                   "payment again in the chat.")
+                                   "payment again in the chat.", status="failed")
         # Keep writing flow_screen: INIT/BACK re-render _flow_screen(pa, PIN_SCREEN),
         # and answering PIN_SCREEN while the device sits on PIN_RETRY would be a
         # backward navigation, which Meta refuses outright.
@@ -905,8 +925,12 @@ def _submit_pin(token: str, data: dict) -> dict:
     except Exception:  # never leak a stack to the Flow; the money paths are idempotent
         log.exception("flow execution failed for pa=%s", pa.id)
         _clear_actions(pa.msisdn)
-        return _success_screen("Something went wrong completing that. If you were charged it will auto-reverse.")
-    return _success_screen(outcome)
+        return _success_screen("Something went wrong completing that. If you were charged it "
+                               "will auto-reverse.", status="failed")
+    # `status` is carried on the returned line itself (router.Outcome), so an
+    # executor that has not been tagged yet still closes on the neutral heading
+    # rather than claiming an outcome nobody established.
+    return _success_screen(outcome, getattr(outcome, "status", ""))
 
 
 def _transfer_form_screen(error: str = "", candidates=None) -> dict:

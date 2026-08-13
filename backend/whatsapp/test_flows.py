@@ -591,20 +591,36 @@ class IdentityFlowTests(TestCase):
         self.assertIsNone(resolve_flow_token(token))
         self.assertIsNone(resolve_onboarding_token(token))
 
-    def test_typing_the_number_into_the_chat_is_refused_while_the_flow_is_open(self):
-        """Accepting it here would put in the transcript exactly what the Flow
-        exists to keep out of it."""
+    def test_typing_the_number_into_the_chat_is_processed_not_refused(self):
+        """This used to assert a refusal, on the reasoning that reading it would
+        put in the transcript what the Flow exists to keep out. It is already in
+        the transcript by then — refusing does not un-send it, it only adds a
+        dead end on top of the exposure. So the number is processed, and the
+        protections that DO still help are the ones asserted here: it never
+        reaches the message log in clear, and the reply says how to delete it.
+        """
         from . import router
 
         self._action()
-        with patch.object(router, "reply") as mock_reply:
+        with patch.object(router, "reply") as mock_reply, \
+             patch.object(router, "_kyc_submit_identity") as submit:
             router._advance(  # noqa: SLF001
                 PendingAction.objects.get(action_type="kyc"), self.user,
                 MSISDN, "12345678901")
-        said = " ".join(str(c) for c in mock_reply.call_args_list)
-        self.assertIn("secure screen", said)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
+        submit.assert_called_once()
+        self.assertIn("delete your message",
+                      " ".join(str(c) for c in mock_reply.call_args_list).lower())
+        self.assertFalse(WaMessageLog.objects.filter(text__contains="12345678901").exists())
+
+    def test_an_open_identity_flow_masks_a_number_typed_into_the_chat(self):
+        """The masking gate the webhook consults. It covered the chat-fallback
+        states only, so with a Flow actually open the number it was meant to
+        protect went into the log in clear — the case that now happens most,
+        since a typed number is answered rather than refused."""
+        from . import router
+
+        self._action()
+        self.assertTrue(router.is_awaiting_bvn(MSISDN))
 
     def test_the_router_sends_the_flow_instead_of_asking_in_the_chat(self):
         from . import router
@@ -783,15 +799,19 @@ class EmailFlowTests(TestCase):
         pa.refresh_from_db()
         self.assertEqual(pa.state, "email")
 
-    def test_typing_the_code_into_the_chat_is_refused(self):
+    def test_typing_the_code_into_the_chat_is_processed_not_refused(self):
+        """Same correction as the identity number: the code is in the thread the
+        moment it is sent, so refusing to read it protects nothing and strands
+        the customer. It goes to the SAME checker the Flow submit uses."""
         from . import router
 
         pa = self._action("code")
-        with patch.object(router, "reply") as mock_reply:
+        with patch.object(router, "reply"), \
+             patch.object(router, "_advance_kyc") as advance:
             router._advance(pa, self.user, MSISDN, "123456")  # noqa: SLF001
-        self.assertIn("secure screen", " ".join(str(c) for c in mock_reply.call_args_list))
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.email_verified)
+        advance.assert_called_once_with(pa, self.user, MSISDN, "123456")
+        pa.refresh_from_db()
+        self.assertEqual(pa.state, "email")   # the chat step for the code
 
     @patch("whatsapp.router.send_email", return_value={"success": True})
     @patch("whatsapp.router.email_live", return_value=True)

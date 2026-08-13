@@ -2022,12 +2022,17 @@ class ChatAccountSetupTests(TestCase):
         self.assertEqual(pa.state, FLOW_ID_STATE)
         self.assertEqual(pa.payload["id_kind"], "bvn")
 
-        # And a number typed into the chat while it is open is refused, not used.
+        # A number typed into the chat while it is open is USED, not refused: it
+        # is in the customer's history the moment they send it, so declining to
+        # read it protects nothing and dead-ends the signup. What the Flow still
+        # buys is that the number never reaches the message log in clear, and
+        # that the reply tells them to delete the message.
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": True}):
             self.inbound("12345678901", f"f2-{m}", msisdn=m)
-        start.assert_not_called()
-        self.assertIn("secure screen", self.last_reply(m))
+        start.assert_called_once()
+        self.assertFalse(
+            WaMessageLog.objects.filter(msisdn=m, text__contains="12345678901").exists())
 
     @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
     @patch("whatsapp.router.wallet_views._start_wema_attempt")
