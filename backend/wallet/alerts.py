@@ -47,6 +47,27 @@ def _alerts_on(channel: str) -> bool:
     return bool(cfg.get(channel.upper(), channel == "email"))
 
 
+def _narration_line(txn) -> str:
+    """The customer's own note for this payment, as its own alert line.
+
+    Read from the ledger row's meta, where both money paths already put it:
+    `note` for a bank transfer (execute_payout) and `narration` for a bill or a
+    top-up (run_provider_purchase). Two keys because the two paths named it
+    differently long before there was a narration field to fill either.
+
+    Empty string when there is no note, so the alert closes up around it — a
+    "For:" line with nothing after it reads as a rendering fault on the one
+    message customers check for fraud.
+
+    Deliberately NOT on the reversal body: a reversal is about money coming back,
+    and repeating what the customer meant to buy would put their own words in a
+    sentence about a payment that did not happen.
+    """
+    meta = _meta(txn)
+    note = str(meta.get("note") or meta.get("narration") or "").strip()
+    return f"For: {note[:60]}\n" if note else ""
+
+
 def _describe(txn, *, reversal: bool = False) -> tuple:
     """(subject, body) for the alert. Deliberately short: this is read on a lock
     screen, and the detail lives in the receipt."""
@@ -70,6 +91,7 @@ def _describe(txn, *, reversal: bool = False) -> tuple:
                 f"{txn.created:%d %b %Y, %I:%M %p}")
     else:
         body = (f"{word} of {amount}{where} on your Zitch account.\n"
+                f"{_narration_line(txn)}"
                 f"Ref: {txn.reference}\n"
                 f"{txn.created:%d %b %Y, %I:%M %p}")
     if balance:

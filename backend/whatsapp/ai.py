@@ -28,7 +28,12 @@ SYSTEM_PROMPT = (
     "supported action, call clarify — and put the reason in plain words the "
     "customer will read, saying what you need from them. Zitch cannot read the "
     "phone's contacts, so a name only works if it is a saved Zitch beneficiary; "
-    "otherwise ask for the number."
+    "otherwise ask for the number. "
+    "Set `narration` ONLY from words the message gives as the PURPOSE of the "
+    "payment — the part after \"for\" in \"send 5k to Ada for rent\". It is "
+    "optional: leave it null when the message does not say what the money is "
+    "for. Never invent one, never restate the amount or the recipient in it, and "
+    "never put a number the customer did not describe as a purpose into it."
 )
 
 # Anthropic tool schemas (the spec's §6 input_schemas verbatim).
@@ -60,7 +65,8 @@ TOOLS = [
                           # dropped and the top-up silently went to the sender's
                           # own line — the wrong number, already paid for.
                           "recipient_ref": {"type": ["string", "null"]},
-                          "network": {"type": ["string", "null"]}},
+                          "network": {"type": ["string", "null"]},
+                          "narration": {"type": ["string", "null"]}},
                       "required": ["amount"]}},
     {"name": "buy_data",
      "description": "Buy a data bundle.",
@@ -68,7 +74,8 @@ TOOLS = [
                       "properties": {
                           "plan": {"type": ["string", "null"]},
                           "phone": {"type": ["string", "null"]},
-                          "network": {"type": ["string", "null"]}}}},
+                          "network": {"type": ["string", "null"]},
+                          "narration": {"type": ["string", "null"]}}}},
     {"name": "pay_bill",
      "description": "Pay an electricity, cable TV, or internet bill.",
      "input_schema": {"type": "object",
@@ -77,7 +84,8 @@ TOOLS = [
                           "biller": {"type": ["string", "null"]},
                           "customer_id": {"type": ["string", "null"], "description": "meter or smartcard"},
                           "variation": {"type": ["string", "null"]},
-                          "amount": {"type": ["integer", "null"]}},
+                          "amount": {"type": ["integer", "null"]},
+                          "narration": {"type": ["string", "null"]}},
                       "required": ["category"]}},
     {"name": "add_money",
      "description": "Show the user's dedicated Zitch account number so they can fund "
