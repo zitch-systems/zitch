@@ -9,6 +9,7 @@ import hashlib
 import logging
 import re
 import secrets
+import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -3142,6 +3143,11 @@ def _try_pin(pa: PendingAction, user, msisdn: str, text: str) -> None:
     return _exec_transfer(pa, user, msisdn)
 
 
+#: How often the settle wait re-reads the ledger. Short enough that a fast rail
+#: is caught almost immediately, long enough that a 3-second budget is a handful
+#: of queries rather than hundreds.
+_SETTLE_POLL = 0.25
+
 #: The three things that can have happened to money by the time a Flow closes,
 #: plus the untagged default. The Flow's terminal screen shows one of them as its
 #: heading, so "we tried" and "it worked" stop looking identical to the customer.
@@ -4300,12 +4306,60 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # would only race it.
     if not getattr(settings, "TESTING", False):
         drain_in_background()
-    # PENDING, emphatically not success: the rail has not answered yet. The tick
-    # on this line read as "done" on the Flow's closing screen for a payment that
-    # had not been attempted, which is the one thing a banking channel must never
-    # say. The receipt in the chat is still the authoritative outcome.
+    # Give the rail a moment to answer before closing the Flow. Without this,
+    # "Successful" was unreachable in production: every money Flow closed on
+    # "Pending" because the endpoint replied the instant the job was queued, so
+    # the customer's last word from the Flow was always about a payment that had
+    # not been attempted yet.
+    settled = _await_settlement(pa.id, user)
+    if settled is not None:
+        return settled
+    # Still working. PENDING, emphatically not success: the rail has not answered
+    # yet, and a tick here would read as "done" for a payment that may still
+    # fail — the one thing a banking channel must never say. The receipt in the
+    # chat remains the authoritative outcome.
     return Outcome("Confirmed — I'm completing your payment now. The receipt will "
                    "arrive in this chat in a few seconds.", OUTCOME_PENDING)
+
+
+def _await_settlement(action_id: int, user):
+    """Poll the ledger for this action's outcome, briefly. Returns a tagged
+    Outcome once the row is terminal, or None if it is still processing.
+
+    Bounded by WHATSAPP_FLOW_SETTLE_WAIT (default 3s, hard-capped at 6). Meta
+    allows the data-exchange about ten seconds before showing the customer
+    "Couldn't load content. Try again later." — the failure that moving
+    execution off this thread was introduced to fix — so this deliberately stays
+    far from that ceiling. It also occupies a gunicorn thread, and the web dyno
+    serves /healthz from the same pool of eight.
+
+    Waiting changes NOTHING about the payment: it is queued and executing either
+    way, and the chat receipt is sent by the worker regardless. All this decides
+    is which heading the closing screen can honestly show.
+    """
+    from wallet.models import Transaction
+
+    budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 0) or 0)
+    if budget <= 0:
+        return None
+    key = f"wa-{action_id}"          # the idempotency key every executor uses
+    deadline = time.monotonic() + budget
+    while True:
+        # .only() because this runs on the request thread and the ledger row is
+        # wide; the status and the reference are all that is read.
+        txn = (Transaction.objects.filter(user=user, idempotency_key=key)
+               .only("transaction_status", "reference").first())
+        if txn is not None and txn.transaction_status != Transaction.PENDING:
+            if txn.transaction_status == Transaction.SUCCESS:
+                return Outcome("Sent — the receipt is in your chat.", OUTCOME_SUCCESS)
+            # A failure is worth waiting for too: it is the one outcome the
+            # customer should see BEFORE the screen closes, not only in a chat
+            # message they may scroll past.
+            return Outcome("That didn't go through. Nothing was sent — "
+                           "see the chat for details.", OUTCOME_FAILED)
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(_SETTLE_POLL)
 
 
 @db_transaction.atomic
