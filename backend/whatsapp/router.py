@@ -5,6 +5,7 @@ services the app uses (balance, NGN bank transfer with name-enquiry, confirm,
 PIN, idempotency). The LLM intent layer (later) sits *in front* of this and
 hands it the same structured actions, so money never depends on the AI being up.
 """
+import contextvars
 import hashlib
 import logging
 import re
@@ -454,50 +455,141 @@ def _flow_summary(pa: PendingAction) -> str:
     return "Confirm your payment"
 
 
+def _narration(pa: PendingAction) -> str:
+    """The customer's note for this action, or "" — always optional, never a
+    reason to refuse a payment."""
+    from .flows import clean_narration
+
+    return clean_narration(pa.payload.get("narration"))
+
+
+def _with_narration(pa: PendingAction, rows: list) -> list:
+    """Put the note on the receipt, under the amount.
+
+    A receipt is the thing customers forward as proof of payment, and "what was
+    this for" is the question they are answering when they forward it. Placed
+    after the amount rather than appended at the end so it reads with the
+    payment, not after the reference and the date — which are for us, not them.
+
+    Absent rather than blank when there is no note: a receipt with an empty
+    "Narration —" row looks like something failed to render.
+    """
+    note = _narration(pa)
+    if not note:
+        return rows
+    at = next((i for i, (k, _v) in enumerate(rows)
+               if str(k).strip().lower() == "amount"), len(rows) - 1)
+    return [*rows[:at + 1], ("Narration", note), *rows[at + 1:]]
+
+
+def pin_screen_send_data(amount: str, recipient: str = "", details: str = "",
+                         balance: str = "", narration: str = "") -> dict:
+    """The `flow_action_payload.data` for a message that OPENS on a PIN screen.
+
+    One builder for every such send, because the send payload is a contract with
+    the published screen and hand-written dicts have already broken it once: when
+    the three-line confirm landed, the signup PIN send kept passing the retired
+    "summary" key, Meta rejected the undeclared property, and every signup PIN
+    send failed silently down its fallback rungs the moment the new Flow went
+    live. A property added to the screen must reach every sender, and the only
+    way to be sure of that is for there to be one.
+
+    The non-payment senders (signup PIN, PIN reset) pass neither balance nor
+    narration and get empty strings: they describe no transaction, but the screen
+    still declares the properties, and declared-but-absent is the rejection.
+    """
+    return {"balance": balance, "amount": amount, "recipient": recipient,
+            "details": details, "narration": narration, "error": ""}
+
+
+def _flow_balance_line(pa: PendingAction) -> str:
+    """What the customer has, on the screen where they decide to spend it.
+
+    Deciding whether to send ₦50,000 needs the balance in front of you, and this
+    is the last screen before the money goes. Without it the only way to check
+    was to abandon the payment, ask for the balance, and start over — so the
+    screen that most needed the number was the one screen that never showed it.
+
+    Rendered at the TOP of the screen rather than the top-right corner: a Flow
+    JSON SingleColumnLayout stacks its children vertically and the version in use
+    has no row, column or alignment primitive, so a corner is not expressible
+    here. Empty on any failure — a balance we cannot read must not take down the
+    confirm screen it is decoration on.
+    """
+    try:
+        return f"Balance {_money(get_or_create_wallet(pa.user).balance)}"
+    except Exception:  # noqa: BLE001 — never block a payment to print a number
+        log.exception("could not read balance for the confirm screen pa=%s", pa.id)
+        return ""
+
+
 def _flow_fields(pa: PendingAction) -> dict:
-    """The confirm screen's three lines: amount, who/what, and the routing detail.
+    """The confirm screen's lines: the balance, the amount, who/what, the routing
+    detail, and the customer's own narration.
 
     Split rather than one sentence because this is the screen someone checks
     before money leaves. An account number buried mid-sentence is not read; on
     its own line it is. The bank matters most of all — routing is purely by
     {account_number, bank_code}, so the bank is half of where the money goes and
     a customer confirming "JOHN DOE" alone has confirmed the wrong half.
+
+    Every branch is completed by `_with_context` below, so no branch can ship a
+    dict missing a property the published screen declares — the mismatch that
+    shows "Couldn't load content. Try again later." instead of an ending.
     """
     p = pa.payload
     at = pa.action_type
+
+    def _with_context(fields: dict) -> dict:
+        # Through the same cleaner as every other consumer. It is already clean
+        # at rest — each entry point cleans on the way in — but this is the one
+        # that renders it to a screen, and two spellings of "the narration" is
+        # how the two drift.
+        note = _narration(pa)
+        return {**fields,
+                "balance": _flow_balance_line(pa),
+                # Prefixed so the line reads as the customer's own note rather
+                # than as another routing detail on a screen full of them.
+                "narration": f"Note: {note}" if note else ""}
+
     try:
         if at == "transfer":
-            return {"amount": _money(Decimal(p["amount"])),
-                    "recipient": f"To {p.get('name', 'recipient').upper()}",
-                    "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·")}
+            return _with_context({
+                "amount": _money(Decimal(p["amount"])),
+                "recipient": f"To {p.get('name', 'recipient').upper()}",
+                "details": f"{p.get('bank_name', '')} · {p.get('account', '')}".strip(" ·")})
         if at == "airtime":
-            return {"amount": _money(Decimal(p["amount"])),
-                    "recipient": f"{NETWORK_NAMES.get(p.get('net', ''), '')} airtime".strip(),
-                    "details": f"To {p.get('phone', '')}".strip()}
+            return _with_context({
+                "amount": _money(Decimal(p["amount"])),
+                "recipient": f"{NETWORK_NAMES.get(p.get('net', ''), '')} airtime".strip(),
+                "details": f"To {p.get('phone', '')}".strip()})
         if at == "data":
-            return {"amount": _money(Decimal(p["price"])),
-                    "recipient": f"{p.get('plan_name', 'Data')} · "
-                                 f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
-                    "details": f"To {p.get('phone', '')}".strip()}
+            return _with_context({
+                "amount": _money(Decimal(p["price"])),
+                "recipient": f"{p.get('plan_name', 'Data')} · "
+                             f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
+                "details": f"To {p.get('phone', '')}".strip()})
         if at == "electricity":
             cust = p.get("customer", "")
             meter_line = f"Meter {p.get('meter', '')}".strip()
             if cust:
                 meter_line += f" · {cust}"
-            return {"amount": _money(Decimal(p["amount"])),
-                    "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
-                    "details": meter_line}
+            return _with_context({
+                "amount": _money(Decimal(p["amount"])),
+                "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
+                "details": meter_line})
         if at == "cable":
-            return {"amount": _money(Decimal(p["price"])),
-                    "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
-                                 f"{p.get('plan_name', '')}".strip(),
-                    "details": f"Smartcard {p.get('iuc', '')}".strip()}
+            return _with_context({
+                "amount": _money(Decimal(p["price"])),
+                "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
+                             f"{p.get('plan_name', '')}".strip(),
+                "details": f"Smartcard {p.get('iuc', '')}".strip()})
     except (KeyError, InvalidOperation):
         pass
     # Conversion (and any shape we don't itemise) falls back to the one-line
-    # summary in the heading, with the other two lines blank rather than absent —
-    # the screen declares all three, so every one must be supplied.
-    return {"amount": _flow_summary(pa), "recipient": "", "details": ""}
+    # summary in the heading, with the other lines blank rather than absent —
+    # the screen declares all of them, so every one must be supplied.
+    return _with_context({"amount": _flow_summary(pa), "recipient": "", "details": ""})
 
 
 def _send_pin_flow(pa: PendingAction, user) -> bool:
@@ -532,6 +624,9 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     res = send_flow(
         pa.msisdn, sign_flow_token(pa),
         header="Confirm payment", body=body,
+        # fields comes from _flow_fields, which completes every branch with the
+        # balance and the narration — so this spread stays complete by
+        # construction rather than by remembering to update it.
         screen=PIN_SCREEN, screen_data={**fields, "error": ""},
         cta=cta,
     )
@@ -757,6 +852,13 @@ def _send_confirm(pa: PendingAction, msisdn: str, body: str, logo: str = "") -> 
     """
     if pa.state == FLOW_PIN_STATE:
         return None
+    # The note goes with the details, above the "enter your PIN" prompt, so the
+    # customer confirms what they wrote alongside what it will cost. Every chat
+    # confirm card is built by a different function; this is the one funnel they
+    # all pass through, so it is the only place that cannot be forgotten.
+    note = _narration(pa)
+    if body and note:
+        body = f"{body}\n📝 {note}"
     text = f"{body}\n\n{_confirm_prompt(pa)}" if body else _confirm_prompt(pa)
     return reply_image(msisdn, logo, text) if logo else reply(msisdn, text)
 
@@ -1400,13 +1502,14 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
             msisdn, sign_onboarding_token(ob),
             header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
             screen=PIN_SCREEN,
-            # PIN_SCREEN's published schema is {amount, recipient, details, error}
-            # since the three-line confirm landed. This still sent the retired
-            # "summary" key — an undeclared property, which Meta rejects — so
-            # every signup PIN send failed the moment the new Flow was published,
-            # and signup silently fell down its fallback rungs.
-            screen_data={"amount": "Create a 6-digit PIN", "recipient": "",
-                         "details": "You'll enter it again to confirm", "error": ""},
+            # Built by the shared builder, never inline. This send is where the
+            # drift bug bit before: PIN_SCREEN's schema changed under it and the
+            # hand-written dict kept sending the retired "summary" key, which
+            # Meta rejects as an undeclared property — so every signup PIN send
+            # failed the moment the new Flow was published, and signup silently
+            # fell down its fallback rungs.
+            screen_data=pin_screen_send_data(
+                "Create a 6-digit PIN", details="You'll enter it again to confirm"),
         )
         if res.get("success"):
             return reply(msisdn, "🔐 Tap the secure screen above to set your *6-digit PIN*. "
@@ -1546,6 +1649,14 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
         f"Your current transfer limit is *₦{user.daily_transfer_limit:,.0f}/day*. "
         "You can pay bills, buy airtime & data, and check your balance here.\n\n"
+        # Said out loud, because an empty wallet is the state EVERY new account
+        # starts in and nothing else in this message mentions it. A customer who
+        # finishes signup and goes straight to "send 5k" meets an insufficient-
+        # balance refusal as their first real interaction — which reads as the
+        # account not working, rather than as the one step nobody told them
+        # about. The account number this points at is minted just below.
+        "💰 *Next: add money.* Your wallet starts at ₦0 — reply *6* any time for "
+        "your Zitch account number and transfer to it from any bank.\n\n"
         + ("" if pin else
            "🔐 Set your *transaction PIN* in the Zitch app before you send money — "
            "we never collect a PIN in this chat.\n\n")
@@ -1707,7 +1818,12 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
         "Transfer to your dedicated Zitch account from any bank — your wallet is "
         "credited automatically, usually within seconds:\n\n"
         f"{body}\n"
-        f"👤 {wallet.account_name}",
+        f"👤 {wallet.account_name}\n\n"
+        # The number on its own is not an instruction. This is the screen a new
+        # customer reaches at the end of signup, so it should close on what to do
+        # next and how they will know it worked, rather than leaving them to
+        # infer both from an account number.
+        "Send money to it whenever you're ready, then reply *1* to see your balance.",
     )
 
 
@@ -1796,8 +1912,8 @@ def _start_pin_reset(user, msisdn: str) -> None:
             msisdn, sign_flow_token(pa),
             header="Set your PIN", body="Choose the 6-digit PIN you'll use to authorise payments.",
             screen=PIN_SCREEN,
-            screen_data={"amount": "Create a 6-digit PIN", "recipient": "",
-                         "details": "You'll enter it again to confirm", "error": ""},
+            screen_data=pin_screen_send_data(
+                "Create a 6-digit PIN", details="You'll enter it again to confirm"),
             cta="Set PIN").get("success"):
         return reply(msisdn, "🔐 Tap the secure screen above to set your new *6-digit PIN*. "
                              "It never appears in this chat.")
@@ -2738,10 +2854,11 @@ def _start_transfer(user, msisdn: str) -> None:
         log.warning("wa_transfer_form_send_failed pa=%s detail=%r",
                     pa.id, res.get("error_detail", ""))
         _clear_actions(msisdn)
-    PendingAction.objects.create(
-        user=user, msisdn=msisdn, action_type="transfer", state="amount",
-        payload={"pin_attempts": 0}, expires_at=_flow_deadline("amount"),
-    )
+    # Through _new_flow like every other money flow, not a hand-rolled create:
+    # this fallback was the one narratable action born outside it, so an AI
+    # message whose transfer details were incomplete ("send 5k for rent") lost
+    # the narration on its way into the guided path.
+    _new_flow(user, msisdn, "transfer", "amount", {"pin_attempts": 0})
     reply(msisdn, "How much would you like to send? (e.g. 5000 or 5k)")
 
 
@@ -3221,6 +3338,10 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         # Stable key per flow: a re-sent "pin" message can't double-pay.
         txn = execute_payout(
             user, amount, pa.payload["account"], bank, confirmed_name,
+            # The customer's own words on the beneficiary's statement. Falls back
+            # inside execute_payout to "Transfer to <name>" when it is blank,
+            # which is what every transfer sent before narration existed.
+            note=_narration(pa),
             idempotency_key=f"wa-{pa.id}", channel="whatsapp",
         )
     except PayoutError as exc:
@@ -3259,14 +3380,14 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         return Outcome(line, OUTCOME_PENDING)
 
     wallet = get_or_create_wallet(user)
-    reply_receipt(msisdn, "Transfer receipt", [
+    reply_receipt(msisdn, "Transfer receipt", _with_narration(pa, [
         ("To", pa.payload["name"].upper()),
         ("Bank", pa.payload["bank_name"]),
         ("Account", pa.payload["account"]),
         ("Amount", _money(amount)),
         ("Reference", txn.reference),
         ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
-    ], ref=txn.reference, user=user, balance_after=wallet.balance)
+    ]), ref=txn.reference, user=user, balance_after=wallet.balance)
     # A settled transfer is the one case that may be CALLED successful, and it is
     # now said rather than inferred: this used to return whatever reply_receipt
     # gave back, which run_flow_execution turned into a bare "Done ✅" — the same
@@ -3407,11 +3528,35 @@ def _meter_type(text) -> str | None:
     return None
 
 
+#: The narration the CURRENT message asked for, for the duration of dispatching
+#: it. Set once by dispatch_intent and read once by _new_flow.
+#:
+#: A context variable rather than a parameter because the alternative is
+#: threading an optional string through every _begin_*/_start_* entry point and
+#: every _new_flow call inside them — eight signatures to carry one word that
+#: only the AI path can supply, where each new money flow added later is another
+#: chance to forget it. Scoped to one dispatch and cleared in a finally, so it
+#: cannot leak into the next message; a ContextVar (not a global) so concurrent
+#: requests on the same worker cannot read each other's.
+_ai_narration: contextvars.ContextVar[str] = contextvars.ContextVar("ai_narration", default="")
+
+#: Action types with money and a receipt behind them — the only ones a narration
+#: means anything for. An unlock or a PIN reset has nothing to narrate.
+_NARRATABLE = ("transfer", "airtime", "data", "electricity", "cable")
+
+
 def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | None = None) -> PendingAction:
     _clear_actions(msisdn)
+    payload = payload if payload is not None else {"pin_attempts": 0}
+    note = _ai_narration.get("")
+    if note and action_type in _NARRATABLE and "narration" not in payload:
+        # Stamped at birth, before anything arms a confirm: the Flow's send
+        # payload is built from this payload, so a narration attached afterwards
+        # would be missing from the very screen it exists to appear on.
+        payload = {**payload, "narration": note}
     return PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type=action_type, state=state,
-        payload=payload or {"pin_attempts": 0}, expires_at=_flow_deadline(state),
+        payload=payload, expires_at=_flow_deadline(state),
     )
 
 
@@ -3453,7 +3598,12 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         reply(msisdn, msg)
         return Outcome(msg, OUTCOME_FAILED)
     try:
+        # The note rides the ledger row so the settlement alert can quote it
+        # later — by then the pending action is long gone, and the alert is
+        # often the only thing the customer reads about a bill they paid.
         purchase_meta = {**pa.payload.get("meta", {}), "channel": "whatsapp"}
+        if _narration(pa):
+            purchase_meta["narration"] = _narration(pa)
         status, txn, result = run_provider_purchase(
             user, amount, label, purchase_meta, provider_call,
             idempotency_key=f"wa-{pa.id}",
@@ -3473,7 +3623,7 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
     _clear_actions(msisdn)
     if status == "success":
         title, rows = receipt(txn, result)
-        reply_receipt(msisdn, title, rows, ref=txn.reference,
+        reply_receipt(msisdn, title, _with_narration(pa, rows), ref=txn.reference,
                       user=user, balance_after=get_or_create_wallet(user).balance)
         # Named rather than inferred, for the same reason as the transfer path.
         return Outcome(f"{label} successful — the receipt is in your chat.", OUTCOME_SUCCESS)
@@ -4071,8 +4221,23 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
     """Map one LLM tool call to a deterministic flow. Returns False for
     clarify/unknown so the caller shows the menu. Money still requires the
     flow's confirm + PIN — the LLM only routes here."""
+    from .flows import clean_narration
+
     name = intent.get("name")
     p = intent.get("input", {}) or {}
+    # Cleaned here, at the boundary, so a model that returns a newline or 300
+    # characters cannot put either into a payload, a bank statement or a
+    # rendered receipt. Reset in the finally below: a narration is a fact about
+    # ONE message, and one that outlived its dispatch would attach the last
+    # customer's words to the next customer's payment.
+    token = _ai_narration.set(clean_narration(p.get("narration")))
+    try:
+        return _dispatch_intent(user, msisdn, name, p)
+    finally:
+        _ai_narration.reset(token)
+
+
+def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
 
     if name == "check_balance":
         _do_balance(user, msisdn)
@@ -4263,14 +4428,18 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
     except FxError as exc:
         _clear_actions(msisdn)
         reply(msisdn, exc.message)
-        return exc.message
+        # Tagged, like every other executor. Untagged fell through to the neutral
+        # "Done" heading, so a refused conversion closed the Flow on the same word
+        # a successful one did — the exact tell-them-apart-at-a-glance failure the
+        # status heading was added to end, still live on this one path.
+        return Outcome(exc.message, OUTCOME_FAILED)
     _clear_actions(msisdn)
     new_bal = currency_balance(user, quote.to_currency)
     line = (f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
             f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
             f"New {quote.to_currency} balance: {new_bal:,.2f}.")
     reply(msisdn, line)
-    return line
+    return Outcome(line, OUTCOME_SUCCESS)
 
 
 # --------------------------------------------------------------------------- #
@@ -4320,7 +4489,7 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # "Pending" because the endpoint replied the instant the job was queued, so
     # the customer's last word from the Flow was always about a payment that had
     # not been attempted yet.
-    settled = _await_settlement(pa.id, user)
+    settled = _await_settlement(pa.id, user, pa.action_type)
     if settled is not None:
         return settled
     # Still working. PENDING, emphatically not success: the rail has not answered
@@ -4331,7 +4500,21 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
                    "arrive in this chat in a few seconds.", OUTCOME_PENDING)
 
 
-def _await_settlement(action_id: int, user):
+#: What the settled screen calls each action. "Sent" is true of a transfer and
+#: false of everything else — a meter token or a data bundle is bought, not sent —
+#: and this screen is the one place the customer is told the money moved, so it
+#: should not describe their electricity payment as something posted to someone.
+_SETTLED_VERB = {
+    "transfer": "Sent",
+    "airtime": "Airtime purchased",
+    "data": "Data bundle purchased",
+    "electricity": "Electricity paid",
+    "cable": "Subscription paid",
+    "convert": "Converted",
+}
+
+
+def _await_settlement(action_id: int, user, action_type: str = ""):
     """Poll the ledger for this action's outcome, briefly. Returns a tagged
     Outcome once the row is terminal, or None if it is still processing.
 
@@ -4351,7 +4534,11 @@ def _await_settlement(action_id: int, user):
     budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 0) or 0)
     if budget <= 0:
         return None
-    key = f"wa-{action_id}"          # the idempotency key every executor uses
+    # The key every executor stamps its ledger row with — except FX, which has
+    # always used its own prefix. Polling `wa-<id>` for a conversion therefore
+    # matched nothing and timed out into "Pending" every single time, however
+    # fast the rail answered.
+    key = f"wa-fx-{action_id}" if action_type == "convert" else f"wa-{action_id}"
     deadline = time.monotonic() + budget
     while True:
         # .only() because this runs on the request thread and the ledger row is
@@ -4360,11 +4547,12 @@ def _await_settlement(action_id: int, user):
                .only("transaction_status", "reference").first())
         if txn is not None and txn.transaction_status != Transaction.PENDING:
             if txn.transaction_status == Transaction.SUCCESS:
-                return Outcome("Sent — the receipt is in your chat.", OUTCOME_SUCCESS)
+                verb = _SETTLED_VERB.get(action_type, "Done")
+                return Outcome(f"{verb} — the receipt is in your chat.", OUTCOME_SUCCESS)
             # A failure is worth waiting for too: it is the one outcome the
             # customer should see BEFORE the screen closes, not only in a chat
             # message they may scroll past.
-            return Outcome("That didn't go through. Nothing was sent — "
+            return Outcome("That didn't go through. You were not charged — "
                            "see the chat for details.", OUTCOME_FAILED)
         if time.monotonic() >= deadline:
             return None

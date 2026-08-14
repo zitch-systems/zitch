@@ -245,16 +245,26 @@ def resolve_flow_token(token: str):
 # screen builders
 # --------------------------------------------------------------------------- #
 def _pin_screen(summary, error: str = "", screen: str = PIN_SCREEN) -> dict:
-    """`summary` is either the structured {amount, recipient, details} the money
-    flows persist, or a bare string (the signup PIN, which has no payment to
-    describe). Every declared field is always supplied — the screen renders all
-    three, so a missing one is a blank line rather than an omission."""
+    """`summary` is either the structured {amount, recipient, details, balance,
+    narration} the money flows persist, or a bare string (the signup PIN, which
+    has no payment to describe). Every declared field is always supplied — the
+    screen renders all of them, so a missing one is a blank line rather than an
+    omission, and an omission is a contract mismatch: the endpoint must answer
+    with exactly the properties the published screen declares, or WhatsApp shows
+    "Couldn't load content. Try again later." on every ending of the Flow.
+
+    That is also why `balance` and `narration` default to empty strings rather
+    than being left out on the paths that have neither — the signup PIN and the
+    set-PIN pages share this screen and describe no payment at all.
+    """
     fields = summary if isinstance(summary, dict) else {}
     heading = fields.get("amount") or (summary if isinstance(summary, str) else "")
     return {"screen": screen,
-            "data": {"amount": heading or "Confirm your payment",
+            "data": {"balance": fields.get("balance", ""),
+                     "amount": heading or "Confirm your payment",
                      "recipient": fields.get("recipient", ""),
                      "details": fields.get("details", ""),
+                     "narration": fields.get("narration", ""),
                      "error": error or ""}}
 
 
@@ -853,6 +863,59 @@ def _submit_email(pa, data: dict) -> dict:
     return _success_screen("Email verified ✅ — see the chat for what's next.")
 
 
+#: What a narration may be before it is stored. The bank rail puts this on the
+#: beneficiary's statement and the receipt renders it into an image, so it is
+#: bounded here rather than at either consumer: 60 characters (the Flow field's
+#: own max-chars, restated because the chat and AI paths do not pass through it),
+#: single-line, and printable.
+NARRATION_MAX = 60
+
+
+def clean_narration(raw) -> str:
+    """Normalise a customer-supplied narration, or "" if there is nothing usable.
+
+    Optional everywhere, so "" is an ordinary answer and never an error. Newlines
+    and control characters are collapsed rather than rejected: they arrive from
+    voice notes and pasted text, they break both the statement narration and the
+    rendered receipt, and refusing a payment over whitespace would be a strange
+    place to be strict.
+    """
+    text = str(raw or "")
+    # Control characters (including the newlines a dictated note arrives with)
+    # become spaces, then runs of whitespace collapse to one.
+    text = "".join(" " if ch < " " or ch == "\x7f" else ch for ch in text)
+    return " ".join(text.split())[:NARRATION_MAX].strip()
+
+
+def _close_in_chat(msisdn: str, text: str) -> None:
+    """Say in the THREAD what the Flow's terminal screen just said.
+
+    The terminal screen is not a reliable place to have told someone something.
+    It renders inside Meta's panel, it is gone the moment the customer taps Done
+    or swipes the sheet away, and when the data-exchange answer does not reach
+    the device at all — a timeout, a dropped connection, a contract mismatch —
+    WhatsApp replaces it with "Couldn't load content. Try again later.", which
+    names no outcome and is indistinguishable from every other Flow failure.
+
+    Every ending that MOVED money already writes to the chat from its executor
+    (the receipt, or the failure line). The endings that did not were exactly the
+    ones a customer is most likely to misread as "nothing happened": a wrong PIN
+    that cancelled the payment, a lockout, a PIN that was never set. Those closed
+    the panel and left the thread silent, so the last thing in the customer's
+    history was the confirm card — still sitting there, still looking live.
+
+    Best-effort by design: a send that fails must not turn a settled outcome into
+    an exception on the endpoint thread, where the only thing left to answer with
+    is the error screen this exists to make redundant.
+    """
+    from .router import reply
+
+    try:
+        reply(msisdn, text)
+    except Exception:  # noqa: BLE001 — the screen is still the primary answer
+        log.exception("could not mirror flow outcome to chat for %s", msisdn)
+
+
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
@@ -887,6 +950,7 @@ def _submit_pin(token: str, data: dict) -> dict:
             # and asterisks are chat markdown, not Flow markup.
             if user.pin_lock_is_escalated:
                 message += " Reply \"reset pin\" in the chat to choose a new one."
+            _close_in_chat(pa.msisdn, f"🔒 {message}")
             return _success_screen(message, status="failed")
         if code == "no_pin":
             # Unsatisfiable, and — unlike a wrong PIN — uncounted: the branch
@@ -896,8 +960,10 @@ def _submit_pin(token: str, data: dict) -> dict:
             # one screen id until the token expired, for a PIN that does not
             # exist and that no number of retries can conjure.
             _clear_actions(pa.msisdn)
-            return _success_screen("You don't have a transaction PIN yet — reply "
-                                   "\"set pin\" in the chat to create one.", status="failed")
+            no_pin = ("You don't have a transaction PIN yet — reply "
+                      "\"set pin\" in the chat to create one.")
+            _close_in_chat(pa.msisdn, f"❌ That payment was cancelled. {no_pin}")
+            return _success_screen(no_pin, status="failed")
         # One retry, then cancel: the budget the chat rung already enforces
         # (PIN_FLOW_ATTEMPTS, spec §7), and a SCREEN budget as much as a policy
         # one. Attempt 1 answers PIN_RETRY — a different id, so the pad arrives
@@ -918,8 +984,16 @@ def _submit_pin(token: str, data: dict) -> dict:
         tries = int(pa.payload.get("flow_pin_tries", 0)) + 1
         if tries >= PIN_FLOW_ATTEMPTS:
             _clear_actions(pa.msisdn)
-            return _success_screen(f"{message} Cancelled for your safety — start the "
-                                   "payment again in the chat.", status="failed")
+            cancelled = (f"{message} Cancelled for your safety — start the "
+                         "payment again in the chat.")
+            # The one wrong-PIN ending that gets a chat line. The RETRY render
+            # below deliberately does not: the pad itself is showing the error,
+            # the customer is still looking at it, and a message per attempt
+            # would bury the thread in duplicates of what is already on screen.
+            # This branch is different — the panel is closing and the payment is
+            # gone, which is not something to learn by noticing an absence.
+            _close_in_chat(pa.msisdn, f"❌ {cancelled}")
+            return _success_screen(cancelled, status="failed")
         # Keep writing flow_screen: INIT/BACK re-render _flow_screen(pa, PIN_SCREEN),
         # and answering PIN_SCREEN while the device sits on PIN_RETRY would be a
         # backward navigation, which Meta refuses outright.
@@ -940,8 +1014,10 @@ def _submit_pin(token: str, data: dict) -> dict:
     except Exception:  # never leak a stack to the Flow; the money paths are idempotent
         log.exception("flow execution failed for pa=%s", pa.id)
         _clear_actions(pa.msisdn)
-        return _success_screen("Something went wrong completing that. If you were charged it "
-                               "will auto-reverse.", status="failed")
+        broke = ("Something went wrong completing that. If you were charged it "
+                 "will auto-reverse.")
+        _close_in_chat(pa.msisdn, f"❌ {broke}")
+        return _success_screen(broke, status="failed")
     # `status` is carried on the returned line itself (router.Outcome), so an
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
@@ -1066,8 +1142,8 @@ def _submit_vtu_details(pa, data: dict) -> dict:
     from common.http import daily_limit_error, send_limit_error
     from utility.models import DataPlan
 
-    from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _insufficient,
-                         _money, _phone_from, _touch)
+    from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _flow_fields,
+                         _insufficient, _money, _phone_from, _touch)
     from wallet.services import get_or_create_wallet
 
     user = pa.user
@@ -1090,7 +1166,6 @@ def _submit_vtu_details(pa, data: dict) -> dict:
             return refuse("Enter the amount as a number, e.g. 500.")
         if amount < MIN_AIRTIME:
             return refuse(f"Minimum airtime is NGN {MIN_AIRTIME:,.0f}.")
-        label = f"{_money(amount)} {net_name} airtime"
         meta = {"phone": phone, "network": net}
         extra = {}
     else:
@@ -1099,7 +1174,6 @@ def _submit_vtu_details(pa, data: dict) -> dict:
         if plan is None:
             return refuse("Pick a plan from the list.")
         amount = plan.price
-        label = f"{plan.name} ({net_name})"
         meta = {"phone": phone, "network": net, "plan_code": plan.plan_code}
         extra = {"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name}
 
@@ -1120,8 +1194,12 @@ def _submit_vtu_details(pa, data: dict) -> dict:
             "again.", status="failed")
 
     pa.payload.update({"phone": phone, "amount": str(amount), "meta": meta,
-                       "pin_attempts": 0, **extra})
-    fields = {"amount": _money(amount), "recipient": label, "details": f"To {phone}"}
+                       "pin_attempts": 0,
+                       "narration": clean_narration(data.get("narration")), **extra})
+    # Built from the payload rather than assembled here, so the confirm screen
+    # gains the balance and the narration on this path too — an inline dict would
+    # ship a response missing properties the published screen declares.
+    fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
     pa.payload["flow_screen"] = PIN_CHAIN   # routed into, so never the root
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)
@@ -1209,7 +1287,8 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
 
     pa.payload.update({"amount": str(amount), "account": account,
                        "bank_code": bank.bank_code, "bank_name": bank.name,
-                       "name": name, "pin_attempts": 0})
+                       "name": name, "pin_attempts": 0,
+                       "narration": clean_narration(data.get("narration"))})
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
     # The form routes to PIN_CHAIN, not PIN_SCREEN — see the PIN_CHAIN comment.

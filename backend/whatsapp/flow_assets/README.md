@@ -73,6 +73,28 @@ public key.
   have: these fields are visible, so a refused value staying in the box helps
   rather than traps.
 
+- **Balance and narration on the PIN pages.** `PIN_SCREEN`, `PIN_CHAIN` and
+  `PIN_RETRY` each declare two further properties: `balance`, rendered above the
+  amount, and `narration`, rendered under the routing detail. The balance is
+  there because this is the last screen before the money goes and deciding
+  whether to send ₦50,000 needs the number in front of you — without it the only
+  way to check was to abandon the payment, ask, and start again.
+
+  It renders at the **top of the screen, not the top-right corner**: a
+  `SingleColumnLayout` stacks its children vertically and this Flow JSON version
+  has no row, column or alignment primitive, so a corner is not expressible here.
+
+  `TRANSFER_FORM`, `VTU_AIRTIME` and `VTU_DATA` carry the optional `narration`
+  input that fills it. The signup pair (`PIN_CONFIRM` / `PIN_CONFIRM_RETRY`) has
+  neither: it re-enters a PIN being created and there is no transaction behind
+  it.
+
+  Both are supplied on **every** send and every endpoint answer, including the
+  signup PIN and the PIN reset, which pass empty strings. Declared-but-absent is
+  the contract mismatch described under *Re-publishing* below, and it is why
+  every PIN-screen send now goes through `router.pin_screen_send_data()` rather
+  than a hand-written dict — that drift has already broken signup once.
+
 - `SUCCESS` — terminal screen showing the outcome as a `status` heading
   (`✅ Successful` / `⏳ Pending` / `❌ Not completed` / `Done`) over the
   `message` detail. The heading is the point: the screen used to render only the

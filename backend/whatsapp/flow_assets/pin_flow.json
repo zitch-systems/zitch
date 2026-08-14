@@ -486,6 +486,15 @@
                 "data-source": "${data.banks}"
               },
               {
+                "type": "TextInput",
+                "name": "narration",
+                "label": "Narration (optional)",
+                "input-type": "text",
+                "required": false,
+                "helper-text": "What this is for — shows on your receipt",
+                "max-chars": 60
+              },
+              {
                 "type": "Footer",
                 "label": "Continue",
                 "on-click-action": {
@@ -493,7 +502,8 @@
                   "payload": {
                     "amount": "${form.amount}",
                     "account_number": "${form.account_number}",
-                    "bank": "${form.bank}"
+                    "bank": "${form.bank}",
+                    "narration": "${form.narration}"
                   }
                 }
               }
@@ -701,13 +711,23 @@
                 "helper-text": "The number to top up — leave your own to recharge yourself"
               },
               {
+                "type": "TextInput",
+                "name": "narration",
+                "label": "Narration (optional)",
+                "input-type": "text",
+                "required": false,
+                "helper-text": "What this is for — shows on your receipt",
+                "max-chars": 60
+              },
+              {
                 "type": "Footer",
                 "label": "Continue",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
                     "amount": "${form.amount}",
-                    "phone": "${form.phone}"
+                    "phone": "${form.phone}",
+                    "narration": "${form.narration}"
                   }
                 }
               }
@@ -791,13 +811,23 @@
                 "helper-text": "The number to load the bundle on"
               },
               {
+                "type": "TextInput",
+                "name": "narration",
+                "label": "Narration (optional)",
+                "input-type": "text",
+                "required": false,
+                "helper-text": "What this is for — shows on your receipt",
+                "max-chars": 60
+              },
+              {
                 "type": "Footer",
                 "label": "Continue",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
                     "plan": "${form.plan}",
-                    "phone": "${form.phone}"
+                    "phone": "${form.phone}",
+                    "narration": "${form.narration}"
                   }
                 }
               }
@@ -1130,6 +1160,10 @@
       "id": "PIN_SCREEN",
       "title": "Confirm payment",
       "data": {
+        "balance": {
+          "type": "string",
+          "__example__": "Balance ₦12,500.00"
+        },
         "amount": {
           "type": "string",
           "__example__": "₦5,000.00"
@@ -1145,6 +1179,10 @@
         "error": {
           "type": "string",
           "__example__": ""
+        },
+        "narration": {
+          "type": "string",
+          "__example__": "Rent"
         }
       },
       "layout": {
@@ -1158,6 +1196,10 @@
             "alt-text": "Zitch"
           },
           {
+            "type": "TextBody",
+            "text": "${data.balance}"
+          },
+          {
             "type": "TextHeading",
             "text": "${data.amount}"
           },
@@ -1168,6 +1210,10 @@
           {
             "type": "TextBody",
             "text": "${data.details}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.narration}"
           },
           {
             "type": "TextBody",
@@ -1206,6 +1252,10 @@
       "id": "PIN_CHAIN",
       "title": "Confirm payment",
       "data": {
+        "balance": {
+          "type": "string",
+          "__example__": "Balance ₦12,500.00"
+        },
         "amount": {
           "type": "string",
           "__example__": "₦5,000.00"
@@ -1221,6 +1271,10 @@
         "error": {
           "type": "string",
           "__example__": ""
+        },
+        "narration": {
+          "type": "string",
+          "__example__": "Rent"
         }
       },
       "layout": {
@@ -1234,6 +1288,10 @@
             "alt-text": "Zitch"
           },
           {
+            "type": "TextBody",
+            "text": "${data.balance}"
+          },
+          {
             "type": "TextHeading",
             "text": "${data.amount}"
           },
@@ -1244,6 +1302,10 @@
           {
             "type": "TextBody",
             "text": "${data.details}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.narration}"
           },
           {
             "type": "TextBody",
@@ -1282,6 +1344,10 @@
       "id": "PIN_RETRY",
       "title": "Confirm payment",
       "data": {
+        "balance": {
+          "type": "string",
+          "__example__": "Balance ₦12,500.00"
+        },
         "amount": {
           "type": "string",
           "__example__": "₦5,000.00"
@@ -1297,6 +1363,10 @@
         "error": {
           "type": "string",
           "__example__": ""
+        },
+        "narration": {
+          "type": "string",
+          "__example__": "Rent"
         }
       },
       "layout": {
@@ -1310,6 +1380,10 @@
             "alt-text": "Zitch"
           },
           {
+            "type": "TextBody",
+            "text": "${data.balance}"
+          },
+          {
             "type": "TextHeading",
             "text": "${data.amount}"
           },
@@ -1320,6 +1394,10 @@
           {
             "type": "TextBody",
             "text": "${data.details}"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.narration}"
           },
           {
             "type": "TextBody",

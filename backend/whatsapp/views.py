@@ -22,6 +22,7 @@ from django.views.decorators.csrf import csrf_exempt
 from common.http import api, evaluate_transaction_pin, fail, ok, require_user
 from common.ratelimit import opaque_cache_identifier, ratelimit
 
+from . import media
 from .flows import resolve_approve_token
 from .models import Broadcast, BroadcastRecipient, ConversationState, WhatsAppLink
 from .ops import record_audit, validate_broadcast_spec
@@ -390,9 +391,19 @@ def _process(msg: dict) -> None:
     # would be processed repeatedly. Drop anything missing from/id.
     if not frm or not mid:
         return
-    is_text = msg.get("type") == "text"
+    msg_type = msg.get("type") or ""
+    is_text = msg_type == "text"
     body = (msg.get("text") or {}).get("body", "") if is_text else ""
     is_flow_reply = False
+    # A voice note or a photo is a message, not an unsupported event. Only the
+    # REFERENCE is taken here — the id, and the caption a photo may carry. The
+    # bytes are pulled in the worker, off the webhook thread, because Meta
+    # retries a slow acknowledgement and a media download is the slowest thing
+    # this channel does.
+    media_id, media_caption = "", ""
+    if media.can_interpret(msg_type):
+        media_id = str((msg.get(msg_type) or {}).get("id") or "")
+        media_caption = str((msg.get(msg_type) or {}).get("caption") or "")[:512]
     # Interactive replies (list rows / reply buttons) deliver an id we chose when
     # sending — the ids ARE the text the router understands ("1", "airtime", a
     # bank code…), so a tap is handled exactly like the user typing it.
@@ -417,8 +428,13 @@ def _process(msg: dict) -> None:
         logged = "[PIN]"
     elif is_awaiting_bvn(frm):
         logged = "[BVN]"  # keep the BVN out of the message log, like the PIN
+    elif media_id:
+        # The transcript is NOT logged from here: it does not exist yet, and when
+        # it does it goes through the same redaction every inbound body does.
+        # What is recorded is that a voice note or a photo arrived.
+        logged = f"[{msg_type}]" + (f" {_redact_chat_log(media_caption)}" if media_caption else "")
     else:
-        logged = _redact_chat_log(body) if body else f"[{msg.get('type', 'non-text')}]"
+        logged = _redact_chat_log(body) if body else f"[{msg_type or 'non-text'}]"
 
     from .jobs import discard_inbound, enqueue_inbound, process_inbound_message
 
@@ -430,7 +446,9 @@ def _process(msg: dict) -> None:
     try:
         row, _created = enqueue_inbound(
             message_id=mid, msisdn=frm, logged_text=logged,
-            payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply},
+            payload={"is_text": is_text, "body": body, "flow_reply": is_flow_reply,
+                     "media_kind": msg_type if media_id else "",
+                     "media_id": media_id, "media_caption": media_caption},
         )
     except Exception as exc:  # noqa: BLE001 — re-raised below; this is for visibility
         # A message that cannot even be QUEUED leaves no row anywhere, so the queue
