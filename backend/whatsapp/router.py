@@ -479,9 +479,13 @@ def _flow_fields(pa: PendingAction) -> dict:
                                  f"{NETWORK_NAMES.get(p.get('net', ''), '')}".strip(" ·"),
                     "details": f"To {p.get('phone', '')}".strip()}
         if at == "electricity":
+            cust = p.get("customer", "")
+            meter_line = f"Meter {p.get('meter', '')}".strip()
+            if cust:
+                meter_line += f" · {cust}"
             return {"amount": _money(Decimal(p["amount"])),
                     "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
-                    "details": f"Meter {p.get('meter', '')}".strip()}
+                    "details": meter_line}
         if at == "cable":
             return {"amount": _money(Decimal(p["price"])),
                     "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
@@ -1077,7 +1081,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # Nothing live — but if something just ran out, say so before treating this
     # message as the start of something new. The message itself is still handled
     # below, so "balance" after a timeout still answers with the balance.
-    if _announce_timeout(msisdn) and re.fullmatch(r"\d{4,6}", low.strip()):
+    timed_out = _announce_timeout(msisdn)
+    if timed_out and re.fullmatch(r"\d{4,6}", low.strip()):
         # ...except a PIN or code, which was plainly the answer to the flow that
         # just died. The stray-PIN warning below is true but not the point here,
         # and it would be the last thing they read.
@@ -1087,7 +1092,11 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # require nor verify it, so this guards the thing we can: what the bot will
     # reveal. Only reads are gated — every action already authenticates at the
     # point money moves, and prompting twice would be friction, not security.
-    if _needs_reauth(convo) and _is_sensitive_read(low):
+    # Skip re-auth when we just announced a timeout — the expired payment's
+    # "Confirm with PIN" card is still visible in the chat and a second card
+    # right after the timeout message is confusing. The next command will
+    # re-auth if still needed.
+    if not timed_out and _needs_reauth(convo) and _is_sensitive_read(low):
         return _send_unlock(user, msisdn, text)
 
     # A bare 4-6 digit message with nothing expecting one is very often a PIN
