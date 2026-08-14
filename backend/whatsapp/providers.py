@@ -314,6 +314,58 @@ def upload_media(data: bytes, mime: str, filename: str) -> str:
         return ""
 
 
+#: The most we will pull down for one inbound voice note or photo. Meta caps
+#: uploads well above this (16MB audio, 5MB images), but we are about to hold the
+#: bytes in memory on a worker and then base64 them into a model request, which
+#: inflates them by a third. A customer cannot say anything about a payment that
+#: needs more than this, and a cap is the difference between a big message and an
+#: OOM on a dyno that is also serving /healthz.
+MAX_INBOUND_MEDIA = 8 * 1024 * 1024
+
+
+def download_media(media_id: str) -> tuple[bytes, str]:
+    """Fetch an inbound media object by id -> (bytes, mime). ("", "") on failure.
+
+    Two hops, both authenticated: Meta gives a short-lived, single-use URL from
+    the id, and the URL itself still needs the bearer token — an unauthenticated
+    GET of it returns 401, which is the trap this function exists to hide.
+
+    Never raises. A voice note we cannot fetch is answered by asking the customer
+    to type it, which is a far better outcome than a webhook retry storm.
+    """
+    if not media_id or not wa_live():
+        return b"", ""
+    auth = {"Authorization": f"Bearer {_cfg()['TOKEN']}"}
+    try:
+        meta = requests.get(f"{_cfg()['BASE_URL']}/{media_id}", headers=auth, timeout=15)
+        if not meta.ok:
+            log.warning("wa_media_lookup_failed status=%s", meta.status_code)
+            return b"", ""
+        info = meta.json() if meta.content else {}
+        url = info.get("url") or ""
+        if not url:
+            return b"", ""
+        # Streamed and capped rather than read whole: `file_size` is Meta's claim
+        # about the object, not a promise about the bytes on the wire, and this
+        # runs on a shared worker.
+        with requests.get(url, headers=auth, timeout=30, stream=True) as resp:
+            if not resp.ok:
+                log.warning("wa_media_fetch_failed status=%s", resp.status_code)
+                return b"", ""
+            chunks, total = [], 0
+            for chunk in resp.iter_content(64 * 1024):
+                total += len(chunk)
+                if total > MAX_INBOUND_MEDIA:
+                    log.warning("wa_media_too_large bytes_over=%s", MAX_INBOUND_MEDIA)
+                    return b"", ""
+                chunks.append(chunk)
+        mime = (info.get("mime_type") or resp.headers.get("Content-Type") or "").split(";")[0]
+        return b"".join(chunks), mime.strip()
+    except requests.RequestException as exc:
+        log.warning("wa_media_download_failed error_type=%s", type(exc).__name__)
+        return b"", ""
+
+
 def send_image_media(msisdn: str, media_id: str, caption: str = "") -> dict:
     """Send a previously-uploaded image by media id, so it renders INLINE in the
     chat rather than as a file card. `send_image` posts a public link instead;

@@ -195,6 +195,8 @@ def _execute_authorised_action(action_id: int, user_id) -> None:
 
 
 def process_inbound_message(pk: int, *, raise_errors=False) -> str:
+    from . import media
+
     row, disposition = _claim_inbound(pk)
     if row is None:
         return disposition
@@ -204,8 +206,22 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
             _execute_authorised_action(int(payload["execute_action"]), payload.get("user_id"))
         elif payload.get("flow_reply"):
             pass
+        elif payload.get("media_id"):
+            # Here, not in the webhook: this downloads bytes from Meta and calls
+            # a model, which together are the slowest thing the channel does, and
+            # Meta retries a webhook it considers slow to acknowledge.
+            said, instead = media.interpret(
+                str(payload.get("media_kind") or ""), str(payload["media_id"]),
+                str(payload.get("media_caption") or ""))
+            if said:
+                # Routed as if typed — same parsing, same redaction before the
+                # intent call, same confirm card, same PIN. Media buys the
+                # customer a way to say something, never a way to skip a step.
+                handle_inbound(row.msisdn, said)
+            else:
+                reply(row.msisdn, instead)
         elif not payload.get("is_text"):
-            reply(row.msisdn, 'I can only read text messages for now. Reply "menu" for options.')
+            reply(row.msisdn, media.CANNOT_READ["other"])
         else:
             handle_inbound(row.msisdn, str(payload.get("body") or ""))
     except Exception as exc:  # noqa: BLE001 — durable retry/dead-letter boundary
