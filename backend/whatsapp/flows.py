@@ -80,6 +80,16 @@ _PIN_CONFIRM_ATTEMPTS = 2   # confirm mismatches per create session
 #: this screen re-renders it (same id).
 PIN_CONFIRM_RETRY = "PIN_CONFIRM_RETRY"
 TRANSFER_FORM = "TRANSFER_FORM"
+#: The airtime/data ladder, one Flow instead of four chat round-trips: what to
+#: buy, then the network, then the details, then the PIN — each a page of the
+#: SAME open session. VTU_SCREEN is the root; the other three are only ever
+#: routed into, which is what keeps the root openable (see PIN_CHAIN).
+#: Airtime and data split at the third page because their inputs genuinely
+#: differ — an amount you type versus a plan you pick from that network's list.
+VTU_SCREEN = "VTU_SCREEN"
+VTU_NETWORK = "VTU_NETWORK"
+VTU_AIRTIME = "VTU_AIRTIME"
+VTU_DATA = "VTU_DATA"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
@@ -89,6 +99,7 @@ FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is 
 FLOW_PHONE_STATE = "flow_phone"             # ...while the signup phone page is open
 FLOW_PHONE_CODE_STATE = "flow_phone_code"   # ...while the signup phone SMS code is pending
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
+FLOW_VTU_STATE = "flow_vtu"   # ...while the airtime/data form is open (payload["vtu_step"] says which page)
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
 _OB_PREFIX = "ob"             # marks a flow_token that addresses an onboarding, not a money action
 _ID_PREFIX = "id"             # marks a flow_token that addresses a KYC identity step
@@ -223,7 +234,7 @@ def resolve_flow_token(token: str):
     if not pid.isdigit():
         return None
     pa = PendingAction.objects.filter(id=int(pid)).first()
-    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE) or pa.expired:
+    if pa is None or pa.state not in (FLOW_PIN_STATE, FLOW_FORM_STATE, FLOW_VTU_STATE) or pa.expired:
         return None
     if not hmac.compare_digest(sig, _sig(f"{pa.id}:{pa.msisdn}")):
         return None
@@ -394,6 +405,8 @@ def handle_flow_request(payload: dict) -> dict:
             return _success_screen("This request has expired. Please start again in the chat.")
         if pa.state == FLOW_FORM_STATE:
             return _transfer_form_screen()
+        if pa.state == FLOW_VTU_STATE:
+            return _vtu_screen_for(pa)
         if pa.action_type == "setpin":
             return _set_pin_screen(pa)
         return _pin_screen(_pa_screen_fields(pa), screen=_flow_screen(pa, PIN_SCREEN))
@@ -406,6 +419,8 @@ def handle_flow_request(payload: dict) -> dict:
         pa = resolve_flow_token(token)
         if pa is not None and pa.state == FLOW_FORM_STATE:
             return _submit_transfer_form(token, data)
+        if pa is not None and pa.state == FLOW_VTU_STATE:
+            return _submit_vtu(pa, data)
         return _submit_pin(token, data)
 
     # BACK / unknown actions: re-render the PIN screen if we can, else a terminal.
@@ -931,6 +946,186 @@ def _submit_pin(token: str, data: dict) -> dict:
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
     return _success_screen(outcome, getattr(outcome, "status", ""))
+
+
+# --------------------------------------------------------------------------- #
+# airtime / data — one Flow, four pages
+# --------------------------------------------------------------------------- #
+#: The page a VTU session is on. Kept on the payload rather than inferred from
+#: the posted field names, for the same reason the transfer form is: sniffing
+#: for a key misroutes the moment a screen gains or loses one.
+VTU_KIND_STEP = "kind"
+VTU_NETWORK_STEP = "network"
+VTU_DETAILS_STEP = "details"
+
+
+def _vtu_kind_screen(error: str = "") -> dict:
+    return {"screen": VTU_SCREEN, "data": {"error": error or ""}}
+
+
+def _vtu_network_screen(kind: str, error: str = "") -> dict:
+    from .router import NETWORK_NAMES
+
+    return {"screen": VTU_NETWORK,
+            "data": {"networks": [{"id": k, "title": v} for k, v in NETWORK_NAMES.items()],
+                     "summary": "Airtime top-up" if kind == "airtime" else "Data bundle",
+                     "error": error or ""}}
+
+
+def _vtu_airtime_screen(net_name: str, error: str = "") -> dict:
+    return {"screen": VTU_AIRTIME,
+            "data": {"summary": f"{net_name} airtime", "error": error or ""}}
+
+
+def _vtu_data_screen(net: str, net_name: str, error: str = "") -> dict:
+    """The plan list is the NETWORK's, fetched at render time — a plan picked
+    from another network's list is not a typo the provider can recover from."""
+    from utility.models import DataPlan
+
+    from .router import _money
+
+    plans = list(DataPlan.objects.filter(network=net, active=True)[:20])
+    return {"screen": VTU_DATA,
+            "data": {"plans": [{"id": p.plan_code,
+                                "title": f"{p.name} • {p.validity} • {_money(p.price)}"}
+                               for p in plans],
+                     "summary": f"{net_name} data", "error": error or ""}}
+
+
+def _vtu_screen_for(pa) -> dict:
+    """Re-render whichever page this session is standing on (INIT / BACK)."""
+    from .router import NETWORK_NAMES
+
+    step = pa.payload.get("vtu_step", VTU_KIND_STEP)
+    kind = pa.payload.get("vtu_kind", "airtime")
+    if step == VTU_KIND_STEP:
+        return _vtu_kind_screen()
+    if step == VTU_NETWORK_STEP:
+        return _vtu_network_screen(kind)
+    net = pa.payload.get("net", "1")
+    net_name = NETWORK_NAMES.get(net, "")
+    return (_vtu_airtime_screen(net_name) if kind == "airtime"
+            else _vtu_data_screen(net, net_name))
+
+
+def _submit_vtu(pa, data: dict) -> dict:
+    """One page of the airtime/data ladder. Dispatches on the session's STEP."""
+    step = pa.payload.get("vtu_step", VTU_KIND_STEP)
+    if step == VTU_KIND_STEP:
+        return _submit_vtu_kind(pa, data)
+    if step == VTU_NETWORK_STEP:
+        return _submit_vtu_network(pa, data)
+    return _submit_vtu_details(pa, data)
+
+
+def _submit_vtu_kind(pa, data: dict) -> dict:
+    from .router import _touch
+
+    kind = str(data.get("kind", "")).strip().lower()
+    if kind not in ("airtime", "data"):
+        return _vtu_kind_screen(error="⚠️ Pick airtime or data.")
+    pa.payload["vtu_kind"] = kind
+    pa.payload["vtu_step"] = VTU_NETWORK_STEP
+    pa.action_type = kind
+    _touch(pa, payload=pa.payload)
+    pa.save(update_fields=["action_type"])
+    return _vtu_network_screen(kind)
+
+
+def _submit_vtu_network(pa, data: dict) -> dict:
+    from .router import NETWORK_NAMES, _clear_actions, _touch
+
+    net = str(data.get("network", "")).strip()
+    if net not in NETWORK_NAMES:
+        return _vtu_network_screen(pa.payload.get("vtu_kind", "airtime"),
+                                   error="⚠️ Pick a network from the list.")
+    kind = pa.payload.get("vtu_kind", "airtime")
+    net_name = NETWORK_NAMES[net]
+    if kind == "data":
+        screen = _vtu_data_screen(net, net_name)
+        if not screen["data"]["plans"]:
+            # Nothing to pick means the next page is unusable; say so here rather
+            # than render an empty dropdown the customer cannot satisfy.
+            _clear_actions(pa.msisdn)
+            return _success_screen(f"No {net_name} data plans are available right now. "
+                                   "Please try again shortly.", status="failed")
+    pa.payload["net"] = net
+    pa.payload["vtu_step"] = VTU_DETAILS_STEP
+    _touch(pa, payload=pa.payload)
+    return screen if kind == "data" else _vtu_airtime_screen(net_name)
+
+
+def _submit_vtu_details(pa, data: dict) -> dict:
+    """Amount + phone (airtime) or plan + phone (data), then straight into the
+    PIN page of the SAME session. Every check the chat ladder makes is made
+    here — minimum, limits, balance — because two entry points must not
+    disagree about what a valid purchase is.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    from common.http import daily_limit_error, send_limit_error
+    from utility.models import DataPlan
+
+    from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _insufficient,
+                         _money, _phone_from, _touch)
+    from wallet.services import get_or_create_wallet
+
+    user = pa.user
+    kind = pa.payload.get("vtu_kind", "airtime")
+    net = pa.payload.get("net", "1")
+    net_name = NETWORK_NAMES.get(net, "")
+
+    def refuse(message):
+        return (_vtu_airtime_screen(net_name, error=f"⚠️ {message}") if kind == "airtime"
+                else _vtu_data_screen(net, net_name, error=f"⚠️ {message}"))
+
+    phone = _phone_from(str(data.get("phone", "")), user)
+    if not phone:
+        return refuse("Enter a valid phone number.")
+
+    if kind == "airtime":
+        try:
+            amount = Decimal(str(data.get("amount", "")).strip())
+        except InvalidOperation:
+            return refuse("Enter the amount as a number, e.g. 500.")
+        if amount < MIN_AIRTIME:
+            return refuse(f"Minimum airtime is NGN {MIN_AIRTIME:,.0f}.")
+        label = f"{_money(amount)} {net_name} airtime"
+        meta = {"phone": phone, "network": net}
+        extra = {}
+    else:
+        plan = DataPlan.objects.filter(plan_code=str(data.get("plan", "")).strip(),
+                                       network=net, active=True).first()
+        if plan is None:
+            return refuse("Pick a plan from the list.")
+        amount = plan.price
+        label = f"{plan.name} ({net_name})"
+        meta = {"phone": phone, "network": net, "plan_code": plan.plan_code}
+        extra = {"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name}
+
+    # Airtime and data accrue against the BILL cap, not the transfer one.
+    limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
+    if limit_msg:
+        _clear_actions(pa.msisdn)
+        return _success_screen(limit_msg, status="failed")
+    if _insufficient(user, amount):
+        return refuse(f"Insufficient balance — you have {_money(get_or_create_wallet(user).balance)}.")
+    if not user.transaction_pin:
+        # Same refusal the transfer form makes: a PIN pad the customer can never
+        # satisfy is worse than a clear "set one first".
+        _clear_actions(pa.msisdn)
+        return _success_screen(
+            "You haven't set a transaction PIN yet — it's what authorises payments here "
+            "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
+            "again.", status="failed")
+
+    pa.payload.update({"phone": phone, "amount": str(amount), "meta": meta,
+                       "pin_attempts": 0, **extra})
+    fields = {"amount": _money(amount), "recipient": label, "details": f"To {phone}"}
+    pa.payload["flow_fields"] = fields
+    pa.payload["flow_screen"] = PIN_CHAIN   # routed into, so never the root
+    _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)
+    return _pin_screen(fields, screen=PIN_CHAIN)
 
 
 def _transfer_form_screen(error: str = "", candidates=None) -> dict:

@@ -44,7 +44,8 @@ from . import ai
 from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STATE,
                     FLOW_FORM_STATE, IDENTITY_CHAIN,
                     FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
-                    FLOW_SIGNUP_STATE, IDENTITY_SCREEN, SIGNUP_SCREEN, TRANSFER_FORM,
+                    FLOW_SIGNUP_STATE, FLOW_VTU_STATE, IDENTITY_SCREEN, SIGNUP_SCREEN,
+                    TRANSFER_FORM, VTU_SCREEN,
                     PIN_SCREEN,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
@@ -1100,7 +1101,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low == "data":
         return _start_data(user, msisdn)
     if low == "3":
-        return _start_service_menu(user, msisdn, "airtime_data")
+        return _start_vtu(user, msisdn)
     if low in ("electricity", "light", "nepa", "power"):
         return _start_electricity(user, msisdn)
     if low in ("cable", "tv", "dstv", "gotv", "startimes"):
@@ -2822,6 +2823,16 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return handle_inbound(msisdn, text)
         return reply(msisdn, "💸 Please fill the secure *Send money* form above — "
                              "or reply \"cancel\".")
+    if pa.state == FLOW_VTU_STATE:
+        # The airtime/data form. Same escape hatch as the transfer form: nothing
+        # has been bought, so a clear new instruction replaces it rather than
+        # trapping the customer in "fill the form".
+        if _is_new_command(text):
+            _clear_actions(msisdn)
+            reply(msisdn, "Okay — leaving that purchase.")
+            return handle_inbound(msisdn, text)
+        return reply(msisdn, "📱 Please use the secure *Airtime & data* form above — "
+                             "or reply \"cancel\".")
     if pa.state == FLOW_PIN_STATE:
         # A secure PIN Flow is open: the PIN is entered there, never in chat.
         #
@@ -3456,6 +3467,42 @@ SERVICE_MENUS = {
 }
 
 
+def _start_vtu(user, msisdn: str) -> None:
+    """Menu 3 — airtime and data as ONE Flow instead of four chat round-trips.
+
+    The chat ladder asked what to buy, then the network, then the number, then
+    the amount, each its own message and each a place to get stuck; the customer
+    in the screenshot was four taps in and still had two to go. The Flow asks the
+    same four things as four pages of one session and chains into the PIN, so the
+    whole purchase is one interaction.
+
+    Same fallback as the transfer form: if the Flow cannot be sent, the guided
+    chat sub-menu still works. Failing closed would take airtime away from every
+    deploy without Flows configured, and nothing here is secret — the PIN is
+    still collected on its own encrypted page either way.
+    """
+    if _blocked_from_spending(user, msisdn):
+        return None
+    _clear_actions(msisdn)
+    if flows_live():
+        # action_type is provisional: the FIRST page decides airtime vs data and
+        # rewrites it, because the executor is chosen by action_type later.
+        pa = _new_flow(user, msisdn, "airtime", FLOW_VTU_STATE,
+                       {"vtu_step": "kind", "pin_attempts": 0})
+        res = send_flow(
+            msisdn, sign_flow_token(pa),
+            header="Airtime & data",
+            body="Pick what you need and we'll take it from there — your PIN stays private.",
+            screen=VTU_SCREEN, screen_data={"error": ""},
+            cta="Buy",
+        )
+        if res.get("success"):
+            return reply(msisdn, "📱 Tap *Buy* on the secure form above.")
+        log.warning("wa_vtu_flow_send_failed pa=%s detail=%r", pa.id, res.get("error_detail", ""))
+        _clear_actions(msisdn)
+    return _start_service_menu(user, msisdn, "airtime_data")
+
+
 def _start_service_menu(user, msisdn: str, kind: str) -> None:
     """Open a category sub-menu so the user picks 1 or 2 (or taps the row) instead
     of having to type the word. Stored as a `pick_service` flow so a bare "1"/"2"
@@ -3515,6 +3562,14 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if net is None:
             return _ask_network(msisdn)
         pa.payload["net"] = net
+        # The number may already be known (the AI path collects it first when the
+        # message named a person). Asking for it again reads as not listening.
+        if pa.payload.get("phone"):
+            _touch(pa, state="amount", payload=pa.payload)
+            known = pa.payload.get("amount")
+            if known:
+                return _advance_airtime(pa, user, msisdn, known)
+            return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
         _touch(pa, state="phone", payload=pa.payload)
         return reply(msisdn, "What phone number? Reply \"me\" to use your own.")
     if st == "phone":
@@ -3522,7 +3577,17 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if not phone:
             return reply(msisdn, "Enter a valid phone number (or \"me\").")
         pa.payload["phone"] = phone
+        # A number reached this rung from "recharge tobi 2k" — the amount was in
+        # the message and the prefix names the network, so asking for either
+        # again is asking twice for something already said.
+        pa.payload.setdefault("net", _network_from_prefix(phone) or "")
         _touch(pa, state="amount", payload=pa.payload)
+        known = pa.payload.get("amount")
+        if known and pa.payload.get("net"):
+            return _advance_airtime(pa, user, msisdn, known)
+        if not pa.payload.get("net"):
+            _touch(pa, state="network", payload=pa.payload)
+            return _ask_network(msisdn)
         return reply(msisdn, "How much airtime? Type the amount (e.g. 200). Minimum ₦50.")
     if st == "amount":
         amount = parse_amount(text)
@@ -3995,7 +4060,8 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
         _start_transfer(user, msisdn)  # partial details -> guided flow
         return True
     if name == "buy_airtime":
-        return _begin_airtime(user, msisdn, p.get("amount"), p.get("phone"), p.get("network"))
+        return _begin_airtime(user, msisdn, p.get("amount"), p.get("phone"),
+                              p.get("network"), p.get("recipient_ref"))
     if name == "buy_data":
         _start_data(user, msisdn)
         return True
@@ -4043,10 +4109,31 @@ def _network_from_prefix(phone) -> str | None:
     return _PREFIX_TO_NETWORK.get(digits[:4]) if len(digits) >= 10 else None
 
 
-def _begin_airtime(user, msisdn: str, amount, phone, network) -> bool:
+def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None) -> bool:
     """LLM airtime: if amount + network + phone are all known, jump to confirm;
     otherwise start the guided flow."""
     if _blocked_from_spending(user, msisdn):
+        return True
+    # "recharge tobi 2k" names WHO, not what number. Falling through to the
+    # default below would have read the missing number as "me" and topped up the
+    # sender's own line — the wrong number, already paid for, and nothing on the
+    # confirm card to reveal it was wrong because the card shows the number it
+    # guessed. Zitch cannot read the phone's contacts, so the only honest move is
+    # to ask.
+    if recipient_ref and not phone:
+        who = str(recipient_ref)[:40]
+        payload = {"pin_attempts": 0, "recipient_ref": who}
+        try:
+            if amount is not None:
+                payload["amount"] = str(Decimal(str(amount)))
+        except (InvalidOperation, TypeError):
+            pass
+        netid = _network_id(network)
+        if netid:
+            payload["net"] = netid
+        _new_flow(user, msisdn, "airtime", "phone", payload)
+        reply(msisdn, f"I can't look up {who}'s number — Zitch can't read your contacts. "
+                      "What number should I recharge?")
         return True
     # "2k airtime for me" carries neither a number nor a network. Falling back to
     # the guided flow for that made the AI look useless on the single most common
