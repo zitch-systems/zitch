@@ -1546,6 +1546,14 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         f"✅ *Welcome to Zitch, {fn.title() or 'there'}!* Your account is ready.\n\n"
         f"Your current transfer limit is *₦{user.daily_transfer_limit:,.0f}/day*. "
         "You can pay bills, buy airtime & data, and check your balance here.\n\n"
+        # Said out loud, because an empty wallet is the state EVERY new account
+        # starts in and nothing else in this message mentions it. A customer who
+        # finishes signup and goes straight to "send 5k" meets an insufficient-
+        # balance refusal as their first real interaction — which reads as the
+        # account not working, rather than as the one step nobody told them
+        # about. The account number this points at is minted just below.
+        "💰 *Next: add money.* Your wallet starts at ₦0 — reply *6* any time for "
+        "your Zitch account number and transfer to it from any bank.\n\n"
         + ("" if pin else
            "🔐 Set your *transaction PIN* in the Zitch app before you send money — "
            "we never collect a PIN in this chat.\n\n")
@@ -1707,7 +1715,12 @@ def _send_account_details(msisdn: str, wallet, intro: str = "🏦 *Add money to 
         "Transfer to your dedicated Zitch account from any bank — your wallet is "
         "credited automatically, usually within seconds:\n\n"
         f"{body}\n"
-        f"👤 {wallet.account_name}",
+        f"👤 {wallet.account_name}\n\n"
+        # The number on its own is not an instruction. This is the screen a new
+        # customer reaches at the end of signup, so it should close on what to do
+        # next and how they will know it worked, rather than leaving them to
+        # infer both from an account number.
+        "Send money to it whenever you're ready, then reply *1* to see your balance.",
     )
 
 
@@ -4263,14 +4276,18 @@ def _exec_convert(pa: PendingAction, user, msisdn: str) -> str:
     except FxError as exc:
         _clear_actions(msisdn)
         reply(msisdn, exc.message)
-        return exc.message
+        # Tagged, like every other executor. Untagged fell through to the neutral
+        # "Done" heading, so a refused conversion closed the Flow on the same word
+        # a successful one did — the exact tell-them-apart-at-a-glance failure the
+        # status heading was added to end, still live on this one path.
+        return Outcome(exc.message, OUTCOME_FAILED)
     _clear_actions(msisdn)
     new_bal = currency_balance(user, quote.to_currency)
     line = (f"✅ Converted. -{quote.sell_amount:,.2f} {quote.from_currency} / "
             f"+{quote.receive_amount:,.2f} {quote.to_currency}. "
             f"New {quote.to_currency} balance: {new_bal:,.2f}.")
     reply(msisdn, line)
-    return line
+    return Outcome(line, OUTCOME_SUCCESS)
 
 
 # --------------------------------------------------------------------------- #
@@ -4320,7 +4337,7 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # "Pending" because the endpoint replied the instant the job was queued, so
     # the customer's last word from the Flow was always about a payment that had
     # not been attempted yet.
-    settled = _await_settlement(pa.id, user)
+    settled = _await_settlement(pa.id, user, pa.action_type)
     if settled is not None:
         return settled
     # Still working. PENDING, emphatically not success: the rail has not answered
@@ -4331,7 +4348,21 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
                    "arrive in this chat in a few seconds.", OUTCOME_PENDING)
 
 
-def _await_settlement(action_id: int, user):
+#: What the settled screen calls each action. "Sent" is true of a transfer and
+#: false of everything else — a meter token or a data bundle is bought, not sent —
+#: and this screen is the one place the customer is told the money moved, so it
+#: should not describe their electricity payment as something posted to someone.
+_SETTLED_VERB = {
+    "transfer": "Sent",
+    "airtime": "Airtime purchased",
+    "data": "Data bundle purchased",
+    "electricity": "Electricity paid",
+    "cable": "Subscription paid",
+    "convert": "Converted",
+}
+
+
+def _await_settlement(action_id: int, user, action_type: str = ""):
     """Poll the ledger for this action's outcome, briefly. Returns a tagged
     Outcome once the row is terminal, or None if it is still processing.
 
@@ -4351,7 +4382,11 @@ def _await_settlement(action_id: int, user):
     budget = float(getattr(settings, "WHATSAPP_FLOW_SETTLE_WAIT", 0) or 0)
     if budget <= 0:
         return None
-    key = f"wa-{action_id}"          # the idempotency key every executor uses
+    # The key every executor stamps its ledger row with — except FX, which has
+    # always used its own prefix. Polling `wa-<id>` for a conversion therefore
+    # matched nothing and timed out into "Pending" every single time, however
+    # fast the rail answered.
+    key = f"wa-fx-{action_id}" if action_type == "convert" else f"wa-{action_id}"
     deadline = time.monotonic() + budget
     while True:
         # .only() because this runs on the request thread and the ledger row is
@@ -4360,11 +4395,12 @@ def _await_settlement(action_id: int, user):
                .only("transaction_status", "reference").first())
         if txn is not None and txn.transaction_status != Transaction.PENDING:
             if txn.transaction_status == Transaction.SUCCESS:
-                return Outcome("Sent — the receipt is in your chat.", OUTCOME_SUCCESS)
+                verb = _SETTLED_VERB.get(action_type, "Done")
+                return Outcome(f"{verb} — the receipt is in your chat.", OUTCOME_SUCCESS)
             # A failure is worth waiting for too: it is the one outcome the
             # customer should see BEFORE the screen closes, not only in a chat
             # message they may scroll past.
-            return Outcome("That didn't go through. Nothing was sent — "
+            return Outcome("That didn't go through. You were not charged — "
                            "see the chat for details.", OUTCOME_FAILED)
         if time.monotonic() >= deadline:
             return None

@@ -56,7 +56,10 @@ class SettleWaitTests(TestCase):
         _ledger(self.user, pa.id, Transaction.FAILED)
         outcome = router._await_settlement(pa.id, self.user)
         self.assertEqual(outcome.status, router.OUTCOME_FAILED)
-        self.assertIn("Nothing was sent", outcome)
+        # Phrased for every action, not just a transfer: an electricity payment
+        # or a data bundle is not something "sent", and this line closes the Flow
+        # for all of them.
+        self.assertIn("not charged", outcome)
 
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=0.5)
     def test_a_row_still_pending_gives_up_and_says_pending(self):
