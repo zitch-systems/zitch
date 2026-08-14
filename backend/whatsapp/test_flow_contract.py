@@ -30,6 +30,14 @@ SERVER_TRANSITIONS = [
     ("SIGNUP_PHONE", "SIGNUP_PHONE"), ("SIGNUP_PHONE", "PIN_CHAIN"), ("SIGNUP_PHONE", "SUCCESS"),
     ("EMAIL_SCREEN", "EMAIL_SCREEN"), ("EMAIL_SCREEN", "IDENTITY_CHAIN"), ("EMAIL_SCREEN", "SUCCESS"),
     ("TRANSFER_FORM", "TRANSFER_FORM"), ("TRANSFER_FORM", "PIN_CHAIN"), ("TRANSFER_FORM", "SUCCESS"),
+    # The airtime/data ladder. Same-screen re-renders are the right answer here
+    # and NOT the defect the PIN pages have: these fields are visible, so a
+    # refused value staying in the box is help rather than a trap.
+    ("VTU_SCREEN", "VTU_SCREEN"), ("VTU_SCREEN", "VTU_NETWORK"), ("VTU_SCREEN", "SUCCESS"),
+    ("VTU_NETWORK", "VTU_NETWORK"), ("VTU_NETWORK", "VTU_AIRTIME"),
+    ("VTU_NETWORK", "VTU_DATA"), ("VTU_NETWORK", "SUCCESS"),
+    ("VTU_AIRTIME", "VTU_AIRTIME"), ("VTU_AIRTIME", "PIN_CHAIN"), ("VTU_AIRTIME", "SUCCESS"),
+    ("VTU_DATA", "VTU_DATA"), ("VTU_DATA", "PIN_CHAIN"), ("VTU_DATA", "SUCCESS"),
     ("IDENTITY_SCREEN", "IDENTITY_RETRY"), ("IDENTITY_SCREEN", "IDENTITY_CHAIN"), ("IDENTITY_SCREEN", "SUCCESS"),
     ("IDENTITY_RETRY", "IDENTITY_CHAIN"), ("IDENTITY_RETRY", "SUCCESS"),
     ("IDENTITY_CHAIN", "CODE_RETRY"), ("IDENTITY_CHAIN", "SUCCESS"),

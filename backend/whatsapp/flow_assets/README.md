@@ -57,6 +57,22 @@ public key.
   customer has to type correctly only breeds typos. It still never reaches the
   chat. Submitting it mails the code and moves to `IDENTITY_SCREEN` on the same
   open Flow.
+- `VTU_SCREEN` → `VTU_NETWORK` → `VTU_AIRTIME` / `VTU_DATA` → `PIN_CHAIN` — the
+  airtime and data ladder, menu option **3**, as one session. The chat version
+  asked what to buy, then the network, then the number, then the amount, each
+  its own message and each a place to get stuck. `VTU_SCREEN` is the routing
+  root; the rest are only ever routed into, which is what keeps the root
+  openable.
+
+  Airtime and data split at the third page because their inputs genuinely
+  differ — an amount you type versus a plan you pick from **that network's**
+  list, fetched at render time. Routing is by `(network, plan_code)`, so a plan
+  carried over from another network is refused rather than sent to the provider.
+
+  Same-screen re-renders are correct here and are *not* the defect the PIN pages
+  have: these fields are visible, so a refused value staying in the box helps
+  rather than traps.
+
 - `SUCCESS` — terminal screen showing the outcome as a `status` heading
   (`✅ Successful` / `⏳ Pending` / `❌ Not completed` / `Done`) over the
   `message` detail. The heading is the point: the screen used to render only the

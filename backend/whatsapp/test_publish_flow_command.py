@@ -112,12 +112,20 @@ class PublishFlowCommandTests(SimpleTestCase):
 
     @override_settings(**LIVE)
     def test_the_local_asset_is_reported_before_anything_is_sent(self):
-        """17 screens and ~250KB is the sanity check that the file on this host
-        is the real one — a truncated checkout should be obvious immediately."""
+        """The screen count and byte size are the sanity check that the file on
+        this host is the real one — a truncated checkout should be obvious
+        immediately. Read from the file rather than hardcoded, so adding a screen
+        is not a test failure; what is asserted is that the command reports what
+        is actually there."""
+        from pathlib import Path
+
+        import whatsapp
+        raw = (Path(whatsapp.__file__).parent / "flow_assets" / "pin_flow.json").read_text()
         with patch("whatsapp.management.commands.publish_flow.requests.post"), \
              patch("whatsapp.management.commands.publish_flow.published_flow_report", return_value={"status": "unconfigured"}):
             output = _run("--dry-run")
-        self.assertIn("17 screens", output)
+        self.assertIn(f"{len(json.loads(raw)['screens'])} screens", output)
+        self.assertIn(f"{len(raw):,} bytes", output)
 
     @override_settings(**LIVE)
     def test_an_unreadable_probe_never_reports_a_match(self):

@@ -55,6 +55,11 @@ TOOLS = [
                       "properties": {
                           "amount": {"type": "integer"},
                           "phone": {"type": ["string", "null"]},
+                          # Set when the message names WHO to top up but gives no
+                          # number ("recharge tobi 2k"). Without it "tobi" was
+                          # dropped and the top-up silently went to the sender's
+                          # own line — the wrong number, already paid for.
+                          "recipient_ref": {"type": ["string", "null"]},
                           "network": {"type": ["string", "null"]}},
                       "required": ["amount"]}},
     {"name": "buy_data",
