@@ -80,13 +80,26 @@ public key.
   alike at a glance. `whatsapp/router.py`'s `Outcome` carries the tag from
   whichever executor produced the line.
 
-  **`⏳ Pending` is the honest answer for most confirmed payments, not a
-  placeholder.** Meta gives a data-exchange 10 seconds; a payout takes longer,
-  so the PIN is verified, the payment is queued, and the Flow closes *before the
-  rail has answered*. Nothing that runs inside those 10 seconds can know the
-  outcome, so a screen that always said "successful" would be asserting
-  something nobody has established — on a banking channel, the worst available
-  lie. The settled result arrives in the chat as the receipt.
+  The endpoint waits up to **`WHATSAPP_FLOW_SETTLE_WAIT`** seconds (default 3,
+  hard-capped at 6, `0` disables) for the ledger row to become terminal before
+  answering, so a rail that settles quickly closes the Flow on `✅ Successful`
+  and a refusal closes on `❌ Not completed` — the outcome the customer should
+  see *before* the screen closes, not only in a chat message they may scroll
+  past. Without that wait `✅` was unreachable in production: every money Flow
+  answered the instant the job was queued and therefore always said `⏳ Pending`.
+
+  The wait is deliberately small and deliberately optional. Meta gives a
+  data-exchange roughly 10 seconds and shows *"Couldn't load content. Try again
+  later."* past that — the failure that moving execution off the request thread
+  was introduced to fix — and the wait also occupies one of the web dyno's eight
+  gunicorn threads, which serve `/healthz` from the same pool. It changes nothing
+  about the payment: it is queued and executing either way, and the worker sends
+  the receipt regardless.
+
+  **`⏳ Pending` remains the honest answer whenever the rail is still working.** A
+  screen that said "successful" for a payment nobody has confirmed would be
+  asserting something not established — on a banking channel, the worst available
+  lie. The settled result always arrives in the chat as the receipt.
 
 All four KYC steps therefore behave the same way: phone is the only one whose
 code still arrives in the thread, because the SMS itself is the proof of SIM
