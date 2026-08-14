@@ -140,10 +140,6 @@ jobs:
           done
           echo "ERROR: npm advisory service unavailable after 3 attempts; failing closed."
           exit "$audit_status"
-      - name: Expo dependency compatibility
-        run: npx expo install --check
-      - name: Expo project health
-        run: npx expo-doctor
       - name: Lint
         run: npm run lint
       - name: Typecheck
@@ -161,3 +157,18 @@ jobs:
       # bundle after it has landed means main is already red for everyone.
       - name: Bundle (Metro export, iOS)
         run: npx expo export --platform ios --output-dir /tmp/ciexport
+      # LAST, and deliberately so. Both of these ask Expo's servers what the SDK
+      # currently expects, so they can go red because someone else published a
+      # patch release — with nothing in this repository having changed. A failing
+      # step skips every step after it, so while these ran fifth a stale version
+      # map silently suppressed the lint, typecheck, unit tests, browser-asset
+      # parse and Metro bundle above: the app went two days with no CI on a
+      # banking client, and the job still reported the single word "failure".
+      #
+      # They still FAIL the job — a drifted SDK is worth knowing about, and this
+      # is not continue-on-error. They just no longer decide whether the checks
+      # on our own code get to run at all.
+      - name: Expo dependency compatibility
+        run: npx expo install --check
+      - name: Expo project health
+        run: npx expo-doctor
