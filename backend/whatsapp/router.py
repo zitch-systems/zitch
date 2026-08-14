@@ -443,6 +443,11 @@ def _flow_summary(pa: PendingAction) -> str:
                     f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
         if at == "convert":
             return "Confirm your currency conversion"
+        if at == "unlock":
+            # Not a payment, and the one confirm that arrives unprompted — so the
+            # card has to say WHY it appeared. It used to rely on a chat line
+            # beside it, which is exactly the second message this stopped sending.
+            return "It's been a while — confirm it's you to continue"
     except (KeyError, InvalidOperation):
         pass
     return "Confirm your payment"
@@ -730,6 +735,25 @@ def _confirm_prompt(pa: PendingAction) -> str:
     return ("Reply with your PIN to confirm, or \"cancel\".\n"
             "_Delete your PIN message afterwards (press and hold → Delete → Delete for everyone)._"
             + _approve_link_line(pa, primary=False))
+
+
+def _send_confirm(pa: PendingAction, msisdn: str, body: str, logo: str = "") -> None:
+    """The confirm card, in the CHAT — and nothing at all when the secure Flow
+    is already one.
+
+    The Flow message body IS this summary (`_send_pin_flow` sends
+    `_flow_summary(pa)`) and it carries the confirm button. Sending this
+    afterwards stacked two cards in the thread saying the same thing, one of them
+    unactionable, with the real one scrolled above it — and the second card
+    invited a tap it could not service. One PIN request, one card.
+
+    The chat card is still the right answer on every other rung: an SMS code and
+    the dev/test PIN prompt have no card of their own, so this IS their card.
+    """
+    if pa.state == FLOW_PIN_STATE:
+        return None
+    text = f"{body}\n\n{_confirm_prompt(pa)}" if body else _confirm_prompt(pa)
+    return reply_image(msisdn, logo, text) if logo else reply(msisdn, text)
 
 
 def active_link_for(msisdn: str) -> WhatsAppLink | None:
@@ -1206,8 +1230,8 @@ def _send_unlock(user, msisdn: str, resume: str) -> None:
     pa = _new_flow(user, msisdn, "unlock", "pin", {"pin_attempts": 0, "resume": resume[:64]})
     if not _arm_confirm(pa, user):
         return
-    reply(msisdn, "🔒 *Welcome back.* It's been a while, so confirm it's you before "
-                  "I show your account.\n\n" + _confirm_prompt(pa))
+    _send_confirm(pa, msisdn, "🔒 *Welcome back.* It's been a while, so confirm it's you "
+                              "before I show your account.")
 
 
 def _exec_unlock(pa: PendingAction, user, msisdn: str) -> str:
@@ -3045,13 +3069,10 @@ def _resolve_and_confirm(pa: PendingAction, user, msisdn: str, bank) -> None:
     pa.payload.update({"bank_code": bank.bank_code, "bank_name": bank.name, "name": name})
     if not _arm_confirm(pa, user):
         return
-    reply(
-        msisdn,
-        "Confirm transfer\n"
-        f"{_money(amount)} → {name.upper()}\n"
-        f"{bank.name} • {acct}\n"
-        f"{_confirm_prompt(pa)}",
-    )
+    _send_confirm(pa, msisdn,
+                  "Confirm transfer\n"
+                  f"{_money(amount)} → {name.upper()}\n"
+                  f"{bank.name} • {acct}")
 
 
 def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
@@ -3607,10 +3628,10 @@ def _advance_airtime(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["meta"] = {"phone": pa.payload["phone"], "network": pa.payload["net"]}
         if not _arm_confirm(pa, user):
             return
-        return reply_image(
-            msisdn, provider_logo(net),
-            f"📱 *Confirm airtime*\n{_money(amount)} {net} → {pa.payload['phone']}\n\n"
-            f"{_confirm_prompt(pa)}")
+        return _send_confirm(
+            pa, msisdn,
+            f"📱 *Confirm airtime*\n{_money(amount)} {net} → {pa.payload['phone']}",
+            logo=provider_logo(net))
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -3680,10 +3701,10 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
         pa.payload["meta"] = {"phone": phone, "network": pa.payload["net"], "plan_code": pa.payload["plan_code"]}
         if not _arm_confirm(pa, user):
             return
-        return reply_image(
-            msisdn, provider_logo(net),
-            f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}\n\n"
-            f"{_confirm_prompt(pa)}")
+        return _send_confirm(
+            pa, msisdn,
+            f"🌐 *Confirm data*\n{pa.payload['plan_name']} ({net}) → {phone}\n{_money(price)}",
+            logo=provider_logo(net))
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -3809,12 +3830,11 @@ def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -
     if not _arm_confirm(pa, user):
         return
     cust = p.get("customer") or "—"
-    return reply(
-        msisdn,
+    return _send_confirm(
+        pa, msisdn,
         note +
         f"💡 *Confirm electricity*\n{disco_name} ({p['meter_type']}) • "
-        f"Meter {p['meter']}\nCustomer: {cust} • {_money(amount)}\n\n"
-        f"{_confirm_prompt(pa)}")
+        f"Meter {p['meter']}\nCustomer: {cust} • {_money(amount)}")
 
 
 def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -3959,11 +3979,11 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if not _arm_confirm(pa, user):
             return
         cust = cust or "—"
-        return reply_image(
-            msisdn, provider_logo(prov_name),
+        return _send_confirm(
+            pa, msisdn,
             f"📺 *Confirm cable*\n{prov_name} • {pa.payload['plan_name']}\n"
-            f"Card {iuc} • {cust} • {_money(price)}\n\n"
-            f"{_confirm_prompt(pa)}")
+            f"Card {iuc} • {cust} • {_money(price)}",
+            logo=provider_logo(prov_name))
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
@@ -4157,8 +4177,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None
                         "meta": {"phone": ph, "network": netid}})
         if not _arm_confirm(pa, user):   # failure is already explained in-chat
             return True
-        reply(msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}\n"
-                      f"{_confirm_prompt(pa)}")
+        _send_confirm(pa, msisdn, f"Confirm airtime\n{_money(amt)} {net} → {ph}")
         return True
     _start_airtime(user, msisdn)
     return True
@@ -4208,14 +4227,12 @@ def _advance_convert(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if not _arm_confirm(pa, user):
             return
         secs = max(1, int((quote.expires_at - timezone.now()).total_seconds()))
-        return reply(
-            msisdn,
+        return _send_confirm(
+            pa, msisdn,
             "Confirm conversion\n"
             f"Sell {quote.sell_amount:,.2f} {quote.from_currency} → "
             f"Receive {quote.receive_amount:,.2f} {quote.to_currency}\n"
-            f"Rate {quote.rate:.4f} • expires in {secs}s\n"
-            f"{_confirm_prompt(pa)}",
-        )
+            f"Rate {quote.rate:.4f} • expires in {secs}s")
     if st == "pin":
         if not _flow_pin_ok(pa, user, msisdn, text):
             return
