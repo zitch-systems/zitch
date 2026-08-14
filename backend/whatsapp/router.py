@@ -541,7 +541,11 @@ def _flow_fields(pa: PendingAction) -> dict:
     at = pa.action_type
 
     def _with_context(fields: dict) -> dict:
-        note = str(p.get("narration") or "").strip()
+        # Through the same cleaner as every other consumer. It is already clean
+        # at rest — each entry point cleans on the way in — but this is the one
+        # that renders it to a screen, and two spellings of "the narration" is
+        # how the two drift.
+        note = _narration(pa)
         return {**fields,
                 "balance": _flow_balance_line(pa),
                 # Prefixed so the line reads as the customer's own note rather
