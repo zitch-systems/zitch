@@ -331,10 +331,68 @@ def _success_screen(message: str, status: str = "") -> dict:
 # --------------------------------------------------------------------------- #
 # request handler (decrypted payload -> response dict)
 # --------------------------------------------------------------------------- #
+def _screen_contract() -> dict:
+    """screen id -> the exact set of data properties the PUBLISHED Flow declares.
+
+    Read from the shipped flow_assets/pin_flow.json, which is the same document
+    uploaded to Meta, so the contract cannot drift from the one the device is
+    holding us to. Empty on any read failure — a guard that cannot load its rules
+    must not start refusing valid screens.
+    """
+    global _CONTRACT
+    if _CONTRACT is None:
+        try:
+            import json
+            import os
+
+            path = os.path.join(os.path.dirname(__file__), "flow_assets", "pin_flow.json")
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            _CONTRACT = {s["id"]: set((s.get("data") or {}).keys())
+                         for s in doc.get("screens", []) if s.get("id")}
+        except Exception:  # noqa: BLE001 — never block a payment to validate one
+            log.exception("could not read the Flow screen contract")
+            _CONTRACT = {}
+    return _CONTRACT
+
+
+_CONTRACT: dict | None = None
+
+
+def _check_contract(response: dict) -> dict:
+    """Log loudly when a response's data keys don't match its screen's declaration.
+
+    WhatsApp renders ANY mismatch — a missing declared property or an extra
+    undeclared one — as "Couldn't load content. Try again later." on the device,
+    with nothing in it to say which screen or which key. That message is what a
+    customer saw after a payment that had in fact gone through, because the
+    endpoint's own error screen was built by hand and omitted `status`.
+
+    Deliberately does not repair the response: guessing a value for a property
+    the caller forgot would paper over the bug that produced it. It records
+    exactly which key is wrong, so the next occurrence is findable in one grep
+    instead of a device screenshot.
+    """
+    contract = _screen_contract()
+    screen = str(response.get("screen") or "")
+    if not contract or screen not in contract:
+        return response
+    sent = set((response.get("data") or {}).keys())
+    declared = contract[screen]
+    if sent != declared:
+        log.error("wa_flow_contract_mismatch screen=%s missing=%s unexpected=%s",
+                  screen, sorted(declared - sent), sorted(sent - declared))
+    return response
+
+
 def handle_flow_request(payload: dict) -> dict:
     """Route a decrypted Flows request to its response. Never raises — any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
+    return _check_contract(_handle_flow_request(payload))
+
+
+def _handle_flow_request(payload: dict) -> dict:
     if not isinstance(payload, dict):
         return _success_screen("Invalid request. Please start again in the chat.")
     action = payload.get("action", "")
@@ -916,6 +974,35 @@ def _close_in_chat(msisdn: str, text: str) -> None:
         log.exception("could not mirror flow outcome to chat for %s", msisdn)
 
 
+def _hold_open(pa, summary, message: str) -> dict:
+    """Show `message` on the payment panel WITHOUT closing the Flow.
+
+    Only a settled success may close the panel by itself; a pending or failed
+    payment keeps it open so the customer reads the outcome where they were
+    looking, and dismisses it themselves.
+
+    Which screen id this answers with matters more than it looks. WhatsApp keeps
+    a form's client-side value whenever the endpoint replies with the SAME screen
+    the device is already on, and the PIN box is min/max 6 — so a re-render onto
+    the current screen comes back holding six invisible characters that refuse
+    new keystrokes, which reads as a broken input. Answering PIN_RETRY from the
+    root is a NAVIGATION, so the box arrives empty; a session already sitting on
+    PIN_RETRY has nowhere further to go, and closes rather than showing that
+    jammed box.
+    """
+    current = _flow_screen(pa, PIN_SCREEN)
+    if current in (PIN_SCREEN, PIN_CHAIN):
+        pa.payload["flow_screen"] = PIN_RETRY
+        try:
+            pa.save(update_fields=["payload"])
+        except Exception:  # noqa: BLE001 — the row may already be gone (cleared on failure)
+            log.warning("could not persist flow_screen for pa=%s", getattr(pa, "id", "?"))
+        return _pin_screen(summary, error=message, screen=PIN_RETRY)
+    # Already on the retry twin: closing is the honest ending, and the chat
+    # carries the receipt either way.
+    return _success_screen(message, status="failed")
+
+
 def _submit_pin(token: str, data: dict) -> dict:
     from common.http import evaluate_transaction_pin
 
@@ -1017,11 +1104,20 @@ def _submit_pin(token: str, data: dict) -> dict:
         broke = ("Something went wrong completing that. If you were charged it "
                  "will auto-reverse.")
         _close_in_chat(pa.msisdn, f"❌ {broke}")
-        return _success_screen(broke, status="failed")
+        return _hold_open(pa, summary, broke)
     # `status` is carried on the returned line itself (router.Outcome), so an
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
-    return _success_screen(outcome, getattr(outcome, "status", ""))
+    status = getattr(outcome, "status", "")
+    # ONLY a settled success closes the panel. A Flow that closes itself is a
+    # statement that the job is done, and on a pending or failed payment that is
+    # the wrong thing to say — the customer is left looking at their own chat
+    # thread trying to work out whether their money moved. Everything else holds
+    # the panel open with the outcome written on it, and the customer dismisses
+    # it when they have read it.
+    if status == "success":
+        return _success_screen(outcome, status)
+    return _hold_open(pa, summary, str(outcome))
 
 
 # --------------------------------------------------------------------------- #

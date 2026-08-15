@@ -194,9 +194,21 @@ def flow_endpoint(request):
         # sentence and keep the reason.
         logging.getLogger("whatsapp").exception("flow endpoint failed action=%s", action)
         record_flow_endpoint(action, "", f"{type(exc).__name__}: {exc}")
-        response = {"screen": "SUCCESS",
-                    "data": {"message": "Something went wrong on our side. "
-                                        "Reply 8 in the chat to try again."}}
+        # Built by the same helper every other ending uses, NOT by hand. The
+        # hand-written version here omitted `status`, and SUCCESS declares both
+        # `status` and `message` — a declared-but-absent property is precisely
+        # the contract mismatch WhatsApp renders as "Couldn't load content. Try
+        # again later." So the one screen whose job was to explain a failure in
+        # words was itself unrenderable, and every exception on this endpoint
+        # reached the customer as that message instead: no sentence, no reason,
+        # and — because the payment is executed off this thread — often on a
+        # payment that had already gone through.
+        from .flows import _success_screen
+
+        response = _success_screen(
+            "Something went wrong on our side. Check your chat for the outcome — "
+            "if you were charged and it didn't complete, it will auto-reverse.",
+            status="failed")
     else:
         record_flow_endpoint(action, str(response.get("screen", ""))[:24])
     encrypted = encrypt_response(response, aes_key, iv)

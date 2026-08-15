@@ -77,12 +77,19 @@ class FlowOutcomeReachesTheChatTests(TestCase):
 
     def test_an_execution_crash_says_so_in_the_chat(self):
         """The panel gets a sentence either way; without this the thread got
-        nothing for a payment whose state the customer cannot see."""
+        nothing for a payment whose state the customer cannot see.
+
+        The panel now HOLDS OPEN on a crash rather than closing — only a settled
+        success may close itself — so the sentence lands in the payment card's
+        error line instead of on a terminal heading. What this test is actually
+        about, that the CHAT is told, is unchanged.
+        """
         pa = _armed(self.user)
         with patch("common.http.evaluate_transaction_pin", return_value=(True, "", "")), \
              patch("whatsapp.router.authorise_flow_execution", side_effect=RuntimeError("boom")):
             screen, said = self._submit(pa, "123456")
-        self.assertEqual(screen["data"]["status"], "❌ Not completed")
+        self.assertNotEqual(screen["screen"], "SUCCESS")
+        self.assertIn("auto-reverse", screen["data"]["error"])
         self.assertIn("auto-reverse", " ".join(said))
 
     def test_a_send_failure_never_costs_the_customer_their_screen(self):
