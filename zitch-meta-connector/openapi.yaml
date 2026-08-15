@@ -159,10 +159,9 @@ paths:
       operationId: inspectWebhookEvents
       summary: Inspect webhook event configuration
       description: >
-        Lists which webhook event types (fields) are currently configured per
-        subscribed app. This is current configuration, not a historical
-        delivery log — see the response's `note` field for the exact
-        limitation.
+        Lists subscribed apps and any event-field metadata Meta returns. This
+        is not a historical delivery log. A null field list means Meta omitted
+        that metadata, not that the app has no event subscription.
       parameters:
         - $ref: "#/components/parameters/WabaId"
       responses:
@@ -751,6 +750,8 @@ components:
       properties:
         wabaId: { type: string }
         subscribed: { type: boolean }
+        fieldMetadataAvailable: { type: boolean }
+        note: { type: string }
         subscribedApps:
           type: array
           items:
@@ -759,6 +760,7 @@ components:
               appName: { type: string }
               subscribedFields:
                 type: array
+                nullable: true
                 items: { type: string }
 
     PhoneNumberConfigResult:
@@ -815,8 +817,10 @@ components:
       properties:
         wabaId: { type: string }
         note: { type: string }
+        fieldMetadataAvailable: { type: boolean }
         configuredEventTypes:
           type: array
+          nullable: true
           items: { type: string }
         perApp:
           type: array
@@ -826,6 +830,7 @@ components:
               appName: { type: string }
               fields:
                 type: array
+                nullable: true
                 items: { type: string }
 
     FlowsListResult:

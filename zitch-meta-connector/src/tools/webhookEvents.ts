@@ -4,15 +4,11 @@
  * IMPORTANT LIMITATION (documented rather than papered over): Meta does not
  * provide a historical log of webhook deliveries via the Graph API — webhooks
  * are push-only and Meta keeps no replayable event history. What this tool
- * returns instead is the WABA's current webhook *subscription configuration*:
- * which event types (fields) each subscribed app is currently set up to
- * receive — e.g. `messages`, `message_template_status_update`,
- * `account_update`. That answers "what events are we configured to get",
- * which is the useful maintenance question when messages/templates aren't
- * updating as expected; it is not a log of specific past deliveries. If Zitch
- * wants true webhook-event history, that has to come from the backend's own
- * event log via a dedicated read-only ops endpoint — deliberately out of
- * scope here, since this connector does not touch the production webhook.
+ * returns instead is the WABA's subscribed-app list and, when Meta includes
+ * it, per-app field metadata. Graph API versions may omit
+ * `subscribed_fields`; omission is reported as null rather than an empty array
+ * so "unknown" can never be mistaken for "no events configured". Historical
+ * delivery evidence still belongs to Zitch's production webhook event log.
  */
 import type { Config } from '../config.js';
 import { graphGet } from '../metaClient.js';
@@ -29,8 +25,9 @@ interface SubscribedAppsResponse {
 
 export interface WebhookEventsResult {
   wabaId: string;
-  configuredEventTypes: string[];
-  perApp: Array<{ appName: string | undefined; fields: string[] }>;
+  fieldMetadataAvailable: boolean;
+  configuredEventTypes: string[] | null;
+  perApp: Array<{ appName: string | undefined; fields: string[] | null }>;
   note: string;
 }
 
@@ -41,6 +38,7 @@ export async function inspectWebhookEvents(
   const wabaId = input.wabaId ?? config.metaWabaId;
   const raw = (await graphGet(config, `${wabaId}/subscribed_apps`)) as SubscribedAppsResponse;
   const apps = raw.data ?? [];
+  const fieldMetadataAvailable = apps.every((app) => Array.isArray(app.subscribed_fields));
   const allFields = new Set<string>();
   for (const app of apps) {
     for (const field of app.subscribed_fields ?? []) allFields.add(field);
@@ -48,14 +46,16 @@ export async function inspectWebhookEvents(
 
   return {
     wabaId,
-    configuredEventTypes: [...allFields].sort(),
+    fieldMetadataAvailable,
+    configuredEventTypes: fieldMetadataAvailable ? [...allFields].sort() : null,
     perApp: apps.map((app) => ({
       appName: app.whatsapp_business_api_data?.name,
-      fields: app.subscribed_fields ?? [],
+      fields: Array.isArray(app.subscribed_fields) ? app.subscribed_fields : null,
     })),
-    note:
-      'This reflects current webhook SUBSCRIPTION CONFIGURATION (which event types are ' +
-      'enabled), not a historical log of past webhook deliveries — Meta\'s Graph API does not ' +
-      'expose the latter.',
+    note: fieldMetadataAvailable
+      ? 'This reflects field metadata returned for the current subscribed app(s), not a ' +
+        'historical delivery log.'
+      : 'Meta returned the subscribed app(s) but omitted subscribed_fields. Null means ' +
+        "unknown, not disabled; use Zitch's own webhook event history to prove delivery.",
   };
 }

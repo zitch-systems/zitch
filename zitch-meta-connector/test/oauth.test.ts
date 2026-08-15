@@ -42,6 +42,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     rateLimitMaxRequests: 1000,
     ipRateLimitMaxRequests: 1000,
     readOnly: true,
+    requireWriteConfirmation: true,
     publicBaseUrl: undefined,
     oauthSigningKey: KEY,
     oauthLoginPassword: PASSWORD,
