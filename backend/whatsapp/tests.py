@@ -4453,3 +4453,68 @@ class AiEscalationTests(TestCase):
         reply = self.last_reply()
         self.assertIn("Report a problem", reply)
         self.assertIn("4,000", reply)
+
+
+class LookupHintTests(TestCase):
+    """The deterministic reading of a message, used only to fill in what the
+    model left blank.
+
+    The model is asked for amount/days/kind and usually returns them — but a
+    weaker provider, a retry, or a typo-laden sentence can come back with the
+    right tool and no parameters, and a transaction_history call with nothing in
+    it is the generic dump this whole change exists to stop.
+    """
+
+    def test_it_reads_the_message_from_the_report(self):
+        from whatsapp.router import lookup_hints
+
+        # Verbatim, typo included — this is the sentence a customer actually sent.
+        self.assertEqual(lookup_hints("I sent 5k to someone 2 dayssgo, help me check"),
+                         {"days_ago": 2, "amount": 5000.0, "kind": "transfer"})
+
+    def test_yesterday_and_today_are_days(self):
+        from whatsapp.router import lookup_hints
+
+        self.assertEqual(lookup_hints("did my 2000 airtime yesterday work")["days_ago"], 1)
+        self.assertEqual(lookup_hints("my ₦50,000 funding today")["days_ago"], 0)
+
+    def test_a_phone_number_is_not_an_amount(self):
+        """"i sent 3,000 to 08166938327" — the long number is a destination, and
+        reading it as ₦8,166,938,327 would search for a transaction nobody made."""
+        from whatsapp.router import lookup_hints
+
+        self.assertEqual(lookup_hints("i sent 3,000 to 08166938327 3 days ago")["amount"], 3000.0)
+
+    def test_the_day_count_is_not_an_amount(self):
+        from whatsapp.router import lookup_hints
+
+        self.assertNotIn("amount", lookup_hints("what happened 2 days ago"))
+
+    def test_a_message_with_no_details_yields_nothing(self):
+        from whatsapp.router import lookup_hints
+
+        self.assertEqual(lookup_hints("was my last transaction successful"), {})
+
+    def test_hints_never_override_the_model(self):
+        """When the model DID extract a value it saw the whole sentence; this
+        regex saw a fragment."""
+        from whatsapp import router
+
+        with patch.object(router, "_do_history") as hist:
+            router.dispatch_intent(
+                None, MSISDN,
+                {"name": "transaction_history", "input": {"amount": 7000}},
+                "I sent 5k to someone 2 days ago")
+        self.assertEqual(hist.call_args.kwargs["amount"], 7000)     # model's value kept
+        self.assertEqual(hist.call_args.kwargs["days_ago"], 2)      # blank filled in
+
+    def test_money_intents_are_never_filled_from_a_regex(self):
+        """An amount or a recipient on a SPENDING intent must come from the model
+        and the customer's own confirmation, never from a guess — a guess that
+        reaches the confirm screen is a guess someone might approve."""
+        from whatsapp import router
+
+        with patch.object(router, "_begin_airtime", return_value=True) as begin:
+            router.dispatch_intent(None, MSISDN, {"name": "buy_airtime", "input": {}},
+                                   "send 5k airtime 2 days ago")
+        self.assertIsNone(begin.call_args.args[2])   # amount stayed empty

@@ -517,7 +517,11 @@ def _flow_balance_line(pa: PendingAction) -> str:
     confirm screen it is decoration on.
     """
     try:
-        return f"Balance {_money(get_or_create_wallet(pa.user).balance)}"
+        # "Available balance", not "Balance": this screen is where someone decides
+        # whether they can afford what they are about to send, and the number that
+        # matters for that is what is spendable right now — not a headline figure
+        # that might include money already committed elsewhere.
+        return f"Available balance {_money(get_or_create_wallet(pa.user).balance)}"
     except Exception:  # noqa: BLE001 — never block a payment to print a number
         log.exception("could not read balance for the confirm screen pa=%s", pa.id)
         return ""
@@ -1282,7 +1286,7 @@ def handle_inbound(msisdn: str, text: str) -> None:
         intent = ai.extract_intent(text)
         if intent:
             _record_intent(msisdn, intent)
-            if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent):
+            if intent.get("name") != "clarify" and dispatch_intent(user, msisdn, intent, text):
                 return
             # The model knowing WHY it could not act is the useful part, and we
             # were discarding it for a generic menu. "Sorry, I didn't get that"
@@ -4550,7 +4554,72 @@ def _network_id(network) -> str | None:
     return NET_BY_NAME.get(str(network).strip().lower()) if network else None
 
 
-def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
+#: "5k", "5,000", "₦5000", "2 million" — the amount as customers actually write
+#: it. Used only to FILL IN what the model left blank, never to override it.
+_AMOUNT_HINT = re.compile(
+    r"(?:₦|ngn\s*)?(\d[\d,]*(?:\.\d+)?)\s*(k|m)?\b", re.I)
+#: "2 days ago", "3days ago", "2 dayssgo" (the typo in the report), "yesterday",
+#: "today". Tolerant of the missing space and the doubled letter, because this
+#: exists precisely for the messages a tidier parser would miss.
+_DAYS_HINT = re.compile(
+    r"\b(?:(\d+)\s*d[ae]y?s?\s*s?\s*a?go|(yesterday)|(today))\b", re.I)
+_KIND_HINT = (
+    ("transfer", r"\b(?:transfer|sent|send|paid to|payment to)\b"),
+    ("airtime", r"\bairtime|recharge|top.?up\b"),
+    ("data", r"\bdata|bundle|gb\b"),
+    ("bill", r"\belectric|power|nepa|disco|cable|dstv|gotv|bill\b"),
+    ("funding", r"\bfund(?:ing|ed)?|deposit\b"),
+)
+
+
+def lookup_hints(text: str) -> dict:
+    """Amount / how-many-days-ago / type, read straight from the message.
+
+    The model is asked for these and usually returns them, but "usually" is not
+    a contract: a weaker provider, a rate-limited retry or a typo-laden sentence
+    ("I sent 5k to someone 2 dayssgo") can come back with the right TOOL and no
+    parameters at all — and a transaction_history call with nothing in it is the
+    generic list-and-statement dump this whole change exists to stop.
+
+    So the deterministic layer reads the message too, and its answers are used
+    only to fill blanks the model left. Never to override it: when the model did
+    extract a value it saw the whole sentence, and this regex saw a fragment.
+    """
+    low = str(text or "").lower()
+    out: dict = {}
+
+    m = _DAYS_HINT.search(low)
+    if m:
+        out["days_ago"] = 0 if m.group(3) else 1 if m.group(2) else int(m.group(1))
+
+    # The amount must not swallow the "2" out of "2 days ago", nor a phone
+    # number: only a figure with a currency mark, a k/m suffix, or a thousands
+    # separator reads as money in these sentences.
+    for raw, suffix in _AMOUNT_HINT.findall(low):
+        digits = raw.replace(",", "")
+        if not digits:
+            continue
+        try:
+            value = Decimal(digits)
+        except InvalidOperation:
+            continue
+        if suffix:
+            value *= 1000 if suffix.lower() == "k" else 1_000_000
+        elif "," not in raw and value < 100:
+            continue          # "2" in "2 days ago" is not an amount
+        elif len(digits) >= 10:
+            continue          # a phone or account number, not a price
+        out["amount"] = float(value)
+        break
+
+    for kind, pattern in _KIND_HINT:
+        if re.search(pattern, low):
+            out["kind"] = kind
+            break
+    return out
+
+
+def dispatch_intent(user, msisdn: str, intent: dict, text: str = "") -> bool:
     """Map one LLM tool call to a deterministic flow. Returns False for
     clarify/unknown so the caller shows the menu. Money still requires the
     flow's confirm + PIN — the LLM only routes here."""
@@ -4558,6 +4627,14 @@ def dispatch_intent(user, msisdn: str, intent: dict) -> bool:
 
     name = intent.get("name")
     p = intent.get("input", {}) or {}
+    # Only the two READ tools get the deterministic fallback. A money-moving
+    # intent must never have its amount or its recipient inferred from a regex:
+    # those are confirmed on a screen the customer reads, and a guess that gets
+    # that far is a guess someone might approve.
+    if text and name in ("transaction_history", "report_problem"):
+        for key, value in lookup_hints(text).items():
+            if p.get(key) in (None, ""):
+                p = {**p, key: value}
     # Cleaned here, at the boundary, so a model that returns a newline or 300
     # characters cannot put either into a payload, a bank statement or a
     # rendered receipt. Reset in the finally below: a narration is a fact about

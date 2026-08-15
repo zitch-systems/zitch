@@ -275,7 +275,6 @@ class FlowExecutionOffMetasClockTests(TestCase):
 
     def test_the_endpoint_answers_without_touching_the_bank_rail(self):
         # The regression guard: no payout may happen while Meta is waiting.
-        from .flows import SUCCESS_SCREEN
         from whatsapp import router
 
         pa = _transfer_action(self.user)
@@ -283,13 +282,40 @@ class FlowExecutionOffMetasClockTests(TestCase):
         with patch.object(router, "execute_payout") as payout:
             resp = self.submit_pin(pa)
         payout.assert_not_called()
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
         self.assertEqual(get_or_create_wallet(self.user).balance, before)
+        # Answered, but NOT on the terminal screen: the payment is queued, not
+        # settled, and a Flow that closes itself is a statement that the job is
+        # done. See test_a_pending_payment_holds_the_panel_open below.
+        self.assertNotEqual(resp["screen"], "SUCCESS")
 
-    def test_the_customer_is_told_it_is_on_its_way(self):
+    def test_a_pending_payment_holds_the_panel_open(self):
+        """Only a settled success may close the panel by itself.
+
+        A payment still with the rail closed the Flow on "Pending", which left
+        the customer looking at their own chat thread trying to work out whether
+        their money had moved. The outcome now stays on the panel they were
+        already looking at, and they dismiss it when they have read it.
+        """
+        from .flows import PIN_RETRY
+
         resp = self.submit_pin(_transfer_action(self.user))
-        self.assertIn("Confirmed", resp["data"]["message"])
-        self.assertIn("receipt", resp["data"]["message"].lower())
+        self.assertEqual(resp["screen"], PIN_RETRY)
+        self.assertIn("Confirmed", resp["data"]["error"])
+        self.assertIn("receipt", resp["data"]["error"].lower())
+
+    def test_a_held_panel_still_answers_a_complete_screen(self):
+        """Holding the panel open is only safe if the reply is renderable: a
+        missing declared property is what WhatsApp shows as "Couldn't load
+        content. Try again later."."""
+        import json
+        import os
+
+        resp = self.submit_pin(_transfer_action(self.user))
+        path = os.path.join(os.path.dirname(__file__), "flow_assets", "pin_flow.json")
+        with open(path, encoding="utf-8") as fh:
+            declared = {s["id"]: set((s.get("data") or {}).keys())
+                        for s in json.load(fh)["screens"]}
+        self.assertEqual(set(resp["data"].keys()), declared[resp["screen"]])
 
     def test_the_authorised_payment_is_queued_and_then_paid(self):
         from .jobs import process_inbound_message
@@ -1479,3 +1505,100 @@ class SignupPhoneCodeTests(TestCase):
         self.assertEqual(done["screen"], SUCCESS_SCREEN)
         u = User.objects.get(phone="08077770011")
         self.assertTrue(u.phone_verified)                  # proven by the code, not the chat
+
+
+class ScreenContractTests(TestCase):
+    """Every reply must declare EXACTLY the properties its screen does.
+
+    WhatsApp renders any mismatch — a missing declared property or an extra
+    undeclared one — as "Couldn't load content. Try again later." on the device,
+    naming neither the screen nor the key. That is what a customer saw after a
+    ₦1,000 data purchase that had in fact gone through: the endpoint's own
+    error screen was hand-built and omitted `status`, so the one screen whose
+    job was to explain a failure in words was itself unrenderable.
+    """
+
+    def declared(self):
+        path = os.path.join(os.path.dirname(__file__), "flow_assets", "pin_flow.json")
+        with open(path, encoding="utf-8") as fh:
+            return {s["id"]: set((s.get("data") or {}).keys())
+                    for s in json.load(fh)["screens"]}
+
+    def test_the_endpoints_own_error_screen_is_renderable(self):
+        """The regression. This screen only ever appears when something has
+        already gone wrong, which is exactly when nobody is watching it."""
+        from .flows import _success_screen
+
+        resp = _success_screen("Something went wrong on our side.", status="failed")
+        self.assertEqual(set(resp["data"].keys()), self.declared()[resp["screen"]])
+        self.assertIn("status", resp["data"])
+
+    def test_every_screen_builder_matches_its_declaration(self):
+        from .flows import (CODE_SCREEN, EMAIL_SCREEN, IDENTITY_SCREEN, PIN_CONFIRM,
+                            PIN_RETRY, PIN_SCREEN, _confirm_pin_screen, _email_screen,
+                            _identity_screen, _pin_screen, _success_screen)
+
+        declared = self.declared()
+        built = [
+            _pin_screen({"balance": "b", "amount": "a", "recipient": "r",
+                         "details": "d", "narration": "n"}, screen=PIN_SCREEN),
+            _pin_screen("one-line summary", error="oops", screen=PIN_RETRY),
+            _confirm_pin_screen(),
+            _confirm_pin_screen(error="mismatch"),
+            _identity_screen("BVN"),
+            _identity_screen("BVN", screen=CODE_SCREEN),
+            _email_screen(),
+            _success_screen("done"),
+            _success_screen("nope", status="failed"),
+        ]
+        for resp in built:
+            with self.subTest(screen=resp["screen"]):
+                self.assertIn(resp["screen"], declared)
+                self.assertEqual(set(resp["data"].keys()), declared[resp["screen"]])
+
+    def test_a_mismatch_is_logged_with_the_offending_key(self):
+        """The guard does not repair the response — guessing a value for a
+        property the caller forgot papers over the bug that produced it. It
+        records which key is wrong so the next one is a grep, not a screenshot."""
+        from .flows import _check_contract
+
+        with self.assertLogs("whatsapp", level="ERROR") as caught:
+            _check_contract({"screen": "SUCCESS", "data": {"message": "no status here"}})
+        self.assertIn("wa_flow_contract_mismatch", "\n".join(caught.output))
+        self.assertIn("status", "\n".join(caught.output))
+
+    def test_an_unknown_screen_is_left_alone(self):
+        """A guard that cannot recognise a screen must not start refusing it."""
+        from .flows import _check_contract
+
+        passthrough = {"screen": "NOT_A_SCREEN", "data": {"x": 1}}
+        self.assertEqual(_check_contract(passthrough), passthrough)
+
+    @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
+                                 "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
+                                 "BASE_URL": "https://graph.test"})
+    def test_the_live_endpoint_answers_a_renderable_screen_when_logic_explodes(self):
+        """End to end through the VIEW: an exception inside the handler must
+        still reach the device as a screen it can draw.
+
+        This is the exact path that produced "Couldn't load content" on a
+        payment that had already gone through — the handler raised, and the
+        view's hand-built fallback was itself invalid.
+        """
+        captured = {}
+
+        def fake_encrypt(response, aes_key, iv):
+            captured["response"] = response
+            return "ciphertext"
+
+        with patch("whatsapp.flows_crypto.decrypt_request",
+                   return_value=({"action": "data_exchange", "flow_token": "x.y"}, b"k", b"iv")), \
+             patch("whatsapp.flows_crypto.encrypt_response", side_effect=fake_encrypt), \
+             patch("whatsapp.flows.handle_flow_request", side_effect=RuntimeError("boom")):
+            res = Client().post("/webhooks/whatsapp/flow", data=json.dumps({"x": 1}),
+                                content_type="application/json")
+
+        self.assertEqual(res.status_code, 200)
+        resp = captured["response"]
+        self.assertEqual(set(resp["data"].keys()), self.declared()[resp["screen"]])
+        self.assertIn("status", resp["data"])
