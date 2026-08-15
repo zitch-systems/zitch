@@ -1256,8 +1256,16 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
-    if low in ("9", "history", "transactions", "my transactions", "statement", "recent"):
+    if low in ("9", "history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
+    # A statement is the one history request that explicitly wants the FILE.
+    if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
+        return _do_history(user, msisdn, as_document=True)
+    # Escalation without the AI: the deterministic path must reach a human too,
+    # or turning smart replies off would silently remove the ability to complain.
+    if low in ("report a problem", "report problem", "escalate", "complain", "complaint",
+               "dispute", "raise a case", "report"):
+        return _start_problem_report(user, msisdn)
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
@@ -1280,7 +1288,11 @@ def handle_inbound(msisdn: str, text: str) -> None:
             # were discarding it for a generic menu. "Sorry, I didn't get that"
             # under a request the assistant understood perfectly well — and could
             # explain — reads as broken rather than as a limit.
-            reason = str((intent.get("input") or {}).get("reason") or "").strip()
+            # Sanitised in ai.extract_intent before it ever reached here — this
+            # is the only free-form model text a customer reads, so it is
+            # re-checked rather than trusted twice. An empty result means the
+            # text was refused, and the menu below is the answer.
+            reason = ai.safe_reason((intent.get("input") or {}).get("reason") or "")
             if reason:
                 return reply(msisdn, f"🤔 {reason}\n\n" + menu_text())
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
@@ -1955,14 +1967,148 @@ def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:
                          "Reply *ai on* or *ai off*.")
 
 
-def _do_history(user, msisdn: str, count=None) -> None:
-    """The last few movements, sent as a downloadable PDF statement — with a
-    short text summary alongside so the chat itself answers at a glance (e.g.
-    "was my last transaction successful"), even before the file is opened.
+_STATUS_LABEL = {"success": "successful ✅", "pending": "still pending ⏳", "failed": "not successful ❌"}
 
-    Every status is included, not just settled ones: a customer asking about
-    their last transaction needs to hear "failed" as much as "successful".
+#: How a customer's word for a transaction type maps onto the ledger's `service`
+#: text. Matched against the service label because that is what the row actually
+#: carries — there is no type column to filter on.
+_KIND_PATTERNS = {
+    "transfer": r"transfer|sent|withdraw",
+    "airtime": r"airtime",
+    "data": r"data",
+    "bill": r"electric|cable|tv|bill|disco|water",
+    "funding": r"fund|deposit|top.?up|credit",
+}
+
+#: A day either side of the day the customer named. People say "2 days ago" for
+#: something that happened 58 hours back, and a window that took them literally
+#: would answer "I can't find it" about a payment sitting right there.
+_DAY_FUZZ = 1
+
+#: Naira either side of a stated amount, so "5k" still matches ₦5,000 sent with a
+#: ₦10.75 fee folded in, or a ₦4,950 transfer the customer rounded when retelling.
+_AMOUNT_FUZZ = Decimal("100")
+
+
+def _status_of(t) -> str:
+    from wallet.models import Transaction
+
+    if t.transaction_status == Transaction.SUCCESS:
+        return "success"
+    if t.transaction_status == Transaction.FAILED:
+        return "failed"
+    return "pending"
+
+
+def _find_txns(user, *, amount=None, days_ago=None, kind=None, recipient=None,
+               status=None, reference=None, limit=6) -> list:
+    """The customer's own description of a transaction -> the matching ledger rows.
+
+    Every filter is optional and narrows independently, because a message gives
+    whatever it gives ("the 5k from Tuesday", "that transfer to Ada", "ZT-1234").
+    Deliberately fuzzy on amount and date — see the constants above. Newest first,
+    so a tie between two matching rows is broken toward the one most likely to be
+    on the customer's mind.
     """
+    # Imported locally and aliased: this module already binds `time` to the
+    # stdlib module (time.monotonic in the settle poll), so datetime.time cannot
+    # take that name at module scope.
+    from datetime import datetime as _datetime, time as _time
+
+    from wallet.models import Transaction
+
+    qs = Transaction.objects.filter(user=user)
+    if reference:
+        # An exact reference is the customer quoting our own receipt back at us:
+        # it identifies one row, so nothing else may narrow it further.
+        return list(qs.filter(reference__iexact=str(reference).strip())[:1])
+    if amount is not None:
+        try:
+            target = Decimal(str(amount))
+            qs = qs.filter(amount__gte=target - _AMOUNT_FUZZ, amount__lte=target + _AMOUNT_FUZZ)
+        except (InvalidOperation, TypeError):
+            pass
+    if days_ago is not None:
+        try:
+            day = timezone.localdate() - timedelta(days=max(0, int(days_ago)))
+            start = timezone.make_aware(_datetime.combine(day - timedelta(days=_DAY_FUZZ), _time.min))
+            end = timezone.make_aware(_datetime.combine(day + timedelta(days=_DAY_FUZZ), _time.max))
+            qs = qs.filter(created__gte=start, created__lte=end)
+        except (TypeError, ValueError):
+            pass
+    if kind and _KIND_PATTERNS.get(kind):
+        qs = qs.filter(service__iregex=_KIND_PATTERNS[kind])
+    if recipient:
+        # Names reach the ledger via the service label ("Transfer to ADA OKON"),
+        # so a partial, case-insensitive match is the only kind available.
+        qs = qs.filter(service__icontains=str(recipient).strip()[:40])
+    if status:
+        wanted = {"failed": Transaction.FAILED, "pending": Transaction.PENDING,
+                  "successful": Transaction.SUCCESS, "success": Transaction.SUCCESS}.get(status)
+        if wanted:
+            qs = qs.filter(transaction_status=wanted)
+    return list(qs.order_by("-created")[:limit])
+
+
+def _txn_line(t) -> str:
+    """One transaction as the customer should read it: outcome first."""
+    from wallet.models import Transaction
+
+    sign = "＋" if t.direction == Transaction.IN else "－"
+    label = (t.service or "").strip() or ("Credit" if t.direction == Transaction.IN else "Debit")
+    icon = {"success": "✅", "pending": "⏳", "failed": "❌"}[_status_of(t)]
+    return f"{icon} {sign}{_money(t.amount)}  ·  {label}\n     _{t.created:%d %b, %I:%M %p}_"
+
+
+def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
+                kind=None, recipient=None, status=None, as_document=None) -> None:
+    """Answer a question about past activity.
+
+    Two different questions wear the same clothes here, and answering the wrong
+    one is what made the assistant feel deaf: "send me a statement" wants a
+    LIST (and a file), while "I sent 5k to someone 2 days ago, help me check"
+    wants ONE answer about ONE payment. When the message carries any identifying
+    detail this is a lookup and replies in the chat about what it found; only a
+    bare history request — or an explicit ask for a statement — attaches the PDF.
+
+    A statement is a heavy thing to send: it is 250KB, it lands as a file card,
+    and sending one in answer to "did my transfer arrive?" makes the customer do
+    the work of finding their own answer inside it.
+    """
+    lookup = any(x is not None for x in (amount, days_ago, kind, recipient, status))
+
+    if lookup:
+        rows = _find_txns(user, amount=amount, days_ago=days_ago, kind=kind,
+                          recipient=recipient, status=status)
+        if not rows:
+            said = _describe_query(amount=amount, days_ago=days_ago, kind=kind,
+                                   recipient=recipient, status=status)
+            return reply(
+                msisdn,
+                f"🔍 I couldn't find {said} on your account.\n\n"
+                "It may have been sent from another app or account. Reply *9* to see your "
+                "recent transactions, or tell me more about it and I'll take another look.")
+        if len(rows) == 1:
+            t = rows[0]
+            head = f"Your {_money(t.amount)} {(t.service or 'transaction').strip()} was {_STATUS_LABEL[_status_of(t)]}"
+            body = (f"{head}\n\n"
+                    f"🗓️ {t.created:%d %b %Y, %I:%M %p}\n"
+                    f"🔖 Ref {t.reference}")
+            if _status_of(t) == "pending":
+                body += ("\n\nIt's still with the provider. These usually settle within a few "
+                         "minutes — you'll get a message here the moment it does.")
+            elif _status_of(t) == "failed":
+                body += "\n\nYou were not charged for it."
+            else:
+                body += ("\n\nIf the person says they haven't received it, reply "
+                         "*report a problem* and I'll open a case with support.")
+            return reply(msisdn, body)
+        found = _describe_query(amount=amount, days_ago=days_ago, kind=kind,
+                                recipient=recipient, status=status)
+        return reply(msisdn, f"🔍 I found {len(rows)} transactions matching {found}:\n\n"
+                             + "\n".join(_txn_line(t) for t in rows)
+                             + "\n\nReply *report a problem* if one of these needs looking into.")
+
     from wallet.models import Transaction
 
     try:
@@ -1973,29 +2119,25 @@ def _do_history(user, msisdn: str, count=None) -> None:
     if not rows:
         return reply(msisdn, "🧾 No transactions yet. Reply *6* to add money and get started.")
 
-    def status_of(t) -> str:
-        if t.transaction_status == Transaction.SUCCESS:
-            return "success"
-        if t.transaction_status == Transaction.FAILED:
-            return "failed"
-        return "pending"
-
     lines, pdf_rows = [], []
     for t in rows:
         sign = "＋" if t.direction == Transaction.IN else "－"
         label = (t.service or "").strip() or ("Credit" if t.direction == Transaction.IN else "Debit")
-        status = status_of(t)
-        icon = {"success": "✅", "pending": "⏳", "failed": "❌"}[status]
-        lines.append(f"{icon} {sign}{_money(t.amount)}  ·  {label}\n     _{t.created:%d %b, %I:%M %p}_")
+        lines.append(_txn_line(t))
         pdf_rows.append({"date": t.created.strftime("%d %b %Y, %I:%M %p"), "label": label,
-                         "amount": _money(t.amount), "sign": sign, "status": status,
+                         "amount": _money(t.amount), "sign": sign, "status": _status_of(t),
                          "reference": t.reference})
 
     balance = _money(get_or_create_wallet(user).balance)
     generated = timezone.localtime().strftime("%d %b %Y, %I:%M %p")
-    header = (f"🧾 Your last transaction was {_STATUS_LABEL[status_of(rows[0])]}."
+    header = (f"🧾 Your last transaction was {_STATUS_LABEL[_status_of(rows[0])]}."
               if count == 1 else f"🧾 *Your last {len(rows)} transactions*")
     caption = header + "\n\n" + "\n".join(lines) + f"\n\nBalance: {balance}"
+
+    # The file is for a STATEMENT request. A one-line "was my last one ok?" gets
+    # the answer in the thread where it was asked.
+    if not as_document and count <= 3:
+        return reply(msisdn, caption)
 
     from .providers import send_document, upload_media, wa_live
 
@@ -2017,7 +2159,126 @@ def _do_history(user, msisdn: str, count=None) -> None:
         reply(msisdn, caption)
 
 
-_STATUS_LABEL = {"success": "successful ✅", "pending": "still pending ⏳", "failed": "not successful ❌"}
+def _describe_query(*, amount=None, days_ago=None, kind=None, recipient=None, status=None) -> str:
+    """The customer's own search terms, read back to them. A bare "I couldn't
+    find it" leaves them unable to tell whether we misheard the amount, the day
+    or the type — so we say which one we looked for."""
+    bits = []
+    if status:
+        bits.append({"failed": "a failed", "pending": "a pending",
+                     "successful": "a successful"}.get(status, "a"))
+    if amount is not None:
+        try:
+            bits.append(f"{_money(Decimal(str(amount)))}")
+        except (InvalidOperation, TypeError):
+            pass
+    bits.append({"transfer": "transfer", "airtime": "airtime purchase", "data": "data purchase",
+                 "bill": "bill payment", "funding": "wallet funding"}.get(kind, "transaction"))
+    if recipient:
+        bits.append(f"to {str(recipient)[:40]}")
+    if days_ago is not None:
+        try:
+            n = max(0, int(days_ago))
+            bits.append("today" if n == 0 else "yesterday" if n == 1 else f"{n} days ago")
+        except (TypeError, ValueError):
+            pass
+    return " ".join(b for b in bits if b)
+
+
+def _start_problem_report(user, msisdn: str) -> None:
+    """The keyword path into a support case: show what could be wrong and let the
+    customer point at it. The AI path names the transaction from the message;
+    this one has no message to read, so it asks."""
+    from wallet.models import Transaction
+
+    rows = list(Transaction.objects.filter(user=user).order_by("-created")[:5])
+    if not rows:
+        return reply(msisdn, "You don't have any transactions yet, so there's nothing to raise "
+                             "a case about.\n\nIf you need help with something else:\n"
+                             + (_more_info_block() or ""))
+    return reply(msisdn, "🛟 *Report a problem*\n\nWhich transaction is it? Reply with the "
+                         "amount and roughly when it happened — for example \"the ₦5,000 "
+                         "transfer 2 days ago\".\n\n"
+                 + "\n".join(_txn_line(t) for t in rows))
+
+
+def _do_report_problem(user, msisdn: str, *, amount=None, days_ago=None, kind=None,
+                       recipient=None, reference=None, reason=None, detail=None) -> None:
+    """Open a real support case against a transaction the customer says went wrong.
+
+    "Escalate this to customer support" used to reach nothing — the assistant had
+    no tool for it, so the message fell through to a menu and the customer was
+    left believing a human had been told. Nobody had been. This writes a Dispute,
+    which is the same case record the app's own dispute flow and the ops console
+    already work from, and it answers with the case number and the response
+    window so the customer has something to hold us to.
+
+    It never promises a refund. A dispute is an investigation, and the remedy is
+    an audited path that a human decides on — see compliance.models.Dispute.
+    """
+    from django.db import IntegrityError
+
+    from compliance.models import Dispute
+
+    rows = _find_txns(user, amount=amount, days_ago=days_ago, kind=kind,
+                      recipient=recipient, reference=reference, limit=4)
+    if not rows:
+        said = _describe_query(amount=amount, days_ago=days_ago, kind=kind, recipient=recipient)
+        return reply(
+            msisdn,
+            f"🔍 I couldn't find {said} on your account, so I don't have a transaction to "
+            "raise a case against.\n\nReply *9* to see your recent transactions and tell me "
+            "which one it is — or contact our team directly:\n" + (_more_info_block() or ""))
+    if len(rows) > 1:
+        return reply(msisdn, "I found more than one transaction that could be the one you mean:\n\n"
+                             + "\n".join(_txn_line(t) for t in rows)
+                             + "\n\nWhich one should I raise with support? Reply with the amount "
+                               "and the date, or the reference.")
+
+    txn = rows[0]
+    reason = reason if reason in dict(Dispute.REASONS) else Dispute.NOT_RECEIVED
+    # The customer's own words, capped to the column and stripped of newlines so
+    # one message cannot fill the case list with whitespace.
+    note = " ".join(str(detail or "").split())[:500]
+    # Looked up before creating rather than via get_or_create: the "one open case
+    # per reference" rule is a CONDITIONAL unique constraint (open/investigating
+    # only), and a status__in lookup cannot be expressed as get_or_create kwargs
+    # without trying to write it as a field.
+    case = Dispute.objects.filter(
+        user=user, reference=txn.reference,
+        status__in=(Dispute.OPEN, Dispute.INVESTIGATING)).first()
+    if case is not None:
+        return reply(
+            msisdn,
+            f"📌 There's already an open case for that {_money(txn.amount)} "
+            f"{(txn.service or 'transaction').strip()}.\n\n"
+            f"🔖 Case #{case.id} · raised {case.created:%d %b}\n"
+            f"⏳ We'll come back to you by {case.due:%d %b %Y}.\n\n"
+            "You don't need to do anything else — we'll message you here as soon as there's "
+            "an update.")
+    try:
+        case = Dispute.objects.create(
+            user=user, reference=txn.reference, reason=reason,
+            detail=note or "Raised from WhatsApp")
+    except IntegrityError:
+        # Lost a race with the same customer double-sending. The constraint did
+        # its job; read back the winner rather than reporting a failure for a
+        # case that now exists.
+        case = Dispute.objects.filter(
+            user=user, reference=txn.reference,
+            status__in=(Dispute.OPEN, Dispute.INVESTIGATING)).first()
+        if case is None:
+            raise
+    log.info("wa_dispute_opened case=%s ref=%s reason=%s", case.id, txn.reference, reason)
+    return reply(
+        msisdn,
+        f"✅ I've opened a support case for your {_money(txn.amount)} "
+        f"{(txn.service or 'transaction').strip()}.\n\n"
+        f"🔖 Case #{case.id}\n"
+        f"🧾 Transaction {txn.reference} · {txn.created:%d %b %Y, %I:%M %p}\n"
+        f"⏳ Our team will come back to you by {case.due:%d %b %Y}.\n\n"
+        "You'll get an update here — no need to send it again. If it's urgent you can also "
+        "reach our team directly:\n" + (_more_info_block() or ""))
 
 
 def _do_support(msisdn: str) -> None:
@@ -4355,7 +4616,16 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
         _start_convert(user, msisdn)
         return True
     if name == "transaction_history":
-        _do_history(user, msisdn, p.get("count"))
+        _do_history(user, msisdn, p.get("count"),
+                    amount=p.get("amount"), days_ago=p.get("days_ago"),
+                    kind=p.get("kind"), recipient=p.get("recipient"),
+                    status=p.get("status"), as_document=p.get("as_document"))
+        return True
+    if name == "report_problem":
+        _do_report_problem(user, msisdn, amount=p.get("amount"), days_ago=p.get("days_ago"),
+                           kind=p.get("kind"), recipient=p.get("recipient"),
+                           reference=p.get("reference"), reason=p.get("reason"),
+                           detail=p.get("detail"))
         return True
     return False  # clarify / unknown
 
