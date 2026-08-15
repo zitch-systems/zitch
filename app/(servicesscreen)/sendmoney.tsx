@@ -1,27 +1,75 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, Alert, Pressable, ScrollView } from 'react-native';
+import { View, Text, TextInput, Alert, Pressable, ScrollView } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken, hasTransactionPin, saveTransactionPin, hasOfferedBiometricPay, markBiometricPayOffered } from '@/lib/secureStore';
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
 import { isBiometricAvailable, authenticate, biometricLabel, setBiometricEnabled } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Card, Field, Btn, Sheet, PinPad, money, NText } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram, BankLogo, AmountField } from '@/components/design/flowkit';
+import { LoadingMark } from '@/components/design/Loading';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
-import { useTheme, font } from '@/lib/theme';
+import { useTheme, font, radius, iconTint } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
 const AMOUNTS = [1000, 2000, 5000, 10000, 20000, 50000];
 // Mirrors backend User.LARGE_TXN_THRESHOLD — drives the device biometric step-up.
 const LARGE_TXN = 100000;
+// Display-only mirror of the `amount >= 50` gate in `valid` below (backend
+// common.http.MIN_TRANSFER). Shown in the info strip so the floor is stated
+// before the user types, not after the button refuses to enable.
+const MIN_AMOUNT = 50;
 type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string; logo?: string };
 type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; initials: string; color: string };
 type BankMatch = { bank: string; bank_name: string; name: string };
 
-const SendMoney = () => {
+// Banner strip content. This app has NO offers/promotions endpoint or constant,
+// so the strip carries one factual line about the transfer service itself
+// rather than an invented discount. Appending real banners here is enough —
+// the pager and the dot indicators below already handle more than one.
+const BANNERS: { title: string; body: string }[] = [
+  { title: 'Any bank, any time', body: 'Send to any Nigerian bank account, 24/7.' },
+];
+
+// The beneficiaries endpoint (/api/transfers/beneficiaries/) carries no
+// favourite flag, so there is no second tab to fill — a "Favourites" tab would
+// be empty chrome. Add it here the day the API returns one.
+const BEN_TABS: { v: string; label: string }[] = [{ v: 'recents', label: 'Recents' }];
+
+// ---- Local presentation helpers (kept in this file on purpose: they are this
+// screen's reference layout, not design-system components) ----
+
+// A borderless input/select row with a hairline rule under it — the card's
+// fields read as ruled lines rather than a stack of boxes.
+const URow = ({ children, onPress, label }: { children: React.ReactNode; onPress?: () => void; label?: string }) => {
   const { c } = useTheme();
+  const inner = (
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 10,
+        minHeight: 54,
+        borderBottomWidth: 1,
+        borderBottomColor: c.line,
+      }}
+    >
+      {children}
+    </View>
+  );
+  if (!onPress) return inner;
+  return (
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}>
+      {inner}
+    </Pressable>
+  );
+};
+
+const SendMoney = () => {
+  const { c, theme } = useTheme();
   const { balance, reload } = useWallet();
   const params = useLocalSearchParams<{ identifier?: string }>();
 
@@ -54,6 +102,13 @@ const SendMoney = () => {
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one transfer attempt
+
+  // ---- Presentation-only state (layout, not flow) ----
+  const [bannerW, setBannerW] = useState(0);     // measured page width for the pager
+  const [bannerPage, setBannerPage] = useState(0);
+  const [benTab, setBenTab] = useState(BEN_TABS[0].v);
+  const [benSearch, setBenSearch] = useState(false);  // search field revealed by the tab-row icon
+  const [benAll, setBenAll] = useState(false);        // "View All" expands past the inline cap
 
   const loadBanks = () => {
     // Banks are a PUBLIC endpoint — load them regardless of session so the picker
@@ -159,6 +214,17 @@ const SendMoney = () => {
   const acctReady = mode === 'bank' ? acct.length === 10 && !!bank : !!resolvedName;
   const recipientName = picked ? picked.name : mode === 'bank' ? bankName : resolvedName;
   const valid = (!!picked || acctReady) && amount >= 50 && amount <= balance;
+
+  // Tapping a saved recipient. For a bank recipient in bank mode this just fills
+  // the account number — the auto-detect effect above then supplies the bank and
+  // holder name (its beneficiary fast path), exactly as the "Sent before"
+  // suggestions do. A Zitch recipient (or zitch mode) has no 10-digit account to
+  // fill, so it takes the existing `picked` path.
+  const tapBeneficiary = (b: Beneficiary) => {
+    idemKey.current = '';
+    if (mode === 'bank' && b.bank_name !== 'Zitch') setAcct(b.account_number);
+    else setPicked(b);
+  };
 
   const resolveZitch = async () => {
     if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
@@ -323,10 +389,75 @@ const SendMoney = () => {
   const acctSuggestions = mode === 'bank' && !picked && acct.length >= 4 && acct.length < 10
     ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && b.account_number.startsWith(acct)).slice(0, 3)
     : [];
+  // Inline list is capped at 3 rows; "View All" swaps in the rest in place.
+  const shownBens = benAll ? filteredBens : filteredBens.slice(0, 3);
 
   return (
     <Screen>
-      <Header title="Send money" onBack={() => router.back()} />
+      <Header
+        title="Transfer to Bank Account"
+        onBack={() => router.back()}
+        right={(
+          <Pressable onPress={() => router.push('/history')} hitSlop={10}>
+            <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.brand }}>History</Text>
+          </Pressable>
+        )}
+      />
+
+      {/* Banner strip — paged, with dot indicators once there is more than one
+          card to page between. */}
+      <View onLayout={(e) => setBannerW(Math.round(e.nativeEvent.layout.width))}>
+        {bannerW > 0 && (
+          <ScrollView
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={(e) => setBannerPage(Math.round(e.nativeEvent.contentOffset.x / bannerW))}
+          >
+            {BANNERS.map((b) => (
+              <View key={b.title} style={{ width: bannerW }}>
+                <LinearGradient
+                  colors={c.heroGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={{ borderRadius: radius.lg, paddingHorizontal: 20, paddingVertical: 18, minHeight: 94, justifyContent: 'center' }}
+                >
+                  <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: 16.5, letterSpacing: -0.2 }}>{b.title}</Text>
+                  <Text style={{ color: '#fff', opacity: 0.86, fontFamily: font.regular, fontSize: 12.5, marginTop: 5 }}>{b.body}</Text>
+                </LinearGradient>
+              </View>
+            ))}
+          </ScrollView>
+        )}
+        {BANNERS.length > 1 && (
+          <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, marginTop: 10 }}>
+            {BANNERS.map((b, i) => (
+              <View
+                key={b.title}
+                style={{ width: i === bannerPage ? 16 : 6, height: 6, borderRadius: 3, backgroundColor: i === bannerPage ? c.brand : c.line }}
+              />
+            ))}
+          </View>
+        )}
+      </View>
+
+      {/* What this screen already knows to be true about a transfer: the fee it
+          prints on every confirm sheet and receipt, and the minimum the
+          Continue button enforces. Nothing here is a promise the flow can't keep. */}
+      <View
+        style={{
+          flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 14,
+          paddingVertical: 9, paddingHorizontal: 14, borderRadius: radius.pill,
+          backgroundColor: iconTint(c.brand, theme === 'dark'),
+        }}
+      >
+        <ZIcon name="spark" size={15} color={c.brand} stroke={2.2} />
+        <NText style={{ flex: 1, fontSize: 12.5, fontFamily: font.semibold, color: c.ink2 }}>
+          {`No transfer fee · Minimum transfer ${money(MIN_AMOUNT)}`}
+        </NText>
+      </View>
+
+      <View style={{ height: 18 }} />
 
       <Segmented
         options={[{ v: 'bank', label: 'To Bank' }, { v: 'zitch', label: 'To Zitch' }]}
@@ -334,106 +465,220 @@ const SendMoney = () => {
         onChange={(v) => { idemKey.current = ''; setMode(v as any); setPicked(null); setAcct(''); setBank(null); setIdentifier(''); setResolvedName(''); }}
       />
 
-      {picked ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, marginBottom: 16 }}>
-          <Monogram text={picked.initials} color={picked.color} />
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{picked.name}</Text>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{picked.account_number} · {picked.bank_name}</Text>
+      {/* Recipient Account — the account row, the bank row, the amount and the
+          Continue button live in one card, as ruled lines rather than boxes. */}
+      <Card pad={18}>
+        <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1, marginBottom: 4 }}>Recipient Account</Text>
+
+        {picked ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.line }}>
+            <Monogram text={picked.initials} color={picked.color} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontFamily: font.bold, color: c.ink1 }}>{picked.name}</Text>
+              <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{picked.account_number} · {picked.bank_name}</Text>
+            </View>
+            <Pressable onPress={() => { idemKey.current = ''; setPicked(null); }} hitSlop={8}>
+              <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Change</Text>
+            </Pressable>
           </View>
-          <Pressable onPress={() => { idemKey.current = ''; setPicked(null); }}><Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand }}>Change</Text></Pressable>
+        ) : mode === 'bank' ? (
+          <>
+            <URow>
+              <ZIcon name="bank" size={18} color={c.ink3} />
+              <TextInput
+                value={acct}
+                onChangeText={(v) => { idemKey.current = ''; setAcct(v.replace(/\D/g, '').slice(0, 10)); }}
+                keyboardType="number-pad"
+                placeholder="Enter 10 digits Account Number"
+                placeholderTextColor={c.ink3}
+                accessibilityLabel="Account number"
+                style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium, paddingVertical: 0 }}
+              />
+            </URow>
+
+            {acctSuggestions.length > 0 && (
+              <View style={{ paddingTop: 10 }}>
+                <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Sent before</Text>
+                {acctSuggestions.map((b) => (
+                  <Pressable key={b.id} onPress={() => { idemKey.current = ''; setAcct(b.account_number); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
+                    <Monogram text={b.initials} color={b.color} size={32} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.name}</Text>
+                      <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12 }}>{b.account_number} · {b.bank_name}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            {/* While auto-detecting, the row shows the small branded Zitch loader
+                in place of the bank name (no "Detecting…" copy). */}
+            <URow onPress={() => setBankSheet(true)} label="Select bank">
+              {bank
+                ? <BankLogo name={bank.name} color={bank.color} logo={bank.logo} size={26} />
+                : <ZIcon name="bank" size={18} color={c.ink3} />}
+              {resolvingBank ? (
+                <View style={{ flex: 1 }} accessible accessibilityRole="progressbar" accessibilityLabel="Loading">
+                  <LoadingMark size={22} />
+                </View>
+              ) : (
+                <Text
+                  numberOfLines={1}
+                  style={{ flex: 1, fontSize: 16, fontFamily: bank ? font.semibold : font.regular, color: bank ? c.ink1 : c.ink3 }}
+                >
+                  {bank?.name || 'Select Bank'}
+                </Text>
+              )}
+              <ZIcon name="right" size={16} color={c.ink3} />
+            </URow>
+
+            {resolvingBank ? null : matches.length > 1 ? (
+              <View style={{ marginTop: 10 }}>
+                <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Found at more than one bank — pick the right one:</Text>
+                {matches.map((m) => (
+                  <Pressable key={m.bank} onPress={() => applyMatch(m)} style={{ paddingVertical: 7 }}>
+                    <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 13 }}>{m.bank_name}</Text>
+                    <Text style={{ color: c.ink2, fontFamily: font.regular, fontSize: 12 }}>{m.name}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : bankName ? (
+              <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 10 }}>✓ {bankName}</Text>
+            ) : bankErr ? (
+              <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5, marginTop: 10 }}>{bankErr}</Text>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <URow>
+              <ZIcon name="user" size={18} color={c.ink3} />
+              <TextInput
+                value={identifier}
+                onChangeText={(v) => { idemKey.current = ''; setResolvedName(''); setIdentifier(v.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15)); }}
+                placeholder="@username / 0801…"
+                placeholderTextColor={c.ink3}
+                accessibilityLabel="Zitch tag or phone"
+                autoCapitalize="none"
+                autoCorrect={false}
+                style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium, paddingVertical: 0 }}
+              />
+            </URow>
+            <View style={{ marginTop: 10 }}>
+              {resolvedName ? <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5 }}>✓ {resolvedName}</Text>
+                : <Btn label="Confirm recipient" variant="outline" size="sm" full={false} onPress={resolveZitch} disabled={resolving} />}
+            </View>
+          </>
+        )}
+
+        {/* Amount: the field leads, with the quick presets as a slim pill row of
+            suggestions underneath (was a dominant 2×3 grid above the field). */}
+        <View style={{ height: 6 }} />
+        <Label>Amount</Label>
+        <AmountField value={amt} onChangeText={(v) => { idemKey.current = ''; setAmt(v); }} />
+        <View style={{ height: 10 }} />
+        <QuickAmounts amounts={AMOUNTS} value={amt} onPick={(v) => { idemKey.current = ''; setAmt(v); }} />
+        <BalanceHint amount={amount} balance={balance} />
+
+        <Field label="Narration (optional)" value={note} onChangeText={(v) => { idemKey.current = ''; setNote(v); }} placeholder="What's it for?" />
+        <View style={{ height: 20 }} />
+
+        <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
+      </Card>
+
+      <View style={{ height: 14 }} />
+
+      <Card pad={14} onPress={() => router.push('/safetytips')}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: iconTint(c.brand, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="shield" size={20} color={c.brand} />
+          </View>
+          <Text style={{ flex: 1, fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>Transfer tips & safety</Text>
+          <ZIcon name="right" size={16} color={c.ink3} />
         </View>
-      ) : mode === 'bank' ? (
-        <>
-          <Field label="Account number" value={acct} onChangeText={(v) => { idemKey.current = ''; setAcct(v.replace(/\D/g, '').slice(0, 10)); }} keyboardType="number-pad" placeholder="Enter 10-digit account number" prefix={<ZIcon name="bank" size={18} color={c.ink3} />} />
-          {acctSuggestions.length > 0 && (
-            <View style={{ marginTop: 8 }}>
-              <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Sent before</Text>
-              {acctSuggestions.map((b) => (
-                <Pressable key={b.id} onPress={() => { idemKey.current = ''; setAcct(b.account_number); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
-                  <Monogram text={b.initials} color={b.color} size={32} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.name}</Text>
-                    <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12 }}>{b.account_number} · {b.bank_name}</Text>
-                  </View>
-                </Pressable>
-              ))}
-            </View>
-          )}
-          <View style={{ height: 14 }} />
-          <Pressable onPress={() => setBankSheet(true)}>
-            {/* While auto-detecting, the field shows the small branded Zitch
-                loader in place of the text (no "Detecting…" copy). */}
-            <Field
-              label="Bank"
-              value={bank?.name || ''}
-              editable={false}
-              loading={resolvingBank}
-              placeholder="Auto-detected from account — or tap to choose"
-              prefix={bank ? <BankLogo name={bank.name} color={bank.color} logo={bank.logo} size={26} /> : <ZIcon name="bank" size={18} color={c.ink3} />}
-              suffix={<ZIcon name="down" size={16} color={c.ink3} />}
-              pointerEvents="none"
-            />
-          </Pressable>
-          {resolvingBank ? null : matches.length > 1 ? (
-            <View style={{ marginTop: 8 }}>
-              <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Found at more than one bank — pick the right one:</Text>
-              {matches.map((m) => (
-                <Pressable key={m.bank} onPress={() => applyMatch(m)} style={{ paddingVertical: 7 }}>
-                  <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 13 }}>{m.bank_name}</Text>
-                  <Text style={{ color: c.ink2, fontFamily: font.regular, fontSize: 12 }}>{m.name}</Text>
-                </Pressable>
-              ))}
-            </View>
-          ) : bankName ? (
-            <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5, marginTop: 8 }}>✓ {bankName}</Text>
-          ) : bankErr ? (
-            <Text style={{ color: c.red, fontFamily: font.semibold, fontSize: 12.5, marginTop: 8 }}>{bankErr}</Text>
-          ) : null}
-          <View style={{ height: 16 }} />
-        </>
-      ) : (
-        <>
-          <Field label="Zitch tag or phone" value={identifier} onChangeText={(v) => { idemKey.current = ''; setResolvedName(''); setIdentifier(v.replace(/[^\d@a-zA-Z]/g, '').slice(0, 15)); }} placeholder="@username / 0801…" prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
-          <View style={{ marginTop: 8, marginBottom: 8 }}>
-            {resolvedName ? <Text style={{ color: c.brandDeep, fontFamily: font.bold, fontSize: 12.5 }}>✓ {resolvedName}</Text>
-              : <Btn label="Confirm recipient" variant="outline" size="sm" full={false} onPress={resolveZitch} disabled={resolving} />}
-          </View>
-        </>
-      )}
+      </Card>
 
-      {/* Amount: the field leads, with the quick presets as a slim pill row of
-          suggestions underneath (was a dominant 2×3 grid above the field). */}
-      <Label>Amount</Label>
-      <AmountField value={amt} onChangeText={(v) => { idemKey.current = ''; setAmt(v); }} />
-      <View style={{ height: 10 }} />
-      <QuickAmounts amounts={AMOUNTS} value={amt} onPick={(v) => { idemKey.current = ''; setAmt(v); }} />
-      <BalanceHint amount={amount} balance={balance} />
-
-      <Field label="Narration (optional)" value={note} onChangeText={(v) => { idemKey.current = ''; setNote(v); }} placeholder="What's it for?" />
-      <View style={{ height: 20 }} />
-
-      <Btn label="Continue" disabled={!valid} onPress={() => setStep('confirm')} />
-
-      {/* Saved beneficiaries — moved to the bottom; tap one to fill the form above */}
+      {/* Saved recipients — the real /api/transfers/beneficiaries/ list (newest
+          first), so "Recents" is the accounts this user has actually paid. */}
       {!picked && beneficiaries.length > 0 && (
         <>
-          <View style={{ height: 28 }} />
-          <Label>Saved beneficiaries</Label>
-          <Field value={query} onChangeText={setQuery} placeholder="Search by name or account" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
-          <View style={{ height: 12 }} />
-          {filteredBens.length === 0 ? (
-            <Text style={{ fontSize: 13, color: c.ink3, marginBottom: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
-          ) : (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 14, paddingBottom: 4 }}>
-              {filteredBens.map((b) => (
-                <Pressable key={b.id} onPress={() => { idemKey.current = ''; setPicked(b); }} style={{ alignItems: 'center', gap: 7, width: 64 }}>
-                  <Monogram text={b.initials} color={b.color} size={52} />
-                  <Text numberOfLines={1} style={{ fontSize: 11, fontFamily: font.semibold, color: c.ink2, textAlign: 'center' }}>{b.name.split(' ')[0]}</Text>
+          <View style={{ height: 14 }} />
+          <Card pad={18}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 20, borderBottomWidth: 1, borderBottomColor: c.line, marginBottom: 4 }}>
+              {BEN_TABS.map((t) => {
+                const on = benTab === t.v;
+                return (
+                  <Pressable
+                    key={t.v}
+                    onPress={() => setBenTab(t.v)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: on }}
+                    style={{ paddingBottom: 10, marginBottom: -1, borderBottomWidth: 2, borderBottomColor: on ? c.brand : 'transparent' }}
+                  >
+                    <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: on ? c.brand : c.ink3 }}>{t.label}</Text>
+                  </Pressable>
+                );
+              })}
+              <View style={{ flex: 1 }} />
+              <Pressable
+                onPress={() => { const next = !benSearch; setBenSearch(next); if (!next) setQuery(''); }}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={benSearch ? 'Hide search' : 'Search saved recipients'}
+                style={{ paddingBottom: 10 }}
+              >
+                <ZIcon name="search" size={18} color={benSearch ? c.brand : c.ink3} />
+              </Pressable>
+            </View>
+
+            {benSearch && (
+              <URow>
+                <ZIcon name="search" size={16} color={c.ink3} />
+                <TextInput
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder="Search by name or account"
+                  placeholderTextColor={c.ink3}
+                  accessibilityLabel="Search saved recipients"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                  style={{ flex: 1, fontSize: 15, color: c.ink1, fontFamily: font.medium, paddingVertical: 0 }}
+                />
+              </URow>
+            )}
+
+            {filteredBens.length === 0 ? (
+              <Text style={{ fontSize: 13, color: c.ink3, paddingVertical: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
+            ) : (
+              shownBens.map((b, i) => (
+                <Pressable
+                  key={b.id}
+                  onPress={() => tapBeneficiary(b)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${b.name}, ${b.account_number} ${b.bank_name}`}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
+                    <Text numberOfLines={1} style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, marginTop: 2 }}>{b.account_number} {b.bank_name}</Text>
+                  </View>
+                  <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: iconTint(b.color, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
+                    <Text style={{ fontSize: 13, fontFamily: font.extrabold, color: b.color }}>{b.initials}</Text>
+                  </View>
                 </Pressable>
-              ))}
-            </ScrollView>
-          )}
+              ))
+            )}
+
+            {filteredBens.length > 3 && (
+              <Pressable
+                onPress={() => setBenAll((v) => !v)}
+                accessibilityRole="button"
+                style={{ alignSelf: 'center', marginTop: 14, paddingVertical: 9, paddingHorizontal: 20, borderRadius: radius.pill, backgroundColor: c.surface3 }}
+              >
+                <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.ink2 }}>{benAll ? 'Show less' : 'View All ›'}</Text>
+              </Pressable>
+            )}
+          </Card>
         </>
       )}
 
@@ -477,4 +722,3 @@ const SendMoney = () => {
 };
 
 export default SendMoney;
-

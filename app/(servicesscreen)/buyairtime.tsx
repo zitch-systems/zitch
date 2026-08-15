@@ -3,7 +3,7 @@ import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, QUICK_AMOUNTS, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
@@ -107,7 +107,7 @@ const BuyAirtime = () => {
 
   return (
     <Screen>
-      <Header title="Airtime" onBack={() => router.back()} />
+      <Header title="Airtime" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
 
       <Label>Select network</Label>
       <ProviderGrid items={NETWORKS} value={net} onPick={setNet} />

@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, HeaderLink } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
@@ -105,7 +105,7 @@ const Exams = () => {
 
   return (
     <Screen>
-      <Header title="Exams · JAMB / WAEC" onBack={() => router.back()} />
+      <Header title="Exams · JAMB / WAEC" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
 
       <Label>Select exam</Label>
       {loadingList ? (

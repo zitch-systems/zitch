@@ -759,6 +759,243 @@ export const StatPill = ({ icon, label, onPress }: { icon: string; label: string
   </Pressable>
 );
 
+// ---- Status pill ----
+// One place decides what a transaction status LOOKS like. The list row, the
+// detail screen and the statement all read the same three states, and before
+// this they each styled them differently — a failed transfer was red on one
+// screen and plain grey on another, which is the one status you cannot afford
+// to under-state.
+export type TxnState = 'success' | 'pending' | 'failed';
+
+export const txnState = (status: string): TxnState => {
+  const s = (status || '').toLowerCase();
+  if (/fail|declin|revers|cancel/.test(s)) return 'failed';
+  if (/pend|process|await|queue/.test(s)) return 'pending';
+  return 'success';
+};
+
+export const StatusPill = ({ status, small }: { status: string; small?: boolean }) => {
+  const { c, theme } = useTheme();
+  const state = txnState(status);
+  const tone = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.lime;
+  return (
+    <View
+      style={{
+        alignSelf: 'flex-end',
+        paddingHorizontal: small ? 7 : 9,
+        paddingVertical: small ? 2 : 3,
+        borderRadius: 999,
+        backgroundColor: iconTint(tone, theme === 'dark'),
+      }}
+    >
+      <Text style={{ fontSize: small ? 10 : 11, fontFamily: font.semibold, color: tone }}>{status}</Text>
+    </View>
+  );
+};
+
+// ---- Header text link ----
+// The "History" / "Download" affordance that sits in a Header's `right` slot.
+// A plain coloured word rather than a bordered pill: it is a shortcut to a
+// sibling screen, not an action on the screen you are looking at, and a button
+// chrome around it competes with the screen's real primary button.
+export const HeaderLink = ({ label, onPress, icon }: { label: string; onPress: () => void; icon?: string }) => {
+  const { c } = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={10}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 5, opacity: pressed ? 0.6 : 1 })}
+    >
+      {icon ? <ZIcon name={icon} size={16} color={c.brand} stroke={2.2} /> : null}
+      <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.brand }}>{label}</Text>
+    </Pressable>
+  );
+};
+
+// ---- Pill tabs ----
+// N-option selector. `Segmented` is a 2-slot toggle on a filled track; this is
+// a row of free-standing pills that scrolls when the options outgrow the width
+// (data-plan categories) and wraps a checkmark onto the chosen one when it is
+// a commitment rather than a view filter (statement time frame).
+export const PillTabs = ({
+  options,
+  value,
+  onChange,
+  scroll = true,
+  check = false,
+}: {
+  options: { v: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+  scroll?: boolean;
+  check?: boolean;
+}) => {
+  const { c, theme } = useTheme();
+  const pills = options.map((o) => {
+    const on = value === o.v;
+    return (
+      <Pressable
+        key={o.v}
+        onPress={() => onChange(o.v)}
+        accessibilityRole="radio"
+        accessibilityLabel={o.label}
+        accessibilityState={{ selected: on }}
+        style={{
+          flex: scroll ? undefined : 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: check ? 10 : 16,
+          paddingVertical: check ? 13 : 9,
+          borderRadius: check ? 14 : 999,
+          backgroundColor: on ? (check ? iconTint(c.brand, theme === 'dark') : c.brand) : c.surface3,
+          borderWidth: check ? 1.5 : 0,
+          borderColor: on ? c.brand : 'transparent',
+          overflow: 'hidden',
+        }}
+      >
+        <Text
+          numberOfLines={1}
+          style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? (check ? c.brand : c.inkOnBrand) : c.ink3 }}
+        >
+          {o.label}
+        </Text>
+        {check && on && (
+          // Notched into the corner the way a selected card is ticked elsewhere
+          // in the app (ProviderGrid), so "chosen" reads the same everywhere.
+          <View style={{ position: 'absolute', right: 0, bottom: 0, width: 22, height: 22, borderTopLeftRadius: 10, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="check" size={11} color={c.inkOnBrand} stroke={3} />
+          </View>
+        )}
+      </Pressable>
+    );
+  });
+  if (!scroll) return <View style={{ flexDirection: 'row', gap: 10 }}>{pills}</View>;
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
+      {pills}
+    </ScrollView>
+  );
+};
+
+// ---- Select row ----
+// A field-shaped row that opens a picker rather than a keyboard. The app's
+// convention (bank picker in sendmoney) is a closed row + a Sheet list, never
+// the native Picker, so this is that pattern extracted once.
+export const SelectRow = ({
+  label,
+  value,
+  placeholder,
+  onPress,
+  icon,
+  compact,
+}: {
+  label?: string;
+  value?: string;
+  placeholder?: string;
+  onPress: () => void;
+  icon?: string;
+  compact?: boolean;
+}) => {
+  const { c } = useTheme();
+  const filled = !!value;
+  return (
+    <View style={{ flex: compact ? 1 : undefined }}>
+      {label ? <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text> : null}
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${label ?? placeholder ?? 'Select'}${filled ? `, ${value}` : ''}`}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 10,
+          height: compact ? 48 : 56,
+          paddingHorizontal: 16,
+          borderRadius: compact ? 14 : radius.sm + 4,
+          backgroundColor: compact ? c.surface3 : c.surface,
+          borderWidth: compact ? 0 : 1.5,
+          borderColor: c.line,
+          opacity: pressed ? 0.85 : 1,
+        })}
+      >
+        {icon ? <ZIcon name={icon} size={18} color={c.ink3} /> : null}
+        <Text
+          numberOfLines={1}
+          style={{ flex: 1, fontSize: compact ? 14 : 15, fontFamily: filled ? font.semibold : font.regular, color: filled ? c.ink1 : c.ink3, textAlign: compact ? 'center' : 'left' }}
+        >
+          {value || placeholder}
+        </Text>
+        <ZIcon name="down" size={16} color={c.ink3} stroke={2.4} />
+      </Pressable>
+    </View>
+  );
+};
+
+// ---- Picker sheet ----
+// The list a SelectRow opens. Options carry an optional icon + sub-label so the
+// same component serves a flat filter list and the file-type chooser.
+export type PickerOption = { v: string; label: string; sub?: string; icon?: string };
+
+export const PickerSheet = ({
+  open,
+  onClose,
+  title,
+  options,
+  value,
+  onPick,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  options: PickerOption[];
+  value: string;
+  onPick: (v: string) => void;
+}) => {
+  const { c } = useTheme();
+  return (
+    <Sheet open={open} onClose={onClose} title={title}>
+      {options.map((o) => {
+        const on = o.v === value;
+        return (
+          <Pressable
+            key={o.v}
+            onPress={() => { onPick(o.v); onClose(); }}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: on }}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.line }}
+          >
+            {o.icon ? (
+              <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+                <ZIcon name={o.icon} size={19} color={on ? c.brand : c.ink2} />
+              </View>
+            ) : null}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ fontSize: 15, fontFamily: on ? font.bold : font.semibold, color: on ? c.brand : c.ink1 }}>{o.label}</Text>
+              {o.sub ? <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{o.sub}</Text> : null}
+            </View>
+            {on ? <ZIcon name="check" size={18} color={c.brand} stroke={2.6} /> : null}
+          </Pressable>
+        );
+      })}
+    </Sheet>
+  );
+};
+
+// ---- Progress bar ----
+export const Progress = ({ value, max, tone }: { value: number; max: number; tone?: string }) => {
+  const { c } = useTheme();
+  // Clamped, not just divided: a limit raised mid-session (or a stale cached
+  // max of 0) would otherwise render a bar wider than its own track.
+  const pct = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+  return (
+    <View style={{ height: 9, borderRadius: 999, backgroundColor: c.surface3, overflow: 'hidden' }}>
+      <View style={{ width: `${pct * 100}%`, height: '100%', borderRadius: 999, backgroundColor: tone ?? c.brand }} />
+    </View>
+  );
+};
+
 // ---- Transaction row ----
 export type Txn = {
   id: string;
@@ -770,6 +1007,10 @@ export type Txn = {
   icon: string;
   dir: 'in' | 'out';
   reference?: string;
+  /** Epoch ms parsed from the backend's date string, or undefined when it
+   *  couldn't be read. Grouping by month needs a real instant; `detail` is a
+   *  pre-formatted display string and cannot be sorted or bucketed. */
+  ts?: number;
 };
 
 export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPress?: () => void }) => {
@@ -783,18 +1024,21 @@ export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPre
   const Wrap: any = onPress ? Pressable : View;
   return (
     <Wrap onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
-      <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
+      {/* A disc, not the rounded square used for service TILES: a tile is a
+          thing you tap to start something, a transaction is a thing that already
+          happened, and the two should not read as the same affordance. */}
+      <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
         <ZIcon name={txn.icon} size={20} color={accent} stroke={2} />
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
+        <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
         <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.detail}</Text>
       </View>
-      <View style={{ alignItems: 'flex-end' }}>
+      <View style={{ alignItems: 'flex-end', gap: 4 }}>
         <NText style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
           {(inflow ? '+' : '-') + money(Math.abs(txn.amount))}
         </NText>
-        <Text style={{ fontSize: 11.5, color: txn.status === 'Pending' ? c.amber : c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.status}</Text>
+        <StatusPill status={txn.status} small />
       </View>
     </Wrap>
   );

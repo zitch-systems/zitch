@@ -39,6 +39,46 @@ export const formatAmountInput = (raw: string): string => {
   return v.includes('.') ? `${grouped}.${kobo ?? ''}` : grouped;
 };
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "2026-08" — sortable, and the identity a month group is keyed by. */
+export const monthKey = (ts: number): string => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+};
+
+/** "Aug 2026" — the heading over a month's transactions. */
+export const monthLabel = (key: string): string => {
+  const [y, m] = key.split('-');
+  return `${MONTHS[Number(m) - 1] ?? m} ${y}`;
+};
+
+const ordinal = (n: number): string => {
+  // 11th/12th/13th are the exception the naive last-digit rule gets wrong.
+  if (n % 100 >= 11 && n % 100 <= 13) return `${n}th`;
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
+};
+
+/** "Aug 15th, 02:24" — a transaction's own timestamp in a list row. */
+export const txnDate = (ts: number): string => {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${MONTHS[d.getMonth()]} ${ordinal(d.getDate())}, ${hh}:${mm}`;
+};
+
+/** "15 Jul, 2026" — the date shown in a statement's start/end fields. */
+export const dayLabel = (ts: number): string => {
+  const d = new Date(ts);
+  return `${d.getDate()} ${MONTHS[d.getMonth()]}, ${d.getFullYear()}`;
+};
+
+/** "2026-07-15" — the wire form the statement API takes. */
+export const isoDay = (ts: number): string => {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 /**
  * Rejects trivially-guessable transaction PINs at setup: repeated blocks
  * (000000, 121212, 123123) and cyclic ascending/descending runs

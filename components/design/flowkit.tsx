@@ -4,7 +4,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Sheet, Btn, Money, money, Field } from '@/components/design/ui';
 import { Naira, NText } from '@/components/design/Naira';
 import { formatAmountInput, sanitizeAmount } from '@/lib/format';
-import { useTheme, font } from '@/lib/theme';
+import { useTheme, font, iconTint } from '@/lib/theme';
 import { router } from 'expo-router';
 
 // Network/provider id → brand color, for monograms & accents.
@@ -281,12 +281,19 @@ export const BalanceHint = ({ amount, balance }: { amount: number; balance: numb
   );
 };
 
-const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
+const Row2 = ({ k, v, strong, icon }: { k: string; v: string; strong?: boolean; icon?: any }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
       <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <NText style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
+      <View style={{ flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+        {icon ? (
+          <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+            <Image source={icon} resizeMode="contain" style={{ width: 15, height: 15 }} />
+          </View>
+        ) : null}
+        <NText numberOfLines={1} style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
+      </View>
     </View>
   );
 };
@@ -301,8 +308,9 @@ export const ConfirmSheet = ({
   balance,
   onPay,
   cta,
-  methodTitle = 'Pay with',
+  methodTitle = 'Payment Method',
   methodSub,
+  productIcon,
 }: {
   open: boolean;
   onClose: () => void;
@@ -310,45 +318,90 @@ export const ConfirmSheet = ({
   total: number;
   rows: [string, string][];
   balance: number;
-  onPay: () => void;
+  /** `pinOnly` is true when the customer chose "Use Payment PIN" rather than the
+   *  Pay button. Callers that ignore the argument keep their previous behaviour
+   *  (biometric offered first), so this stays backward-compatible. */
+  onPay: (pinOnly?: boolean) => void;
   // Overrides for non-payment flows (e.g. a loan disbursement, where money is
   // received, not paid). Defaults reproduce the standard "Pay with wallet" look.
   cta?: string;            // pay-button label (default: "Pay ₦…")
-  methodTitle?: string;    // heading above the wallet card (default: "Pay with")
+  methodTitle?: string;    // heading above the wallet card
   methodSub?: string;      // sub-line under "Zitch Wallet" (default: "Available ₦…")
+  /** Logo for the first review row (the network/provider being bought from). */
+  productIcon?: any;
 }) => {
-  const { c } = useTheme();
+  const { c, theme } = useTheme();
   // Never let a wallet-funded payment proceed past confirm when the funds (or,
   // for a loan, the available credit) can't cover it — the server rejects it
   // anyway, but the user should be blocked here, not after entering their PIN.
   const insufficient = total > balance;
   return (
     <Sheet open={open} onClose={onClose}>
+      {/* An explicit close, and the PIN as a stated choice. The sheet used to be
+          dismissable only by tapping the backdrop — undiscoverable on a panel
+          that covers most of the screen — and the PIN pad arrived unannounced
+          after Pay, so the one control the customer wanted (skip the biometric,
+          just let me type it) had no way to be asked for. */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
+        <Pressable
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          hitSlop={10}
+          style={{ width: 32, height: 32, alignItems: 'flex-start', justifyContent: 'center' }}
+        >
+          <ZIcon name="x" size={20} color={c.ink2} stroke={2.2} />
+        </Pressable>
+        <View style={{ flex: 1 }} />
+        <Pressable
+          onPress={() => onPay(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Use payment PIN"
+          hitSlop={10}
+          disabled={insufficient}
+        >
+          <Text style={{ fontSize: 14, fontFamily: font.bold, color: insufficient ? c.ink3 : c.brand }}>Use Payment PIN</Text>
+        </Pressable>
+      </View>
+
       <View style={{ alignItems: 'center', marginBottom: 18 }}>
         <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink3 }}>{title}</Text>
         <Money amount={total} size={34} />
       </View>
-      <View style={{ marginBottom: 18 }}>
-        {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} />)}
+
+      <View style={{ borderRadius: 16, backgroundColor: c.surface2, paddingHorizontal: 14, paddingBottom: 2, marginBottom: 18 }}>
+        {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} icon={i === 0 ? productIcon : undefined} />)}
+        <Row2 k="Amount" v={money(total)} strong />
         <Row2 k="Fee" v="₦0" />
       </View>
+
       <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>{methodTitle}</Text>
-      <View style={{ borderRadius: 14, backgroundColor: c.surface2, borderWidth: 1.5, borderColor: c.line, padding: 14, marginBottom: 18 }}>
+      <View style={{ borderRadius: 14, backgroundColor: c.surface2, borderWidth: 1.5, borderColor: insufficient ? c.line : c.brand, padding: 14, marginBottom: 18 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: iconTint(c.brand, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="wallet" size={20} color={c.brand} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Zitch Wallet</Text>
             <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{methodSub ?? `Available ${money(balance)}`}</NText>
           </View>
-          <ZIcon name="check" size={18} color={c.brand} />
+          {/* A filled radio, not a bare tick: this row is a CHOICE of funding
+              source, and it should look selectable even while the wallet is the
+              only one there is. */}
+          <View style={{ width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: insufficient ? c.line : c.brand, backgroundColor: insufficient ? 'transparent' : c.brand, alignItems: 'center', justifyContent: 'center' }}>
+            {!insufficient && <ZIcon name="check" size={12} color={c.inkOnBrand} stroke={3} />}
+          </View>
         </View>
+        {insufficient && (
+          <Text style={{ fontSize: 12.5, fontFamily: font.semibold, color: c.red, marginTop: 10 }}>
+            {money(total - balance)} short — add money to continue.
+          </Text>
+        )}
       </View>
       <Btn
         label={insufficient ? 'Insufficient balance' : (cta ?? `Pay ${money(total)}`)}
         icon="lock"
-        onPress={onPay}
+        onPress={() => onPay(false)}
         disabled={insufficient}
       />
     </Sheet>

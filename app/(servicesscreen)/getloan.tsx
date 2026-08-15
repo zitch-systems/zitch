@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Screen, Header, Btn, Sheet, PinPad, money, Naira, HeaderLink } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
 import Receipt from '@/components/design/Receipt';
@@ -120,7 +120,7 @@ const GetLoan = () => {
 
   return (
     <Screen>
-      <Header title="Get Loan" sub="Instant, no paperwork" onBack={() => router.back()} />
+      <Header title="Get Loan" sub="Instant, no paperwork" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
 
       <Hero style={{ marginBottom: 18 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You’re eligible for up to</Text>

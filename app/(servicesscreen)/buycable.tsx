@@ -3,7 +3,7 @@ import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
 import { apiPost, newIdempotencyKey, publicJson } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
@@ -162,7 +162,7 @@ const BuyCable = () => {
 
   return (
     <Screen>
-      <Header title="Cable TV" onBack={() => router.back()} />
+      <Header title="Cable TV" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
 
       <Label>Select provider</Label>
       <ProviderGrid items={PROVIDERS} value={prov} onPick={setProv} cols={3} />

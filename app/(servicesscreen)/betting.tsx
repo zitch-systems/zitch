@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
 import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
@@ -103,7 +103,7 @@ const Betting = () => {
 
   return (
     <Screen>
-      <Header title="Betting" sub="Fund your betting wallet instantly" onBack={() => router.back()} />
+      <Header title="Betting" sub="Fund your betting wallet instantly" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
 
       <Label>Select platform</Label>
       {loadingList ? (

@@ -68,6 +68,10 @@ export type ThemeTokens = {
   brand: string;
   brandDeep: string;
   heroGradient: [string, string, string];
+  /** The tier/limits card. Deliberately NOT the brand teal: that gradient means
+   *  "your money" everywhere else in the app, and this card is about what the
+   *  account is ALLOWED to do, not what it holds. */
+  tierGradient: [string, string, string];
   // shared palette passthrough
   cyan: string;
   lime: string;
@@ -90,6 +94,7 @@ export const light: ThemeTokens = {
   brand: palette.teal500,
   brandDeep: palette.teal600,
   heroGradient: ['#0C5249', '#00847B', '#0FA295'],
+  tierGradient: ['#F6E4B4', '#EFD79B', '#E7C97E'],
   cyan: palette.cyan,
   lime: palette.lime,
   amber: palette.amber,
@@ -111,6 +116,9 @@ export const dark: ThemeTokens = {
   brand: palette.teal400,
   brandDeep: palette.teal500,
   heroGradient: ['#073A34', '#00847B', '#12B7AA'],
+  // Dimmer and less saturated than the light card: the same gold at full
+  // strength glares against a dark background and swamps the ink on it.
+  tierGradient: ['#4A3C1C', '#5C4A22', '#6E5928'],
   cyan: palette.cyan,
   lime: palette.lime,
   amber: palette.amber,
