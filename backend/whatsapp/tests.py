@@ -4150,3 +4150,306 @@ class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
             self.assertFalse(_is_template_level(code), code)
         for code in (132000, "132001", 132015):
             self.assertTrue(_is_template_level(code), code)
+
+
+class AiCageTests(TestCase):
+    """The assistant is a router, not a speaker.
+
+    Everything here defends one property: nothing the MODEL writes about the
+    customer's money reaches the customer. The model proposes a tool call; the
+    backend reads the ledger and does the talking. A system prompt asks for that,
+    these tests enforce it.
+    """
+
+    def test_only_offered_tools_can_dispatch(self):
+        from whatsapp.ai import TOOLS, _TOOL_NAMES
+
+        self.assertEqual(_TOOL_NAMES, frozenset(t["name"] for t in TOOLS))
+
+    def test_a_hallucinated_tool_is_refused(self):
+        from whatsapp import ai
+
+        with patch("whatsapp.ai.llm_available", return_value=True), \
+             patch("whatsapp.llm.call_tools",
+                   return_value={"name": "close_account", "input": {}}):
+            self.assertIsNone(ai.extract_intent("close my account"))
+
+    def test_a_claim_of_action_is_suppressed_entirely(self):
+        """The model cannot do anything — a tool call is a request, and the
+        outcome is written after the money path runs. Text saying otherwise could
+        stop a customer chasing a payment that never happened."""
+        from whatsapp.ai import safe_reason
+
+        for claim in ("I've escalated this to customer support.",
+                      "I have sent the 5000 to Ada.",
+                      "I checked and it went through.",
+                      "We have refunded you."):
+            self.assertEqual(safe_reason(claim), "", claim)
+
+    def test_an_invented_account_state_is_suppressed(self):
+        from whatsapp.ai import safe_reason
+
+        for claim in ("Your balance is ₦58,500.",
+                      "You have ₦58,500 available.",
+                      "You spent 3000 on airtime yesterday.",
+                      "The transfer was successful."):
+            self.assertEqual(safe_reason(claim), "", claim)
+
+    def test_a_figure_hidden_behind_a_token_is_still_caught(self):
+        """The model writes its reason against the MASKED message, where an
+        amount is an opaque token, and the token only becomes a real number when
+        the text is re-hydrated on the way out. A rule that keyed on the currency
+        mark passed "you have num_ref_1" and then printed a balance that nobody
+        had looked up — so both spellings have to fail."""
+        from whatsapp.ai import safe_reason
+
+        self.assertEqual(safe_reason("You have num_ref_1 available"), "")
+        self.assertEqual(safe_reason("You have 1000000 available"), "")
+        self.assertEqual(safe_reason("Your balance is num_ref_1"), "")
+
+    def test_the_router_re_checks_the_rehydrated_text(self):
+        """Sanitising once, before re-hydration, is not enough — the router runs
+        the same check on what will actually be sent."""
+        from whatsapp import router
+
+        self.assertEqual(router.ai.safe_reason("You have 1000000 available"), "")
+
+    def test_a_genuine_clarification_survives(self):
+        """The cage must not eat the useful case: asking WHICH amount is exactly
+        what clarify is for, and it necessarily quotes amounts."""
+        from whatsapp.ai import safe_reason
+
+        self.assertIn("5,000", safe_reason("Did you mean ₦5,000 or ₦50,000?"))
+        self.assertIn("phone number", safe_reason("Which phone number should the airtime go to?"))
+
+    def test_links_and_contact_details_never_come_from_the_model(self):
+        """An injected message can make a model emit a link. The channel appends
+        Zitch's real support contacts itself, so the model never needs to."""
+        from whatsapp.ai import safe_reason
+
+        out = safe_reason("Please verify at https://evil.example/login or call 08012345678")
+        self.assertNotIn("evil.example", out)
+        self.assertNotIn("08012345678", out)
+
+    def test_reason_is_capped(self):
+        from whatsapp.ai import MAX_REASON, safe_reason
+
+        self.assertLessEqual(len(safe_reason("word " * 500)), MAX_REASON + 1)
+
+    def test_an_unsafe_reason_drops_the_intent(self):
+        """A clarify whose text cannot be relayed is not a clarify — the router
+        must fall through to the menu rather than send an empty bubble."""
+        from whatsapp import ai
+
+        with patch("whatsapp.ai.llm_available", return_value=True), \
+             patch("whatsapp.llm.call_tools",
+                   return_value={"name": "clarify",
+                                 "input": {"reason": "I have already refunded you."}}):
+            self.assertIsNone(ai.extract_intent("where is my money"))
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class AiHistoryLookupTests(TestCase):
+    """The conversations from the screenshots: a customer asking about ONE
+    payment must get an answer about that payment, not a statement to search."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def _stub(self, intent):
+        return patch("whatsapp.ai.extract_intent", return_value=intent)
+
+    def _aged_txn(self, days, amount, service, status=None):
+        """An outgoing row dated `days` back.
+
+        Written with debit() rather than credit()-then-mutate: wallet.models
+        refuses to let amount/direction/currency change once a row exists, which
+        is the right guard and means a test cannot fake a debit by editing a
+        credit. Only `created` is moved afterwards, since the ledger stamps it on
+        insert and there is no other way to age a row.
+        """
+        from wallet.models import Transaction
+        from wallet.services import debit
+
+        debit(self.user, Decimal(amount), service)
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        txn.created = timezone.now() - timedelta(days=days)
+        if status:
+            txn.transaction_status = status
+        txn.save(update_fields=["created", "transaction_status"])
+        return txn
+
+    def test_a_specific_payment_is_answered_not_dumped(self):
+        """"I sent 5k to someone 2 days ago, help me check" — the answer is that
+        payment's status, in the chat. Sending a statement instead makes the
+        customer find their own answer inside a 250KB file."""
+        self._aged_txn(2, "5000", "Transfer to ADA OKON", status=Transaction.SUCCESS)
+        self._aged_txn(0, "3000", "Airtime — MTN", status=Transaction.SUCCESS)
+        with self._stub({"name": "transaction_history",
+                         "input": {"amount": 5000, "days_ago": 2, "kind": "transfer"}}):
+            self.inbound("I sent 5k to someone 2 days ago, help me check", "h1")
+        reply = self.last_reply()
+        self.assertIn("5,000", reply)
+        self.assertIn("ADA OKON", reply)
+        self.assertIn("successful", reply.lower())
+        self.assertNotIn("Airtime", reply)          # not a dump of everything
+        self.assertNotIn("last 5 transactions", reply)
+
+    def test_a_lookup_never_attaches_a_statement(self):
+        self._aged_txn(2, "5000", "Transfer to ADA OKON", status=Transaction.SUCCESS)
+        with patch("whatsapp.providers.send_document") as doc, \
+             self._stub({"name": "transaction_history",
+                         "input": {"amount": 5000, "days_ago": 2}}):
+            self.inbound("did my 5k go through 2 days ago", "h2")
+        doc.assert_not_called()
+
+    def test_a_failed_payment_says_you_were_not_charged(self):
+        from wallet.models import Transaction
+
+        self._aged_txn(3, "2000", "Transfer to BOLA", status=Transaction.FAILED)
+        with self._stub({"name": "transaction_history",
+                         "input": {"amount": 2000, "days_ago": 3}}):
+            self.inbound("what happened to the 2k i sent 3 days ago", "h3")
+        reply = self.last_reply()
+        self.assertIn("not successful", reply.lower())
+        self.assertIn("not charged", reply.lower())
+
+    def test_nothing_found_says_what_was_searched_for(self):
+        """A bare "I couldn't find it" leaves the customer unable to tell whether
+        we misheard the amount, the day or the type."""
+        with self._stub({"name": "transaction_history",
+                         "input": {"amount": 5000, "days_ago": 2, "kind": "transfer"}}):
+            self.inbound("I sent 5k 2 days ago", "h4")
+        reply = self.last_reply()
+        self.assertIn("couldn't find", reply.lower())
+        self.assertIn("5,000", reply)
+        self.assertIn("2 days ago", reply)
+
+    def test_a_statement_request_still_sends_the_file(self):
+        self._aged_txn(1, "1000", "Airtime — MTN", status=Transaction.SUCCESS)
+        with patch("whatsapp.providers.wa_live", return_value=True), \
+             patch("whatsapp.providers.upload_media", return_value="mid"), \
+             patch("whatsapp.providers.send_document", return_value={"success": True}) as doc, \
+             self._stub({"name": "transaction_history", "input": {"as_document": True}}):
+            self.inbound("send me my statement", "h5")
+        doc.assert_called_once()
+        self.assertTrue(doc.call_args.args[2].endswith(".pdf"))
+
+    def test_a_short_history_answers_in_the_chat(self):
+        """"was my last transaction successful" is a question, not a request for
+        a document — two identical PDFs in a row is what the old path did."""
+        self._aged_txn(0, "1000", "Airtime — MTN", status=Transaction.SUCCESS)
+        with patch("whatsapp.providers.send_document") as doc, \
+             self._stub({"name": "transaction_history", "input": {"count": 1}}):
+            self.inbound("was my last transaction successful", "h6")
+        doc.assert_not_called()
+        self.assertIn("successful", self.last_reply().lower())
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class AiEscalationTests(TestCase):
+    """"escalate to customer support" used to reach nothing. It must reach a
+    real case record, and must never promise a refund."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def _stub(self, intent):
+        return patch("whatsapp.ai.extract_intent", return_value=intent)
+
+    def _aged_txn(self, days, amount, service):
+        """See AiHistoryLookupTests._aged_txn — debit(), then age `created`."""
+        from wallet.models import Transaction
+        from wallet.services import debit
+
+        debit(self.user, Decimal(amount), service)
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        txn.created = timezone.now() - timedelta(days=days)
+        txn.save(update_fields=["created"])
+        return txn
+
+    def test_escalation_opens_a_real_case(self):
+        from compliance.models import Dispute
+
+        txn = self._aged_txn(3, "7000", "Transfer to ADEYEMI WILLIAM")
+        with self._stub({"name": "report_problem",
+                         "input": {"amount": 7000, "days_ago": 3,
+                                   "detail": "didn't go through"}}):
+            self.inbound("a transaction from 3 days ago didn't go through, escalate to "
+                         "customer support", "e1")
+        case = Dispute.objects.get(user=self.user, reference=txn.reference)
+        self.assertEqual(case.status, Dispute.OPEN)
+        reply = self.last_reply()
+        self.assertIn(f"#{case.id}", reply)
+        self.assertIn(txn.reference, reply)
+
+    def test_escalation_never_promises_a_refund(self):
+        """A dispute is an investigation. Promising money back in the opening
+        message is a commitment no part of the system has authorised."""
+        self._aged_txn(3, "7000", "Transfer to ADEYEMI WILLIAM")
+        with self._stub({"name": "report_problem", "input": {"amount": 7000, "days_ago": 3}}):
+            self.inbound("escalate this", "e2")
+        reply = self.last_reply().lower()
+        for promise in ("refund", "reversed", "back in your wallet", "you will get your money"):
+            self.assertNotIn(promise, reply)
+
+    def test_a_second_escalation_reuses_the_open_case(self):
+        """A frustrated customer sends it twice. Two cases get worked separately
+        and can be resolved inconsistently."""
+        from compliance.models import Dispute
+
+        self._aged_txn(3, "7000", "Transfer to ADEYEMI WILLIAM")
+        intent = {"name": "report_problem", "input": {"amount": 7000, "days_ago": 3}}
+        with self._stub(intent):
+            self.inbound("escalate this", "e3")
+        with self._stub(intent):
+            self.inbound("escalate this again", "e4")
+        self.assertEqual(Dispute.objects.filter(user=self.user).count(), 1)
+        self.assertIn("already an open case", self.last_reply().lower())
+
+    def test_an_unidentifiable_transaction_asks_rather_than_guessing(self):
+        from compliance.models import Dispute
+
+        with self._stub({"name": "report_problem", "input": {"amount": 999999, "days_ago": 1}}):
+            self.inbound("escalate the payment from yesterday", "e5")
+        self.assertEqual(Dispute.objects.count(), 0)
+        self.assertIn("couldn't find", self.last_reply().lower())
+
+    def test_the_keyword_path_works_without_the_ai(self):
+        """Turning smart replies off must not remove the ability to complain."""
+        self._aged_txn(1, "4000", "Transfer to BOLA")
+        SystemSetting.set("ai_enabled_global", "false")
+        self.inbound("report a problem", "e6")
+        reply = self.last_reply()
+        self.assertIn("Report a problem", reply)
+        self.assertIn("4,000", reply)
