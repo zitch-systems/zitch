@@ -19,6 +19,7 @@ function fakeConfig(apiKey: string): Config {
     rateLimitMaxRequests: 1,
     ipRateLimitMaxRequests: 1,
     readOnly: true,
+    requireWriteConfirmation: true,
     publicBaseUrl: undefined,
     oauthSigningKey: 'oauth-signing-key-for-tests-0000',
     oauthLoginPassword: 'operator-passphrase-for-tests-00',

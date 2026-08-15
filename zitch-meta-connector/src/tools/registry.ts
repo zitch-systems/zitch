@@ -83,9 +83,9 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     name: 'check_whatsapp_webhook_status',
     title: 'Check WhatsApp webhook status',
     description:
-      "Reports which app(s) are subscribed to this WhatsApp Business Account's webhook events " +
-      'and which event fields each is subscribed to. An empty subscriber list is the most common ' +
-      'cause of "webhook events stopped arriving".',
+      "Reports which app(s) are subscribed to this WhatsApp Business Account's webhook events. " +
+      'Per-field metadata is returned when Meta supplies it; null means Meta omitted it and must ' +
+      'not be interpreted as an empty subscription.',
     schema: checkWebhookStatusSchema,
     handler: checkWebhookStatus,
   },
@@ -121,9 +121,8 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     name: 'inspect_webhook_events',
     title: 'Inspect webhook event configuration',
     description:
-      'Lists which webhook event types (fields) are currently configured per subscribed app. ' +
-      'This is current configuration, not a historical delivery log — see the tool result\'s ' +
-      '`note` field for the exact limitation.',
+      'Lists subscribed apps and any event-field metadata Meta returns. This is not a historical ' +
+      'delivery log, and null field metadata means unknown rather than disabled.',
     schema: inspectWebhookEventsSchema,
     handler: inspectWebhookEvents,
   },
