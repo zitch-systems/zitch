@@ -28,6 +28,7 @@ from .models import (
     AuditLog, Broadcast, BroadcastRecipient, ConversationState,
     PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink,
 )
+from . import router
 from .router import _local_phone, reply_receipt
 
 User = get_user_model()
@@ -4526,3 +4527,116 @@ class LookupHintTests(TestCase):
             router.dispatch_intent(None, MSISDN, {"name": "buy_airtime", "input": {}},
                                    "send 5k airtime 2 days ago")
         self.assertIsNone(begin.call_args.args[2])   # amount stayed empty
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class ConversationReferentTests(TestCase):
+    """"Report it."
+
+    The word only means something against what was just said. A customer who
+    was told "your ₦1,000 Electricity — Ikeja was successful" and replies
+    "Report it" has already named the transaction; asking them to describe it
+    again is the channel forgetting a conversation it was part of.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="0")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+        credit(self.user, Decimal("60000"), "Wallet funding")
+        self.older = self._spend(3, "5000", "Transfer to ADEYEMI WILLIAM")
+        self.latest = self._spend(0, "1000", "Electricity — Ikeja")
+
+    def _spend(self, days, amount, service):
+        from wallet.services import debit
+
+        debit(self.user, Decimal(amount), service)
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        txn.created = timezone.now() - timedelta(days=days, minutes=1 if days else 0)
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["created", "transaction_status"])
+        return txn
+
+    def say(self, text, intent=None, mid=None):
+        with patch("whatsapp.ai.extract_intent", return_value=intent):
+            router.handle_inbound(MSISDN, text)
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def test_report_it_reports_the_transaction_just_discussed(self):
+        from compliance.models import Dispute
+
+        self.say("the last one", {"name": "transaction_history", "input": {"count": 1}})
+        self.say("Report it", {"name": "report_problem", "input": {}})
+        case = Dispute.objects.get(user=self.user)
+        self.assertEqual(case.reference, self.latest.reference)
+        self.assertIn("Electricity", self.last_reply())
+        self.assertNotIn("Please tell me", self.last_reply())
+
+    def test_a_lookup_answer_also_sets_the_referent(self):
+        from compliance.models import Dispute
+
+        self.say("what happened to my 5k transfer 3 days ago",
+                 {"name": "transaction_history",
+                  "input": {"amount": 5000, "days_ago": 3, "kind": "transfer"}})
+        self.say("escalate this", {"name": "report_problem", "input": {}})
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.older.reference)
+
+    def test_i_didnt_get_the_token_reports_the_electricity_purchase(self):
+        """"Token" is the prepaid meter token, not an English generic. Asking
+        "what token are you referring to?" of someone who has just bought
+        electricity is the channel not speaking its customers' language."""
+        from compliance.models import Dispute
+
+        self.say("was my last transaction successful",
+                 {"name": "transaction_history", "input": {"count": 1}})
+        self.say("I didn't get the token", {"name": "report_problem", "input": {"kind": "bill"}})
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.latest.reference)
+
+    def test_the_keyword_path_carries_the_referent_too(self):
+        """With smart replies off, "report it" must still land on the right one."""
+        from compliance.models import Dispute
+
+        self.say("was my last transaction successful",
+                 {"name": "transaction_history", "input": {"count": 1}})
+        SystemSetting.set("ai_enabled_global", "false")
+        self.say("Report it")
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.latest.reference)
+
+    def test_a_stale_referent_is_not_used(self):
+        """Tomorrow's "report it" must not be filed against yesterday's payment."""
+        from compliance.models import Dispute
+
+        self.say("the last one", {"name": "transaction_history", "input": {"count": 1}})
+        convo = ConversationState.for_msisdn(MSISDN)
+        convo.last_txn_at = timezone.now() - ConversationState.REFERENT_TTL - timedelta(minutes=1)
+        convo.save(update_fields=["last_txn_at"])
+
+        self.say("Report it", {"name": "report_problem", "input": {}})
+        self.assertEqual(Dispute.objects.count(), 0)
+        self.assertIn("Report a problem", self.last_reply())   # asks, with the list
+
+    def test_nothing_discussed_yet_asks_with_the_list(self):
+        from compliance.models import Dispute
+
+        self.say("Report it", {"name": "report_problem", "input": {}})
+        self.assertEqual(Dispute.objects.count(), 0)
+        reply = self.last_reply()
+        self.assertIn("Report a problem", reply)
+        self.assertIn("1,000", reply)          # the recent transactions, to point at
+
+    def test_an_explicit_description_beats_the_referent(self):
+        """When the customer names a DIFFERENT transaction, that wins — the
+        referent is a fallback for what was left unsaid, not an override."""
+        from compliance.models import Dispute
+
+        self.say("the last one", {"name": "transaction_history", "input": {"count": 1}})
+        self.say("report the 5k transfer from 3 days ago",
+                 {"name": "report_problem",
+                  "input": {"amount": 5000, "days_ago": 3, "kind": "transfer"}})
+        self.assertEqual(Dispute.objects.get(user=self.user).reference, self.older.reference)

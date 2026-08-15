@@ -3,6 +3,8 @@
 Later slices add broadcasts, conversation handover, and admin surfaces; this is
 the minimum the webhook + deterministic router need.
 """
+from datetime import timedelta
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -202,11 +204,52 @@ class ConversationState(models.Model):
     #: and it is user-side and unverifiable, so it can never be a control. What
     #: the bot is willing to REVEAL is ours to gate, and this is how.
     last_verified = models.DateTimeField(null=True, blank=True)
+    #: The ledger reference of the transaction this conversation last talked
+    #: ABOUT — set when the assistant answers a question about one specific
+    #: payment, or sends a receipt for one.
+    #:
+    #: Without it every message is read in isolation, and a customer who was
+    #: just told "your ₦1,000 Electricity — Ikeja was successful" and replies
+    #: "Report it" is asked which transaction they mean. They already said. The
+    #: word "it" is only meaningful against what was said last, so the channel
+    #: has to remember what it said last.
+    #:
+    #: A reference, not a foreign key: it is what the customer sees on their
+    #: receipt, and it survives the row being reversed or re-keyed.
+    last_txn_ref = models.CharField(max_length=64, blank=True, default="")
+    last_txn_at = models.DateTimeField(null=True, blank=True)
     updated = models.DateTimeField(auto_now=True)
+
+    #: How long "it" keeps meaning the same payment. Long enough for a customer
+    #: to read a receipt and type a reply, short enough that tomorrow's "report
+    #: it" is not silently filed against yesterday's transaction.
+    REFERENT_TTL = timedelta(minutes=30)
 
     @classmethod
     def for_msisdn(cls, msisdn):
         return cls.objects.get_or_create(msisdn=msisdn)[0]
+
+    def remember_txn(self, reference: str) -> None:
+        """Record which payment this conversation is currently about."""
+        ref = (reference or "").strip()[:64]
+        if not ref or ref == self.last_txn_ref:
+            if ref:
+                # Same payment, fresh mention — push the clock out so a
+                # follow-up question doesn't fall off the end of the window.
+                self.last_txn_at = timezone.now()
+                self.save(update_fields=["last_txn_at", "updated"])
+            return
+        self.last_txn_ref = ref
+        self.last_txn_at = timezone.now()
+        self.save(update_fields=["last_txn_ref", "last_txn_at", "updated"])
+
+    def referenced_txn(self) -> str:
+        """The payment "it" refers to, or "" once the window has passed."""
+        if not self.last_txn_ref or self.last_txn_at is None:
+            return ""
+        if timezone.now() - self.last_txn_at > self.REFERENT_TTL:
+            return ""
+        return self.last_txn_ref
 
     def __str__(self):
         return f"{self.msisdn} [{self.status}]"

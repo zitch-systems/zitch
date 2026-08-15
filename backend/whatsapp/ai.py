@@ -67,7 +67,28 @@ SYSTEM_PROMPT = (
     "successful, what did I spend, send me a statement — call transaction_history "
     "with the details they gave. When something went wrong and they want it "
     "escalated, chased, disputed or refunded, call report_problem. Do not answer "
-    "either from your own words."
+    "either from your own words.\n"
+    "9. A complaint that names no transaction is still a complaint. \"It didn't "
+    "work\", \"I didn't get it\", \"nothing came\", \"report it\", \"escalate "
+    "this\" refer to whatever was last discussed — call report_problem and leave "
+    "the fields you were not told null; the backend knows which payment the "
+    "conversation is about. Never ask the customer to repeat what they just said."
+    "\n\n"
+    # Nigerian retail-banking vocabulary. The model is otherwise liable to read
+    # these as English generics and ask what the customer meant — which is how
+    # "I didn't get the token" became "what token are you referring to?" to
+    # someone who had just bought prepaid electricity.
+    "WHAT THESE WORDS MEAN HERE:\n"
+    "- \"token\" / \"pin\" / \"units\" after an electricity purchase = the prepaid "
+    "meter token. \"I didn't get the token\" is a failed/undelivered ELECTRICITY "
+    "purchase: report_problem, kind \"bill\".\n"
+    "- \"recharge\", \"top up\", \"load\" = airtime. \"credit\" as a verb = to "
+    "add money.\n"
+    "- \"data didn't enter\", \"airtime didn't land\", \"value not given\", "
+    "\"debited but not credited\", \"debited twice\" = report_problem.\n"
+    "- \"k\" = thousand, \"m\" = million. \"5k\" is 5000.\n"
+    "- Amounts and dates are often approximate or misspelled (\"2 dayssgo\"). "
+    "Extract what you can and leave the rest null rather than asking."
 )
 
 #: Anything the model might claim to have DONE. It cannot do anything — a tool
