@@ -621,9 +621,12 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     else:
         body = summary + _approve_link_line(pa, primary=False)
         cta = ""   # provider default: "Confirm with PIN"
+    # "unlock" re-verifies the owner after a lull — no money moves, so the
+    # card should never claim to be a payment.
+    header = "Confirm identity" if pa.action_type == "unlock" else "Confirm payment"
     res = send_flow(
         pa.msisdn, sign_flow_token(pa),
-        header="Confirm payment", body=body,
+        header=header, body=body,
         # fields comes from _flow_fields, which completes every branch with the
         # balance and the narration — so this spread stays complete by
         # construction rather than by remembering to update it.
@@ -1952,23 +1955,69 @@ def _do_ai_consent(link: WhatsAppLink, msisdn: str, low: str) -> None:
                          "Reply *ai on* or *ai off*.")
 
 
-def _do_history(user, msisdn: str) -> None:
-    """The last few settled movements. Short on purpose: a statement belongs in
-    the app, and a wall of text in a chat is read by nobody."""
+def _do_history(user, msisdn: str, count=None) -> None:
+    """The last few movements, sent as a downloadable PDF statement — with a
+    short text summary alongside so the chat itself answers at a glance (e.g.
+    "was my last transaction successful"), even before the file is opened.
+
+    Every status is included, not just settled ones: a customer asking about
+    their last transaction needs to hear "failed" as much as "successful".
+    """
     from wallet.models import Transaction
 
-    rows = list(Transaction.objects.filter(user=user)
-                .exclude(transaction_status=Transaction.FAILED)
-                .order_by("-created")[:8])
+    try:
+        count = max(1, min(int(count), 20))
+    except (TypeError, ValueError):
+        count = 8
+    rows = list(Transaction.objects.filter(user=user).order_by("-created")[:count])
     if not rows:
         return reply(msisdn, "🧾 No transactions yet. Reply *6* to add money and get started.")
-    lines = []
+
+    def status_of(t) -> str:
+        if t.transaction_status == Transaction.SUCCESS:
+            return "success"
+        if t.transaction_status == Transaction.FAILED:
+            return "failed"
+        return "pending"
+
+    lines, pdf_rows = [], []
     for t in rows:
         sign = "＋" if t.direction == Transaction.IN else "－"
         label = (t.service or "").strip() or ("Credit" if t.direction == Transaction.IN else "Debit")
-        lines.append(f"{sign}{_money(t.amount)}  ·  {label}\n     _{t.created:%d %b, %I:%M %p}_")
-    reply(msisdn, "🧾 *Your last {n} transactions*\n\n".format(n=len(rows)) + "\n".join(lines)
-          + f"\n\nBalance: {_money(get_or_create_wallet(user).balance)}")
+        status = status_of(t)
+        icon = {"success": "✅", "pending": "⏳", "failed": "❌"}[status]
+        lines.append(f"{icon} {sign}{_money(t.amount)}  ·  {label}\n     _{t.created:%d %b, %I:%M %p}_")
+        pdf_rows.append({"date": t.created.strftime("%d %b %Y, %I:%M %p"), "label": label,
+                         "amount": _money(t.amount), "sign": sign, "status": status,
+                         "reference": t.reference})
+
+    balance = _money(get_or_create_wallet(user).balance)
+    generated = timezone.localtime().strftime("%d %b %Y, %I:%M %p")
+    header = (f"🧾 Your last transaction was {_STATUS_LABEL[status_of(rows[0])]}."
+              if count == 1 else f"🧾 *Your last {len(rows)} transactions*")
+    caption = header + "\n\n" + "\n".join(lines) + f"\n\nBalance: {balance}"
+
+    from .providers import send_document, upload_media, wa_live
+
+    sent = False
+    if wa_live():
+        try:
+            from .receipt import render_statement_pdf
+
+            pdf = render_statement_pdf(pdf_rows, balance=balance, generated=generated)
+            filename = f"Zitch-Statement-{timezone.now():%Y%m%d%H%M%S}.pdf"
+            media_id = upload_media(pdf, "application/pdf", filename)
+            if media_id:
+                sent = send_document(msisdn, media_id, filename, caption=caption).get("success", False)
+            if not sent:
+                log.warning("wa_history_pdf_send_failed msisdn=%s", mask_pii(msisdn))
+        except Exception:  # noqa: BLE001 — the text summary below must still land
+            log.exception("wa_history_pdf_render_failed msisdn=%s", mask_pii(msisdn))
+    if not sent:
+        reply(msisdn, caption)
+
+
+_STATUS_LABEL = {"success": "successful ✅", "pending": "still pending ⏳", "failed": "not successful ❌"}
 
 
 def _do_support(msisdn: str) -> None:
@@ -3314,8 +3363,9 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
     bank = Bank.objects.filter(bank_code=pa.payload["bank_code"]).first()
     if bank is None:
         _clear_actions(msisdn)
-        reply(msisdn, "Something went wrong. Reply \"menu\" to start over.")
-        return Outcome("Transfer could not be completed.", OUTCOME_FAILED)
+        msg = f"Something went wrong with your {_money(amount)} transfer. Reply \"menu\" to start over."
+        reply(msisdn, msg)
+        return Outcome(msg, OUTCOME_FAILED)
     # Re-run the name enquiry immediately before paying, exactly as the app does
     # (transfers.views.bank_transfer). The name shown at the "bank" step can be
     # minutes old by the time the PIN comes back, and routing is purely by
@@ -3330,7 +3380,8 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         if not fresh.get("mock") and fresh_name and not _names_match(confirmed_name, fresh_name):
             _clear_actions(msisdn)
             msg = (f"This account now belongs to {fresh_name}, not {confirmed_name.upper()}. "
-                   "Nothing was sent — please check the account number and start again.")
+                   f"Your {_money(amount)} transfer was not sent — please check the account "
+                   "number and start again.")
             reply(msisdn, msg)
             return Outcome(msg, OUTCOME_FAILED)
         confirmed_name = fresh_name or confirmed_name
@@ -3346,14 +3397,18 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         )
     except PayoutError as exc:
         _clear_actions(msisdn)
+        who = pa.payload["name"].upper()
         if exc.kind == "insufficient":
-            reply(msisdn, "Insufficient balance — transfer cancelled.")
-            return Outcome("Insufficient balance — transfer cancelled.", OUTCOME_FAILED)
+            msg = f"Insufficient balance for the {_money(amount)} transfer to {who} — cancelled."
+            reply(msisdn, msg)
+            return Outcome(msg, OUTCOME_FAILED)
         if exc.kind == "duplicate":
-            reply(msisdn, "That transfer was already processed.")
-            return Outcome("That transfer was already processed.", OUTCOME_FAILED)
-        reply(msisdn, f"Transfer failed: {exc.message}")
-        return Outcome(f"Transfer failed: {exc.message}", OUTCOME_FAILED)
+            msg = f"That {_money(amount)} transfer to {who} was already processed."
+            reply(msisdn, msg)
+            return Outcome(msg, OUTCOME_FAILED)
+        msg = f"Transfer of {_money(amount)} to {who} failed: {exc.message}"
+        reply(msisdn, msg)
+        return Outcome(msg, OUTCOME_FAILED)
 
     _clear_actions(msisdn)
 
@@ -3572,12 +3627,24 @@ def _insufficient(user, amount: Decimal) -> bool:
     return get_or_create_wallet(user).balance < amount
 
 
+def _vtu_detail(pa: PendingAction, amount: Decimal) -> str:
+    """The amount + who/what this VTU purchase was for, as one parenthetical —
+    the same recipient/details the confirm screen showed. Every outcome line
+    (pending, failed, or an early refusal) quotes this so a customer reading
+    only the LAST message in the thread still knows what was being paid for,
+    not just that something was."""
+    fields = _flow_fields(pa)
+    recip = " · ".join(x for x in (fields.get("recipient", ""), fields.get("details", "")) if x)
+    return f"{_money(amount)}{' — ' + recip if recip else ''}"
+
+
 def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
              provider_call, receipt) -> str:
     """Debit -> provider -> settle via the shared run_provider_purchase, then send
     the outcome. On success `receipt(txn, result)` returns ``(title, rows)`` and we
     send a branded, downloadable receipt JPEG. Returns the outcome text (also used
     verbatim on the secure Flow's success screen)."""
+    detail = _vtu_detail(pa, amount)
     # Enforce the per-txn tier ceiling + large-transfer face step-up here, so EVERY
     # VTU path is gated regardless of entry point (the AI-prefilled fast-paths reach
     # this without the guided flow's own send_limit_error check, which would
@@ -3610,16 +3677,19 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         )
     except InsufficientFunds:
         _clear_actions(msisdn)
-        reply(msisdn, "Insufficient balance — cancelled.")
-        return Outcome("Insufficient balance — cancelled.", OUTCOME_FAILED)
+        line = f"Insufficient balance for {label} ({detail}) — cancelled."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
     except LimitExceeded as exc:
         _clear_actions(msisdn)
-        reply(msisdn, str(exc))
-        return Outcome(str(exc), OUTCOME_FAILED)
+        line = f"{exc} ({label}, {detail})"
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
     except DuplicateTransaction:
         _clear_actions(msisdn)
-        reply(msisdn, "That request was already processed.")
-        return Outcome("That request was already processed.", OUTCOME_FAILED)
+        line = f"That {label} ({detail}) was already processed."
+        reply(msisdn, line)
+        return Outcome(line, OUTCOME_FAILED)
     _clear_actions(msisdn)
     if status == "success":
         title, rows = receipt(txn, result)
@@ -3634,10 +3704,12 @@ def _run_vtu(pa: PendingAction, user, msisdn: str, amount: Decimal, label: str,
         from wallet.alerts import mark_awaiting_settlement
 
         mark_awaiting_settlement(txn)
-        line = f"⏳ Your {label} is processing — we'll confirm shortly. Ref {txn.reference}."
+        line = (f"⏳ Your {label} ({detail}) is processing — we'll confirm shortly. "
+                f"Ref {txn.reference}.")
         reply(msisdn, line)
         return Outcome(line, OUTCOME_PENDING)
-    line = f"❌ {label} failed: {result.get('message', 'please try again')}. You were not charged."
+    line = (f"❌ {label} ({detail}) failed: {result.get('message', 'please try again')}. "
+            f"You were not charged.")
     reply(msisdn, line)
     return Outcome(line, OUTCOME_FAILED)
 
@@ -4281,6 +4353,9 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
         return True
     if name == "convert_currency":
         _start_convert(user, msisdn)
+        return True
+    if name == "transaction_history":
+        _do_history(user, msisdn, p.get("count"))
         return True
     return False  # clarify / unknown
 

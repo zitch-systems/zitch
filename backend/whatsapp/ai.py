@@ -100,6 +100,17 @@ TOOLS = [
                           "amount": {"type": "number"},
                           "amount_side": {"type": "string", "enum": ["sell", "buy"], "default": "sell"}},
                       "required": ["from_currency", "to_currency", "amount"]}},
+    {"name": "transaction_history",
+     "description": "Look up the user's recent transactions, or check whether a specific "
+                    "recent one (e.g. \"was my last transaction successful\") went through. "
+                    "Sends the customer a PDF statement plus a short summary in the chat.",
+     "input_schema": {"type": "object",
+                      "properties": {
+                          "count": {"type": ["integer", "null"],
+                                   "description": "How many recent transactions, e.g. 1 for "
+                                                  "\"my last transaction\"/\"was my last "
+                                                  "transaction successful\", 5 for \"my last 5 "
+                                                  "transactions\". Null defaults to 8."}}}},
     {"name": "clarify",
      "description": ("The message isn't a supported action or is ambiguous. `reason` is "
                      "shown to the customer verbatim, so write it to them, not about them."),
