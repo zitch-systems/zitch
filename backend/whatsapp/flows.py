@@ -1151,12 +1151,25 @@ def _vtu_airtime_screen(net_name: str, error: str = "") -> dict:
 
 def _vtu_data_screen(net: str, net_name: str, error: str = "") -> dict:
     """The plan list is the NETWORK's, fetched at render time — a plan picked
-    from another network's list is not a typo the provider can recover from."""
+    from another network's list is not a typo the provider can recover from.
+
+    Returns the TERMINAL screen when the network has no plans. A Flow Dropdown
+    bound to an empty array does not render: the customer gets a blank panel
+    with a spinner and no way forward but the X, which is indistinguishable from
+    the product being broken. Refusing here rather than at the one call site
+    that remembered to check means the INIT/BACK re-render and the error
+    re-render cannot reintroduce it.
+    """
     from utility.models import DataPlan
 
     from .router import _money
 
     plans = list(DataPlan.objects.filter(network=net, active=True)[:20])
+    if not plans:
+        log.warning("wa_vtu_data_no_plans net=%s", net)
+        return _success_screen(
+            f"No {net_name} data plans are available right now. Please try again shortly.",
+            status="failed")
     return {"screen": VTU_DATA,
             "data": {"plans": [{"id": p.plan_code,
                                 "title": f"{p.name} • {p.validity} • {_money(p.price)}"}
@@ -1214,13 +1227,13 @@ def _submit_vtu_network(pa, data: dict) -> dict:
     kind = pa.payload.get("vtu_kind", "airtime")
     net_name = NETWORK_NAMES[net]
     if kind == "data":
+        # _vtu_data_screen answers the terminal screen itself when the network
+        # has no plans (an empty Dropdown does not render), so the only thing
+        # left to do here is drop the action behind it.
         screen = _vtu_data_screen(net, net_name)
-        if not screen["data"]["plans"]:
-            # Nothing to pick means the next page is unusable; say so here rather
-            # than render an empty dropdown the customer cannot satisfy.
+        if screen["screen"] == SUCCESS_SCREEN:
             _clear_actions(pa.msisdn)
-            return _success_screen(f"No {net_name} data plans are available right now. "
-                                   "Please try again shortly.", status="failed")
+            return screen
     pa.payload["net"] = net
     pa.payload["vtu_step"] = VTU_DETAILS_STEP
     _touch(pa, payload=pa.payload)
