@@ -3,7 +3,7 @@ import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiJson, newIdempotencyKey } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
 import { Label, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
@@ -128,7 +128,7 @@ const Remita = () => {
 
   return (
     <Screen>
-      <Header title="Pay with Remita" sub="Government bills, school fees & more" onBack={() => router.back()} />
+      <Header title="Pay with Remita" sub="Government bills, school fees & more" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
 
       <Label>Remita Retrieval Reference (RRR)</Label>
       <Field

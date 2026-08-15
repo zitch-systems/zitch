@@ -697,6 +697,124 @@ def wema_statement(request):
               from_date=date_from, to_date=date_to, transactions=rows)
 
 
+@api
+@ratelimit("statement_request", limit=6, window=3600)
+@require_user
+def statement_request(request):
+    """POST /api/wallet/statement/request/
+    {access_token, from, to, file_type: pdf|excel, include_address?, email?}
+    -> {success, message}
+
+    Renders the customer's own Zitch ledger for a date range and EMAILS it as a
+    file. Emailed rather than returned inline on purpose: a statement is the one
+    export people forward to a landlord, an embassy or an accountant, and a
+    mailbox is where it needs to end up anyway. It also keeps a potentially large
+    render off the response path.
+
+    The address is included only when the customer asked for it — it is on the
+    document for visa and loan applications that require it, and printing a home
+    address on every statement someone forwards is a privacy leak, not a feature.
+    """
+    import re
+    from datetime import datetime, timedelta
+
+    from django.utils import timezone
+
+    from utility.providers import send_email
+
+    from .statement import build_statement_xlsx
+
+    user = request.user_obj
+    wallet = get_or_create_wallet(user)
+
+    file_type = str(request.data.get("file_type") or "pdf").lower()
+    if file_type not in ("pdf", "excel"):
+        return fail("Choose either a PDF or an Excel file", status=400)
+
+    def _day(v, default):
+        v = str(v or "").strip()
+        return v if re.match(r"^\d{4}-\d{2}-\d{2}$", v) else default
+
+    today = timezone.localdate()
+    date_to = _day(request.data.get("to"), today.strftime("%Y-%m-%d"))
+    date_from = _day(request.data.get("from"), (today - timedelta(days=30)).strftime("%Y-%m-%d"))
+    if date_from > date_to:
+        return fail("The end date can't come before the start date", status=400)
+
+    # The customer may send the statement somewhere other than their sign-in
+    # address (an accountant, a landlord's agent), so an explicit `email` wins —
+    # but it is only ever a destination, never a change to the account.
+    email = str(request.data.get("email") or user.email or "").strip()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$", email):
+        return fail("Add a valid email address to send the statement to", status=400)
+
+    # Inclusive of the end DAY, not the end instant: "to 14 Aug" that silently
+    # dropped everything after midnight on the 14th would look like missing money.
+    start = timezone.make_aware(datetime.strptime(date_from, "%Y-%m-%d"))
+    end = timezone.make_aware(datetime.strptime(date_to, "%Y-%m-%d")) + timedelta(days=1)
+    txns = list(user.transactions.filter(created__gte=start, created__lt=end).order_by("-created")[:1000])
+
+    from .models import Transaction
+
+    def state(t) -> str:
+        if t.transaction_status == Transaction.SUCCESS:
+            return "success"
+        if t.transaction_status == Transaction.FAILED:
+            return "failed"
+        return "pending"
+
+    rows = []
+    for t in txns:
+        credit = t.direction == Transaction.IN
+        rows.append({
+            "date": timezone.localtime(t.created).strftime("%d %b %Y, %I:%M %p"),
+            "label": (t.service or "").strip() or ("Credit" if credit else "Debit"),
+            "amount": f"₦{t.amount:,.2f}",
+            "signed_amount": f"{'' if credit else '-'}{t.amount}",
+            "direction": "in" if credit else "out",
+            "sign": "＋" if credit else "－",
+            "status": state(t),
+            "reference": t.reference or "",
+        })
+
+    period = f"{date_from} to {date_to}"
+    if file_type == "excel":
+        data = build_statement_xlsx(rows)
+        filename = f"Zitch-Statement-{date_from}_{date_to}.xlsx"
+    else:
+        from whatsapp.receipt import render_statement_pdf
+
+        address = ""
+        if str(request.data.get("include_address") or "").lower() in ("1", "true", "yes"):
+            address = " ".join(x for x in (
+                getattr(user, "address", "") or "", getattr(user, "city", "") or "",
+                getattr(user, "state", "") or "") if x).strip()
+        data = render_statement_pdf(
+            rows,
+            balance=f"₦{wallet.balance:,.2f}",
+            generated=timezone.localtime().strftime("%d %b %Y, %I:%M %p"),
+            heading=f"{len(rows)} transaction{'s' if len(rows) != 1 else ''}",
+            holder=(user.get_full_name() or "").strip() or user.email,
+            account=wallet.account_number or "",
+            period=period,
+            address=address,
+        )
+        filename = f"Zitch-Statement-{date_from}_{date_to}.pdf"
+
+    sent = send_email(
+        email,
+        f"Your Zitch account statement ({period})",
+        f"Your Zitch account statement for {period} is attached.\n\n"
+        f"{len(rows)} transaction{'s' if len(rows) != 1 else ''}. "
+        "If you didn't request this, please contact support@zitch.ng immediately.",
+        attachments=[{"filename": filename, "content": data}],
+    )
+    if not sent.get("success"):
+        return fail("We couldn't email your statement just now. Please try again.", status=502)
+    return ok(success=True, message=f"Statement sent to {email}",
+              from_date=date_from, to_date=date_to, count=len(rows))
+
+
 # --------------------------- ZITCH-TO-ZITCH TRANSFER ---------------------------
 def _find_recipient(identifier: str):
     """Resolve a Zitch recipient by phone (or @tag/email)."""

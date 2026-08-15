@@ -16,6 +16,21 @@ export type LinkedAccount = {
   mono_account_id?: string;
 };
 
+// The backend sends "YYYY-MM-DD HH:MM" (wallet.views.transaction_history).
+// Parsed by hand rather than handed to `new Date(str)`: that form is not in the
+// ECMAScript spec's grammar, so Hermes and JSC are free to disagree about it —
+// and one of them reads it as UTC, which silently shifts a late-evening
+// transaction into the next day's group. Returns undefined when unreadable, and
+// the caller buckets those separately rather than inventing a date.
+const parseTs = (s: string): number | undefined => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(s.trim());
+  if (!m) {
+    const loose = Date.parse(s);
+    return Number.isNaN(loose) ? undefined : loose;
+  }
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
+};
+
 // Picks an icon from the service label. Direction comes from the backend's
 // authoritative `direction` field; the label regex is only a fallback.
 const mapTxn = (raw: any, i: number): Txn => {
@@ -31,10 +46,12 @@ const mapTxn = (raw: any, i: number): Txn => {
   else if (/elect|power|disco/.test(s)) icon = 'bills';
   else if (/transfer|send|withdraw/.test(s)) icon = 'send';
   else if (/fund|deposit|add/.test(s)) icon = 'deposit';
+  const when = String(raw?.date ?? raw?.created_at ?? raw?.time ?? '');
   return {
     id: String(raw?.id ?? raw?.reference ?? i),
     type: service,
-    detail: String(raw?.date ?? raw?.created_at ?? raw?.time ?? ''),
+    detail: when,
+    ts: parseTs(when),
     amount: Number(raw?.amount ?? 0),
     status: String(raw?.transaction_status ?? 'Successful'),
     icon,

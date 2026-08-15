@@ -2,7 +2,7 @@ import React, { useRef, useState } from 'react';
 import { View, Text, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { Screen, Header, Card, Field, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, Field, Btn, HeaderLink } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -51,7 +51,7 @@ const Scan = () => {
   return (
     <Screen pad={false} scroll={false}>
       <View style={{ paddingHorizontal: 20 }}>
-        <Header title="Scan to Pay" sub="Point at a Zitch QR code" onBack={() => router.back()} />
+        <Header title="Scan to Pay" sub="Point at a Zitch QR code" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
       </View>
 
       <View style={{ flex: 1, paddingHorizontal: 16 }}>

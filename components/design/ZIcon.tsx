@@ -169,6 +169,34 @@ const P: Record<string, (color: string) => React.ReactNode> = {
     <Path key="b" d="M3 4v4h4" />,
     <Path key="c" d="M12 8v4l3 2" />,
   ],
+  // A ribboned medal — the tier badge on the account-limits card.
+  medal: () => [
+    <Path key="a" d="M8 3 6 8m10-5 2 5" />,
+    <Circle key="b" cx={12} cy={14} r={6} />,
+    <Path key="c" d="M12 11v6m-2.5-4.5h5" />,
+  ],
+  calendar: () => [
+    <Rect key="a" x={3} y={5} width={18} height={16} rx={2.5} />,
+    <Path key="b" d="M3 10h18M8 3v4M16 3v4" />,
+  ],
+  // Address-book silhouette — the contact picker beside a phone-number field.
+  contacts: () => [
+    <Rect key="a" x={4} y={3} width={16} height={18} rx={2.5} />,
+    <Circle key="b" cx={12} cy={10} r={2.6} />,
+    <Path key="c" d="M8 17a4 4 0 0 1 8 0M2 8h2M2 12h2M2 16h2" />,
+  ],
+  // Filter sliders — the category/status dropdowns on the transactions list.
+  sliders: () => [
+    <Path key="a" d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h10M18 18h2" />,
+    <Circle key="b" cx={16} cy={6} r={2} />,
+    <Circle key="c" cx={10} cy={12} r={2} />,
+    <Circle key="d" cx={16} cy={18} r={2} />,
+  ],
+  // Gridded page — the spreadsheet option in the statement file-type picker.
+  sheet: () => [
+    <Rect key="a" x={4} y={3} width={16} height={18} rx={2.5} />,
+    <Path key="b" d="M4 9h16M4 15h16M10 9v12" />,
+  ],
   settings: () => [
     <Circle key="a" cx={12} cy={12} r={3} />,
     <Path key="b" d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 6.8 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 13.3H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 6.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10 4.6V4a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />,

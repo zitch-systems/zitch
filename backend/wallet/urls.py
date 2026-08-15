@@ -17,6 +17,8 @@ urlpatterns = [
     path("dev/simulate-deposit/", views.simulate_deposit),
     # Wema NUBAN bank statement (transhistoryV2).
     path("wallet/statement/", views.wema_statement),
+    # The Zitch ledger, rendered to a PDF/Excel file and emailed to the customer.
+    path("wallet/statement/request/", views.statement_request),
     path("transfer/resolve/", views.resolve_recipient),
     path("transfer/send/", views.transfer_send),
 ]

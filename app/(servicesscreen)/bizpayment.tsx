@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { Screen, Header, Card, Btn } from '@/components/design/ui';
+import { Screen, Header, Card, Btn, HeaderLink } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 
@@ -13,7 +13,7 @@ const BizPayment = () => {
   const { c } = useTheme();
   return (
     <Screen>
-      <Header title="Receive Payment" onBack={() => router.back()} />
+      <Header title="Receive Payment" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
       <Card style={{ alignItems: 'center', paddingVertical: 28 }}>
         <View style={{ width: 56, height: 56, borderRadius: 18, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
           <ZIcon name="shield" size={28} color={c.brand} />

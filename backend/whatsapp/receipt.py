@@ -253,13 +253,23 @@ _STATUS_BADGE = {
 }
 
 
-def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
+def render_statement_pdf(rows: list, *, balance: str, generated: str,
+                         heading: str = "", holder: str = "",
+                         account: str = "", period: str = "",
+                         address: str = "") -> bytes:
     """Return single-page PDF bytes for a transaction-history statement.
 
     `rows` = [{"date", "label", "amount", "sign", "status", "reference"}], newest
     first. Drawn with the same brand header/watermark as the receipt, then a
     row per transaction, so a customer forwarding the file gets something that
     reads as Zitch's, not a generic export.
+
+    The optional identity block (`holder`/`account`/`period`/`address`) is what
+    separates a chat convenience list from a document someone hands to a landlord
+    or an embassy: those readers need to see WHOSE account it is and WHAT window
+    it covers, and a statement that cannot say so is not evidence of anything.
+    The WhatsApp caller passes none of them and gets the compact list it always
+    got. `address` is only ever supplied when the customer asked for it.
     """
     reg = _font("DejaVuSans.ttf", 22)
     bold = _font("DejaVuSans-Bold.ttf", 24)
@@ -273,6 +283,12 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
     def money_safe(v: str) -> str:
         return v if naira_ok else v.replace(_NAIRA, "NGN ")
 
+    # The callers pass the FULLWIDTH +/- (U+FF0B/U+FF0D) because that is what
+    # lines up in a WhatsApp chat bubble — but DejaVu has no glyph for either,
+    # so on the rendered sheet every amount was prefixed with a tofu box.
+    def sign_safe(v: str) -> str:
+        return v.replace("＋", "+").replace("－", "-")
+
     W = _px(820)
     pad = _px(56)
     band_h = _px(150)
@@ -280,7 +296,14 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
     row_h = _px(84)
     foot_h = _px(100)
 
-    H = band_h + title_h + row_h * max(1, len(rows)) + foot_h
+    # Only the identity lines actually supplied take up space — the chat's
+    # compact list passes none and its layout is unchanged.
+    id_lines = [(k, v) for k, v in
+                (("Account name", holder), ("Account number", account),
+                 ("Statement period", period), ("Address", address)) if v]
+    id_h = (_px(30) + _px(38) * len(id_lines)) if id_lines else 0
+
+    H = band_h + title_h + id_h + row_h * max(1, len(rows)) + foot_h
 
     img = Image.new("RGB", (W, H), _BG)
     img.paste(_gradient(W, band_h, _BRAND, _BRAND_DEEP), (0, 0))
@@ -293,7 +316,8 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
         img.paste(_white(mark), (x, (band_h - mark.height) // 2 - _px(8)), _white(mark))
         x += mark.width + _px(20)
     d.text((x, band_h // 2 - _px(38)), "zitch", font=wordmark, fill=(255, 255, 255))
-    d.text((x + _px(2), band_h // 2 + _px(6)), "TRANSACTION HISTORY", font=tiny,
+    d.text((x + _px(2), band_h // 2 + _px(6)),
+           "ACCOUNT STATEMENT" if id_lines else "TRANSACTION HISTORY", font=tiny,
            fill=(226, 246, 243))
     site = "zitch.ng"
     d.text((W - pad - d.textlength(site, font=small), band_h // 2 - _px(12)),
@@ -301,7 +325,8 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
 
     # --- title / balance -------------------------------------------------
     y = band_h
-    d.text((pad, y + _px(20)), f"Last {len(rows)} transaction{'s' if len(rows) != 1 else ''}",
+    d.text((pad, y + _px(20)),
+           heading or f"Last {len(rows)} transaction{'s' if len(rows) != 1 else ''}",
            font=bold, fill=_INK)
     bal_line = f"Balance {money_safe(balance)}"
     d.text((W - pad - d.textlength(bal_line, font=small), y + _px(26)), bal_line,
@@ -309,8 +334,19 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
     d.line([0, y + title_h, W, y + title_h], fill=_LINE, width=max(1, _px(1)))
     y += title_h
 
+    # --- who / when ---------------------------------------------------------
+    if id_lines:
+        d.rectangle([0, y, W, y + id_h], fill=_WASH)
+        ly = y + _px(22)
+        for k, v in id_lines:
+            d.text((pad, ly), k, font=tiny, fill=_MUTED)
+            d.text((pad + _px(210), ly - _px(2)), str(v), font=small, fill=_INK)
+            ly += _px(38)
+        d.line([0, y + id_h, W, y + id_h], fill=_LINE, width=max(1, _px(1)))
+        y += id_h
+
     # The watermark goes over the body only, same reasoning as the receipt.
-    body_box = (0, band_h + title_h, W, H - foot_h)
+    body_box = (0, band_h + title_h + id_h, W, H - foot_h)
     body_h = body_box[3] - body_box[1]
     if body_h > 0:
         body = img.crop(body_box).convert("RGBA")
@@ -320,7 +356,7 @@ def render_statement_pdf(rows: list, *, balance: str, generated: str) -> bytes:
 
     # --- rows ------------------------------------------------------------
     for row in rows:
-        amount_str = f"{row.get('sign', '')}{money_safe(row.get('amount', ''))}"
+        amount_str = f"{sign_safe(row.get('sign', ''))}{money_safe(row.get('amount', ''))}"
         colour = _BRAND_DEEP if row.get("sign") == "＋" else _INK
         d.text((pad, y + _px(14)), row.get("label", ""), font=bold, fill=_INK)
         d.text((pad, y + _px(46)), row.get("date", ""), font=tiny, fill=_MUTED)

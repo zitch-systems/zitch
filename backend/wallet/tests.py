@@ -3,13 +3,17 @@ Zitch-to-Zitch transfer, and the tier / face-verification send limits.
 
 All run in MOCK provider mode (no keys), so funding settles automatically.
 """
+import io
 import json
+import zipfile
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction as db_transaction
 from django.test import Client, TestCase
+from django.utils import timezone
 
 from accounts.models import AccessToken
 from common.http import unverified_error
@@ -636,3 +640,103 @@ class EmailAlertBrandingTests(TestCase):
             html = _email_alert_html(txn)
         self.assertIn("—", html)
         self.assertIn("₦100.00", html)
+
+
+class StatementRequestTests(TestCase):
+    """The emailed PDF/Excel statement — the file a customer hands to a landlord
+    or an embassy. What matters is that the range it claims is the range it
+    contains, and that the address only appears when it was asked for."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000009", "ada@zitch.test", balance="20000")
+
+    def post(self, payload):
+        res = self.client.post("/api/wallet/statement/request/",
+                               data=json.dumps({"access_token": self.token, **payload}),
+                               content_type="application/json")
+        return res, res.json()
+
+    def test_rejects_an_unknown_file_type(self):
+        res, body = self.post({"file_type": "docx"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("PDF", body["message"])
+
+    def test_rejects_a_backwards_range(self):
+        res, body = self.post({"from": "2026-08-14", "to": "2026-07-15", "file_type": "pdf"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("end date", body["message"].lower())
+
+    def test_rejects_a_destination_that_is_not_an_email(self):
+        res, _ = self.post({"file_type": "pdf", "email": "not-an-address"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_pdf_is_attached_and_named_for_its_period(self):
+        credit(self.user, Decimal("5000"), "Wallet top-up")
+        with patch("utility.providers.send_email", return_value={"success": True}) as sent:
+            res, body = self.post({"from": "2020-01-01", "to": "2030-01-01", "file_type": "pdf"})
+        self.assertEqual(res.status_code, 200, body)
+        attachment = sent.call_args.kwargs["attachments"][0]
+        self.assertTrue(attachment["filename"].endswith(".pdf"))
+        self.assertIn("2020-01-01", attachment["filename"])
+        self.assertTrue(attachment["content"].startswith(b"%PDF-"))
+
+    def test_excel_attachment_is_a_readable_workbook(self):
+        credit(self.user, Decimal("5000"), "Wallet top-up")
+        with patch("utility.providers.send_email", return_value={"success": True}) as sent:
+            res, body = self.post({"from": "2020-01-01", "to": "2030-01-01", "file_type": "excel"})
+        self.assertEqual(res.status_code, 200, body)
+        attachment = sent.call_args.kwargs["attachments"][0]
+        self.assertTrue(attachment["filename"].endswith(".xlsx"))
+        with zipfile.ZipFile(io.BytesIO(attachment["content"])) as z:
+            self.assertIsNone(z.testzip())
+            self.assertIn("xl/worksheets/sheet1.xml", z.namelist())
+            self.assertIn("Wallet top-up", z.read("xl/worksheets/sheet1.xml").decode())
+
+    def test_the_range_bounds_what_the_file_contains(self):
+        """The end DAY is inclusive. A statement 'to 14 Aug' that dropped
+        everything after midnight on the 14th would read as missing money."""
+        credit(self.user, Decimal("5000"), "Inside the window")
+        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
+        today = timezone.localtime(txn.created).date()
+        day = today.strftime("%Y-%m-%d")
+
+        # A single-day window whose start AND end are the transaction's own day
+        # must contain it — the end day is inclusive, not exclusive.
+        with patch("utility.providers.send_email", return_value={"success": True}) as sent:
+            res, body = self.post({"from": day, "to": day, "file_type": "excel"})
+        self.assertEqual(res.status_code, 200, body)
+        self.assertGreaterEqual(body["count"], 1)
+        sheet = sent.call_args.kwargs["attachments"][0]["content"]
+        with zipfile.ZipFile(io.BytesIO(sheet)) as z:
+            self.assertIn("Inside the window", z.read("xl/worksheets/sheet1.xml").decode())
+
+        # …and a window that closes the day before must not.
+        before = (today - timedelta(days=2)).strftime("%Y-%m-%d")
+        yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        with patch("utility.providers.send_email", return_value={"success": True}) as sent:
+            res, body = self.post({"from": before, "to": yesterday, "file_type": "excel"})
+        self.assertEqual(res.status_code, 200, body)
+        self.assertEqual(body["count"], 0)
+        sheet = sent.call_args.kwargs["attachments"][0]["content"]
+        with zipfile.ZipFile(io.BytesIO(sheet)) as z:
+            self.assertNotIn("Inside the window", z.read("xl/worksheets/sheet1.xml").decode())
+
+    def test_the_address_only_appears_when_it_was_asked_for(self):
+        """A home address printed on every forwarded statement is a privacy leak,
+        so the PDF must be materially different when the toggle is off."""
+        self.user.address = "12 Marina Road, Lagos Island"
+        self.user.save(update_fields=["address"])
+        credit(self.user, Decimal("5000"), "Wallet top-up")
+        with patch("utility.providers.send_email", return_value={"success": True}) as sent:
+            self.post({"file_type": "pdf", "include_address": False})
+            without = sent.call_args.kwargs["attachments"][0]["content"]
+            self.post({"file_type": "pdf", "include_address": True})
+            with_addr = sent.call_args.kwargs["attachments"][0]["content"]
+        self.assertNotEqual(len(without), len(with_addr))
+
+    def test_a_refused_send_is_reported_rather_than_claimed(self):
+        with patch("utility.providers.send_email", return_value={"success": False}):
+            res, body = self.post({"file_type": "pdf"})
+        self.assertEqual(res.status_code, 502)
+        self.assertFalse(body.get("success"))

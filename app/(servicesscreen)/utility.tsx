@@ -1,6 +1,6 @@
 import React from 'react';
 import { router } from 'expo-router';
-import { Screen, Header, ZItem } from '@/components/design/ui';
+import { Screen, Header, ZItem, HeaderLink } from '@/components/design/ui';
 
 const Utility = () => {
   const items = [
@@ -10,7 +10,7 @@ const Utility = () => {
   ];
   return (
     <Screen>
-      <Header title="Utility Payment" sub="Seamless utility payments with Zitch" onBack={() => router.back()} />
+      <Header title="Utility Payment" sub="Seamless utility payments with Zitch" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
       {items.map((it, i) => (
         <ZItem key={it.title} icon={it.icon} title={it.title} sub={it.sub} onPress={() => router.push(it.to as any)} last={i === items.length - 1} />
       ))}
