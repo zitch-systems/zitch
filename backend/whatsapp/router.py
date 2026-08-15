@@ -352,6 +352,14 @@ def reply_receipt(msisdn: str, title: str, rows: list, *, ref: str,
     """
     rows = _sender_rows(user) + list(rows)
     text = _receipt(title, rows)
+    # A receipt is the strongest possible statement of which payment this
+    # conversation is about, so it sets the referent too: "I didn't get the
+    # token" right after an electricity receipt names that purchase, and the
+    # customer should not have to describe it back to us.
+    try:
+        ConversationState.for_msisdn(msisdn).remember_txn(ref)
+    except Exception:  # noqa: BLE001 — a receipt must never fail over bookkeeping
+        log.warning("could not record the receipt referent ref=%s", ref)
     from .providers import send_document, send_image_media, upload_media, wa_live
 
     delivered = ""
@@ -1267,9 +1275,10 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return _do_history(user, msisdn, as_document=True)
     # Escalation without the AI: the deterministic path must reach a human too,
     # or turning smart replies off would silently remove the ability to complain.
-    if low in ("report a problem", "report problem", "escalate", "complain", "complaint",
-               "dispute", "raise a case", "report"):
-        return _start_problem_report(user, msisdn)
+    # `report it` / `report this` carry a referent, so they go straight to the
+    # case rather than to the "which one?" list.
+    if _REPORT_KEYWORD.fullmatch(low.strip()):
+        return _do_report_problem(user, msisdn, detail=text[:500])
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
@@ -2094,6 +2103,9 @@ def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
                 "recent transactions, or tell me more about it and I'll take another look.")
         if len(rows) == 1:
             t = rows[0]
+            # Remember what this answer was about, so the customer's next message
+            # can say "it".
+            ConversationState.for_msisdn(msisdn).remember_txn(t.reference)
             head = f"Your {_money(t.amount)} {(t.service or 'transaction').strip()} was {_STATUS_LABEL[_status_of(t)]}"
             body = (f"{head}\n\n"
                     f"🗓️ {t.created:%d %b %Y, %I:%M %p}\n"
@@ -2134,6 +2146,10 @@ def _do_history(user, msisdn: str, count=None, *, amount=None, days_ago=None,
 
     balance = _money(get_or_create_wallet(user).balance)
     generated = timezone.localtime().strftime("%d %b %Y, %I:%M %p")
+    if count == 1:
+        # "Was my last transaction successful?" names one payment as surely as a
+        # lookup does — so "report it" straight afterwards has to resolve.
+        ConversationState.for_msisdn(msisdn).remember_txn(rows[0].reference)
     header = (f"🧾 Your last transaction was {_STATUS_LABEL[_status_of(rows[0])]}."
               if count == 1 else f"🧾 *Your last {len(rows)} transactions*")
     caption = header + "\n\n" + "\n".join(lines) + f"\n\nBalance: {balance}"
@@ -2189,6 +2205,20 @@ def _describe_query(*, amount=None, days_ago=None, kind=None, recipient=None, st
     return " ".join(b for b in bits if b)
 
 
+#: The ways a customer says "something went wrong with that". Deliberately
+#: tolerant of the referent ("report it", "escalate this") because those are the
+#: shortest and therefore commonest forms, and they are exactly the ones a
+#: keyword list without a memory has to refuse.
+_REPORT_KEYWORD = re.compile(
+    r"(?:report|escalate|complain|complaint|dispute|raise)"
+    r"(?:\s+(?:a|an|this|that|it|the))?"
+    r"(?:\s+(?:problem|issue|case|complaint|transaction|payment|last\s+one|one))?"
+    r"|i\s+did\s?n[o']?t\s+(?:get|receive)\s+(?:the\s+|my\s+)?\w+"
+    r"|(?:it|this|that)\s+did\s?n[o']?t\s+(?:work|go\s+through|come|enter|arrive)",
+    re.I,
+)
+
+
 def _start_problem_report(user, msisdn: str) -> None:
     """The keyword path into a support case: show what could be wrong and let the
     customer point at it. The AI path names the transaction from the message;
@@ -2224,9 +2254,22 @@ def _do_report_problem(user, msisdn: str, *, amount=None, days_ago=None, kind=No
 
     from compliance.models import Dispute
 
+    # "Report it." The word only means anything against what was just said, and
+    # the customer has already told us which payment — by asking about it one
+    # message ago. Asking them to describe it again is the channel forgetting a
+    # conversation it was part of.
+    if not any((amount, days_ago, kind, recipient, reference)):
+        reference = ConversationState.for_msisdn(msisdn).referenced_txn()
+
+    described = any((amount, days_ago, kind, recipient, reference))
     rows = _find_txns(user, amount=amount, days_ago=days_ago, kind=kind,
-                      recipient=recipient, reference=reference, limit=4)
+                      recipient=recipient, reference=reference, limit=4) if described else []
     if not rows:
+        if not described:
+            # Nothing said, nothing remembered — the only honest move is to ask,
+            # with the recent transactions in front of them so answering is a
+            # glance rather than an effort of memory.
+            return _start_problem_report(user, msisdn)
         said = _describe_query(amount=amount, days_ago=days_ago, kind=kind, recipient=recipient)
         return reply(
             msisdn,
