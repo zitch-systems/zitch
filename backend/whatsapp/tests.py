@@ -4341,12 +4341,20 @@ class AiHistoryLookupTests(TestCase):
         self.assertIn("2 days ago", reply)
 
     def test_a_statement_request_still_sends_the_file(self):
+        """Driven straight into _do_history rather than through the webhook.
+
+        Forcing `wa_live` True to reach the upload path also makes every OTHER
+        outbound message in that request real, and the suite's outbound-HTTP
+        guard rightly refuses them — the test was proving something about the
+        statement while quietly taking the whole channel live to do it.
+        """
+        from whatsapp.router import _do_history
+
         self._aged_txn(1, "1000", "Airtime — MTN", status=Transaction.SUCCESS)
         with patch("whatsapp.providers.wa_live", return_value=True), \
              patch("whatsapp.providers.upload_media", return_value="mid"), \
-             patch("whatsapp.providers.send_document", return_value={"success": True}) as doc, \
-             self._stub({"name": "transaction_history", "input": {"as_document": True}}):
-            self.inbound("send me my statement", "h5")
+             patch("whatsapp.providers.send_document", return_value={"success": True}) as doc:
+            _do_history(self.user, MSISDN, as_document=True)
         doc.assert_called_once()
         self.assertTrue(doc.call_args.args[2].endswith(".pdf"))
 
