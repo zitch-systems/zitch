@@ -23,7 +23,7 @@
  * inference away from deprecating the Flow that PIN entry depends on.
  */
 import type { Config } from '../config.js';
-import { graphDelete, graphPost } from '../metaClient.js';
+import { graphDelete, graphPost, graphPostFlowAsset } from '../metaClient.js';
 import type {
   CreateFlowInput,
   CreateMessageTemplateInput,
@@ -229,11 +229,10 @@ export async function updateFlowJson(
     throw new Error('flowJson has no "screens" array — refusing to upload a Flow with no screens.');
   }
 
-  const res = (await graphPost(config, `${input.flowId}/assets`, {
-    name: 'flow.json',
-    asset_type: 'FLOW_JSON',
-    file: input.flowJson,
-  })) as { success?: boolean; validation_errors?: Array<{ error?: string; message?: string; error_type?: string }> };
+  const res = (await graphPostFlowAsset(config, input.flowId, input.flowJson)) as {
+    success?: boolean;
+    validation_errors?: Array<{ error?: string; message?: string; error_type?: string }>;
+  };
 
   return {
     action: 'update_whatsapp_flow_json',

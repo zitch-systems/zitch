@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { _resetConfigForTests, loadConfig, type Config } from '../src/config.js';
 import {
@@ -43,6 +43,10 @@ function writableConfig(overrides: Partial<Config> = {}): Config {
     ...overrides,
   };
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('write-mode gating', () => {
   it('hides every write tool in read-only mode', () => {
@@ -100,6 +104,12 @@ describe('the confirmation interlock', () => {
     // later at the network boundary instead — proving confirmation is what
     // was stopping it before.
     const relaxed = writableConfig({ requireWriteConfirmation: false });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: { message: 'simulated upstream refusal' },
+    }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    })));
     await expect(
       publishFlow(relaxed, { flowId: '123', confirm: 'totally-wrong' }),
     ).rejects.not.toBeInstanceOf(ConfirmationError);
@@ -194,6 +204,37 @@ describe('Flow JSON upload validation', () => {
     await expect(
       updateFlowJson(config, { flowId: '1', flowJson: '{not json', confirm: 'wrong' }),
     ).rejects.toBeInstanceOf(ConfirmationError);
+  });
+
+  it('uploads a real multipart file instead of a false-success JSON body', async () => {
+    const flowJson = JSON.stringify({ screens: [{ id: 'A' }], routing_model: {} });
+    const fetchMock = vi.fn(async (_url: URL, init?: RequestInit) => {
+      expect(init?.method).toBe('POST');
+      expect(init?.body).toBeInstanceOf(FormData);
+
+      const headers = new Headers(init?.headers);
+      // fetch must add the boundary generated for this FormData instance.
+      expect(headers.has('content-type')).toBe(false);
+
+      const form = init?.body as FormData;
+      expect(form.get('name')).toBe('flow.json');
+      expect(form.get('asset_type')).toBe('FLOW_JSON');
+      const file = form.get('file');
+      expect(file).toBeInstanceOf(Blob);
+      expect((file as Blob & { name?: string }).name).toBe('flow.json');
+      expect(await (file as Blob).text()).toBe(flowJson);
+
+      return new Response(JSON.stringify({ success: true, validation_errors: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      updateFlowJson(config, { flowId: '123', flowJson, confirm: '123' }),
+    ).resolves.toMatchObject({ success: true, validationErrors: [] });
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
 
