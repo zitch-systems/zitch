@@ -126,7 +126,7 @@ class FlowContractMixin:
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
-                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN"},
+                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN", "RESULT_SCREEN": True},
                    WHATSAPP_PROCESS_INLINE=True)
 class PaymentFlowE2ETests(FlowContractMixin, TestCase):
     """The money path: armed -> INIT -> wrong PIN -> right PIN -> outcome."""
@@ -179,14 +179,36 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
                 break
 
     def test_a_correct_pin_holds_the_panel_open_while_pending(self):
-        """Only a settled success closes the panel. Anything else keeps the
-        outcome where the customer was already looking."""
+        """Only a settled success closes the panel. Anything else lands on
+        RESULT — the outcome, with a Done button, and no PIN box to jam."""
         pa = self._armed()
         with patch("whatsapp.router.execute_payout") as payout:
             payout.return_value = self._pending_txn()
             resp = self._exchange(pa, {"pin": "1234"})
         self.assertScreen(resp, standing_on=flows.PIN_SCREEN, note="pending")
-        self.assertNotEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
+        self.assertNotIn(resp["screen"], self.terminals)
+        self.assertEqual(resp["data"]["status"], "⏳ Pending")
+
+    def test_the_spent_pin_budget_lands_on_result_not_a_closed_panel(self):
+        """The ending a customer most needs to read used to vanish the panel
+        mid-payment."""
+        pa = self._armed()
+        standing = flows.PIN_SCREEN
+        for _ in range(5):
+            resp = self._exchange(pa, {"pin": "9999"})
+            self.assertScreen(resp, standing_on=standing, note="wrong PIN")
+            standing = resp["screen"]
+            if resp["screen"] == flows.RESULT_SCREEN:
+                break
+        self.assertEqual(standing, flows.RESULT_SCREEN)
+        self.assertNotIn(standing, self.terminals)
+
+    def test_result_is_not_terminal_and_can_still_end_the_flow(self):
+        """Non-terminal so it does not close itself; routed to the terminal so
+        Done still ends the Flow properly rather than stranding the session."""
+        self.assertNotIn(flows.RESULT_SCREEN, self.terminals)
+        self.assertIn(SUCCESS_SCREEN, self.routes[flows.RESULT_SCREEN])
 
     def _pending_txn(self):
         from wallet.models import Transaction
@@ -240,7 +262,7 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
-                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN"})
+                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN", "RESULT_SCREEN": True})
 class VtuFlowE2ETests(FlowContractMixin, TestCase):
     """Airtime/data: kind -> network -> details -> PIN, all one open session."""
 
@@ -292,7 +314,7 @@ class VtuFlowE2ETests(FlowContractMixin, TestCase):
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",
                              "APP_SECRET": "", "PHONE_NUMBER_ID": "1",
                              "BASE_URL": "https://graph.test"},
-                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN"})
+                   WHATSAPP_FLOW={"ID": "1", "CTA": "Confirm with PIN", "RESULT_SCREEN": True})
 class TransferFormE2ETests(FlowContractMixin, TestCase):
     def setUp(self):
         self.user = _make_user()
@@ -318,3 +340,43 @@ class TransferFormE2ETests(FlowContractMixin, TestCase):
         self.assertIn("How much", reply.call_args.args[1])
         self.assertEqual(
             PendingAction.objects.get(msisdn=MSISDN).state, "amount")
+
+
+class ResultScreenRolloutTests(FlowContractMixin, TestCase):
+    """The Flow JSON and the endpoint are a contract, and the publish is a
+    manual step that does not run from a deploy.
+
+    So this code can reach production before the screen does. Answering a screen
+    Meta has never heard of is the "Couldn't load content. Try again later."
+    failure — on exactly the endings RESULT exists to improve. The flag makes
+    the deploy order not matter.
+    """
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": False})
+    def test_off_by_default_it_behaves_exactly_as_before(self):
+        resp = flows._result_screen("still processing", status="pending")
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertScreen(resp, note="flag off")
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
+    def test_on_it_holds_the_panel_open(self):
+        resp = flows._result_screen("still processing", status="pending")
+        self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
+        self.assertNotIn(resp["screen"], self.terminals)
+        self.assertScreen(resp, note="flag on")
+
+    @override_settings(WHATSAPP_FLOW={})
+    def test_a_missing_setting_is_off_not_a_crash(self):
+        self.assertFalse(flows.result_screen_live())
+        self.assertEqual(flows._result_screen("x")["screen"], SUCCESS_SCREEN)
+
+    def test_both_states_answer_the_same_data_shape(self):
+        """RESULT and SUCCESS declare the same two properties, which is what
+        makes the fallback a one-line swap rather than a second code path."""
+        self.assertEqual(self.declared[flows.RESULT_SCREEN], self.declared[SUCCESS_SCREEN])
+
+    def test_result_is_never_a_routing_root(self):
+        """A Flow may only OPEN on a root. RESULT is only ever navigated TO, so
+        it must stay off that list or Meta rejects the publish with 131009."""
+        targeted = {d for dests in self.routes.values() for d in dests}
+        self.assertIn(flows.RESULT_SCREEN, targeted)

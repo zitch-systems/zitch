@@ -15,7 +15,7 @@ ending on the confirm card — still there, still looking live.
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from whatsapp import flows
@@ -30,6 +30,7 @@ def _armed(user, **payload):
         expires_at=timezone.now() + timedelta(minutes=5))
 
 
+@override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class FlowOutcomeReachesTheChatTests(TestCase):
 
     def setUp(self):
@@ -45,7 +46,7 @@ class FlowOutcomeReachesTheChatTests(TestCase):
         the panel closing."""
         pa = _armed(self.user, flow_pin_tries=flows_last_try())
         screen, said = self._submit(pa, "000000")
-        self.assertEqual(screen["screen"], flows.SUCCESS_SCREEN)
+        self.assertEqual(screen["screen"], flows.RESULT_SCREEN)
         self.assertEqual(screen["data"]["status"], "❌ Not completed")
         self.assertTrue(said, "the cancelling attempt left the thread silent")
         self.assertIn("cancelled", " ".join(said).lower())
@@ -88,8 +89,8 @@ class FlowOutcomeReachesTheChatTests(TestCase):
         with patch("common.http.evaluate_transaction_pin", return_value=(True, "", "")), \
              patch("whatsapp.router.authorise_flow_execution", side_effect=RuntimeError("boom")):
             screen, said = self._submit(pa, "123456")
-        self.assertNotEqual(screen["screen"], "SUCCESS")
-        self.assertIn("auto-reverse", screen["data"]["error"])
+        self.assertEqual(screen["screen"], flows.RESULT_SCREEN)
+        self.assertIn("auto-reverse", screen["data"]["message"])
         self.assertIn("auto-reverse", " ".join(said))
 
     def test_a_send_failure_never_costs_the_customer_their_screen(self):
@@ -100,7 +101,7 @@ class FlowOutcomeReachesTheChatTests(TestCase):
                    return_value=(False, "pin_locked", "Locked.")), \
              patch("whatsapp.router.reply", side_effect=RuntimeError("graph down")):
             screen = flows._submit_pin(flows.sign_flow_token(pa), {"pin": "000000"})
-        self.assertEqual(screen["screen"], flows.SUCCESS_SCREEN)
+        self.assertEqual(screen["screen"], flows.RESULT_SCREEN)
         self.assertEqual(screen["data"]["status"], "❌ Not completed")
 
 

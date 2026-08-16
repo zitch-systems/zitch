@@ -93,6 +93,20 @@ VTU_DATA = "VTU_DATA"
 IDENTITY_SCREEN = "IDENTITY_SCREEN"
 EMAIL_SCREEN = "EMAIL_SCREEN"
 SUCCESS_SCREEN = "SUCCESS"
+#: The outcome, on a screen that does NOT end the Flow.
+#:
+#: Identical in content to SUCCESS and different in exactly one way that matters:
+#: it is not terminal, so answering it leaves the panel open with the outcome on
+#: it and a Done button. A Flow that closes itself is a statement that the job is
+#: finished, and on a pending or failed payment that is the wrong thing to say —
+#: the customer was left in their own chat thread working out whether their money
+#: had moved.
+#:
+#: It also solves what re-rendering a PIN screen could not: WhatsApp keeps a
+#: form's client-side value on a same-id reply, so showing an outcome on the PIN
+#: page brought back the six rejected digits in a box fixed at 6/6, which then
+#: refuses new keystrokes and reads as broken.
+RESULT_SCREEN = "RESULT"
 FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
 FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open
 FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is pending
@@ -316,6 +330,37 @@ _STATUS_HEADINGS = {
     "failed": "❌ Not completed",
     "done": "Done",
 }
+
+
+def result_screen_live() -> bool:
+    """Is RESULT actually PUBLISHED on Meta's side yet?
+
+    The Flow JSON and this code are a contract, and the publish is a manual step
+    (`manage.py publish_flow --publish`) that does not run from a deploy. So the
+    code can reach production before the screen does — and answering a screen
+    Meta has never heard of is the "Couldn't load content. Try again later."
+    failure, on exactly the endings this feature exists to improve.
+
+    Defaults OFF for that reason: until someone confirms the publish, the
+    endings behave exactly as they did before. Flip WHATSAPP_FLOW['RESULT_SCREEN']
+    to true once `publish_flow` reports RESULT among the live screens.
+    """
+    return bool((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("RESULT_SCREEN", False))
+
+
+def _result_screen(message: str, status: str = "") -> dict:
+    """The outcome, with the panel left open. Same content as the terminal
+    screen; the customer closes it by tapping Done.
+
+    Falls back to the terminal screen while RESULT is not live — the panel
+    closes as it used to, which is worse than holding open and far better than
+    an unrenderable screen.
+    """
+    data = {"status": _STATUS_HEADINGS.get(status or "done", _STATUS_HEADINGS["done"]),
+            "message": message or "Done"}
+    if not result_screen_live():
+        return {"screen": SUCCESS_SCREEN, "data": data}
+    return {"screen": RESULT_SCREEN, "data": data}
 
 
 def _success_screen(message: str, status: str = "") -> dict:
@@ -974,33 +1019,24 @@ def _close_in_chat(msisdn: str, text: str) -> None:
         log.exception("could not mirror flow outcome to chat for %s", msisdn)
 
 
-def _hold_open(pa, summary, message: str) -> dict:
-    """Show `message` on the payment panel WITHOUT closing the Flow.
+def _hold_open(pa, summary, message: str, status: str = "failed") -> dict:
+    """Show `message` WITHOUT closing the Flow.
 
-    Only a settled success may close the panel by itself; a pending or failed
-    payment keeps it open so the customer reads the outcome where they were
-    looking, and dismisses it themselves.
+    Only a settled success may close the panel by itself. Everything else —
+    pending, failed, a spent PIN budget, a lockout — lands on RESULT, which
+    carries the outcome and a Done button, so the customer reads it where they
+    were already looking and dismisses it when they have.
 
-    Which screen id this answers with matters more than it looks. WhatsApp keeps
-    a form's client-side value whenever the endpoint replies with the SAME screen
-    the device is already on, and the PIN box is min/max 6 — so a re-render onto
-    the current screen comes back holding six invisible characters that refuse
-    new keystrokes, which reads as a broken input. Answering PIN_RETRY from the
-    root is a NAVIGATION, so the box arrives empty; a session already sitting on
-    PIN_RETRY has nowhere further to go, and closes rather than showing that
-    jammed box.
+    RESULT rather than a re-render of the PIN page: WhatsApp keeps a form's
+    client-side value on a same-id reply, so the outcome used to arrive with the
+    six rejected digits still in a box fixed at 6/6 — which then refuses new
+    keystrokes and reads as broken. RESULT has no form on it at all.
+
+    `summary` is unused now and kept in the signature because the callers hold
+    it for the screens that DO re-render a payment card.
     """
-    current = _flow_screen(pa, PIN_SCREEN)
-    if current in (PIN_SCREEN, PIN_CHAIN):
-        pa.payload["flow_screen"] = PIN_RETRY
-        try:
-            pa.save(update_fields=["payload"])
-        except Exception:  # noqa: BLE001 — the row may already be gone (cleared on failure)
-            log.warning("could not persist flow_screen for pa=%s", getattr(pa, "id", "?"))
-        return _pin_screen(summary, error=message, screen=PIN_RETRY)
-    # Already on the retry twin: closing is the honest ending, and the chat
-    # carries the receipt either way.
-    return _success_screen(message, status="failed")
+    del summary  # see docstring
+    return _result_screen(message, status=status)
 
 
 def _submit_pin(token: str, data: dict) -> dict:
@@ -1038,7 +1074,7 @@ def _submit_pin(token: str, data: dict) -> dict:
             if user.pin_lock_is_escalated:
                 message += " Reply \"reset pin\" in the chat to choose a new one."
             _close_in_chat(pa.msisdn, f"🔒 {message}")
-            return _success_screen(message, status="failed")
+            return _result_screen(message, status="failed")
         if code == "no_pin":
             # Unsatisfiable, and — unlike a wrong PIN — uncounted: the branch
             # returns before evaluate_transaction_pin's atomic block, so it never
@@ -1050,7 +1086,7 @@ def _submit_pin(token: str, data: dict) -> dict:
             no_pin = ("You don't have a transaction PIN yet — reply "
                       "\"set pin\" in the chat to create one.")
             _close_in_chat(pa.msisdn, f"❌ That payment was cancelled. {no_pin}")
-            return _success_screen(no_pin, status="failed")
+            return _result_screen(no_pin, status="failed")
         # One retry, then cancel: the budget the chat rung already enforces
         # (PIN_FLOW_ATTEMPTS, spec §7), and a SCREEN budget as much as a policy
         # one. Attempt 1 answers PIN_RETRY — a different id, so the pad arrives
@@ -1080,7 +1116,7 @@ def _submit_pin(token: str, data: dict) -> dict:
             # This branch is different — the panel is closing and the payment is
             # gone, which is not something to learn by noticing an absence.
             _close_in_chat(pa.msisdn, f"❌ {cancelled}")
-            return _success_screen(cancelled, status="failed")
+            return _result_screen(cancelled, status="failed")
         # Keep writing flow_screen: INIT/BACK re-render _flow_screen(pa, PIN_SCREEN),
         # and answering PIN_SCREEN while the device sits on PIN_RETRY would be a
         # backward navigation, which Meta refuses outright.
@@ -1117,7 +1153,10 @@ def _submit_pin(token: str, data: dict) -> dict:
     # it when they have read it.
     if status == "success":
         return _success_screen(outcome, status)
-    return _hold_open(pa, summary, str(outcome))
+    # Pending keeps its own heading — "⏳ Pending" is the true thing to show a
+    # customer whose money is with the rail, and calling it a failure would be
+    # as wrong as calling it done.
+    return _hold_open(pa, summary, str(outcome), status=status or "pending")
 
 
 # --------------------------------------------------------------------------- #

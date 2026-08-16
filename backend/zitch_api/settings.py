@@ -534,6 +534,14 @@ WHATSAPP_FLOW = {
     "PRIVATE_KEY": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY", ""),
     "PRIVATE_KEY_PASSPHRASE": os.environ.get("WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE", ""),
     "CTA": os.environ.get("WHATSAPP_FLOW_CTA", "Confirm with PIN"),
+    # Whether the non-terminal RESULT screen is live on Meta's side. The Flow
+    # JSON and the endpoint are a contract, and the publish is a manual step
+    # that does not run from a deploy — so this code can reach production before
+    # the screen does, and answering a screen Meta has never heard of is the
+    # "Couldn't load content" failure. Defaults OFF: the endings behave exactly
+    # as before until someone confirms `publish_flow` lists RESULT as live.
+    "RESULT_SCREEN": os.environ.get("WHATSAPP_FLOW_RESULT_SCREEN", "").strip().lower()
+                     in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
