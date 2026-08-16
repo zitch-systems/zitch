@@ -1273,12 +1273,6 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # A statement is the one history request that explicitly wants the FILE.
     if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
         return _do_history(user, msisdn, as_document=True)
-    # Escalation without the AI: the deterministic path must reach a human too,
-    # or turning smart replies off would silently remove the ability to complain.
-    # `report it` / `report this` carry a referent, so they go straight to the
-    # case rather than to the "which one?" list.
-    if _REPORT_KEYWORD.fullmatch(low.strip()):
-        return _do_report_problem(user, msisdn, detail=text[:500])
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
@@ -1308,6 +1302,18 @@ def handle_inbound(msisdn: str, text: str) -> None:
             reason = ai.safe_reason((intent.get("input") or {}).get("reason") or "")
             if reason:
                 return reply(msisdn, f"🤔 {reason}\n\n" + menu_text())
+
+    # Escalation, as the LAST thing tried rather than the first.
+    #
+    # It sits here, below the AI, on purpose: the model reads "escalate the 5k
+    # transfer from Tuesday" and returns the amount and the day, and a keyword
+    # match ABOVE it threw all of that away and asked which transaction they
+    # meant. The keyword is the safety net for the cases the model cannot serve
+    # — smart replies switched off, an LLM outage, or a `clarify` for a sentence
+    # the model did not recognise as a complaint — and a safety net belongs
+    # underneath.
+    if _REPORT_KEYWORD.fullmatch(low.strip()):
+        return _do_report_problem(user, msisdn, detail=text[:500])
     return reply(msisdn, "Sorry, I didn't get that.\n\n" + menu_text())
 
 
@@ -3197,13 +3203,23 @@ def _start_transfer(user, msisdn: str) -> None:
     # the PIN screen with the recipient's resolved name — replacing the
     # question-by-question chat interrogation. The typed/AI path is untouched:
     # "send 2300 to Ada, opay, 91887..." still parses straight to a confirm.
-    if flows_live():
+    # The form's bank picker is a Dropdown bound to this array, and a Flow
+    # Dropdown with an EMPTY data-source does not render — the customer gets a
+    # blank panel with a spinner and no way forward but the X. An unseeded or
+    # fully-deactivated Bank table is not hypothetical (a fresh environment, a
+    # bad sync), and when it happens the chat interrogation below still works
+    # perfectly well. So the emptiness decides which rung we open on, rather
+    # than being discovered on the customer's screen.
+    banks = _bank_items()
+    if not banks:
+        log.warning("wa_transfer_form_skipped reason=no_active_banks")
+    if flows_live() and banks:
         pa = _new_flow(user, msisdn, "transfer", FLOW_FORM_STATE, {"pin_attempts": 0})
         res = send_flow(
             msisdn, sign_flow_token(pa),
             header="Send money", body="Fill in the details privately — we'll confirm the "
                                       "account name before anything moves.",
-            screen=TRANSFER_FORM, screen_data={"banks": _bank_items(), "error": ""},
+            screen=TRANSFER_FORM, screen_data={"banks": banks, "error": ""},
             cta="Send money",
         )
         if res.get("success"):
