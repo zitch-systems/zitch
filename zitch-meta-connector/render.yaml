@@ -38,6 +38,11 @@ services:
         sync: false
       - key: META_PHONE_NUMBER_ID
         sync: false
+      # Data-exchange endpoint attached to every replacement Flow immediately
+      # before publish. Keeping it in deployment config prevents a new Flow
+      # from validating cleanly but remaining unpublishable with no endpoint.
+      - key: META_FLOW_ENDPOINT_URI
+        value: "https://api.zitch.ng/webhooks/whatsapp/flow"
       # --- Connector auth — fill in via the Render dashboard ---
       # Generate with: openssl rand -hex 32
       - key: CONNECTOR_API_KEY

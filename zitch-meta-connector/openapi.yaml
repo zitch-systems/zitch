@@ -757,6 +757,7 @@ components:
           items:
             type: object
             properties:
+              appId: { type: string }
               appName: { type: string }
               subscribedFields:
                 type: array
@@ -859,6 +860,9 @@ components:
         validationErrors: { type: array, items: { type: string } }
         previewUrl: { type: string }
         previewExpiresAt: { type: string }
+        endpointUri: { type: string }
+        applicationId: { type: string }
+        applicationName: { type: string }
 
     FlowScreensResult:
       type: object

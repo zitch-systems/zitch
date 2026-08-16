@@ -229,6 +229,22 @@ export function graphPostFlowAsset(
   return graphMutate(config, 'POST', `${flowId}/assets`, form);
 }
 
+/** Attach the HTTPS data-exchange endpoint (and, when supplied, the owning
+ * Meta app) to a draft Flow. Meta's metadata endpoint is multipart too; using
+ * JSON here has the same dangerous failure mode the asset endpoint had — an
+ * HTTP-success-shaped response without the requested state change. */
+export function graphPostFlowMetadata(
+  config: Config,
+  flowId: string,
+  endpointUri: string,
+  applicationId?: string,
+): Promise<unknown> {
+  const form = new FormData();
+  form.set('endpoint_uri', endpointUri);
+  if (applicationId) form.set('application_id', applicationId);
+  return graphMutate(config, 'POST', flowId, form);
+}
+
 export function graphDelete(
   config: Config,
   path: string,

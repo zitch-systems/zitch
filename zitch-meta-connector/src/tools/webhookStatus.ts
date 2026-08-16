@@ -27,6 +27,7 @@ export interface WebhookStatusResult {
   subscribed: boolean;
   fieldMetadataAvailable: boolean;
   subscribedApps: Array<{
+    appId: string | undefined;
     appName: string | undefined;
     subscribedFields: string[] | null;
   }>;
@@ -46,6 +47,7 @@ export async function checkWebhookStatus(
     subscribed: apps.length > 0,
     fieldMetadataAvailable,
     subscribedApps: apps.map((app) => ({
+      appId: app.whatsapp_business_api_data?.id,
       appName: app.whatsapp_business_api_data?.name,
       subscribedFields: Array.isArray(app.subscribed_fields) ? app.subscribed_fields : null,
     })),
