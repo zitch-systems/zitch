@@ -168,7 +168,7 @@ describe('write input validation', () => {
   });
 
   it('accepts a Flow JSON large enough for the real pin_flow.json', () => {
-    // The real document is ~246KB because the logo is inlined as base64; a
+    // The real document is ~329KB because the logo is inlined as base64; a
     // tighter bound would reject the actual production Flow.
     const big = JSON.stringify({ screens: [{ id: 'A' }], padding: 'x'.repeat(300_000) });
     expect(() => updateFlowJsonSchema.parse({ flowId: '1', flowJson: big, confirm: '1' })).not.toThrow();

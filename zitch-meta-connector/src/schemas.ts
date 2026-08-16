@@ -9,6 +9,8 @@
  */
 import { z } from 'zod';
 
+import { MAX_FLOW_JSON_CHARS } from './httpLimits.js';
+
 /** Meta object IDs (WABA ID, phone number ID, message template ID) are decimal digit strings. */
 const metaId = z
   .string()
@@ -238,9 +240,9 @@ export const updateFlowJsonSchema = z
     flowJson: z
       .string()
       .min(2)
-      // Generous, because the real pin_flow.json is ~246KB with the logo
-      // inlined as base64 — but still bounded so this cannot be a memory bomb.
-      .max(4_000_000)
+      // The real pin_flow.json is ~329 KB with the logo inlined as base64.
+      // Keep this below the one-MiB HTTP envelope limit in httpLimits.ts.
+      .max(MAX_FLOW_JSON_CHARS)
       .describe('The complete Flow JSON document, as a string.'),
     confirm: confirm.describe('Must equal `flowId`.'),
   })
