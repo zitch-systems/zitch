@@ -453,6 +453,11 @@ draining broadcasts; the web drain exists so that a worker which is stopped, cra
 or never created cannot silently swallow every reply. Set `WHATSAPP_WEB_DRAIN=false`
 to turn it off once a dedicated worker is confirmed healthy.
 
+The WSGI process also starts one bounded inbound drain after boot. This recovers a
+small durable backlog left by the process it replaced instead of waiting for the
+next customer callback. Queue leases make concurrent web/worker startups safe, and
+a recovery failure is logged without preventing the HTTP service from starting.
+
 ## Commands
 
 ```bash
