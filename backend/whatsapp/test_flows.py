@@ -245,6 +245,7 @@ class FlowsHandlerTests(TestCase):
 # router arming + chat guard
 # --------------------------------------------------------------------------- #
 @override_settings(WHATSAPP_PROCESS_INLINE=False)
+@override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
 class FlowExecutionOffMetasClockTests(TestCase):
     """Meta gives a data-exchange 10 seconds. Executing a transfer inside one
     means a name enquiry, a payout to the bank rail, a rendered receipt, a media
@@ -296,12 +297,17 @@ class FlowExecutionOffMetasClockTests(TestCase):
         their money had moved. The outcome now stays on the panel they were
         already looking at, and they dismiss it when they have read it.
         """
-        from .flows import PIN_RETRY
+        from .flows import RESULT_SCREEN
 
         resp = self.submit_pin(_transfer_action(self.user))
-        self.assertEqual(resp["screen"], PIN_RETRY)
-        self.assertIn("Confirmed", resp["data"]["error"])
-        self.assertIn("receipt", resp["data"]["error"].lower())
+        # RESULT, not a re-rendered PIN page: WhatsApp keeps a form's value on a
+        # same-id reply, so an outcome shown on the PIN page arrived with the
+        # rejected digits still in a box fixed at 6/6, which then refuses new
+        # keystrokes. RESULT carries no form at all.
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
+        self.assertIn("Confirmed", resp["data"]["message"])
+        self.assertIn("receipt", resp["data"]["message"].lower())
+        self.assertEqual(resp["data"]["status"], "⏳ Pending")
 
     def test_a_held_panel_still_answers_a_complete_screen(self):
         """Holding the panel open is only safe if the reply is renderable: a
