@@ -123,7 +123,7 @@ async function graphMutate(
   config: Config,
   method: 'POST' | 'DELETE',
   path: string,
-  body?: Record<string, unknown>,
+  body?: Record<string, unknown> | FormData,
   query: Record<string, string | number | undefined> = {},
 ): Promise<unknown> {
   if (config.readOnly) {
@@ -144,14 +144,18 @@ async function graphMutate(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), config.graphTimeoutMs);
   try {
+    const isMultipart = body instanceof FormData;
     const response = await fetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${config.metaAccessToken}`,
         Accept: 'application/json',
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        // fetch adds the multipart boundary. Setting Content-Type ourselves
+        // would omit that boundary and make Meta reject an otherwise valid
+        // Flow asset upload.
+        ...(body && !isMultipart ? { 'Content-Type': 'application/json' } : {}),
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(body ? { body: isMultipart ? body : JSON.stringify(body) } : {}),
       signal: controller.signal,
     });
 
@@ -203,6 +207,26 @@ export function graphPost(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   return graphMutate(config, 'POST', path, body);
+}
+
+/** Upload a WhatsApp Flow JSON asset using Meta's required multipart shape.
+ *
+ * The `/assets` endpoint can return HTTP 200 even when an application/json
+ * body contains fields named `file`, `name`, and `asset_type`; in that case it
+ * leaves the default Flow untouched. Keeping this construction in the Graph
+ * client makes the wire format explicit and prevents another write tool from
+ * accidentally repeating that false-success request.
+ */
+export function graphPostFlowAsset(
+  config: Config,
+  flowId: string,
+  flowJson: string,
+): Promise<unknown> {
+  const form = new FormData();
+  form.set('name', 'flow.json');
+  form.set('asset_type', 'FLOW_JSON');
+  form.set('file', new Blob([flowJson], { type: 'application/json' }), 'flow.json');
+  return graphMutate(config, 'POST', `${flowId}/assets`, form);
 }
 
 export function graphDelete(
