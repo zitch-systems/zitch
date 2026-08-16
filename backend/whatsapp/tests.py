@@ -587,11 +587,12 @@ class VtuTests(TestCase):
 
     def test_airtime(self):
         self.inbound("airtime", "a1")
-        self.inbound("1", "a2")               # MTN -> ask phone
-        self.inbound("08099998888", "a3")     # phone -> ask amount
-        self.inbound("200", "a4")             # amount -> confirm
+        self.inbound("1", "a2")               # MTN -> own number already selected
+        self.assertIn("How much airtime", self.last_reply())
+        self.inbound("200", "a3")             # amount -> confirm
         self.assertIn("Confirm airtime", self.last_reply())
-        self.inbound("1234", "a5")            # PIN
+        self.assertIn(self.user.phone, self.last_reply())
+        self.inbound("1234", "a4")            # PIN
         self.assertIn("Airtime receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("19800"))
 
@@ -599,10 +600,10 @@ class VtuTests(TestCase):
         self.inbound("data", "d1")
         self.inbound("1", "d2")               # MTN -> plan list
         self.assertIn("1GB", self.last_reply())
-        self.inbound("1", "d3")               # pick plan -> ask phone
-        self.inbound("me", "d4")              # phone -> confirm
+        self.inbound("1", "d3")               # pick plan -> own number -> confirm
         self.assertIn("Confirm data", self.last_reply())
-        self.inbound("1234", "d5")
+        self.assertIn(self.user.phone, self.last_reply())
+        self.inbound("1234", "d4")
         self.assertIn("Data receipt", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("19500"))
 
@@ -615,8 +616,10 @@ class VtuTests(TestCase):
         self.inbound("3000", "e5")            # amount -> confirm
         self.assertIn("Confirm electricity", self.last_reply())
         self.assertIn("ADEYEMI WILLIAM", self.last_reply())  # validated customer name
+        self.assertIn("12 Marina Road", self.last_reply())   # validated service address
         self.inbound("1234", "e6")
         self.assertIn("Token", self.receipt_text())          # prepaid token in the receipt
+        self.assertIn("12 Marina Road", self.receipt_text())
         self.assertEqual(self.bal(), Decimal("17000"))
 
     def test_cable(self):
@@ -641,7 +644,7 @@ class VtuTests(TestCase):
         # type the name they can see — "MTN" must advance the flow, not re-prompt.
         self.inbound("airtime", "tn1")
         self.inbound("MTN", "tn2")
-        self.assertIn("What phone number?", self.last_reply())
+        self.assertIn("How much airtime", self.last_reply())
 
     def test_typed_provider_and_disco_names_accepted(self):
         self.inbound("cable", "tp1")
@@ -660,9 +663,8 @@ class VtuTests(TestCase):
         self.assertIn("Data", self.last_reply())
         self.inbound("1", "p2")               # 1 -> Airtime -> ask network
         self.assertIn("network", self.last_reply().lower())
-        self.inbound("1", "p3")               # MTN -> ask phone
-        self.inbound("me", "p4")
-        self.inbound("200", "p5")
+        self.inbound("1", "p3")               # MTN -> own number already selected
+        self.inbound("200", "p4")
         self.assertIn("Confirm airtime", self.last_reply())
 
     def test_airtime_data_menu_data_pick(self):

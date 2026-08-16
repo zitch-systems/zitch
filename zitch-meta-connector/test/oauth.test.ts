@@ -24,7 +24,7 @@ import { checkAuth, requireApiKey } from '../src/auth.js';
 
 const KEY = 'test-signing-key-0000000000000000';
 const PASSWORD = 'operator-passphrase-0000000000';
-const ALLOWED = ['claude.ai', 'claude.com', 'localhost', '127.0.0.1'] as const;
+const ALLOWED = ['chatgpt.com', 'claude.ai', 'claude.com', 'localhost', '127.0.0.1'] as const;
 
 function testConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -180,6 +180,10 @@ describe('client registration', () => {
 
   it('allows a subdomain of an allowed host', () => {
     expect(() => validateRedirectUri('https://api.claude.ai/cb', ALLOWED)).not.toThrow();
+  });
+
+  it('allows ChatGPT dynamic-client callbacks', () => {
+    expect(() => validateRedirectUri('https://chatgpt.com/connector_platform_oauth_redirect', ALLOWED)).not.toThrow();
   });
 
   it('rejects plain http except on loopback', () => {

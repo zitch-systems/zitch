@@ -184,7 +184,8 @@ def bank_transfer(request):
     name = resolved_name or shown_name or "Bank recipient"
 
     try:
-        txn = execute_payout(user, amount, acct, bank, name, note=note, idempotency_key=key)
+        txn = execute_payout(user, amount, acct, bank, name, note=note,
+                             idempotency_key=key, channel="app")
     except PayoutError as exc:
         if exc.kind == "duplicate":
             # Try to replay the original outcome (idempotent_replay returns ok(success=True, duplicate=True)).
@@ -211,6 +212,8 @@ def bank_transfer(request):
     if txn.transaction_status == Transaction.PENDING:
         # Rail queued it but hasn't confirmed — don't claim "sent".
         return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
+                  narration=(txn.meta or {}).get("narration", ""),
                   message="Your transfer is processing and will be confirmed shortly.")
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
+              narration=(txn.meta or {}).get("narration", ""),
               message="Money sent")

@@ -191,6 +191,39 @@ class WhatsAppChannelAlertTests(TestCase):
         wa_reply.assert_called_once()
         self.assertIn("Debit alert", wa_reply.call_args[0][1])
 
+    def test_an_app_transfer_alert_identifies_the_destination(self):
+        """The chat must say more than amount/ref for a debit made in the app."""
+        from .alerts import _describe
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to ADEYEMI WILLIAM", reference="APP-TR-1",
+            transaction_status=Transaction.SUCCESS,
+            meta={"channel": "app", "recipient_name": "ADEYEMI WILLIAM",
+                  "bank": "First Bank", "account": "0228656883",
+                  "narration": "For car"})
+        _subject, body = _describe(txn)
+        self.assertIn("to ADEYEMI WILLIAM", body)
+        self.assertIn("To: ADEYEMI WILLIAM", body)
+        self.assertIn("Bank: First Bank", body)
+        self.assertIn("Account: 0228****83", body)
+        self.assertIn("For: For car", body)
+
+    def test_an_app_electricity_alert_carries_meter_and_address(self):
+        from .alerts import _describe
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Electricity — Ikeja", reference="APP-EL-1",
+            transaction_status=Transaction.SUCCESS,
+            meta={"channel": "app", "meter": "1023542134", "meter_type": "prepaid",
+                  "customer_name": "ADEYEMI WILLIAM",
+                  "customer_address": "12 Marina Road, Lagos"})
+        _subject, body = _describe(txn)
+        self.assertIn("Meter: 1023542134", body)
+        self.assertIn("Customer: ADEYEMI WILLIAM", body)
+        self.assertIn("Address: 12 Marina Road, Lagos", body)
+
     def test_a_reversed_whatsapp_channel_debit_still_alerts_in_chat(self):
         """The reversal happens later, out of band — the original chat never
         says the money came back unless this does."""

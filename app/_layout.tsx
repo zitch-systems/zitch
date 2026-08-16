@@ -9,7 +9,6 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import * as ScreenCapture from "expo-screen-capture";
 import { router, SplashScreen, Stack } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
@@ -77,12 +76,10 @@ const RootLayout = () => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready, error]);
 
-  // Financial screens contain balances, identity details and PIN entry. Block OS
-  // screenshots, recordings and sensitive recents thumbnails by default. Receipts
-  // remain shareable through the app's explicit receipt export, which creates a
-  // deliberately-scoped artefact instead of exposing whatever is on screen.
+  // PIN screens apply their own capture protection. Keeping this root effect
+  // limited to keychain cleanup lets customers screenshot ordinary app pages
+  // and lets the receipt renderer capture its own receipt card.
   useEffect(() => {
-    if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     // Drop any money PIN left cached by older builds when biometric pay is off.
     reconcileCachedPin().catch(() => {});
   }, []);
@@ -160,4 +157,3 @@ const RootLayout = () => {
 };
 
 export default RootLayout;
-

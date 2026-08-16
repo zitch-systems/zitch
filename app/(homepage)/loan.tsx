@@ -134,7 +134,7 @@ const Loans = () => {
         )}
       </View>
 
-      <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN">
+      <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Repay ${active ? money(Number(active.outstanding)) : ''} from your wallet`}
         </Text>

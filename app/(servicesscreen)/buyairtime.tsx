@@ -9,6 +9,7 @@ import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { localPhoneNumber } from '@/lib/phone';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -21,7 +22,7 @@ type Step = null | 'confirm' | 'pin';
 
 const BuyAirtime = () => {
   const { c } = useTheme();
-  const { balance, reload } = useWallet();
+  const { balance, reload, phoneNumber } = useWallet();
   const params = useLocalSearchParams<{ phone?: string }>();
   const [, setToken] = useState('');
   const [net, setNet] = useState('1');
@@ -36,8 +37,15 @@ const BuyAirtime = () => {
   const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one purchase attempt
+  const phoneSeeded = useRef(false);
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
+  useEffect(() => {
+    const own = localPhoneNumber(phoneNumber);
+    if (!own || phoneSeeded.current) return;
+    phoneSeeded.current = true;
+    setPhone((current) => current || own);
+  }, [phoneNumber]);
 
   // A change to ANY purchase detail is a new spend — drop the retained key so the
   // next attempt mints a fresh one. The key is kept only across byte-identical
@@ -139,7 +147,7 @@ const BuyAirtime = () => {
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
@@ -150,4 +158,3 @@ const BuyAirtime = () => {
 };
 
 export default BuyAirtime;
-

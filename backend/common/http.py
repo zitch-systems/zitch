@@ -489,7 +489,8 @@ def provider_purchase_response(status, txn, result, *, success_message, **succes
     """
     if status == "pending":
         return ok(pending=True, reference=txn.reference,
-                  message="Your purchase is processing and will be confirmed shortly.")
+                  message="Your purchase is processing and will be confirmed shortly.",
+                  **success_extra)
     if status != "success":
         return fail(result.get("message", "Transaction failed"), status=502)
     return ok(success=True, message=success_message, reference=txn.reference, **success_extra)

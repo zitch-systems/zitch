@@ -68,9 +68,46 @@ def _narration_line(txn) -> str:
     return f"For: {note[:60]}\n" if note else ""
 
 
+def _detail_lines(txn) -> str:
+    """Safe transaction context for app-originated WhatsApp debit alerts.
+
+    The alert is often the only thing the linked WhatsApp chat receives for an
+    app purchase. Keep provider secrets/tokens out, but include enough ledger
+    metadata to identify the transfer, top-up, or meter payment unambiguously.
+    """
+    meta = _meta(txn)
+    service = " ".join(str(getattr(txn, "service", "") or "").split())[:90]
+    low = service.lower()
+    lines = []
+
+    def add(label, value, limit=120):
+        text = " ".join(str(value or "").split())[:limit]
+        if text:
+            lines.append(f"{label}: {text}")
+
+    if "transfer" in low or meta.get("bank") or meta.get("account"):
+        add("To", meta.get("recipient_name"))
+        add("Bank", meta.get("bank"))
+        account = meta.get("account")
+        if account:
+            add("Account", _mask_account(account))
+    elif "electric" in low or meta.get("meter"):
+        add("Service", service)
+        add("Customer", meta.get("customer_name") or meta.get("customer"))
+        add("Meter", meta.get("meter"))
+        add("Type", meta.get("meter_type"))
+        add("Address", meta.get("customer_address") or meta.get("address"), 180)
+    elif any(word in low for word in ("airtime", "data")) or meta.get("phone"):
+        add("Service", service)
+        add("Phone", meta.get("phone"))
+    elif service:
+        add("Service", service)
+
+    return "".join(f"{line}\n" for line in lines)
+
+
 def _describe(txn, *, reversal: bool = False) -> tuple:
-    """(subject, body) for the alert. Deliberately short: this is read on a lock
-    screen, and the detail lives in the receipt."""
+    """(subject, body) for the alert, with bounded non-secret transaction detail."""
     credit = txn.direction == txn.IN
     word = "Reversal" if reversal else ("Credit" if credit else "Debit")
     amount = _money(txn.amount, txn.currency)
@@ -91,6 +128,7 @@ def _describe(txn, *, reversal: bool = False) -> tuple:
                 f"{txn.created:%d %b %Y, %I:%M %p}")
     else:
         body = (f"{word} of {amount}{where} on your Zitch account.\n"
+                f"{_detail_lines(txn)}"
                 f"{_narration_line(txn)}"
                 f"Ref: {txn.reference}\n"
                 f"{txn.created:%d %b %Y, %I:%M %p}")

@@ -172,3 +172,26 @@ jobs:
         run: npx expo install --check
       - name: Expo project health
         run: npx expo-doctor
+
+  meta-connector:
+    name: Meta connector (MCP + OAuth)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: zitch-meta-connector
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: zitch-meta-connector/package-lock.json
+      - run: npm ci
+      - name: Typecheck source
+        run: npm run typecheck
+      - name: Build production server
+        run: npm run build
+      - name: Typecheck tests
+        run: npx tsc -p test/tsconfig.json
+      - name: Unit and OAuth integration tests
+        run: npm test

@@ -23,6 +23,7 @@ import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
 import { isBiometricTxnEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
@@ -75,6 +76,8 @@ export const Screen = ({
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
             // "handled" so the FIRST tap on a button while the keyboard is open
             // activates it, instead of being swallowed to just dismiss the keyboard
             // (which forced a double-tap on every form's submit button).
@@ -468,15 +471,24 @@ export const Sheet = ({
   onClose,
   children,
   title,
+  protectScreen = false,
 }: {
   open: boolean;
   onClose: () => void;
   children: React.ReactNode;
   title?: string;
+  /** Block screenshots only while a PIN-entry sheet is actually visible. */
+  protectScreen?: boolean;
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  usePinScreenProtection(open && protectScreen);
+  // A hidden React Native Modal can keep its children mounted. PIN pads then
+  // initialise biometrics while the sheet is invisible and initialise again
+  // when the customer opens it, which presents the native fingerprint prompt
+  // twice. Mount sheet content only for the visible lifetime of the sheet.
+  if (!open) return null;
   // On fold/tablet, cap the sheet width and centre it so it reads as a card
   // rather than stretching across the whole display. Full-width on phones.
   const maxW = width >= 600 ? 560 : undefined;
@@ -532,6 +544,11 @@ export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiomet
   // Fire the biometric prompt at most once per mount (each time the sheet opens),
   // so the OS sheet doesn't reappear after a manual cancel or a wrong-PIN retry.
   const autoTried = React.useRef(false);
+  // Both the auto prompt and the visible biometric button call the same async
+  // function. A fast tap while the automatic OS sheet is opening used to start a
+  // second native prompt; keep one scan and one completion in flight per pad.
+  const bioInFlight = React.useRef(false);
+  const bioCompleted = React.useRef(false);
   // Keep the latest onComplete/busy in refs so the biometric helpers stay STABLE
   // and the setup effect runs exactly once per mount — not on every render (an
   // inline onComplete in the parent would otherwise re-run the effect each render,
@@ -540,18 +557,27 @@ export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiomet
   const busyRef = React.useRef(busy);
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
   useEffect(() => { busyRef.current = busy; }, [busy]);
+  useEffect(() => {
+    if (error) bioCompleted.current = false;
+  }, [error]);
   const handleBiometric = React.useCallback(async () => {
+    if (busyRef.current || bioInFlight.current || bioCompleted.current) return;
+    bioInFlight.current = true;
     try {
-      if (busyRef.current) return;
       // biometricOnly: the device passcode must NOT be able to release the cached
       // money PIN — only the account owner's enrolled fingerprint/face. The typed
       // PIN remains the fallback (✕ → keypad) if the scan is cancelled.
       const ok = await authenticate('Approve payment', true);
       if (!ok) return;
       const storedPin = await getTransactionPin();
-      if (storedPin) onCompleteRef.current && onCompleteRef.current(storedPin, true);
+      if (storedPin) {
+        bioCompleted.current = true;
+        onCompleteRef.current && onCompleteRef.current(storedPin, true);
+      }
     } catch {
       /* biometrics must never crash the payment sheet — fall back to the keypad */
+    } finally {
+      bioInFlight.current = false;
     }
   }, []);
   useEffect(() => {
@@ -735,7 +761,7 @@ export const PinSheet = ({
 }) => {
   const { c } = useTheme();
   return (
-    <Sheet open={open} onClose={onClose} title={title}>
+    <Sheet open={open} onClose={onClose} title={title} protectScreen>
       {/* No negative top margin: the subtitle renders inside the sheet's
           ScrollView, so pulling it up clips its top edge against the title. */}
       {!busy && (

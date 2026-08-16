@@ -20,6 +20,7 @@ describe('loadConfig', () => {
       'RATE_LIMIT_MAX_REQUESTS',
       'IP_RATE_LIMIT_MAX_REQUESTS',
       'META_GRAPH_API_BASE_URL',
+      'OAUTH_ALLOWED_REDIRECT_HOSTS',
     ]) {
       originalEnv[key] = process.env[key];
       delete process.env[key];
@@ -62,6 +63,11 @@ describe('loadConfig', () => {
     expect(config.rateLimitMaxRequests).toBe(30);
     expect(config.ipRateLimitMaxRequests).toBe(60);
     expect(config.graphTimeoutMs).toBe(10_000);
+  });
+
+  it('allows ChatGPT dynamic-client callbacks by default', () => {
+    setValidEnv();
+    expect(loadConfig().oauthAllowedRedirectHosts).toContain('chatgpt.com');
   });
 
   it('rejects an IP rate limit budget smaller than the per-key budget', () => {

@@ -6,6 +6,7 @@ import { Btn, Header, PinPad, Screen } from '@/components/design/ui';
 import { apiJson } from '@/lib/api';
 import { font, useTheme } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 
 /**
  * Deep-link approval for a WhatsApp-armed payment.
@@ -40,6 +41,7 @@ const WaApprove = () => {
   const [outcome, setOutcome] = useState('');
   const [deadReason, setDeadReason] = useState('');
   const [pinError, setPinError] = useState('');
+  usePinScreenProtection(phase === 'confirm' || phase === 'busy');
 
   useEffect(() => {
     let alive = true;

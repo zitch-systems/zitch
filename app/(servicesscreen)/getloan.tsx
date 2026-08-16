@@ -185,7 +185,7 @@ const GetLoan = () => {
         methodSub="Zitch Wallet · arrives instantly"
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Authorize loan of ${money(amount)}`}
         </Text>
@@ -196,4 +196,3 @@ const GetLoan = () => {
 };
 
 export default GetLoan;
-
