@@ -26,9 +26,12 @@ let lastKnownAuth: AuthState | null = null;
  * not just on mount — so a session that LOCKS while an authed screen is already
  * rendered is dropped to /signin rather than staying visible until remount.
  */
-const AuthGuard = ({ children }: { children: React.ReactNode }) => {
+const AuthGuard = ({ children, fresh = false }: { children: React.ReactNode; fresh?: boolean }) => {
   const { c } = useTheme();
-  const [state, setState] = useState<AuthState>(lastKnownAuth ?? 'loading');
+  // Deep-link payment approvals opt out of the navigation cache: the app may
+  // have been locked while it was backgrounded in WhatsApp, so the previous
+  // route's authenticated result is not safe enough to render payment details.
+  const [state, setState] = useState<AuthState>(fresh ? 'loading' : (lastKnownAuth ?? 'loading'));
 
   useEffect(() => {
     let active = true;

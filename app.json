@@ -32,6 +32,20 @@
         "android.permission.USE_FINGERPRINT"
       ],
       "package": "com.zitch.app",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": false,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "api.zitch.ng",
+              "pathPrefix": "/wa/approve/"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
       "allowBackup": false,
       "versionCode": 12,
       "blockedPermissions": [
@@ -48,6 +62,13 @@
     },
     "plugins": [
       "expo-router",
+      "expo-notifications",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow Zitch to let you choose a phone number for airtime and data purchases."
+        }
+      ],
       [
         "expo-local-authentication",
         {

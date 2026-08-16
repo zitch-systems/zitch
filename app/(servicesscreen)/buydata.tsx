@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Image } from 'react-native';
+import { View, Text, TextInput, Pressable, Image, ActivityIndicator } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
 import { apiPost, newIdempotencyKey, publicJson } from '@/lib/api';
@@ -13,6 +13,7 @@ import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { localPhoneNumber } from '@/lib/phone';
+import { pickContactPhone } from '@/lib/contacts';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -68,7 +69,7 @@ type Plan = { id: string; label: string; sub?: string; price: number };
 
 const BuyData = () => {
   const { c } = useTheme();
-  const { balance, reload, txns, phoneNumber } = useWallet();
+  const { balance, reload, phoneNumber } = useWallet();
   const [net, setNet] = useState('1');
   const [planType, setPlanType] = useState('1');
   const [plan, setPlan] = useState('');
@@ -78,8 +79,8 @@ const BuyData = () => {
   const [loadingPlans, setLoadingPlans] = useState(false);
   const [tab, setTab] = useState('all');
   const [grid, setGrid] = useState(true);
-  const [picker, setPicker] = useState<null | 'net' | 'type' | 'phone'>(null);
-  const [phoneDraft, setPhoneDraft] = useState('');
+  const [picker, setPicker] = useState<null | 'net' | 'type'>(null);
+  const [contactBusy, setContactBusy] = useState(false);
   const [step, setStep] = useState<Step>(null);
   const [pinFirst, setPinFirst] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -163,18 +164,20 @@ const BuyData = () => {
     };
   }, [plans, tab]);
 
-  // Numbers this customer has actually topped up before, newest first. Real
-  // history, not the phone's address book — the app holds no contacts permission.
-  const recentNumbers = useMemo(() => {
-    const own = localPhoneNumber(phoneNumber);
-    const seen: string[] = own ? [own] : [];
-    for (const t of txns) {
-      const m = /\b(0\d{10})\b/.exec(t.detail || '');
-      if (m && !seen.includes(m[1])) seen.push(m[1]);
-      if (seen.length >= 6) break;
+  const chooseContact = async () => {
+    if (contactBusy) return;
+    setContactBusy(true);
+    try {
+      const result = await pickContactPhone();
+      if (result.status === 'picked') setPhone(result.phone);
+      else if (result.status === 'missing') notify('No phone number', 'That contact has no Nigerian mobile number.');
+      else if (result.status === 'unsupported') notify('Contacts', 'Choose a contact from the Zitch mobile app.');
+    } catch {
+      notify('Contacts unavailable', 'Could not open your contacts. Please enter the number instead.');
+    } finally {
+      setContactBusy(false);
     }
-    return seen;
-  }, [txns, phoneNumber]);
+  };
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
@@ -294,24 +297,29 @@ const BuyData = () => {
             <ZIcon name="down" size={14} color={c.ink3} stroke={2.4} />
           </Pressable>
           <View style={{ width: 1, height: 28, backgroundColor: c.line }} />
-          <Text
-            style={{ flex: 1, fontSize: 17, fontFamily: font.bold, color: phone ? c.ink1 : c.ink3, letterSpacing: 0.2 }}
-            numberOfLines={1}
-            onPress={() => { setPhoneDraft(phone); setPicker('phone'); }}
-            suppressHighlighting
-            accessibilityRole="button"
-            accessibilityLabel={phone ? `Phone number ${phone}` : 'Enter phone number'}
-          >
-            {phone ? prettyPhone(phone) : 'Enter phone number'}
-          </Text>
+          <TextInput
+            value={phone ? prettyPhone(phone) : ''}
+            onChangeText={(value) => setPhone(value.replace(/\D/g, '').slice(0, 11))}
+            placeholder="Enter phone number"
+            placeholderTextColor={c.ink3}
+            keyboardType="phone-pad"
+            autoComplete="tel"
+            maxLength={13}
+            accessibilityLabel="Phone number"
+            style={{ flex: 1, fontSize: 17, fontFamily: font.bold, color: c.ink1, letterSpacing: 0.2, paddingVertical: 8 }}
+          />
           <Pressable
-            onPress={() => { setPhoneDraft(phone); setPicker('phone'); }}
+            onPress={chooseContact}
+            disabled={contactBusy}
             accessibilityRole="button"
-            accessibilityLabel="Choose a saved number"
+            accessibilityLabel="Choose from contacts"
+            accessibilityState={{ disabled: contactBusy }}
             hitSlop={8}
             style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}
           >
-            <ZIcon name="contacts" size={18} color={c.inkOnBrand} stroke={2} />
+            {contactBusy
+              ? <ActivityIndicator size="small" color={c.inkOnBrand} />
+              : <ZIcon name="contacts" size={18} color={c.inkOnBrand} stroke={2} />}
           </Pressable>
         </View>
       </Card>
@@ -377,15 +385,6 @@ const BuyData = () => {
         onPick={setPlanType}
       />
 
-      <PhoneSheet
-        open={picker === 'phone'}
-        onClose={() => setPicker(null)}
-        draft={phoneDraft}
-        setDraft={setPhoneDraft}
-        onChange={setPhone}
-        recents={recentNumbers}
-      />
-
       <ConfirmSheet
         open={step === 'confirm'}
         onClose={() => setStep(null)}
@@ -406,79 +405,6 @@ const BuyData = () => {
         <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} autoBiometric={!pinFirst} />
       </Sheet>
     </Screen>
-  );
-};
-
-/** Number entry + the numbers this customer has topped up before. The app holds
- *  no contacts permission, so this offers real history rather than the phone's
- *  address book — everything it lists is a number the customer has actually used. */
-const PhoneSheet = ({
-  open, onClose, draft, setDraft, onChange, recents,
-}: {
-  open: boolean; onClose: () => void; draft: string;
-  setDraft: React.Dispatch<React.SetStateAction<string>>;
-  onChange: (v: string) => void; recents: string[];
-}) => {
-  const { c } = useTheme();
-  // The draft lives in the parent and is seeded when the sheet is OPENED, not
-  // synced back here by an effect — an effect that re-set state on every render
-  // of an open sheet would fight the keypad it is meant to serve.
-  const ok = draft.length >= 10;
-  return (
-    <Sheet open={open} onClose={onClose} title="Phone number">
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, height: 58, borderRadius: 16, backgroundColor: c.surface2, borderWidth: 1.5, borderColor: c.line, paddingHorizontal: 16, marginBottom: 18 }}>
-        <ZIcon name="phone" size={19} color={c.ink3} />
-        <Text
-          style={{ flex: 1, fontSize: 17, fontFamily: font.bold, color: draft ? c.ink1 : c.ink3 }}
-        >
-          {draft ? prettyPhone(draft) : '0801 234 5678'}
-        </Text>
-      </View>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -4, marginBottom: 18 }}>
-        {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'].map((k, i) => (
-          <View key={i} style={{ width: '33.333%', padding: 4 }}>
-            {k ? (
-              <Pressable
-                onPress={() => setDraft((d) => (k === '⌫' ? d.slice(0, -1) : (d + k).slice(0, 11)))}
-                accessibilityRole="button"
-                accessibilityLabel={k === '⌫' ? 'Delete' : k}
-                style={({ pressed }) => ({ height: 54, borderRadius: 14, backgroundColor: pressed ? c.surface3 : c.surface2, alignItems: 'center', justifyContent: 'center' })}
-              >
-                <Text style={{ fontSize: 21, fontFamily: font.bold, color: c.ink1 }}>{k}</Text>
-              </Pressable>
-            ) : <View style={{ height: 54 }} />}
-          </View>
-        ))}
-      </View>
-      {recents.length > 0 && (
-        <>
-          <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.ink2, marginBottom: 10 }}>
-            Numbers you&apos;ve topped up
-          </Text>
-          {recents.map((n) => (
-            <Pressable
-              key={n}
-              onPress={() => { onChange(n); onClose(); }}
-              accessibilityRole="button"
-              accessibilityLabel={`Use ${n}`}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: c.line }}
-            >
-              <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-                <ZIcon name="phone" size={17} color={c.ink2} />
-              </View>
-              <Text style={{ flex: 1, fontSize: 15, fontFamily: font.semibold, color: c.ink1 }}>{prettyPhone(n)}</Text>
-              <ZIcon name="right" size={16} color={c.ink3} />
-            </Pressable>
-          ))}
-          <View style={{ height: 18 }} />
-        </>
-      )}
-      <Btn
-        label="Use this number"
-        disabled={!ok}
-        onPress={() => { onChange(draft); onClose(); }}
-      />
-    </Sheet>
   );
 };
 

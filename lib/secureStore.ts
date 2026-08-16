@@ -24,9 +24,9 @@ const KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
 
 // Unlike the session token, the transaction PIN directly authorises money.
 // Bind its keychain item to the OS authentication ACL as well as to this device.
-// The separate biometric-only prompt in the payment UI remains defence in depth;
-// even if that JavaScript check is hooked, the keystore will not release the PIN
-// without a fresh system authentication.
+// The payment UI reads this item directly: the keystore itself opens one fresh
+// system authentication prompt. A second JavaScript biometric prompt would only
+// make the customer scan twice; it cannot strengthen the keychain ACL.
 const TXN_PIN_KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
   ...KEYCHAIN_OPTS,
   requireAuthentication: true,

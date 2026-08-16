@@ -51,14 +51,12 @@ const SetThumbprint = () => {
     }
   };
 
-  // Payment-approval toggle — a scan then the PIN (captured in the sheet) caches
-  // the money PIN; off drops it so payments fall back to the keypad.
+  // Payment-approval toggle — capture the PIN, then SecureStore opens the one OS
+  // authentication required to place it behind the keychain biometric ACL.
   const togglePay = async (v: boolean) => {
     if (!v) { await setBiometricTxnEnabled(false); setPay(false); return; }
     if (!(await guardAvailable())) return;
-    // biometricOnly: the device passcode must not stand in for the owner's scan
-    // when arming payment approval.
-    if (await authenticate(`Approve payments with ${label}`, true)) setPinOpen(true);
+    setPinOpen(true);
   };
 
   const enablePay = async (pin: string) => {

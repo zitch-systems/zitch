@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 from datetime import timedelta
 
@@ -30,7 +31,7 @@ from utility.providers import (
 from wallet.models import Wallet
 from wallet.services import get_or_create_wallet, wema_account_reference
 
-from .models import OTP, AccessToken, User, hash_identifier
+from .models import OTP, AccessToken, PushDevice, User, hash_identifier
 
 # The shared design system in common.emails is the only place email HTML lives.
 # This alias keeps the name that accounts, whatsapp and admin already import.
@@ -333,8 +334,37 @@ def logout(request):
     Server-side revocation so a signed-out (or otherwise leaked-then-cleared)
     token can't be replayed for the remainder of its TTL.
     """
+    # A signed-out phone must stop receiving private account alerts. Scope the
+    # removal to this installation so tablets/other phones stay subscribed.
+    device_id = _session_device_id(request)
+    if device_id:
+        PushDevice.objects.filter(user=request.user_obj, device_id=device_id).delete()
     AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
     return ok(message="Logged out")
+
+
+@api
+@require_user
+def push_register(request):
+    """POST /api/push/register/ {token, platform}.
+
+    Expo tokens are opaque credentials for addressing a device, not proof of a
+    user. Ownership therefore comes exclusively from the authenticated session;
+    a client-supplied user id is never accepted.
+    """
+    token = (request.data.get("token") or "").strip()
+    if not re.fullmatch(r"(?:Exponent|Expo)PushToken\[[A-Za-z0-9_-]+\]", token):
+        return fail("Invalid push token")
+    platform = (request.data.get("platform") or "").strip().lower()
+    if platform not in ("android", "ios"):
+        return fail("Invalid device platform")
+    device_id = _session_device_id(request)
+    PushDevice.objects.update_or_create(
+        token=token,
+        defaults={"user": request.user_obj, "device_id": device_id,
+                  "platform": platform, "enabled": True},
+    )
+    return ok(message="Notifications enabled")
 
 
 @api

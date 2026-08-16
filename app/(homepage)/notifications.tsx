@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
@@ -6,6 +6,7 @@ import { Loading } from '@/components/design/Loading';
 import { Screen, Header, ZItem, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { clearPendingNotificationOpen } from '@/lib/notifications';
 
 /**
  * Notifications = the user's REAL account activity (credits, purchases,
@@ -18,6 +19,10 @@ import { useWallet } from '@/lib/wallet';
 const Notifications = () => {
   const { c } = useTheme();
   const { txns, loading } = useWallet();
+
+  useEffect(() => {
+    clearPendingNotificationOpen().catch(() => {});
+  }, []);
 
   return (
     <Screen tab>

@@ -159,7 +159,49 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
             send_sms(user.phone, _sms_alert(txn, reversal=reversal))
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_sms_failed ref=%s", txn.reference)
+    _push_alert(txn, subject)
     _whatsapp_alert(txn, subject, body, reversal=reversal)
+
+
+def _push_alert(txn, subject: str) -> None:
+    """Send a privacy-bounded native app notification to every live install.
+
+    The lock-screen body carries the direction/amount but no recipient account,
+    phone number, balance, or narration. Full details remain behind app auth.
+    Invalid Expo tokens are removed immediately so every later ledger movement
+    does not retry a handset that uninstalled the app.
+    """
+    if not _alerts_on("push"):
+        return
+    try:
+        import requests
+        from accounts.models import PushDevice
+
+        devices = list(txn.user.push_devices.filter(enabled=True).only("id", "token")[:100])
+        if not devices:
+            return
+        payload = [{
+            "to": device.token,
+            "title": subject,
+            "body": "Tap to view the transaction securely in Zitch.",
+            "sound": "default",
+            "priority": "high",
+            "channelId": "transactions",
+            "data": {"screen": "notifications", "reference": txn.reference},
+        } for device in devices]
+        response = requests.post("https://exp.host/--/api/v2/push/send",
+                                 json=payload, timeout=5)
+        response.raise_for_status()
+        results = response.json().get("data") or []
+        if isinstance(results, dict):
+            results = [results]
+        invalid_ids = [device.id for device, result in zip(devices, results)
+                       if result.get("status") == "error"
+                       and (result.get("details") or {}).get("error") == "DeviceNotRegistered"]
+        if invalid_ids:
+            PushDevice.objects.filter(id__in=invalid_ids).delete()
+    except Exception:  # noqa: BLE001 — an alert can never fail a settled payment
+        log.exception("txn_alert_push_failed ref=%s", txn.reference)
 
 
 def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> None:

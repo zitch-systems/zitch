@@ -119,9 +119,8 @@ const Me = () => {
     }
   };
 
-  // Biometric TRANSACTION-approval toggle — separate from sign-in. Enabling scans
-  // then captures the PIN to cache (the only path that stores it); disabling drops
-  // the cached PIN so payments fall back to the keypad.
+  // Biometric TRANSACTION-approval toggle — separate from sign-in. SecureStore
+  // performs the single native authentication when the entered PIN is saved.
   const toggleBioTxn = async (v: boolean) => {
     if (!v) {
       await setBiometricTxnEnabled(false);
@@ -133,8 +132,7 @@ const Me = () => {
       notify('Biometrics unavailable', 'Set up Face ID or a fingerprint in your device settings first.');
       return;
     }
-    const ok = await authenticate('Approve payments with biometrics', true);
-    if (ok) setPinOpen(true);  // capture the PIN to cache
+    setPinOpen(true);  // capture the PIN, then save behind the OS biometric ACL
   };
 
   const enablePay = async (pin: string) => {

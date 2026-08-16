@@ -7,6 +7,7 @@ import { apiJson } from '@/lib/api';
 import { font, useTheme } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
 import { usePinScreenProtection } from '@/lib/screenCapture';
+import { clearPendingWhatsAppApproval, rememberWhatsAppApproval } from '@/lib/pendingApproval';
 
 /**
  * Deep-link approval for a WhatsApp-armed payment.
@@ -51,6 +52,7 @@ const WaApprove = () => {
         setPhase('dead');
         return;
       }
+      await rememberWhatsAppApproval(token);
       const res = await apiJson('/api/whatsapp/approve/preview/', { token });
       if (!alive) return;
       if (res?.success) {
@@ -61,6 +63,7 @@ const WaApprove = () => {
         // backend deliberately words these identically.
         setDeadReason(res?.message || 'This request has expired or was already completed.');
         setPhase('dead');
+        clearPendingWhatsAppApproval().catch(() => {});
       }
     })();
     return () => { alive = false; };
@@ -73,6 +76,7 @@ const WaApprove = () => {
     if (res?.success) {
       setOutcome(res.message || 'Done ✅');
       setPhase('done');
+      clearPendingWhatsAppApproval().catch(() => {});
       return;
     }
     if (res?.offline) {
@@ -149,7 +153,7 @@ const WaApprove = () => {
 // an idle-locked session keeps its token on the device — without the guard, an
 // OS-unlocked phone could open straight onto a live payment approval.
 const Guarded = () => (
-  <AuthGuard>
+  <AuthGuard fresh>
     <WaApprove />
   </AuthGuard>
 );
