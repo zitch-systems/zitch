@@ -67,7 +67,7 @@ export interface Config {
    * connectorApiKey so OAuth works with no extra configuration. */
   oauthLoginPassword: string;
   /** Hosts a redirect_uri may point at. Registration is unauthenticated (that
-   * is what makes Dynamic Client Registration work for Claude), so this list
+   * is what makes Dynamic Client Registration work for MCP clients), so this list
    * is the only thing stopping this service being used as an open redirector. */
   oauthAllowedRedirectHosts: readonly string[];
   /** Optional pre-shared client, for clients that cannot do dynamic
@@ -194,8 +194,9 @@ export function loadConfig(): Config {
       createHmac('sha256', connectorApiKey).update('zitch-meta-connector/oauth-signing').digest('hex'),
     oauthLoginPassword: optionalEnv('OAUTH_LOGIN_PASSWORD') ?? connectorApiKey,
     oauthAllowedRedirectHosts: listEnv('OAUTH_ALLOWED_REDIRECT_HOSTS') ?? [
-      // Claude's custom-connector callbacks, plus loopback for local client
-      // development. Anything else has to be added deliberately.
+      // ChatGPT and Claude custom-connector callbacks, plus loopback for local
+      // client development. Anything else has to be added deliberately.
+      'chatgpt.com',
       'claude.ai',
       'claude.com',
       'localhost',

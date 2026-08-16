@@ -17,7 +17,7 @@ from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
-from utility.vtung import _build, _parse
+from utility.vtung import _build, _parse, vt_verify_customer
 
 # API_KEY set => _live() true and _token() returns it without a login round-trip.
 VT_CREDS = {"BASE_URL": "https://vtu.ng", "API_KEY": "tok123", "USERNAME": "", "PASSWORD": ""}
@@ -106,6 +106,18 @@ class VtuNgParseTests(TestCase):
         r = _parse({"code": "error", "message": "insufficient balance", "data": {}})
         self.assertFalse(r["success"])
         self.assertFalse(r.get("pending"))
+
+    @override_settings(VTUNG=VT_CREDS)
+    def test_customer_verification_extracts_the_service_address(self):
+        with patch("utility.vtung._request", return_value={
+            "code": "success",
+            "data": {"customer": {"customerName": "ADA OKON",
+                                   "serviceAddress": "14 Allen Avenue, Ikeja"}},
+        }):
+            result = vt_verify_customer("ikeja-electric", "1023542134", "prepaid")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["customer_name"], "ADA OKON")
+        self.assertEqual(result["customer_address"], "14 Allen Avenue, Ikeja")
 
 
 @override_settings(VTUNG=VT_CREDS)

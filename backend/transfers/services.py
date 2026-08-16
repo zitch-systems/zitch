@@ -316,6 +316,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             "Your Zitch account number isn't set up yet, so there's nothing to send from. "
             "Finish account setup, then try again — your balance is safe.")
 
+    narration = " ".join(str(note or "").split())[:60] or f"Transfer to {name}"
+
     try:
         txn = debit(
             user, amount, f"Transfer to {name}",
@@ -326,7 +328,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             # row the payout sweep (filters meta__reconcile=True) could never find —
             # money debited, never settled or reversed. Cleared below only on a
             # definitively delivered result.
-            meta={"account": account_number, "bank": bank.name, "note": note,
+            meta={"account": account_number, "bank": bank.name,
+                  "recipient_name": name, "note": narration, "narration": narration,
                   "reconcile": True, "channel": channel},
             idempotency_key=idempotency_key,
         )
@@ -339,7 +342,7 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
 
     # Wema per-user-balance model: debit the sender's own NUBAN.
     sender_source = getattr(getattr(user, "wallet", None), "account_number", "") or ""
-    result = payout_send(amount, txn.reference, note or f"Transfer to {name}",
+    result = payout_send(amount, txn.reference, narration,
                          bank.bank_code, account_number, name, bank_name=bank.name,
                          source_account=sender_source)
 

@@ -109,7 +109,8 @@ const TxnDetail = () => {
         source={() => ({
           capture: async () => {
             const { captureRef } = await import('react-native-view-shot');
-            return captureRef(card, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
+            if (!card.current) throw new Error('Receipt is not ready to capture');
+            return captureRef(card.current, { format: 'jpg', quality: 0.95, result: 'tmpfile' });
           },
           html: receiptHtml({
             title: p.type || 'Transaction',

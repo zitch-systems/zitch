@@ -9,12 +9,14 @@ import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import { isTrivialPin } from '@/lib/format';
 import AuthGuard from '@/components/AuthGuard';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 
 // Change the transaction PIN for a signed-in user. Changing an existing PIN
 // requires the CURRENT PIN by default (so a stolen session token alone can't
 // overwrite it); if the user has forgotten it, they can switch to confirming
 // with their account password as the recovery path.
 const ResetPin = () => {
+  usePinScreenProtection();
   const { c } = useTheme();
   const [useOldPin, setUseOldPin] = useState(true);   // false => verify with password (forgot-PIN)
   const [oldPin, setOldPin] = useState('');

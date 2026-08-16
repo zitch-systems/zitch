@@ -671,6 +671,10 @@
           "type": "string",
           "__example__": "MTN airtime"
         },
+        "phone": {
+          "type": "string",
+          "__example__": "08031234567"
+        },
         "error": {
           "type": "string",
           "__example__": ""
@@ -701,6 +705,9 @@
           {
             "type": "Form",
             "name": "vtu_airtime_form",
+            "init-values": {
+              "phone": "${data.phone}"
+            },
             "children": [
               {
                 "type": "TextInput",
@@ -772,6 +779,10 @@
           "type": "string",
           "__example__": "MTN data"
         },
+        "phone": {
+          "type": "string",
+          "__example__": "08031234567"
+        },
         "error": {
           "type": "string",
           "__example__": ""
@@ -802,6 +813,9 @@
           {
             "type": "Form",
             "name": "vtu_data_form",
+            "init-values": {
+              "phone": "${data.phone}"
+            },
             "children": [
               {
                 "type": "Dropdown",

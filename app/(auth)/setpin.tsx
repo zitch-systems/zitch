@@ -10,6 +10,7 @@ import { Stepper } from '@/components/design/Stepper';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
 import { isTrivialPin } from '@/lib/format';
+import { usePinScreenProtection } from '@/lib/screenCapture';
 
 // The backend enforces six digits for every newly-created transaction PIN.
 // Keeping this in sync is security-critical: a four-digit client both weakens
@@ -17,6 +18,7 @@ import { isTrivialPin } from '@/lib/format';
 const PIN_LEN = 6;
 
 const SetPin = () => {
+  usePinScreenProtection();
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState<string | null>(null);

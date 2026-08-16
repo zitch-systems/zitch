@@ -12,6 +12,7 @@ import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
+import { localPhoneNumber } from '@/lib/phone';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -67,7 +68,7 @@ type Plan = { id: string; label: string; sub?: string; price: number };
 
 const BuyData = () => {
   const { c } = useTheme();
-  const { balance, reload, txns } = useWallet();
+  const { balance, reload, txns, phoneNumber } = useWallet();
   const [net, setNet] = useState('1');
   const [planType, setPlanType] = useState('1');
   const [plan, setPlan] = useState('');
@@ -87,6 +88,14 @@ const BuyData = () => {
   // receipt and carried into the saved/shared file, so a support ticket can name it.
   const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
+  const phoneSeeded = useRef(false);
+
+  useEffect(() => {
+    const own = localPhoneNumber(phoneNumber);
+    if (!own || phoneSeeded.current) return;
+    phoneSeeded.current = true;
+    setPhone((current) => current || own);
+  }, [phoneNumber]);
 
   // Fetch plans whenever network + plan type are chosen.
   useEffect(() => {
@@ -157,14 +166,15 @@ const BuyData = () => {
   // Numbers this customer has actually topped up before, newest first. Real
   // history, not the phone's address book — the app holds no contacts permission.
   const recentNumbers = useMemo(() => {
-    const seen: string[] = [];
+    const own = localPhoneNumber(phoneNumber);
+    const seen: string[] = own ? [own] : [];
     for (const t of txns) {
       const m = /\b(0\d{10})\b/.exec(t.detail || '');
       if (m && !seen.includes(m[1])) seen.push(m[1]);
       if (seen.length >= 6) break;
     }
     return seen;
-  }, [txns]);
+  }, [txns, phoneNumber]);
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
@@ -387,7 +397,7 @@ const BuyData = () => {
         onPay={(pinOnly) => { setStep(null); setPinError(''); setPinFirst(!!pinOnly); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>

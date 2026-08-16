@@ -201,7 +201,9 @@ def validate_meter(request):
     meter_type = request.data.get("meter_type", "prepaid")
     res = vtu_verify_customer(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
     if res.get("success"):
-        return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""))
+        address = res.get("customer_address", "")
+        return ok(customer_name=res.get("customer_name", ""), name=res.get("customer_name", ""),
+                  customer_address=address, address=address)
     return fail(res.get("message", "Could not verify meter number"), status=400)
 
 
@@ -216,14 +218,33 @@ def buyelectricity(request):
     if amount is None or amount < MIN_ELECTRICITY:
         return fail(f"Minimum amount is ₦{MIN_ELECTRICITY:,.0f}")
     disco = str(data.get("disco", ""))
-    meter = data.get("meter", "")
+    meter = str(data.get("meter", "") or "").strip()
     meter_type = data.get("meter_type", "prepaid")
+    disco_name = DISCO_NAMES.get(disco, disco)
+    idempotency_key = spend_key(
+        data.get("idempotency_key"), user, "electricity", disco, meter, amount)
+    # A connectivity retry after the provider has already accepted the payment
+    # must replay from our ledger even if customer verification is temporarily
+    # unavailable. Re-verifying before this lookup turned a completed purchase
+    # into an apparent validation failure on retry.
+    replay = idempotent_replay(existing_for_key(user, idempotency_key))
+    if replay:
+        return replay
+    verified = vtu_verify_customer(
+        f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric", meter, meter_type)
+    if not verified.get("success"):
+        return fail(verified.get("message", "Could not verify meter number"), status=400)
+    customer_name = str(verified.get("customer_name", "") or "").strip()
+    customer_address = str(verified.get("customer_address", "") or "").strip()
     outcome = _run_purchase(
-        user, amount, f"Electricity — {DISCO_NAMES.get(disco, disco)}",
-        {"meter": meter, "disco": disco, "meter_type": meter_type},
+        user, amount, f"Electricity — {disco_name}",
+        {"meter": meter, "disco": disco, "meter_type": meter_type,
+         "customer_name": customer_name, "customer": customer_name,
+         "customer_address": customer_address, "address": customer_address,
+         "channel": "app"},
         lambda ref: vtu_purchase(f"{DISCO_NAMES.get(disco, 'ikeja').lower()}-electric",
                                  {"billersCode": meter, "variation_code": meter_type, "amount": str(amount)}, reference=ref),
-        idempotency_key=spend_key(data.get("idempotency_key"), user, "electricity", disco, meter, amount),
+        idempotency_key=idempotency_key,
     )
     if not isinstance(outcome, tuple):
         return outcome
@@ -231,7 +252,10 @@ def buyelectricity(request):
     # Prepaid purchases return a recharge token from the aggregator (success only).
     token = (result.get("token") or result.get("provider_reference", "")) if status == "success" else ""
     return provider_purchase_response(status, txn, result,
-                                      success_message="Electricity purchase successful", token=token)
+                                      success_message="Electricity purchase successful", token=token,
+                                      customer_name=customer_name,
+                                      customer_address=customer_address,
+                                      address=customer_address)
 
 
 # ---------------- REMITA (RRR bill payment) ----------------

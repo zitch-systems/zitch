@@ -586,6 +586,9 @@ def _flow_fields(pa: PendingAction) -> dict:
             meter_line = f"Meter {p.get('meter', '')}".strip()
             if cust:
                 meter_line += f" · {cust}"
+            address = p.get("customer_address") or p.get("address") or ""
+            if address:
+                meter_line += f" · {address}"
             return _with_context({
                 "amount": _money(Decimal(p["amount"])),
                 "recipient": DISCO_NAMES.get(p.get("disco", ""), "Electricity"),
@@ -4005,10 +4008,20 @@ def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | N
     )
 
 
+def _own_phone(user) -> str | None:
+    """The linked account phone in the familiar local form VTU inputs show."""
+    digits = re.sub(r"\D", "", str(getattr(user, "phone", "") or ""))
+    if len(digits) == 13 and digits.startswith("234"):
+        digits = "0" + digits[3:]
+    elif len(digits) == 10:
+        digits = "0" + digits
+    return digits if len(digits) >= 10 else None
+
+
 def _phone_from(text: str, user) -> str | None:
     """'me' -> the user's own number; else the digits typed (>= 10)."""
     if text.strip().lower() in ("me", "self", "mine"):
-        return (user.phone or "").lstrip("+")
+        return _own_phone(user)
     digits = re.sub(r"\D", "", text)
     return digits if len(digits) >= 10 else None
 
@@ -4199,7 +4212,9 @@ def _choice_id(text: str, names: dict) -> str | None:
 def _start_airtime(user, msisdn: str) -> None:
     if _blocked_from_spending(user, msisdn):
         return None
-    _new_flow(user, msisdn, "airtime", "network")
+    phone = _own_phone(user)
+    payload = {"pin_attempts": 0, **({"phone": phone} if phone else {})}
+    _new_flow(user, msisdn, "airtime", "network", payload)
     _ask_network(msisdn)
 
 
@@ -4285,7 +4300,9 @@ def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
 def _start_data(user, msisdn: str) -> None:
     if _blocked_from_spending(user, msisdn):
         return None
-    _new_flow(user, msisdn, "data", "network")
+    phone = _own_phone(user)
+    payload = {"pin_attempts": 0, **({"phone": phone} if phone else {})}
+    _new_flow(user, msisdn, "data", "network", payload)
     _ask_network(msisdn)
 
 
@@ -4310,6 +4327,8 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
             return reply(msisdn, "Reply with a plan number from the list, or \"cancel\".")
         pa.payload.update({"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name})
         _touch(pa, state="phone", payload=pa.payload)
+        if pa.payload.get("phone"):
+            return _advance_data(pa, user, msisdn, pa.payload["phone"])
         return reply(msisdn, "What phone number? Reply \"me\" to use your own.")
     if st == "phone":
         phone = _phone_from(text, user)
@@ -4424,7 +4443,9 @@ def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
             _touch(pa, state="meter", payload=p)
             return reply(msisdn, "Couldn't validate that meter. Check the number and try again, or \"cancel\".")
         cust = res.get("customer_name", "")
-        p.update({"customer": cust, "meter_verified": True})
+        address = res.get("customer_address", "")
+        p.update({"customer": cust, "customer_address": address,
+                  "meter_verified": True})
         note = f"Meter verified{f' ({cust})' if cust else ''}. "
 
     if not p.get("amount"):
@@ -4453,15 +4474,20 @@ def _electricity_confirm(pa: PendingAction, user, msisdn: str, note: str = "") -
         return _limit_reply(msisdn, user, limit_msg)
     disco_name = DISCO_NAMES[p["disco"]]
     p["amount"] = str(amount)
-    p["meta"] = {"meter": p["meter"], "disco": p["disco"], "meter_type": p["meter_type"]}
+    p["meta"] = {"meter": p["meter"], "disco": p["disco"], "meter_type": p["meter_type"],
+                 "customer_name": p.get("customer", ""),
+                 "customer": p.get("customer", ""),
+                 "customer_address": p.get("customer_address", ""),
+                 "address": p.get("customer_address", "")}
     if not _arm_confirm(pa, user):
         return
     cust = p.get("customer") or "—"
+    address = p.get("customer_address") or "Not provided by electricity provider"
     return _send_confirm(
         pa, msisdn,
         note +
         f"💡 *Confirm electricity*\n{disco_name} ({p['meter_type']}) • "
-        f"Meter {p['meter']}\nCustomer: {cust} • {_money(amount)}")
+        f"Meter {p['meter']}\nCustomer: {cust}\nAddress: {address}\n{_money(amount)}")
 
 
 def _advance_electricity(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -4507,7 +4533,11 @@ def _exec_electricity(pa: PendingAction, user, msisdn: str) -> str:
 
     def _receipt_rows(txn, res):
         token = res.get("token") or res.get("provider_reference", "")
-        rows = [("Disco", disco_name), ("Meter", f"{meter} ({mt})"), ("Amount", _money(amount))]
+        rows = [("Disco", disco_name), ("Meter", f"{meter} ({mt})"),
+                ("Customer", pa.payload.get("customer") or "Verified customer"),
+                ("Address", pa.payload.get("customer_address")
+                            or "Not provided by electricity provider"),
+                ("Amount", _money(amount))]
         if token:
             rows.append(("Token", token))
         rows += [("Reference", txn.reference), ("Date", timezone.now().strftime("%d %b %Y, %H:%M"))]
@@ -4908,7 +4938,7 @@ def _begin_airtime(user, msisdn: str, amount, phone, network, recipient_ref=None
     # for: no target means the customer's own line, and a Nigerian number's
     # prefix names its network. Neither guess moves money; the confirm screen
     # still shows what was inferred and still needs biometrics or the PIN.
-    ph = _phone_from(str(phone), user) if phone else (user.phone or "").lstrip("+")
+    ph = _phone_from(str(phone), user) if phone else _own_phone(user)
     netid = _network_id(network) or _network_from_prefix(ph)
     try:
         amt = Decimal(str(amount)) if amount is not None else None

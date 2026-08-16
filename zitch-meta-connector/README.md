@@ -1,7 +1,7 @@
 # zitch-meta-connector
 
 A remote, HTTPS-based [MCP](https://modelcontextprotocol.io) server that gives an AI assistant
-(Claude, or later a ChatGPT GPT Action) maintenance and configuration access to the Zitch
+(ChatGPT or Claude) maintenance and configuration access to the Zitch
 WhatsApp Cloud API and Meta Business API — webhook status, phone-number config, message
 templates, Flows, delivery health, and credential validity.
 
@@ -149,26 +149,26 @@ Two credential types are accepted, because two very different callers need in:
 
 | Caller | Credential |
 |---|---|
-| **Claude web custom connectors** | OAuth 2.1 access token — its UI can only sign in through a browser redirect flow |
+| **ChatGPT and Claude web custom connectors** | OAuth 2.1 access token — their UIs sign in through a browser redirect flow |
 | **Scripts, curl, health probes, a future GPT Action** | `CONNECTOR_API_KEY` directly — none of these can run a browser flow |
 
-Both land on the same read-only tools, with the same rate limits and the same audit logging.
+Both land on the same enabled toolset, with the same rate limits and the same audit logging.
 Neither ever exposes `META_ACCESS_TOKEN`: **an OAuth token authenticates the caller *to this
 connector* and is never itself a Meta credential.**
 
-### Connecting Claude
+### Connecting ChatGPT or Claude
 
-In Claude → Settings → Connectors → *Add custom connector*, give it:
+Create a custom MCP connector/plugin in either client and give it:
 
 ```
 https://zitch-meta-connector.onrender.com/mcp
 ```
 
-That is all it needs. Claude discovers everything else on its own: the `401` from `/mcp` carries a
-`WWW-Authenticate` header pointing at this server's protected-resource metadata, Claude reads the
-metadata, registers itself as a client, and opens the sign-in page. You'll be asked for the
+Select OAuth authentication. The client discovers everything else on its own: the `401` from
+`/mcp` carries a `WWW-Authenticate` header pointing at this server's protected-resource metadata,
+the client reads the metadata, registers itself, and opens the sign-in page. You'll be asked for the
 **operator passphrase** — `OAUTH_LOGIN_PASSWORD`, or `CONNECTOR_API_KEY` if you haven't set one.
-Approve, and Claude holds a token from then on.
+Approve, and the client holds a scoped connector token from then on.
 
 ### The OAuth endpoints
 
@@ -188,13 +188,14 @@ Design notes worth knowing before you change any of it:
 - **Client registration is stateless.** The `client_id` *is* a signed token carrying that client's
   own metadata, and the `client_secret` is derived from it. Nothing is stored, so a client
   registered before a redeploy still works after one — an in-memory registry would silently force
-  Claude to re-register on every deploy.
+  the client to re-register on every deploy.
 - **Authorization codes are the one stateful thing**, precisely because they must be single-use,
   and "already redeemed?" is not a question a self-contained token can answer. They live ~60 seconds.
 - **Not a JWT, deliberately.** These tokens carry no client-supplied `alg` header, which is the
   root of the whole algorithm-confusion family of bugs. One algorithm, fixed in code.
-- **Redirect URIs are allowlisted by host** (`claude.ai`, `claude.com`, loopback by default).
-  Registration is unauthenticated — that's what makes it work for Claude — so without that
+- **Redirect URIs are allowlisted by host** (`chatgpt.com`, `claude.ai`, `claude.com`,
+  and loopback by default).
+  Registration is unauthenticated — that's what makes it work for either client — so without that
   allowlist anyone could register a client pointing at their own callback and turn this into an
   open redirector.
 - **Revocation is key rotation.** Tokens are stateless and there is no denylist, so a refresh

@@ -18,8 +18,8 @@ services:
     runtime: node
     rootDir: zitch-meta-connector
     # `starter`, not `free`: the free plan sleeps after 15 minutes idle, and
-    # this connector's clients (Claude's remote-connector integration, a
-    # future GPT Action) expect an HTTPS endpoint to respond promptly rather
+    # this connector's clients (ChatGPT and Claude custom connectors) expect
+    # an HTTPS endpoint to respond promptly rather
     # than eat a ~30-60s cold-start on the first call after a quiet period.
     # Nothing here is money-movement-critical the way the banking services
     # are (see the root render.yaml's comment on that same field), so this is
@@ -42,7 +42,7 @@ services:
       # Generate with: openssl rand -hex 32
       - key: CONNECTOR_API_KEY
         sync: false
-      # --- OAuth 2.1 (Claude web custom connectors) ---
+      # --- OAuth 2.1 (ChatGPT and Claude web custom connectors) ---
       # Optional. OAuth works with none of these set: clients register
       # dynamically, the consent screen accepts CONNECTOR_API_KEY as the
       # operator passphrase, and tokens are signed with a key derived from it.

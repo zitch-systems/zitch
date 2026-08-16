@@ -30,6 +30,7 @@ import { buildMcpServer } from './mcpServer.js';
 import { buildRestRouter } from './rest.js';
 import { buildOAuthRouter } from './oauth/router.js';
 import { toolsFor } from './tools/registry.js';
+import { JSON_BODY_LIMIT_BYTES } from './httpLimits.js';
 
 const config = loadConfig();
 
@@ -47,10 +48,10 @@ app.use((_req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   next();
 });
-// Small limit: every request body here is a JSON-RPC tool call with a
-// handful of short string/number fields — nothing this server does needs a
-// large payload, so capping it removes an easy memory-exhaustion vector.
-app.use(express.json({ limit: '256kb' }));
+// Bounded but large enough for update_whatsapp_flow_json: the Flow carries its
+// logo inline and its JSON-RPC envelope is currently >256 KB. Keep this limit
+// paired with MAX_FLOW_JSON_CHARS and its regression test in httpLimits.ts.
+app.use(express.json({ limit: JSON_BODY_LIMIT_BYTES }));
 
 app.get('/healthz', (_req, res) => {
   res.status(200).json({

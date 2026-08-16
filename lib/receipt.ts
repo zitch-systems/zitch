@@ -196,7 +196,12 @@ export const exportReceipt = async (
     ? (await (await import('expo-print')).printToFileAsync({ html: src.html, base64: false })).uri
     : await src.capture();
 
-  const target = `${FS.cacheDirectory}${filename}`;
+  if (!raw) throw new Error('Receipt renderer did not return a file.');
+  const exportDirectory = FS.cacheDirectory || FS.documentDirectory;
+  // Some native runtimes can temporarily expose neither directory during app
+  // restoration. The capture is still a valid file, so share it directly.
+  if (!exportDirectory) return { uri: withScheme(raw), mime, filename };
+  const target = `${exportDirectory}${filename}`;
   try {
     // A previous export of the same reference would otherwise make copyAsync fail.
     await FS.deleteAsync(target, { idempotent: true });

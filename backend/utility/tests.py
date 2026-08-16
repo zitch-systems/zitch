@@ -131,6 +131,48 @@ class UtilityTests(TestCase):
                               {"access_token": self.token, "disco": "1", "meter": "1234567890"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(body["customer_name"])
+        self.assertTrue(body["customer_address"])
+
+    def test_electricity_purchase_returns_and_persists_the_verified_address(self):
+        with patch("utility.views.vtu_verify_customer", return_value={
+            "success": True, "customer_name": "ADEYEMI WILLIAM",
+            "customer_address": "12 Marina Road, Lagos",
+        }):
+            res, body = self.post("/api/utility/buyelectricity/", {
+                "access_token": self.token, "amount": "1000", "disco": "1",
+                "meter": "1023542134", "meter_type": "prepaid",
+                "transaction_pin": "1234",
+            })
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["customer_address"], "12 Marina Road, Lagos")
+        txn = Transaction.objects.get(reference=body["reference"])
+        self.assertEqual(txn.meta["customer_address"], "12 Marina Road, Lagos")
+        self.assertEqual(txn.meta["channel"], "app")
+
+    def test_electricity_retry_replays_before_calling_the_provider_again(self):
+        payload = {
+            "access_token": self.token, "amount": "1000", "disco": "1",
+            "meter": "1023542134", "meter_type": "prepaid",
+            "transaction_pin": "1234", "idempotency_key": "electricity-retry-1",
+        }
+        with patch("utility.views.vtu_verify_customer", return_value={
+            "success": True, "customer_name": "ADEYEMI WILLIAM",
+            "customer_address": "12 Marina Road, Lagos",
+        }):
+            first, first_body = self.post("/api/utility/buyelectricity/", payload)
+        self.assertEqual(first.status_code, 200)
+
+        with patch("utility.views.vtu_verify_customer",
+                   side_effect=RuntimeError("verification provider offline")) as verify, \
+             patch("utility.views.vtu_purchase",
+                   side_effect=RuntimeError("purchase provider called twice")) as purchase:
+            retry, retry_body = self.post("/api/utility/buyelectricity/", payload)
+        self.assertEqual(retry.status_code, 200)
+        self.assertTrue(retry_body["duplicate"])
+        self.assertEqual(retry_body["reference"], first_body["reference"])
+        verify.assert_not_called()
+        purchase.assert_not_called()
+        self.assertEqual(self.balance(), Decimal("19000"))
 
     def test_validate_iuc_requires_auth(self):
         res, _ = self.post("/api/utility/validate_iuc/", {"cablenetwork": "2", "iuc": "1234567890"})

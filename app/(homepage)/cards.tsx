@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Image, AppState, Platform } from 'react-native';
-import * as ScreenCapture from 'expo-screen-capture';
+import { View, Text, Pressable, Image, AppState } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
@@ -50,9 +49,6 @@ const Cards = () => {
     if (!reveal) return;
     const sub = AppState.addEventListener('change', (s) => { if (s !== 'active') setReveal(null); });
     const t = setTimeout(() => setReveal(null), 60 * 1000);
-    // Defence in depth for a full PAN/CVV. The root already blocks capture for
-    // every financial screen; do not re-enable it when these details disappear.
-    if (Platform.OS !== 'web') ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     return () => {
       sub.remove();
       clearTimeout(t);
@@ -189,7 +185,7 @@ const Cards = () => {
         <Btn label={Number(fundAmt) > 0 ? `Fund ${money(Number(fundAmt))}` : 'Fund card'} disabled={Number(fundAmt) < 100} onPress={() => { setFundOpen(false); setPinError(''); setTimeout(() => setFundPin(true), 320); }} />
       </Sheet>
 
-      <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN">
+      <Sheet open={fundPin} onClose={() => !busy && setFundPin(false)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Funding…' : `Load ${money(Number(fundAmt))} onto your card`}
         </Text>
@@ -197,7 +193,7 @@ const Cards = () => {
       </Sheet>
 
       {/* Details reveal: PIN */}
-      <Sheet open={detailsPin} onClose={() => !busy && setDetailsPin(false)} title="Reveal card details">
+      <Sheet open={detailsPin} onClose={() => !busy && setDetailsPin(false)} title="Reveal card details" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           Enter your PIN to show the full card number & CVV
         </Text>

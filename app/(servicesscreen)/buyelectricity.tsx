@@ -35,6 +35,7 @@ const BuyElectricity = () => {
   const [meter, setMeter] = useState('');
   const [amt, setAmt] = useState('');
   const [customerName, setCustomerName] = useState('');
+  const [customerAddress, setCustomerAddress] = useState('');
   const [validating, setValidating] = useState(false);
   const [purchasedToken, setPurchasedToken] = useState('');
   const [step, setStep] = useState<Step>(null);
@@ -47,13 +48,16 @@ const BuyElectricity = () => {
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    const timer = setTimeout(() => setCustomerName(''), 0);
+    const timer = setTimeout(() => {
+      setCustomerName('');
+      setCustomerAddress('');
+    }, 0);
     return () => clearTimeout(timer);
   }, [disco, meterType, meter]);
 
   const provider = DISCOS.find((d) => d.id === disco)!;
   const amount = Number(amt || 0);
-  const valid = meter.length >= 8 && amount >= 500;
+  const valid = meter.length >= 8 && amount >= 500 && !!customerName;
 
   const validateMeter = async () => {
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
@@ -63,6 +67,7 @@ const BuyElectricity = () => {
       const result = await response.json();
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
+        setCustomerAddress(result.customer_address || result.address || 'Not provided by electricity provider');
       } else {
         notify('Error', result.message || 'Could not verify meter number.');
       }
@@ -100,6 +105,10 @@ const BuyElectricity = () => {
         setTxnRef(String(result.reference || ''));
         setPending(!!result.pending);
         if (result.token) setPurchasedToken(String(result.token));
+        if (result.customer_name) setCustomerName(String(result.customer_name));
+        if (result.customer_address || result.address) {
+          setCustomerAddress(String(result.customer_address || result.address));
+        }
         setStep(null);
         setDone(true);
         reload();
@@ -130,6 +139,8 @@ const BuyElectricity = () => {
             ['Disco', provider.name],
             ['Meter', meter],
             ['Type', meterType],
+            ['Customer', customerName || 'Verified customer'],
+            ['Address', customerAddress || 'Not provided by electricity provider'],
             ...(purchasedToken ? ([['Token', purchasedToken]] as [string, string][]) : []),
             ['Total', money(amount), true],
           ]}
@@ -163,7 +174,10 @@ const BuyElectricity = () => {
       />
       <View style={{ marginTop: 8, marginBottom: 8 }}>
         {customerName ? (
-          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {customerName}</Text>
+          <View style={{ gap: 3 }}>
+            <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {customerName}</Text>
+            <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12.5 }}>{customerAddress || 'Address unavailable'}</Text>
+          </View>
         ) : (
           <Btn label="Validate meter" variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating} />
         )}
@@ -183,11 +197,11 @@ const BuyElectricity = () => {
         title="Confirm payment"
         total={amount}
         balance={balance}
-        rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
+        rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType], ['Customer', customerName], ['Address', customerAddress || 'Not provided by electricity provider']]}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
@@ -198,4 +212,3 @@ const BuyElectricity = () => {
 };
 
 export default BuyElectricity;
-

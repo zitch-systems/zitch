@@ -1183,12 +1183,13 @@ def _vtu_network_screen(kind: str, error: str = "") -> dict:
                      "error": error or ""}}
 
 
-def _vtu_airtime_screen(net_name: str, error: str = "") -> dict:
+def _vtu_airtime_screen(net_name: str, error: str = "", phone: str = "") -> dict:
     return {"screen": VTU_AIRTIME,
-            "data": {"summary": f"{net_name} airtime", "error": error or ""}}
+            "data": {"summary": f"{net_name} airtime", "phone": phone or "",
+                     "error": error or ""}}
 
 
-def _vtu_data_screen(net: str, net_name: str, error: str = "") -> dict:
+def _vtu_data_screen(net: str, net_name: str, error: str = "", phone: str = "") -> dict:
     """The plan list is the NETWORK's, fetched at render time — a plan picked
     from another network's list is not a typo the provider can recover from.
 
@@ -1213,12 +1214,13 @@ def _vtu_data_screen(net: str, net_name: str, error: str = "") -> dict:
             "data": {"plans": [{"id": p.plan_code,
                                 "title": f"{p.name} • {p.validity} • {_money(p.price)}"}
                                for p in plans],
-                     "summary": f"{net_name} data", "error": error or ""}}
+                     "summary": f"{net_name} data", "phone": phone or "",
+                     "error": error or ""}}
 
 
 def _vtu_screen_for(pa) -> dict:
     """Re-render whichever page this session is standing on (INIT / BACK)."""
-    from .router import NETWORK_NAMES
+    from .router import NETWORK_NAMES, _own_phone
 
     step = pa.payload.get("vtu_step", VTU_KIND_STEP)
     kind = pa.payload.get("vtu_kind", "airtime")
@@ -1228,8 +1230,9 @@ def _vtu_screen_for(pa) -> dict:
         return _vtu_network_screen(kind)
     net = pa.payload.get("net", "1")
     net_name = NETWORK_NAMES.get(net, "")
-    return (_vtu_airtime_screen(net_name) if kind == "airtime"
-            else _vtu_data_screen(net, net_name))
+    phone = pa.payload.get("phone") or _own_phone(pa.user) or ""
+    return (_vtu_airtime_screen(net_name, phone=phone) if kind == "airtime"
+            else _vtu_data_screen(net, net_name, phone=phone))
 
 
 def _submit_vtu(pa, data: dict) -> dict:
@@ -1257,7 +1260,7 @@ def _submit_vtu_kind(pa, data: dict) -> dict:
 
 
 def _submit_vtu_network(pa, data: dict) -> dict:
-    from .router import NETWORK_NAMES, _clear_actions, _touch
+    from .router import NETWORK_NAMES, _clear_actions, _own_phone, _touch
 
     net = str(data.get("network", "")).strip()
     if net not in NETWORK_NAMES:
@@ -1265,18 +1268,21 @@ def _submit_vtu_network(pa, data: dict) -> dict:
                                    error="⚠️ Pick a network from the list.")
     kind = pa.payload.get("vtu_kind", "airtime")
     net_name = NETWORK_NAMES[net]
+    phone = pa.payload.get("phone") or _own_phone(pa.user) or ""
+    if phone:
+        pa.payload["phone"] = phone
     if kind == "data":
         # _vtu_data_screen answers the terminal screen itself when the network
         # has no plans (an empty Dropdown does not render), so the only thing
         # left to do here is drop the action behind it.
-        screen = _vtu_data_screen(net, net_name)
+        screen = _vtu_data_screen(net, net_name, phone=phone)
         if screen["screen"] == SUCCESS_SCREEN:
             _clear_actions(pa.msisdn)
             return screen
     pa.payload["net"] = net
     pa.payload["vtu_step"] = VTU_DETAILS_STEP
     _touch(pa, payload=pa.payload)
-    return screen if kind == "data" else _vtu_airtime_screen(net_name)
+    return screen if kind == "data" else _vtu_airtime_screen(net_name, phone=phone)
 
 
 def _submit_vtu_details(pa, data: dict) -> dict:
@@ -1291,7 +1297,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
     from utility.models import DataPlan
 
     from .router import (MIN_AIRTIME, NETWORK_NAMES, _clear_actions, _flow_fields,
-                         _insufficient, _money, _phone_from, _touch)
+                         _insufficient, _money, _own_phone, _phone_from, _touch)
     from wallet.services import get_or_create_wallet
 
     user = pa.user
@@ -1300,10 +1306,12 @@ def _submit_vtu_details(pa, data: dict) -> dict:
     net_name = NETWORK_NAMES.get(net, "")
 
     def refuse(message):
-        return (_vtu_airtime_screen(net_name, error=f"⚠️ {message}") if kind == "airtime"
-                else _vtu_data_screen(net, net_name, error=f"⚠️ {message}"))
+        phone_value = pa.payload.get("phone") or _own_phone(user) or ""
+        return (_vtu_airtime_screen(net_name, error=f"⚠️ {message}", phone=phone_value)
+                if kind == "airtime" else
+                _vtu_data_screen(net, net_name, error=f"⚠️ {message}", phone=phone_value))
 
-    phone = _phone_from(str(data.get("phone", "")), user)
+    phone = _phone_from(str(data.get("phone") or pa.payload.get("phone") or ""), user)
     if not phone:
         return refuse("Enter a valid phone number.")
 

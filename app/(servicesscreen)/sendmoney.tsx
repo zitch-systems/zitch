@@ -100,6 +100,7 @@ const SendMoney = () => {
   const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false);  // queued by the rail, not yet confirmed
   const [sentName, setSentName] = useState('');  // server-resolved holder (authoritative for the receipt)
+  const [sentNarration, setSentNarration] = useState('');
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one transfer attempt
 
@@ -330,6 +331,7 @@ const SendMoney = () => {
         idemKey.current = '';
         setPending(!res.success && !!res.pending && !res.duplicate);
         if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
+        if (res.narration) setSentNarration(String(res.narration));
         setTxnRef(String(res.reference || ''));
         setStep(null);   // close the PIN sheet FIRST…
         reload();
@@ -364,6 +366,7 @@ const SendMoney = () => {
     // Prefer the name the bank actually resolved to (returned by the send), so the
     // receipt reflects who was really paid — not a possibly-stale displayed name.
     const finalName = sentName || recipientName;
+    const narration = sentNarration || note.trim() || `Transfer to ${finalName || 'recipient'}`;
     return (
       <Screen scroll={false}>
         <Receipt
@@ -371,7 +374,7 @@ const SendMoney = () => {
           message={pending
             ? `${money(amount)} to ${finalName || 'recipient'} is processing and will be confirmed shortly.`
             : `${money(amount)} sent to ${finalName || 'recipient'}.`}
-          rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ...(note ? ([['Note', note]] as [string, string][]) : []), ['Fee', '₦0'], ['Total', money(amount), true]]}
+          rows={[['Recipient', finalName || '—'], ['Account', acctShown], ['Bank', bankShown], ['Narration', narration], ['Fee', '₦0'], ['Total', money(amount), true]]}
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
@@ -705,11 +708,11 @@ const SendMoney = () => {
         title="Confirm transfer"
         total={amount}
         balance={balance}
-        rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch']]}
+        rows={[['To', recipientName || '—'], ['Account', picked ? picked.account_number : mode === 'bank' ? acct : identifier], ['Bank', picked ? picked.bank_name : mode === 'bank' ? bank?.name || '—' : 'Zitch'], ['Narration', note.trim() || `Transfer to ${recipientName || 'recipient'}`]]}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title={busy ? 'Processing transfer' : 'Enter your PIN'}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title={busy ? 'Processing transfer' : 'Enter your PIN'} protectScreen>
         {/* No negative top margin — inside the sheet's ScrollView it clips the
             subtitle's top edge under the title. */}
         <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>

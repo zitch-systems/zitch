@@ -333,10 +333,33 @@ def vt_requery(reference: str) -> dict:
     return parsed
 
 
+def _first_customer_field(payload, keys: tuple[str, ...]) -> str:
+    """Find a provider customer field across the wrapper shapes VTU.ng uses."""
+    if isinstance(payload, dict):
+        for key in keys:
+            value = payload.get(key)
+            if value is not None and not isinstance(value, (dict, list)):
+                text = str(value).strip()
+                if text:
+                    return text
+        for value in payload.values():
+            if isinstance(value, (dict, list)):
+                found = _first_customer_field(value, keys)
+                if found:
+                    return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _first_customer_field(value, keys)
+            if found:
+                return found
+    return ""
+
+
 def vt_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a meter / smartcard number, returning the customer name."""
+    """Validate a meter / smartcard number, returning customer identity data."""
     if not _live():
-        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM"}
+        return {"success": True, "mock": True, "customer_name": "ADEYEMI WILLIAM",
+                "customer_address": "12 Marina Road, Lagos (demo)"}
     sid = service_id.lower()
     if sid.endswith("-electric"):
         svc = _VT_DISCO.get(sid[: -len("-electric")], sid)
@@ -349,7 +372,12 @@ def vt_verify_customer(service_id: str, billers_code: str, variation: str = "") 
         data = _request("POST", _EP_VERIFY, json_body=body)
     except (requests.RequestException, ValueError) as exc:
         return {"success": False, "message": f"VTU.ng unreachable: {exc}"}
-    d = data.get("data") or {}
-    name = (d.get("customer_name") or d.get("customerName") or d.get("name")
-            or data.get("customer_name") or "")
-    return {"success": bool(name), "customer_name": name, "raw": data}
+    name = _first_customer_field(data, (
+        "customer_name", "customerName", "customer", "name",
+    ))
+    address = _first_customer_field(data, (
+        "customer_address", "customerAddress", "meter_address", "meterAddress",
+        "service_address", "serviceAddress", "address",
+    ))
+    return {"success": bool(name), "customer_name": name,
+            "customer_address": address, "raw": data}

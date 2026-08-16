@@ -661,7 +661,8 @@ def pending_bank_payouts(cutoff):
 
 
 @db_transaction.atomic
-def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "") -> tuple[Transaction, Transaction]:
+def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "",
+             channel: str = "") -> tuple[Transaction, Transaction]:
     """Move funds between two Zitch wallets atomically.
 
     Both wallet rows are locked (in a stable order to avoid deadlocks) so the
@@ -706,19 +707,24 @@ def transfer(sender, recipient, amount, note: str = "", idempotency_key: str = "
     rw.save(update_fields=["balance", "updated"])
 
     sender_name = (sender.get_full_name() or sender.phone or "Zitch user").strip()
+    narration = " ".join(str(note or "").split())[:60] or f"Transfer to {recipient_name}"
 
     try:
         with db_transaction.atomic():  # savepoint: contain the unique violation
             debit_txn = Transaction.objects.create(
                 user=sender, service=service, amount=amount,
                 direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
-                reference=ref, meta={"to": recipient.phone, "note": note},
+                reference=ref, meta={"to": recipient.phone, "recipient_name": recipient_name,
+                                     "note": narration, "narration": narration,
+                                     "channel": channel},
                 idempotency_key=idempotency_key,
             )
             credit_txn = Transaction.objects.create(
                 user=recipient, service=f"Transfer from {sender_name}", amount=amount,
                 direction=Transaction.IN, transaction_status=Transaction.SUCCESS,
-                reference=f"{ref}-C", meta={"from": sender.phone, "note": note},
+                reference=f"{ref}-C", meta={"from": sender.phone, "counterparty": sender_name,
+                                            "note": narration, "narration": narration,
+                                            "channel": channel},
             )
     except IntegrityError:
         if idempotency_key:

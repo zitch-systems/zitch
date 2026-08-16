@@ -9,8 +9,10 @@ Two rules, and they are separate on purpose:
   deterministic layer executes, because someone who typed the whole instruction
   has already answered every question the form would ask.
 """
+import json
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -66,14 +68,16 @@ class TheLadderIsOneSessionTests(TestCase):
         self.assertEqual(_submit(pa, {"kind": "airtime"})["screen"], VTU_NETWORK)
         pa.refresh_from_db()
         self.assertEqual(pa.action_type, "airtime")
-        self.assertEqual(_submit(pa, {"network": "1"})["screen"], VTU_AIRTIME)
+        detail = _submit(pa, {"network": "1"})
+        self.assertEqual(detail["screen"], VTU_AIRTIME)
+        self.assertEqual(detail["data"]["phone"], self.user.phone)
         pa.refresh_from_db()
-        resp = _submit(pa, {"amount": "500", "phone": "08031234567"})
+        resp = _submit(pa, {"amount": "500"})
         # Chains into the PIN page of the SAME session, not a second message.
         self.assertEqual(resp["screen"], PIN_CHAIN)
         pa.refresh_from_db()
         self.assertEqual(pa.state, FLOW_PIN_STATE)
-        self.assertEqual(pa.payload["phone"], "08031234567")
+        self.assertEqual(pa.payload["phone"], self.user.phone)
         self.assertEqual(Decimal(pa.payload["amount"]), Decimal("500"))
 
     def test_data_takes_the_plan_page_instead_of_an_amount(self):
@@ -86,11 +90,28 @@ class TheLadderIsOneSessionTests(TestCase):
         resp = _submit(pa, {"network": "1"})
         self.assertEqual(resp["screen"], VTU_DATA)
         self.assertEqual(resp["data"]["plans"], [{"id": "mtn-1gb", "title": "1GB • 30 days • ₦500.00"}])
+        self.assertEqual(resp["data"]["phone"], self.user.phone)
         pa.refresh_from_db()
-        resp = _submit(pa, {"plan": "mtn-1gb", "phone": "08031234567"})
+        resp = _submit(pa, {"plan": "mtn-1gb"})
         self.assertEqual(resp["screen"], PIN_CHAIN)
         pa.refresh_from_db()
         self.assertEqual(pa.payload["plan_code"], "mtn-1gb")
+        self.assertEqual(pa.payload["phone"], self.user.phone)
+
+    def test_an_international_account_number_is_prefilled_in_local_form(self):
+        self.user.phone = "+234 801 000 0001"
+        self.user.save(update_fields=["phone"])
+        pa = _vtu_action(self.user, vtu_kind="airtime", vtu_step="network")
+        resp = _submit(pa, {"network": "1"})
+        self.assertEqual(resp["data"]["phone"], "08010000001")
+
+    def test_published_forms_bind_the_phone_prefill(self):
+        asset = Path(__file__).with_name("flow_assets") / "pin_flow.json"
+        screens = {s["id"]: s for s in json.loads(asset.read_text())["screens"]}
+        for screen_id in (VTU_AIRTIME, VTU_DATA):
+            form = next(c for c in screens[screen_id]["layout"]["children"]
+                        if c.get("type") == "Form")
+            self.assertEqual(form["init-values"]["phone"], "${data.phone}")
 
     def test_a_plan_from_another_network_is_refused(self):
         """Routing is by (network, plan_code); a mismatched pair is not something

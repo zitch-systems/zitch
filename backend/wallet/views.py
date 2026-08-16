@@ -890,7 +890,8 @@ def transfer_send(request):
         return daily_err
 
     try:
-        debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""), idempotency_key=key)
+        debit_txn, _ = transfer(sender, recipient, amount, note=data.get("note", ""),
+                                idempotency_key=key, channel="app")
     except DuplicateTransaction:
         return idempotent_replay(existing_for_key(sender, key)) or fail("Duplicate request", status=409)
     except InsufficientFunds:
@@ -899,4 +900,5 @@ def transfer_send(request):
         return fail(str(exc), status=403, code="limit_exceeded")
 
     wallet = get_or_create_wallet(sender)
-    return ok(success=True, wallet=str(wallet.balance), reference=debit_txn.reference, message="Money sent")
+    return ok(success=True, wallet=str(wallet.balance), reference=debit_txn.reference,
+              narration=(debit_txn.meta or {}).get("narration", ""), message="Money sent")
