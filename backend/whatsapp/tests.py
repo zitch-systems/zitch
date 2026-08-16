@@ -4640,3 +4640,99 @@ class ConversationReferentTests(TestCase):
                  {"name": "report_problem",
                   "input": {"amount": 5000, "days_ago": 3, "kind": "transfer"}})
         self.assertEqual(Dispute.objects.get(user=self.user).reference, self.older.reference)
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class ProductDenialTests(TestCase):
+    """The assistant answered "how much is my loan balance" with "Zitch doesn't
+    offer loans" — to a customer of a company with a loans product, a loans
+    screen in the app and a /api/loans/ endpoint.
+
+    That is worse than an unhelpful answer. It is a false statement about the
+    business, made in the business's own voice, that would send someone to a
+    competitor. The cage was meant to stop the model INVENTING capabilities; it
+    had started denying real ones.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user(balance="50000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def say(self, text, intent=None):
+        with patch("whatsapp.ai.extract_intent", return_value=intent):
+            router.handle_inbound(MSISDN, text)
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def test_the_model_cannot_tell_a_customer_zitch_lacks_a_product(self):
+        from whatsapp.ai import safe_reason
+
+        for denial in ("Zitch doesn't offer loans.",
+                       "Zitch does not offer loans. I can check your balance instead.",
+                       "We don't offer savings accounts.",
+                       "Zitch can't do loans.",
+                       "Zitch only offers wallet services."):
+            self.assertEqual(safe_reason(denial), "", denial)
+
+    def test_it_may_still_say_it_cannot_do_something_HERE(self):
+        """The boundary the model may draw is about ITSELF, never about Zitch."""
+        from whatsapp.ai import safe_reason
+
+        kept = safe_reason("I can't check your loan balance here — please use the Zitch app.")
+        self.assertIn("Zitch app", kept)
+
+    def test_loan_balance_is_answered_from_the_ledger(self):
+        from datetime import timedelta as td
+
+        from loans.models import Loan
+
+        Loan.objects.create(user=self.user, principal=Decimal("20000"),
+                            interest=Decimal("2000"), tenure_days=30,
+                            amount_repaid=Decimal("5000"), status=Loan.ACTIVE,
+                            reference="ZLN123", due_date=timezone.now() + td(days=12))
+        self.say("How much is my loan balance", {"name": "check_loan_balance", "input": {}})
+        reply = self.last_reply()
+        self.assertIn("17,000", reply)      # outstanding, not principal
+        self.assertIn("ZLN123", reply)
+
+    def test_no_loan_says_so_without_denying_the_product(self):
+        self.say("How much is my loan balance", {"name": "check_loan_balance", "input": {}})
+        reply = self.last_reply().lower()
+        self.assertIn("don't have an active", reply)
+        self.assertNotIn("doesn't offer", reply)
+        self.assertNotIn("does not offer", reply)
+
+    def test_savings_balance_is_answered_from_the_ledger(self):
+        from datetime import timedelta as td
+
+        from savings.models import FixedSave
+
+        FixedSave.objects.create(user=self.user, principal=Decimal("100000"),
+                                 interest=Decimal("3699"), rate=Decimal("0.15"),
+                                 duration_days=90, status=FixedSave.ACTIVE,
+                                 reference="ZSV1", matures_at=timezone.now() + td(days=60))
+        self.say("How much is my savings", {"name": "check_savings_balance", "input": {}})
+        reply = self.last_reply()
+        self.assertIn("100,000", reply)
+        self.assertIn("matures", reply.lower())
+
+    def test_both_answer_with_the_ai_off(self):
+        SystemSetting.set("ai_enabled_global", "false")
+        self.say("my loan balance")
+        self.assertIn("loan", self.last_reply().lower())
+        self.say("my savings")
+        self.assertIn("savings", self.last_reply().lower())
+
+    def test_the_tools_exist_for_the_products_that_exist(self):
+        """A product with a backend app and no tool is a question the assistant
+        will answer by guessing."""
+        from whatsapp.ai import _TOOL_NAMES
+
+        self.assertIn("check_loan_balance", _TOOL_NAMES)
+        self.assertIn("check_savings_balance", _TOOL_NAMES)
