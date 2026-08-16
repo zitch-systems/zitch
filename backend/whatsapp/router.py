@@ -26,6 +26,7 @@ from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit
 from transfers.models import Bank
 from transfers.views import _names_match
 from transfers.services import PayoutError, execute_payout
+from exams.models import ExamProduct
 from utility.models import CablePlan, DataPlan
 from utility.providers import (email_live, payout_resolve_account, send_email, send_sms,
                                sms_live, verify_bvn, verify_nin, vtu_purchase,
@@ -168,7 +169,8 @@ MENU_BODY = (
     "6️⃣  🏦 Add money\n"
     "7️⃣  🧾 My account details\n"
     "8️⃣  ✅ Verify my identity\n"
-    "9️⃣  🧾 Transaction history\n\n"
+    "9️⃣  🧾 Transaction history\n"
+    "🔟  🎓 Exam PIN\n\n"
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -524,6 +526,12 @@ def _flow_balance_line(pa: PendingAction) -> str:
     here. Empty on any failure — a balance we cannot read must not take down the
     confirm screen it is decoration on.
     """
+    # Identity re-authentication deliberately withholds account data until the
+    # customer has proved who they are.  It shares the payment-confirmation
+    # machinery, but it is not itself a transaction and must not leak the very
+    # balance that the gate is protecting.
+    if pa.action_type == "unlock":
+        return ""
     try:
         # "Available balance", not "Balance": this screen is where someone decides
         # whether they can afford what they are about to send, and the number that
@@ -599,6 +607,13 @@ def _flow_fields(pa: PendingAction) -> dict:
                 "recipient": f"{CABLE_NAMES.get(p.get('prov', ''), '')} "
                              f"{p.get('plan_name', '')}".strip(),
                 "details": f"Smartcard {p.get('iuc', '')}".strip()})
+        if at == "exam":
+            quantity = int(p.get("quantity", 1))
+            return _with_context({
+                "amount": _money(Decimal(p["amount"])),
+                "recipient": f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')} "
+                             f"×{quantity}",
+                "details": f"Delivery phone {p.get('phone', '')}".strip()})
     except (KeyError, InvalidOperation):
         pass
     # Conversion (and any shape we don't itemise) falls back to the one-line
@@ -631,10 +646,10 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
     # PIN instead"). Both remain live either way — this only decides which one
     # the message presents as the way to confirm.
     if _has_app_session(user):
-        body = f"{summary}\n\n{_approve_link_line(pa, primary=True)}"
+        body = f"{summary}\n{fields.get('balance', '')}\n\n{_approve_link_line(pa, primary=True)}"
         cta = "Use PIN instead"
     else:
-        body = summary + _approve_link_line(pa, primary=False)
+        body = f"{summary}\n{fields.get('balance', '')}" + _approve_link_line(pa, primary=False)
         cta = ""   # provider default: "Confirm with PIN"
     # "unlock" re-verifies the owner after a lull — no money moves, so the
     # card should never claim to be a payment.
@@ -877,6 +892,9 @@ def _send_confirm(pa: PendingAction, msisdn: str, body: str, logo: str = "") -> 
     note = _narration(pa)
     if body and note:
         body = f"{body}\n📝 {note}"
+    balance = _flow_balance_line(pa)
+    if body and balance:
+        body = f"{body}\n💰 {balance}"
     text = f"{body}\n\n{_confirm_prompt(pa)}" if body else _confirm_prompt(pa)
     return reply_image(msisdn, logo, text) if logo else reply(msisdn, text)
 
@@ -1273,6 +1291,9 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return reply(msisdn, _chat_lock_tip())
     if low in ("9", "history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
+    if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
+               "jamb pin", "nabteb pin"):
+        return _start_exam(user, msisdn)
     # A statement is the one history request that explicitly wants the FILE.
     if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
         return _do_history(user, msisdn, as_document=True)
@@ -3502,6 +3523,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "data": _advance_data,
         "electricity": _advance_electricity,
         "cable": _advance_cable,
+        "exam": _advance_exam,
         "convert": _advance_convert,
         "pick_service": _advance_pick_service,
         "add_account": _advance_add_account,
@@ -3990,7 +4012,7 @@ _ai_narration: contextvars.ContextVar[str] = contextvars.ContextVar("ai_narratio
 
 #: Action types with money and a receipt behind them — the only ones a narration
 #: means anything for. An unlock or a PIN reset has nothing to narrate.
-_NARRATABLE = ("transfer", "airtime", "data", "electricity", "cable")
+_NARRATABLE = ("transfer", "airtime", "data", "electricity", "cable", "exam")
 
 
 def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | None = None) -> PendingAction:
@@ -4663,6 +4685,127 @@ def _exec_cable(pa: PendingAction, user, msisdn: str) -> str:
     )
 
 
+# ---- exam PINs ----
+def _start_exam(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
+    products = list(ExamProduct.objects.filter(active=True).order_by("name")[:8])
+    if not products:
+        return reply(msisdn, "Exam PINs are unavailable right now. Please try again later.")
+    pa = _new_flow(user, msisdn, "exam", "product", {
+        "pin_attempts": 0,
+        "product_choices": [product.code for product in products],
+    })
+    lines = "\n".join(
+        f"{index + 1}  {product.name} · {product.description} · {_money(product.price)}"
+        for index, product in enumerate(products)
+    )
+    _touch(pa, state="product", payload=pa.payload)
+    return reply(msisdn, "🎓 *Buy an Exam PIN*\nChoose a product:\n" + lines)
+
+
+def _exam_product(text: str, choices: list[str]):
+    product = _pick(text, choices, lambda code: ExamProduct.objects.filter(
+        code=code, active=True).first())
+    if product is not None:
+        return product
+    wanted = re.sub(r"\s", "", text.lower())
+    if not wanted:
+        return None
+    return next((item for item in ExamProduct.objects.filter(code__in=choices, active=True)
+                 if wanted in (re.sub(r"\s", "", item.code.lower()),
+                               re.sub(r"\s", "", item.name.lower()))), None)
+
+
+def _advance_exam(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    state = pa.state
+    if state == "product":
+        product = _exam_product(text, pa.payload.get("product_choices", []))
+        if product is None:
+            return reply(msisdn, "Reply with an exam product number from the list, or \"cancel\".")
+        pa.payload.update({
+            "exam_code": product.code,
+            "exam_name": product.name,
+            "description": product.description,
+            "unit_price": str(product.price),
+            "service_id": product.service_id,
+        })
+        _touch(pa, state="quantity", payload=pa.payload)
+        return reply(msisdn, "How many PINs? Reply with a number from 1 to 10.")
+    if state == "quantity":
+        try:
+            quantity = int(text.strip())
+        except (TypeError, ValueError):
+            quantity = 0
+        if not 1 <= quantity <= 10:
+            return reply(msisdn, "Enter a quantity from 1 to 10.")
+        pa.payload["quantity"] = quantity
+        own = _own_phone(user)
+        if own:
+            pa.payload["phone"] = own
+        _touch(pa, state="phone", payload=pa.payload)
+        return reply(msisdn, "What phone number should receive the PIN details? Reply \"me\" to use your own.")
+    if state == "phone":
+        phone = _phone_from(text, user)
+        if not phone:
+            return reply(msisdn, "Enter a valid phone number, or reply \"me\".")
+        quantity = int(pa.payload["quantity"])
+        amount = Decimal(pa.payload["unit_price"]) * quantity
+        if _insufficient(user, amount):
+            return reply(msisdn, f"Insufficient balance ({_money(get_or_create_wallet(user).balance)}).")
+        limit_msg = send_limit_error(user, amount) or daily_limit_error(user, amount, "bill")
+        if limit_msg:
+            _clear_actions(msisdn)
+            return _limit_reply(msisdn, user, limit_msg)
+        pa.payload.update({
+            "phone": phone,
+            "amount": str(amount),
+            "meta": {"exam": pa.payload["exam_code"], "phone": phone,
+                     "quantity": quantity},
+        })
+        if not _arm_confirm(pa, user):
+            return None
+        return _send_confirm(
+            pa, msisdn,
+            f"🎓 *Confirm Exam PIN*\n{pa.payload['exam_name']} · "
+            f"{pa.payload['description']} ×{quantity}\nTo {phone}\n{_money(amount)}")
+    if state == "pin":
+        if not _flow_pin_ok(pa, user, msisdn, text):
+            return None
+        return _exec_exam(pa, user, msisdn)
+    _clear_actions(msisdn)
+    return send_menu(msisdn)
+
+
+def _exec_exam(pa: PendingAction, user, msisdn: str) -> str:
+    amount = Decimal(pa.payload["amount"])
+    quantity = int(pa.payload["quantity"])
+    phone = pa.payload["phone"]
+    name = pa.payload["exam_name"]
+    service_id = pa.payload.get("service_id") or f"{pa.payload['exam_code']}-pin"
+
+    def receipt(txn, result):
+        pins = result.get("pins") or result.get("Pin") or []
+        if isinstance(pins, (str, int)):
+            pins = [pins]
+        pin_text = ", ".join(str(value) for value in pins) or "Delivered"
+        return ("Exam PIN receipt", [
+            ("Exam", name), ("Product", pa.payload["description"]),
+            ("Quantity", str(quantity)), ("Phone", phone),
+            ("PIN", pin_text), ("Amount", _money(amount)),
+            ("Reference", txn.reference),
+            ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
+        ])
+
+    return _run_vtu(
+        pa, user, msisdn, amount, f"Exam PIN — {name} x{quantity}",
+        lambda ref: vtu_purchase(service_id, {
+            "billersCode": phone, "quantity": quantity, "phone": phone,
+        }, reference=ref),
+        receipt,
+    )
+
+
 def _pick(text: str, choices: list, fetch):
     """Map a '1'-based reply to an item via `fetch(code)`; None if out of range."""
     try:
@@ -5107,6 +5250,7 @@ _SETTLED_VERB = {
     "data": "Data bundle purchased",
     "electricity": "Electricity paid",
     "cable": "Subscription paid",
+    "exam": "Exam PIN purchased",
     "convert": "Converted",
 }
 
@@ -5194,6 +5338,7 @@ def run_flow_execution(pa: PendingAction, user) -> str:
     executors = {
         "transfer": _exec_transfer, "airtime": _exec_airtime, "data": _exec_data,
         "electricity": _exec_electricity, "cable": _exec_cable, "convert": _exec_convert,
+        "exam": _exec_exam,
         "unlock": _exec_unlock,
     }
     fn = executors.get(pa.action_type)

@@ -21,7 +21,7 @@ import { Loading, LoadingMark } from '@/components/design/Loading';
 import { Naira, NText } from '@/components/design/Naira';
 import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
-import { isBiometricTxnEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
+import { isBiometricTxnEnabled, isBiometricAvailable, biometricLabel } from '@/lib/biometrics';
 import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 
@@ -564,11 +564,10 @@ export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiomet
     if (busyRef.current || bioInFlight.current || bioCompleted.current) return;
     bioInFlight.current = true;
     try {
-      // biometricOnly: the device passcode must NOT be able to release the cached
-      // money PIN — only the account owner's enrolled fingerprint/face. The typed
-      // PIN remains the fallback (✕ → keypad) if the scan is cancelled.
-      const ok = await authenticate('Approve payment', true);
-      if (!ok) return;
+      // The transaction PIN is itself protected by SecureStore's authenticated
+      // keychain ACL. Reading it opens the single OS biometric prompt; doing a
+      // separate LocalAuthentication scan first caused the double prompt users
+      // reported and added no protection to the already-gated secret.
       const storedPin = await getTransactionPin();
       if (storedPin) {
         bioCompleted.current = true;

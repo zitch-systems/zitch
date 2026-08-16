@@ -12,6 +12,8 @@ import { Loading } from '@/components/design/Loading';
 import { Screen, Field, Btn } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
+import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
+import { registerForPushNotifications, takePendingNotificationOpen } from '@/lib/notifications';
 
 const Signin = () => {
   const { c } = useTheme();
@@ -20,6 +22,18 @@ const Signin = () => {
   const [bioReady, setBioReady] = useState(false);
   const [knownName, setKnownName] = useState('');
   const autoPrompted = useRef(false);
+
+  const resumeAfterSignin = async () => {
+    registerForPushNotifications(false).catch(() => {});
+    const approval = await pendingWhatsAppApproval();
+    if (approval) {
+      router.replace({ pathname: '/waapprove', params: { token: approval } });
+    } else if (await takePendingNotificationOpen()) {
+      router.replace('/notifications');
+    } else {
+      router.replace('/home');
+    }
+  };
 
   // Offer instant sign-in only if the user enabled biometrics, the device
   // supports them, and a previous session token is still on the device.
@@ -45,7 +59,7 @@ const Signin = () => {
     if (ok) {
       // Clear any idle lock and refresh activity before entering the app.
       await unlockSession();
-      router.replace('/home');
+      await resumeAfterSignin();
     }
   };
 
@@ -81,7 +95,7 @@ const Signin = () => {
         // nothing read them; session state lives in secureStore + lib/session.)
         await saveToken(result.access_token);
         await unlockSession(); // clear any idle lock + stamp activity
-        router.replace('/home');
+        await resumeAfterSignin();
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }
@@ -183,4 +197,3 @@ const Signin = () => {
 };
 
 export default Signin;
-

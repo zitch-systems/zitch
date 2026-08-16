@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, Pressable, ActivityIndicator } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
@@ -10,6 +10,8 @@ import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 import { localPhoneNumber } from '@/lib/phone';
+import { pickContactPhone } from '@/lib/contacts';
+import ZIcon from '@/components/design/ZIcon';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -36,6 +38,7 @@ const BuyAirtime = () => {
   const [txnRef, setTxnRef] = useState('');
   const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
+  const [contactBusy, setContactBusy] = useState(false);
   const idemKey = useRef('');  // stable across retries of one purchase attempt
   const phoneSeeded = useRef(false);
 
@@ -57,6 +60,21 @@ const BuyAirtime = () => {
   const network = NETWORKS.find((n) => n.id === net)!;
   const amount = Number(amt || 0);
   const valid = phone.length >= 10 && amount >= 50 && amount <= balance;
+
+  const chooseContact = async () => {
+    if (contactBusy) return;
+    setContactBusy(true);
+    try {
+      const result = await pickContactPhone();
+      if (result.status === 'picked') setPhone(result.phone);
+      else if (result.status === 'missing') notify('No phone number', 'That contact has no Nigerian mobile number.');
+      else if (result.status === 'unsupported') notify('Contacts', 'Choose a contact from the Zitch mobile app.');
+    } catch {
+      notify('Contacts unavailable', 'Could not open your contacts. Please enter the number instead.');
+    } finally {
+      setContactBusy(false);
+    }
+  };
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
@@ -126,6 +144,23 @@ const BuyAirtime = () => {
         onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
         keyboardType="number-pad"
         placeholder="0801 234 5678"
+        maxLength={11}
+        autoComplete="tel"
+        suffix={(
+          <Pressable
+            onPress={chooseContact}
+            disabled={contactBusy}
+            accessibilityRole="button"
+            accessibilityLabel="Choose from contacts"
+            accessibilityState={{ disabled: contactBusy }}
+            hitSlop={8}
+            style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}
+          >
+            {contactBusy
+              ? <ActivityIndicator size="small" color={c.inkOnBrand} />
+              : <ZIcon name="contacts" size={18} color={c.inkOnBrand} stroke={2} />}
+          </Pressable>
+        )}
       />
       <View style={{ height: 16 }} />
 

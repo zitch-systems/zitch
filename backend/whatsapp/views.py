@@ -757,6 +757,13 @@ def approve_handoff(request, token: str):
 <a class="btn" href="{app_url}">Open the app</a>
 <a class="store" href="{store}">Don't have the app? Get Zitch</a>
 </div>
-<script>window.location.href={json.dumps(app_url)};</script>
+<script>
+  // Paint the fallback before asking the in-app browser to hand off. An
+  // immediate custom-scheme navigation left WhatsApp's webview on a blank
+  // spinner on devices that block non-user-initiated app launches.
+  window.setTimeout(function () {{ window.location.href={json.dumps(app_url)}; }}, 650);
+</script>
 </body></html>"""
-    return HttpResponse(body, content_type="text/html; charset=utf-8")
+    response = HttpResponse(body, content_type="text/html; charset=utf-8")
+    response["Cache-Control"] = "no-store"
+    return response

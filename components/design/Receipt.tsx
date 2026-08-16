@@ -128,25 +128,29 @@ const Receipt = ({
           <Watermark />
         </View>
 
-        <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
-          {actions.map(([ic, lb, fn]) => (
-            <Pressable
-              key={ic}
-              onPress={fn}
-              disabled={busy}
-              accessibilityRole="button"
-              accessibilityLabel={lb}
-              accessibilityState={{ disabled: busy }}
-              style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: 6, paddingVertical: 14, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
-            >
-              {busy && ic !== 'copy'
-                ? <ActivityIndicator size="small" color={c.brand} style={{ height: 20 }} />
-                : <ZIcon name={ic} size={20} color={c.brand} />}
-              <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
-            </Pressable>
-          ))}
-        </View>
       </ScrollView>
+
+      {/* Receipt actions stay pinned above the dashboard button. The details can
+          scroll independently, but Save/Share must be visible the moment the
+          success page opens, including on short phones. */}
+      <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+        {actions.map(([ic, lb, fn]) => (
+          <Pressable
+            key={ic}
+            onPress={fn}
+            disabled={busy}
+            accessibilityRole="button"
+            accessibilityLabel={lb}
+            accessibilityState={{ disabled: busy }}
+            style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: 6, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1.5, borderColor: c.line, opacity: pressed || busy ? 0.85 : 1 })}
+          >
+            {busy && ic !== 'copy'
+              ? <ActivityIndicator size="small" color={c.brand} style={{ height: 20 }} />
+              : <ZIcon name={ic} size={20} color={c.brand} />}
+            <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.ink2 }}>{lb}</Text>
+          </Pressable>
+        ))}
+      </View>
 
       <ReceiptExport
         action={action}
@@ -163,7 +167,7 @@ const Receipt = ({
         })}
       />
 
-      <View style={{ paddingBottom: 24, paddingTop: 12 }}>
+      <View style={{ paddingBottom: 24, paddingTop: 10 }}>
         <Btn label="Back to Dashboard" onPress={onDone} />
       </View>
     </View>

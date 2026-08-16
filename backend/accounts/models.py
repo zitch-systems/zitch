@@ -504,6 +504,28 @@ class KnownDevice(models.Model):
         return f"u_{self.user_id} {self.device_id[:12]} {self.model}"
 
 
+class PushDevice(models.Model):
+    """One Expo push token belonging to an authenticated app installation.
+
+    Tokens can rotate and a shared handset can later sign in as another user, so
+    ``token`` is globally unique and registration transfers ownership atomically.
+    The install id lets logout revoke only this phone's notifications instead of
+    silencing every device on the account.
+    """
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="push_devices")
+    token = models.CharField(max_length=255, unique=True)
+    device_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    platform = models.CharField(max_length=16, blank=True, default="")
+    enabled = models.BooleanField(default=True)
+    created = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"u_{self.user_id} {self.platform} {self.token[:24]}…"
+
+
 class OperatorTotp(models.Model):
     """A staff member's TOTP second factor.
 

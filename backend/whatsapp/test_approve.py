@@ -227,6 +227,8 @@ class HandoffSurfaceTests(TestCase):
         html = res.content.decode()
         self.assertIn(f"zitch://waapprove?token={token}", html)
         self.assertIn("https://zitch.ng/app", html)
+        self.assertIn("window.setTimeout", html)
+        self.assertEqual(res.headers["Cache-Control"], "no-store")
         self.assertNotIn("JOHN DOE", html)
         self.assertNotIn("5,000", html)
 

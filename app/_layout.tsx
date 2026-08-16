@@ -3,7 +3,7 @@
 // as anonymous bots.
 import "@/lib/netPatch";
 import { useEffect, useState } from "react";
-import { AppState, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
+import { AppState, Linking, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -18,6 +18,8 @@ import { enforceIdleTimeout, enforceHardExpiry, isSessionLocked, lockIfAwayTooLo
 import { FONT_WAIT_MS, splashReady } from "@/lib/boot";
 import { getToken } from "@/lib/secureStore";
 import { reconcileCachedPin } from "@/lib/biometrics";
+import { configureNotificationPresentation, registerForPushNotifications, subscribeToNotificationOpens } from "@/lib/notifications";
+import { rememberWhatsAppApprovalUrl } from "@/lib/pendingApproval";
 
 // Default every Text/TextInput to Inter so nothing can fall back to the
 // platform font. An explicit fontFamily on a component still wins, since the
@@ -65,6 +67,26 @@ const RootLayout = () => {
     const timer = setTimeout(() => setFontWaitOver(true), FONT_WAIT_MS);
     return () => clearTimeout(timer);
   }, []);
+
+  // Preserve a WhatsApp approval token even when the app is locked and the root
+  // guard redirects to sign-in. After authentication, Signin resumes this exact
+  // approval instead of dropping the customer on Home.
+  useEffect(() => {
+    Linking.getInitialURL().then(rememberWhatsAppApprovalUrl).catch(() => {});
+    const sub = Linking.addEventListener('url', ({ url }) => {
+      rememberWhatsAppApprovalUrl(url).catch(() => {});
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Register silently on later launches when permission is already granted.
+  // The actual first-time prompt is contextual, on completed signup.
+  useEffect(() => {
+    if (!ready) return;
+    configureNotificationPresentation();
+    registerForPushNotifications(false).catch(() => {});
+    return subscribeToNotificationOpens(() => router.push('/notifications'));
+  }, [ready]);
 
   useEffect(() => {
     // A font that will not load is a cosmetic problem. Throwing here made it a

@@ -460,6 +460,9 @@ TXN_ALERTS = {
     # up on WhatsApp and has never opened the app, it is the only alert they will
     # actually see.
     "WHATSAPP": os.environ.get("TXN_ALERTS_WHATSAPP", "true").strip().lower() != "false",
+    # Native push is free and requested explicitly during signup. A customer can
+    # still revoke permission in OS settings; then no token is registered.
+    "PUSH": os.environ.get("TXN_ALERTS_PUSH", "true").strip().lower() != "false",
 }
 # KYC — selfie/liveness + address + ID-document (image/biometric) — Prembly
 # (IdentityPass). Blank => mock mode.

@@ -4,7 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { getToken, hasTransactionPin, saveTransactionPin, hasOfferedBiometricPay, markBiometricPayOffered } from '@/lib/secureStore';
 import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
-import { isBiometricAvailable, authenticate, biometricLabel, setBiometricEnabled } from '@/lib/biometrics';
+import { isBiometricAvailable, authenticate, biometricLabel, setBiometricTxnEnabled } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Card, Field, Btn, Sheet, PinPad, money, NText } from '@/components/design/ui';
 import { Label, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, Monogram, BankLogo, AmountField } from '@/components/design/flowkit';
@@ -275,12 +275,10 @@ const SendMoney = () => {
           {
             text: 'Enable',
             onPress: async () => {
-              // biometricOnly: tie the cached PIN to the owner's biometric, not the
-              // device passcode.
-              const okScan = await authenticate(`Enable ${label} approval`, true);
-              if (!okScan) return;
-              await setBiometricEnabled(true);
+              // SecureStore performs the single native authentication while it
+              // writes the PIN behind the keychain biometric ACL.
               await saveTransactionPin(pin);
+              await setBiometricTxnEnabled(true);
               notify('Enabled', `You can now approve payments with ${label}.`);
             },
           },

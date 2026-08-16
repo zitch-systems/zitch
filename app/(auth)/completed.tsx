@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
+import { registerForPushNotifications } from '@/lib/notifications';
 
 const Completed = () => {
   const { c } = useTheme();
@@ -12,6 +13,9 @@ const Completed = () => {
 
   useEffect(() => {
     AsyncStorage.getItem('UserFirstName').then((n) => n && setFirstName(n));
+    // Ask only after account creation, when the benefit is concrete and an
+    // authenticated token exists to bind this device's push token server-side.
+    registerForPushNotifications(true).catch(() => {});
   }, []);
 
   return (
