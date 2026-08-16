@@ -20,6 +20,7 @@ describe('loadConfig', () => {
       'RATE_LIMIT_MAX_REQUESTS',
       'IP_RATE_LIMIT_MAX_REQUESTS',
       'META_GRAPH_API_BASE_URL',
+      'META_FLOW_ENDPOINT_URI',
       'OAUTH_ALLOWED_REDIRECT_HOSTS',
     ]) {
       originalEnv[key] = process.env[key];
@@ -98,6 +99,12 @@ describe('loadConfig', () => {
     setValidEnv();
     process.env.META_GRAPH_API_BASE_URL = 'http://graph.facebook.com';
     expect(() => loadConfig()).toThrow(/https/i);
+  });
+
+  it('requires an HTTPS Flow endpoint when one is configured', () => {
+    setValidEnv();
+    process.env.META_FLOW_ENDPOINT_URI = 'http://api.example.test/flow';
+    expect(() => loadConfig()).toThrow(/META_FLOW_ENDPOINT_URI.*https/i);
   });
 
   it('caches the config across calls (does not re-read env)', () => {

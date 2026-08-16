@@ -25,6 +25,7 @@ function writableConfig(overrides: Partial<Config> = {}): Config {
     metaPhoneNumberId: '222',
     metaAppId: undefined,
     metaAppSecret: undefined,
+    metaFlowEndpointUri: undefined,
     connectorApiKey: 'a'.repeat(32),
     port: 0,
     graphApiVersion: 'v21.0',
@@ -235,6 +236,60 @@ describe('Flow JSON upload validation', () => {
       updateFlowJson(config, { flowId: '123', flowJson, confirm: '123' }),
     ).resolves.toMatchObject({ success: true, validationErrors: [] });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+describe('Flow publication verification', () => {
+  it('attaches the configured endpoint as multipart and verifies the resulting status', async () => {
+    const config = writableConfig({
+      metaAppId: '987654321',
+      metaFlowEndpointUri: 'https://api.zitch.ng/webhooks/whatsapp/flow',
+    });
+    const fetchMock = vi.fn(async (url: URL, init?: RequestInit) => {
+      if (url.pathname.endsWith('/123') && init?.method === 'POST') {
+        expect(init.body).toBeInstanceOf(FormData);
+        const form = init.body as FormData;
+        expect(form.get('endpoint_uri')).toBe(config.metaFlowEndpointUri);
+        expect(form.get('application_id')).toBe(config.metaAppId);
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.pathname.endsWith('/123/publish')) {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        status: 'PUBLISHED',
+        endpoint_uri: config.metaFlowEndpointUri,
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      publishFlow(config, { flowId: '123', confirm: '123' }),
+    ).resolves.toMatchObject({ success: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('never reports success when Meta leaves the Flow in draft', async () => {
+    const fetchMock = vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.searchParams.has('fields') ? { status: 'DRAFT', validation_errors: [] } : { success: true },
+    ), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      publishFlow(writableConfig(), { flowId: '123', confirm: '123' }),
+    ).rejects.toThrow(/did not publish.*DRAFT.*no endpoint_uri/i);
   });
 });
 

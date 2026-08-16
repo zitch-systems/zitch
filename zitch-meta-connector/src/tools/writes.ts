@@ -23,7 +23,13 @@
  * inference away from deprecating the Flow that PIN entry depends on.
  */
 import type { Config } from '../config.js';
-import { graphDelete, graphPost, graphPostFlowAsset } from '../metaClient.js';
+import {
+  graphDelete,
+  graphGet,
+  graphPost,
+  graphPostFlowAsset,
+  graphPostFlowMetadata,
+} from '../metaClient.js';
 import type {
   CreateFlowInput,
   CreateMessageTemplateInput,
@@ -257,11 +263,44 @@ export interface PublishFlowResult {
 
 export async function publishFlow(config: Config, input: PublishFlowInput): Promise<PublishFlowResult> {
   assertConfirmed(config, input.flowId, input.confirm);
+
+  // Flow JSON v3+ with data_exchange cannot be published without an HTTPS
+  // endpoint. Attach the deployment-owned value immediately before publish,
+  // so creating a replacement Flow cannot silently omit the one piece that
+  // makes every dynamic screen work. The Meta app is supplied when configured;
+  // a Flow created by this app is already associated with it.
+  if (config.metaFlowEndpointUri) {
+    await graphPostFlowMetadata(
+      config,
+      input.flowId,
+      config.metaFlowEndpointUri,
+      config.metaAppId,
+    );
+  }
+
   const res = (await graphPost(config, `${input.flowId}/publish`, {})) as { success?: boolean };
+  const node = (await graphGet(config, input.flowId, {
+    fields: 'status,validation_errors,endpoint_uri,application',
+  })) as {
+    status?: string;
+    endpoint_uri?: string;
+    validation_errors?: Array<{ error?: string; message?: string; error_type?: string }>;
+  };
+  if (node.status !== 'PUBLISHED') {
+    const errors = (node.validation_errors ?? [])
+      .map((e) => [e.error_type, e.error ?? e.message].filter(Boolean).join(': '))
+      .filter(Boolean)
+      .slice(0, 5);
+    throw new Error(
+      `Meta did not publish Flow ${input.flowId}; current status is ${node.status ?? 'unknown'}` +
+        `${errors.length ? `; validation: ${errors.join(' | ')}` : ''}` +
+        `${node.endpoint_uri ? '' : '; no endpoint_uri is attached'}.`,
+    );
+  }
   return {
     action: 'publish_whatsapp_flow',
     flowId: input.flowId,
-    success: res.success !== false,
+    success: res.success !== false && node.status === 'PUBLISHED',
     note:
       'The published Flow is now live for customers. A published Flow can no longer be edited ' +
       'in place — further changes need a new Flow version.',

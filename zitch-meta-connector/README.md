@@ -104,6 +104,10 @@ one — to any of these:
 
 Two tests enforce the first two by name, so a future tool that crosses either line fails CI.
 
+Endpoint-backed Flows also need `META_FLOW_ENDPOINT_URI` set to the public HTTPS data-exchange
+endpoint. `publish_whatsapp_flow` attaches that URI immediately before publishing and then reads
+the Flow back; it refuses to report success unless Meta's status is actually `PUBLISHED`.
+
 ### The safety model
 
 1. **Absent, not refusing.** In read-only mode write tools are not registered at all — they do not

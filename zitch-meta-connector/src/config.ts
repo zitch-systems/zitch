@@ -18,6 +18,10 @@ export interface Config {
   /** Optional: only needed if a future tool calls Meta's /debug_token endpoint. */
   metaAppId: string | undefined;
   metaAppSecret: string | undefined;
+  /** The Zitch backend data-exchange endpoint attached before publishing a
+   * Flow. Optional so read-only deployments and non-endpoint Flows keep
+   * working; production sets it explicitly. */
+  metaFlowEndpointUri?: string;
   connectorApiKey: string;
   port: number;
   graphApiVersion: string;
@@ -172,12 +176,20 @@ export function loadConfig(): Config {
     );
   }
 
+  const metaFlowEndpointUri = optionalEnv('META_FLOW_ENDPOINT_URI');
+  if (metaFlowEndpointUri && !metaFlowEndpointUri.startsWith('https://')) {
+    throw new Error(
+      `META_FLOW_ENDPOINT_URI must start with https:// (got: ${metaFlowEndpointUri}).`,
+    );
+  }
+
   cached = {
     metaAccessToken: requireEnv('META_ACCESS_TOKEN'),
     metaWabaId: requireEnv('META_WABA_ID'),
     metaPhoneNumberId: requireEnv('META_PHONE_NUMBER_ID'),
     metaAppId: optionalEnv('META_APP_ID'),
     metaAppSecret: optionalEnv('META_APP_SECRET'),
+    metaFlowEndpointUri,
     connectorApiKey,
     port: intEnv('PORT', 8787),
     graphApiVersion: optionalEnv('META_GRAPH_API_VERSION') ?? 'v21.0',

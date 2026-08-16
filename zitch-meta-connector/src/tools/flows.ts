@@ -25,6 +25,8 @@ interface FlowNode {
   categories?: string[];
   validation_errors?: Array<{ error?: string; error_type?: string; message?: string; pointers?: unknown }>;
   updated_at?: string;
+  endpoint_uri?: string;
+  application?: { id?: string; name?: string };
 }
 
 export interface ListFlowsResult {
@@ -66,6 +68,9 @@ export interface InspectFlowResult {
   validationErrors: string[];
   previewUrl: string | undefined;
   previewExpiresAt: string | undefined;
+  endpointUri: string | undefined;
+  applicationId: string | undefined;
+  applicationName: string | undefined;
 }
 
 export async function inspectFlow(config: Config, input: InspectFlowInput): Promise<InspectFlowResult> {
@@ -73,7 +78,9 @@ export async function inspectFlow(config: Config, input: InspectFlowInput): Prom
     // `preview.invalidate(false)` returns the existing preview link rather than
     // minting a new one — this is a read-only tool, and regenerating a preview
     // would invalidate a URL someone else may be holding.
-    fields: 'id,name,status,categories,updated_at,validation_errors,preview.invalidate(false)',
+    fields:
+      'id,name,status,categories,updated_at,endpoint_uri,application,' +
+      'validation_errors,preview.invalidate(false)',
   })) as FlowNode & { preview?: { preview_url?: string; expires_at?: string } };
 
   return {
@@ -88,6 +95,9 @@ export async function inspectFlow(config: Config, input: InspectFlowInput): Prom
       .slice(0, 20),
     previewUrl: node.preview?.preview_url,
     previewExpiresAt: node.preview?.expires_at,
+    endpointUri: node.endpoint_uri,
+    applicationId: node.application?.id,
+    applicationName: node.application?.name,
   };
 }
 
