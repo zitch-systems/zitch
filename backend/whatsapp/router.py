@@ -4823,6 +4823,20 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
                     kind=p.get("kind"), recipient=p.get("recipient"),
                     status=p.get("status"), as_document=p.get("as_document"))
         return True
+    if name == "account_details":
+        _do_account_details(user, msisdn)
+        return True
+    if name == "verify_identity":
+        _start_kyc(user, msisdn)
+        return True
+    if name == "reset_pin":
+        # Opens the secure reset ladder. The PIN itself is never collected in
+        # the chat — same path the "reset pin" keyword takes.
+        _start_pin_reset(user, msisdn)
+        return True
+    if name == "contact_support":
+        _do_support(msisdn)
+        return True
     if name == "check_loan_balance":
         _do_loan_balance(user, msisdn)
         return True

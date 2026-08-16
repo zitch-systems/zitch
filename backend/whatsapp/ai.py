@@ -311,6 +311,27 @@ TOOLS = [
                      "\"how much is my savings\", \"my fixed save\", \"when does my "
                      "savings mature\"."),
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "account_details",
+     "description": ("The customer's own Zitch account number, bank and account name — "
+                     "what they give someone who is paying THEM. \"what's my account "
+                     "number\", \"send me my details\", \"my account\"."),
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "verify_identity",
+     "description": ("Start or continue identity verification (BVN/NIN/selfie), and the "
+                     "tier limits it unlocks. \"verify my account\", \"how do I upgrade\", "
+                     "\"raise my limit\", \"how much can I send\", \"why is my transfer "
+                     "blocked\"."),
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "reset_pin",
+     "description": ("Start the SECURE transaction-PIN reset. \"I forgot my PIN\", "
+                     "\"change my PIN\", \"my PIN is locked\". This only OPENS the flow — "
+                     "the PIN itself is never typed in the chat, so never ask for it."),
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "contact_support",
+     "description": ("The customer wants a human, or Zitch's contact details. \"talk to "
+                     "someone\", \"customer care\", \"I need help\", \"your phone number\". "
+                     "Use report_problem instead when a specific transaction went wrong."),
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "report_problem",
      "description": ("The customer says something went wrong with a transaction and wants it "
                      "escalated, chased, disputed, investigated or refunded — \"it didn't go "

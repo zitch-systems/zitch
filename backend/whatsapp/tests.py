@@ -4736,3 +4736,87 @@ class ProductDenialTests(TestCase):
 
         self.assertIn("check_loan_balance", _TOOL_NAMES)
         self.assertIn("check_savings_balance", _TOOL_NAMES)
+
+
+@override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+class MenuParityTests(TestCase):
+    """Anything the MENU can do, a customer will type in words.
+
+    The menu is the promise; the numbered options are just a shortcut to it. So
+    a capability the deterministic router has and the AI has no tool for is a
+    question that falls through to "here is the menu again" — which is what a
+    customer sees as the assistant not working, and is how "how much is my loan
+    balance" ended up answered with a denial.
+
+    This asserts the two surfaces cover the same ground.
+    """
+
+    #: tool name -> the deterministic keyword that reaches the same handler.
+    PARITY = {
+        "check_balance": "balance",
+        "add_money": "add money",
+        "transfer": "send money",
+        "transaction_history": "history",
+        "account_details": "account details",
+        "verify_identity": "verify",
+        "reset_pin": "reset pin",
+        "contact_support": "support",
+        "check_loan_balance": "my loan",
+        "check_savings_balance": "my savings",
+        "report_problem": "report a problem",
+    }
+
+    def setUp(self):
+        self.user, self.token = make_user(balance="20000")
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN,
+                                    status=WhatsAppLink.ACTIVE, ai_enabled=True)
+        SystemSetting.set("ai_enabled_global", "true")
+
+    def last_reply(self):
+        row = (WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+               .order_by("-created").first())
+        return row.text if row else ""
+
+    def test_every_parity_tool_is_registered(self):
+        from whatsapp.ai import _TOOL_NAMES
+
+        self.assertEqual(set(self.PARITY) - _TOOL_NAMES, set())
+
+    def test_each_tool_dispatches_to_something(self):
+        """A registered tool that dispatches nowhere is worse than no tool: the
+        model routes to it confidently and the customer gets the menu."""
+        for tool in self.PARITY:
+            with self.subTest(tool=tool):
+                with patch("whatsapp.ai.extract_intent",
+                           return_value={"name": tool, "input": {}}):
+                    router.handle_inbound(MSISDN, f"[{tool}]")
+                reply = self.last_reply()
+                self.assertTrue(reply)
+                self.assertNotIn("Sorry, I didn't get that", reply)
+
+    def test_each_keyword_still_works_with_the_ai_off(self):
+        SystemSetting.set("ai_enabled_global", "false")
+        for tool, keyword in self.PARITY.items():
+            with self.subTest(keyword=keyword):
+                router.handle_inbound(MSISDN, keyword)
+                self.assertNotIn("Sorry, I didn't get that", self.last_reply())
+
+    def test_the_menu_names_nothing_the_ai_cannot_reach(self):
+        """The nine numbered options are the channel's advertised surface. Each
+        one a customer might phrase in words must have a tool behind it."""
+        from whatsapp.ai import _TOOL_NAMES
+
+        menu_backed = {
+            "1 Check balance": "check_balance",
+            "2 Send money": "transfer",
+            "3 Airtime / Data": "buy_airtime",
+            "4 Pay a bill": "pay_bill",
+            "5 Convert currency": "convert_currency",
+            "6 Add money": "add_money",
+            "7 My account details": "account_details",
+            "8 Verify my identity": "verify_identity",
+            "9 Transaction history": "transaction_history",
+        }
+        for label, tool in menu_backed.items():
+            with self.subTest(option=label):
+                self.assertIn(tool, _TOOL_NAMES)
