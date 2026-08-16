@@ -1273,6 +1273,11 @@ def handle_inbound(msisdn: str, text: str) -> None:
     # A statement is the one history request that explicitly wants the FILE.
     if low in ("statement", "download statement", "bank statement", "account statement", "pdf"):
         return _do_history(user, msisdn, as_document=True)
+    if low in ("loan", "my loan", "loan balance", "my loan balance", "loans"):
+        return _do_loan_balance(user, msisdn)
+    if low in ("savings", "my savings", "savings balance", "my savings balance",
+               "fixed save", "my fixed save"):
+        return _do_savings_balance(user, msisdn)
     if low in ("reset pin", "change pin", "forgot pin", "new pin", "set pin", "pin"):
         return _start_pin_reset(user, msisdn)
     if low in ("8", "verify", "verify me", "verify identity", "kyc", "upgrade", "limits"):
@@ -2332,6 +2337,67 @@ def _do_report_problem(user, msisdn: str, *, amount=None, days_ago=None, kind=No
         f"⏳ Our team will come back to you by {case.due:%d %b %Y}.\n\n"
         "You'll get an update here — no need to send it again. If it's urgent you can also "
         "reach our team directly:\n" + (_more_info_block() or ""))
+
+
+def _do_loan_balance(user, msisdn: str) -> None:
+    """What they owe, or what they could borrow — read from the loans ledger.
+
+    Exists because the assistant answered "how much is my loan balance" with
+    "Zitch doesn't offer loans", to a customer of a company that has a loans
+    product, a loans screen in the app and a /api/loans/ endpoint. A tool that
+    reads the real row is the only honest fix; a prompt asking the model to be
+    more careful would still be the model guessing.
+    """
+    from loans.models import Loan
+    from loans.services import credit_limit
+
+    active = user.loans.filter(status=Loan.ACTIVE).first()
+    if active is None:
+        try:
+            available = credit_limit(user)
+        except Exception:  # noqa: BLE001 — never fail a read on a limit calculation
+            log.exception("could not read the credit limit for %s", mask_pii(msisdn))
+            available = None
+        line = "💳 You don't have an active Zitch loan right now."
+        if available and available > 0:
+            line += f"\n\nYou could borrow up to {_money(available)}."
+        return reply(msisdn, line + "\n\nManage loans in the Zitch app: "
+                     + (_links().get("APP") or "https://zitch.ng/app"))
+    overdue = active.due_date < timezone.now()
+    return reply(
+        msisdn,
+        f"💳 *Your Zitch loan*\n\n"
+        f"Outstanding: {_money(active.outstanding)}\n"
+        f"Borrowed: {_money(active.principal)} · repaid {_money(active.amount_repaid)}\n"
+        f"Due: {timezone.localtime(active.due_date):%d %b %Y}{' — *overdue*' if overdue else ''}\n"
+        f"🔖 Ref {active.reference}\n\n"
+        "Repay in the Zitch app: " + (_links().get("APP") or "https://zitch.ng/app"))
+
+
+def _do_savings_balance(user, msisdn: str) -> None:
+    """What they have locked away and when it matures."""
+    from savings.models import FixedSave
+    from savings.services import settle_user_maturities
+
+    try:
+        # Anything that matured since their last visit is paid out first, so the
+        # number quoted here is the number their wallet agrees with.
+        settle_user_maturities(user)
+    except Exception:  # noqa: BLE001 — a stale total beats no answer
+        log.exception("could not settle maturities for %s", mask_pii(msisdn))
+    plans = list(user.savings.filter(status=FixedSave.ACTIVE).order_by("matures_at"))
+    if not plans:
+        return reply(msisdn, "🏦 You don't have any active Zitch savings right now.\n\n"
+                             "Start a Fixed Save in the Zitch app: "
+                     + (_links().get("APP") or "https://zitch.ng/app"))
+    total = sum((p.principal for p in plans), Decimal("0"))
+    lines = [f"• {_money(p.principal)} — matures {timezone.localtime(p.matures_at):%d %b %Y}" for p in plans[:5]]
+    more = f"\n…and {len(plans) - 5} more" if len(plans) > 5 else ""
+    return reply(msisdn, f"🏦 *Your Zitch savings*\n\nLocked: {_money(total)} "
+                         f"across {len(plans)} plan{'s' if len(plans) != 1 else ''}\n\n"
+                 + "\n".join(lines) + more
+                 + "\n\nManage them in the Zitch app: "
+                 + (_links().get("APP") or "https://zitch.ng/app"))
 
 
 def _do_support(msisdn: str) -> None:
@@ -4756,6 +4822,26 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
                     amount=p.get("amount"), days_ago=p.get("days_ago"),
                     kind=p.get("kind"), recipient=p.get("recipient"),
                     status=p.get("status"), as_document=p.get("as_document"))
+        return True
+    if name == "account_details":
+        _do_account_details(user, msisdn)
+        return True
+    if name == "verify_identity":
+        _start_kyc(user, msisdn)
+        return True
+    if name == "reset_pin":
+        # Opens the secure reset ladder. The PIN itself is never collected in
+        # the chat — same path the "reset pin" keyword takes.
+        _start_pin_reset(user, msisdn)
+        return True
+    if name == "contact_support":
+        _do_support(msisdn)
+        return True
+    if name == "check_loan_balance":
+        _do_loan_balance(user, msisdn)
+        return True
+    if name == "check_savings_balance":
+        _do_savings_balance(user, msisdn)
         return True
     if name == "report_problem":
         _do_report_problem(user, msisdn, amount=p.get("amount"), days_ago=p.get("days_ago"),
