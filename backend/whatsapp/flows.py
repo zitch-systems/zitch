@@ -513,16 +513,25 @@ def _handle_flow_request(payload: dict) -> dict:
         return _identity_screen(kind)
 
     if action == "INIT":
+        # The money confirm opens through here (flow_action=data_exchange), so
+        # this is the check that a re-tapped card gets: no live action, no PIN
+        # pad. `resolve_flow_token` returns None for an action that is expired,
+        # cancelled, mid-execution, or gone because the payment completed and the
+        # executor cleared it — every one of which should end the card rather
+        # than re-offer it.
         pa = resolve_flow_token(token)
         if pa is None:
-            return _success_screen("This request has expired. Please start again in the chat.")
+            return _success_screen(
+                "That payment is already done or has expired, so there's nothing "
+                "to confirm. Check the chat for the receipt, or start again there.",
+                status="failed")
         if pa.state == FLOW_FORM_STATE:
             return _transfer_form_screen()
         if pa.state == FLOW_VTU_STATE:
             return _vtu_screen_for(pa)
         if pa.action_type == "setpin":
             return _set_pin_screen(pa)
-        return _pin_screen(_pa_screen_fields(pa), screen=_flow_screen(pa, PIN_SCREEN))
+        return _open_pin_screen(pa)
 
     if action == "data_exchange":
         # Which screen submitted is the pending action's STATE, not the shape of
@@ -540,6 +549,36 @@ def _handle_flow_request(payload: dict) -> dict:
     pa = resolve_flow_token(token)
     return (_pin_screen(_pa_screen_fields(pa), screen=_flow_screen(pa, PIN_SCREEN))
             if pa else _success_screen("Session ended."))
+
+
+def _open_pin_screen(pa) -> dict:
+    """The PIN pad for a FRESH open of a live payment.
+
+    Two things this does that a re-render must not.
+
+    It answers on PIN_SCREEN, always — never the `flow_screen` the session last
+    sat on. PIN_CHAIN and PIN_RETRY are not routing roots, and Meta refuses a
+    non-root as a Flow's first screen ("Specified screen X is not allowed as
+    first screen of this flow", error 131009). A customer who mistyped their PIN,
+    closed the card and tapped it again would otherwise be answered with
+    PIN_RETRY and the card simply would not open.
+
+    And it resets `flow_screen` to match, so the next error render navigates
+    forward from where the device actually is rather than from where a previous
+    session left off.
+
+    The fields are rebuilt rather than replayed, so the balance shown is the one
+    at OPEN time. Under `navigate` it was necessarily the balance at send time —
+    which on a card tapped an hour later was simply a stale number on the screen
+    the customer checks before spending.
+    """
+    from .router import _flow_fields
+
+    fields = _flow_fields(pa)
+    pa.payload["flow_fields"] = fields
+    pa.payload["flow_screen"] = PIN_SCREEN
+    pa.save(update_fields=["payload"])
+    return _pin_screen(fields, screen=PIN_SCREEN)
 
 
 def _confirm_pin_screen(error: str = "") -> dict:

@@ -662,6 +662,16 @@ def _send_pin_flow(pa: PendingAction, user) -> bool:
         # construction rather than by remembering to update it.
         screen=PIN_SCREEN, screen_data={**fields, "error": ""},
         cta=cta,
+        # The one send that asks US which screen to open on. A Flow card cannot
+        # be recalled or expired by the business that sent it, so with `navigate`
+        # this card kept opening a live-looking PIN pad forever — including after
+        # the payment had gone through. The money was never at risk (the token
+        # stops resolving the moment the action leaves the PIN state, so a second
+        # submit checks no PIN and moves nothing), but the customer was invited to
+        # type their PIN into a completed payment and only told afterwards. Asking
+        # the endpoint on open means a finished payment answers with its outcome
+        # and the pad never appears.
+        on_open="data_exchange",
     )
     return bool(res.get("success"))
 

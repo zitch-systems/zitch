@@ -154,8 +154,16 @@ class FlowsHandlerTests(TestCase):
         self.assertIn("GTBank", resp["data"]["details"])
         self.assertIn("0123456789", resp["data"]["details"])
 
-    def test_pin_screen_falls_back_to_the_one_line_summary(self):
-        """Actions queued before flow_fields existed still render every field."""
+    def test_an_action_without_persisted_fields_is_rebuilt_from_its_payload(self):
+        """Opening REBUILDS the fields rather than replaying them, so an action
+        armed before flow_fields existed now renders itemised instead of crammed.
+
+        This used to fall back to the one-line summary in the heading with the
+        other two lines blank. Rebuilding is strictly better — the recipient and
+        the bank land on their own lines, which is the whole point of the split
+        confirm — and it degrades to that same summary anyway when the payload is
+        too sparse to itemise.
+        """
         from .flows import PIN_SCREEN, handle_flow_request
 
         pa = _transfer_action(self.user)
@@ -163,9 +171,26 @@ class FlowsHandlerTests(TestCase):
         pa.save(update_fields=["payload"])
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_flow_token(pa)})
         self.assertEqual(resp["screen"], PIN_SCREEN)
-        self.assertIn("JOHN DOE", resp["data"]["amount"])
-        self.assertEqual(resp["data"]["recipient"], "")
-        self.assertEqual(resp["data"]["details"], "")
+        self.assertIn("JOHN DOE", resp["data"]["recipient"])
+        self.assertIn("GTBank", resp["data"]["details"])
+        # ...and the rebuild is persisted, so a later error render replays it.
+        pa.refresh_from_db()
+        self.assertIn("flow_fields", pa.payload)
+
+    def test_opening_always_answers_a_routing_root(self):
+        """A Flow may only open on a root. A customer who mistyped their PIN,
+        closed the card and tapped it again would otherwise be answered with
+        PIN_RETRY — which Meta refuses as a first screen, so the card would
+        simply not open."""
+        from .flows import PIN_RETRY, PIN_SCREEN, handle_flow_request
+
+        pa = _transfer_action(self.user)
+        pa.payload["flow_screen"] = PIN_RETRY      # where a wrong PIN left it
+        pa.save(update_fields=["payload"])
+        resp = handle_flow_request({"action": "INIT", "flow_token": sign_flow_token(pa)})
+        self.assertEqual(resp["screen"], PIN_SCREEN)
+        pa.refresh_from_db()
+        self.assertEqual(pa.payload["flow_screen"], PIN_SCREEN)
 
     def test_wrong_pin_reprompts_and_does_not_debit(self):
         # PIN_RETRY, not PIN_SCREEN: WhatsApp keeps form state across a
@@ -945,6 +970,11 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
         super().setUpClass()
         doc = jsonlib.loads((pl.Path(__file__).parent / "flow_assets" / "pin_flow.json").read_text())
         cls.declared = {sc["id"]: set(sc["data"]) for sc in doc["screens"]}
+        # A Flow may only OPEN on a root of the routing graph. Read from the
+        # published JSON rather than hard-coded, so a screen that stops being a
+        # root is caught here instead of by Meta at send time.
+        routed_into = {t for targets in doc["routing_model"].values() for t in targets}
+        cls.roots = set(doc["routing_model"]) - routed_into
 
     def setUp(self):
         self.user = _make_user()
@@ -976,9 +1006,26 @@ class SendPayloadsMatchThePublishedScreensTests(TestCase):
                          f"{screen} send keys drifted from the published JSON")
 
     def test_the_transfer_confirm(self):
-        from whatsapp import router
+        """The money confirm opens with flow_action=data_exchange, so it sends no
+        screen at all — the endpoint picks one. Its half of the contract is
+        therefore the INIT RESPONSE, which is checked here instead of a send
+        payload that deliberately no longer carries screen data.
 
-        self._assert_matches(self._sent(router._send_pin_flow, self.pa, self.user))  # noqa: SLF001
+        Also pinned: INIT must answer a routing ROOT. Meta refuses a non-root as
+        a Flow's first screen, so answering PIN_CHAIN or PIN_RETRY here would
+        stop the card opening at all.
+        """
+        from whatsapp import router
+        from whatsapp.flows import handle_flow_request, sign_flow_token
+
+        kw = self._sent(router._send_pin_flow, self.pa, self.user)  # noqa: SLF001
+        self.assertEqual(kw["on_open"], "data_exchange")
+
+        self.pa.refresh_from_db()
+        opened = handle_flow_request(
+            {"action": "INIT", "flow_token": sign_flow_token(self.pa)})
+        self.assertIn(opened["screen"], self.roots, "INIT answered a non-root screen")
+        self._assert_matches({"screen": opened["screen"], "screen_data": opened["data"]})
 
     def test_the_transfer_form(self):
         from transfers.models import Bank
