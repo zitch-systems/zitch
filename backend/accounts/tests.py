@@ -163,7 +163,7 @@ class OtpTakeoverTests(TestCase):
 
     def _established_victim(self, phone, email):
         victim, _ = make_user(phone, email)
-        victim.set_password("Passw0rd123")  # a real account has a usable password
+        victim.set_password("Passw0rd123!")  # a real account has a usable password
         victim.save(update_fields=["password"])
         return victim
 
@@ -214,11 +214,11 @@ class CredentialSecurityTests(TestCase):
         victim_hash = User.objects.get(pk=victim.pk).password
         # Even passing the victim's email, only the token owner's password changes.
         res, _ = self.post("/api/set-password/", {
-            "access_token": atk_token, "email": "victim@zitch.test", "password": "newpass12345",
+            "access_token": atk_token, "email": "victim@zitch.test", "password": "Newpass!12345",
         })
         self.assertEqual(res.status_code, 200)
         self.assertEqual(User.objects.get(pk=victim.pk).password, victim_hash)  # untouched
-        self.assertTrue(User.objects.get(pk=attacker.pk).check_password("newpass12345"))
+        self.assertTrue(User.objects.get(pk=attacker.pk).check_password("Newpass!12345"))
 
     def test_set_password_min_length(self):
         _, token = make_user("08030000003", "c@zitch.test")
@@ -242,22 +242,22 @@ class CredentialSecurityTests(TestCase):
         user.save(update_fields=["password"])
 
         # No current password -> refused, password untouched.
-        res, body = self.post("/api/set-password/", {"access_token": token, "password": "Newpass456"})
+        res, body = self.post("/api/set-password/", {"access_token": token, "password": "Newpass456!"})
         self.assertEqual(res.status_code, 403)
         self.assertEqual(body.get("code"), "current_password_required")
         self.assertTrue(User.objects.get(pk=user.pk).check_password("Oldpass123"))
 
         # Wrong current password -> refused.
         res, _ = self.post("/api/set-password/", {
-            "access_token": token, "password": "Newpass456", "current_password": "nope12345"})
+            "access_token": token, "password": "Newpass456!", "current_password": "nope12345"})
         self.assertEqual(res.status_code, 403)
         self.assertTrue(User.objects.get(pk=user.pk).check_password("Oldpass123"))
 
         # Correct current password -> changed.
         res, _ = self.post("/api/set-password/", {
-            "access_token": token, "password": "Newpass456", "current_password": "Oldpass123"})
+            "access_token": token, "password": "Newpass456!", "current_password": "Oldpass123"})
         self.assertEqual(res.status_code, 200)
-        self.assertTrue(User.objects.get(pk=user.pk).check_password("Newpass456"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("Newpass456!"))
 
     def test_set_pin_requires_auth_and_sets_owner(self):
         res, _ = self.post("/api/set-transaction-pin/", {"email": "x@zitch.test", "pin": "135790"})
@@ -284,7 +284,7 @@ class CredentialSecurityTests(TestCase):
         # A token alone must not be enough to OVERWRITE an existing PIN (else the
         # brute-force lockout is moot — an attacker would just reset the PIN).
         user = User.objects.create(username="08050000005", phone="08050000005", email="e@zitch.test")
-        user.set_password("Passw0rd123")
+        user.set_password("Passw0rd123!")
         user.set_transaction_pin("1234")
         user.save()
         token = AccessToken.issue(user).key
@@ -304,7 +304,7 @@ class CredentialSecurityTests(TestCase):
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("975310"))
         # The account password remains a valid fallback (forgot-PIN recovery).
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "432100", "password": "Passw0rd123"})
+            "access_token": token, "pin": "432100", "password": "Passw0rd123!"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(User.objects.get(pk=user.pk).check_transaction_pin("432100"))
 
@@ -312,14 +312,14 @@ class CredentialSecurityTests(TestCase):
         # A user who locked their PIN and then legitimately changes it (which
         # requires the password) must not stay locked out against the new PIN.
         user = User.objects.create(username="08060000006", phone="08060000006", email="f@zitch.test")
-        user.set_password("Passw0rd123")
+        user.set_password("Passw0rd123!")
         user.set_transaction_pin("1234")
         user.pin_failed_attempts = 5
         user.pin_locked_until = timezone.now() + timedelta(minutes=15)
         user.save()
         token = AccessToken.issue(user).key
         res, _ = self.post("/api/set-transaction-pin/", {
-            "access_token": token, "pin": "567891", "password": "Passw0rd123"})
+            "access_token": token, "pin": "567891", "password": "Passw0rd123!"})
         self.assertEqual(res.status_code, 200)
         u = User.objects.get(pk=user.pk)
         self.assertEqual(u.pin_failed_attempts, 0)
@@ -674,10 +674,10 @@ class FullJourneyE2ETests(TestCase):
         s, b = self.post("/api/verify_otp/", phone=P, otp=otp)
         self.assertEqual(s, 200)
         tok = b["access_token"]
-        self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123")[0], 200)
+        self.assertEqual(self.post("/api/set-password/", access_token=tok, password="Passw0rd123!")[0], 200)
         self.assertEqual(self.post("/api/set-password/", email=P, password="hacked12345")[0], 401)  # no token
         self.assertEqual(self.post("/api/set-transaction-pin/", access_token=tok, pin="246810")[0], 200)
-        s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123")
+        s, b = self.post("/api/sigin/", email_or_phone=P, password="Passw0rd123!")
         self.assertEqual(s, 200)
         tok = b["access_token"]
 
@@ -1009,11 +1009,27 @@ class SessionRevocationTests(TestCase):
     def test_password_change_revokes_other_sessions_but_keeps_current(self):
         user, old_token = make_user("08010000001", "a@zitch.test")
         new_token = AccessToken.issue(user).key  # a second device/session
-        self.assertEqual(self.post("/api/set-password/", new_token, password="Passw0rd123")[0].status_code, 200)
+        self.assertEqual(self.post("/api/set-password/", new_token, password="Passw0rd123!")[0].status_code, 200)
         # The other session is revoked...
         self.assertEqual(self.post("/api/wallet_balance/", old_token)[0].status_code, 401)
         # ...but the one that changed the password stays signed in.
         self.assertEqual(self.post("/api/wallet_balance/", new_token)[0].status_code, 200)
+
+    def test_the_endpoint_enforces_the_rule_the_signup_screen_draws(self):
+        """The "a letter, a number, a special character" tick-boxes were CLIENT
+        side only, so the API accepted passwords the app would not let anyone
+        type. Both doors now call one rule — WhatsApp signup is the second door,
+        and two rules would have meant the weaker one is the one that gets used.
+        """
+        user, _ = make_user("08010000002", "b@zitch.test")
+        token = AccessToken.issue(user).key
+        for weak in ("abcdefgh", "abcdefg1", "Passw0rd123"):
+            res, body = self.post("/api/set-password/", token, password=weak)
+            self.assertEqual(res.status_code, 400, weak)
+            self.assertFalse(User.objects.get(pk=user.pk).check_password(weak), weak)
+        self.assertEqual(
+            self.post("/api/set-password/", token, password="Zitch!2026pay")[0].status_code,
+            200)
 
 
 class PasswordRecoveryTests(TestCase):
@@ -1052,10 +1068,10 @@ class PasswordRecoveryTests(TestCase):
         user, old_token = make_user("08010000001", "a@zitch.test")
         self.post("/api/password/forgot/", phone="08010000001")
         res, body = self.post("/api/password/reset/", phone="08010000001",
-                              otp=self._reset_code("08010000001"), password="NewPassw0rd1")
+                              otp=self._reset_code("08010000001"), password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
-        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1!"))
         # Old session is revoked; the freshly issued one works.
         self.assertEqual(self._auth(old_token), 401)
         self.assertEqual(self._auth(body["access_token"]), 200)
@@ -1063,7 +1079,7 @@ class PasswordRecoveryTests(TestCase):
     def test_reset_rejects_a_wrong_code(self):
         make_user("08010000001", "a@zitch.test")
         self.post("/api/password/forgot/", phone="08010000001")
-        res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1")
+        res, _ = self.post("/api/password/reset/", phone="08010000001", otp="000000", password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 400)
 
     def test_forgot_and_reset_work_with_an_email_identifier(self):
@@ -1072,10 +1088,10 @@ class PasswordRecoveryTests(TestCase):
         self.post("/api/password/forgot/", email_or_phone="a@zitch.test")
         self.assertTrue(OTP.objects.filter(phone="08010000001", purpose=OTP.RESET).exists())
         res, body = self.post("/api/password/reset/", email_or_phone="a@zitch.test",
-                              otp=self._reset_code("08010000001"), password="NewPassw0rd1")
+                              otp=self._reset_code("08010000001"), password="NewPassw0rd1!")
         self.assertEqual(res.status_code, 200)
         self.assertIn("access_token", body)
-        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1"))
+        self.assertTrue(User.objects.get(pk=user.pk).check_password("NewPassw0rd1!"))
 
     def test_signup_verifier_will_not_honour_a_reset_code(self):
         make_user("08010000001", "a@zitch.test")

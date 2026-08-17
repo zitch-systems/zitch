@@ -560,6 +560,14 @@ WHATSAPP_FLOW = {
     # as before until someone confirms `publish_flow` lists RESULT as live.
     "RESULT_SCREEN": os.environ.get("WHATSAPP_FLOW_RESULT_SCREEN", "").strip().lower()
                      in ("1", "true", "yes", "on"),
+    # Same gate, same reason, for the signup page that sets the app password.
+    # OFF means signup goes straight from the phone step to the PIN, exactly as
+    # it does today, and the account is created with no app password. Turn it on
+    # only once `publish_flow` lists SIGNUP_PASSWORD among the live screens —
+    # answering with a screen Meta has not published is the "Couldn't load
+    # content" failure, and here it would land in the middle of a signup.
+    "PASSWORD_SCREEN": os.environ.get("WHATSAPP_FLOW_PASSWORD_SCREEN", "").strip().lower()
+                       in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router

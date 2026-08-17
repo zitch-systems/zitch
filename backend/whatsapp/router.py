@@ -1719,7 +1719,21 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         # gets the SMS round-trip in the ladder.
         phone_verified=(local == wa_local) or bool(ob.payload.get("phone_verified_flow")),
     )
-    user.set_unusable_password()       # no app password yet; "Forgot password" sets one
+    # The app password, when the signup collected one. It arrives ALREADY HASHED
+    # from the Flow (see _submit_signup_password) — assigned, not re-hashed,
+    # because the raw string was deliberately never kept: an abandoned signup, or
+    # a database read by anyone at all, must yield a hash and not a credential.
+    #
+    # This is what makes one account work in both places: the same email and
+    # password now sign in to the mobile app, and the WhatsApp side keeps
+    # authenticating by the chat number plus the PIN. Without it the account
+    # existed with no password at all and the customer had to run "Forgot
+    # password" before they could ever open the app.
+    pw_hash = (ob.payload.get("flow_pw_hash") or "").strip()
+    if pw_hash:
+        user.password = pw_hash
+    else:
+        user.set_unusable_password()   # "Forgot password" sets one in the app
     if pin:
         user.set_transaction_pin(pin)
     user.save()
@@ -1744,6 +1758,12 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
         + ("" if pin else
            "🔐 Set your *transaction PIN* in the Zitch app before you send money — "
            "we never collect a PIN in this chat.\n\n")
+        # One account, both doors. Nothing else tells them the credential they
+        # just chose is the one that opens the app, and a customer who does not
+        # know that runs "Forgot password" on an account they set up two minutes
+        # ago. The password itself is of course never repeated back.
+        + (f"📱 *The Zitch app is the same account.* Sign in with *{user.email}* "
+           "and the password you just chose.\n\n" if pw_hash and user.email else "")
         # Verification runs now, not "later": account setup below collects the ID
         # and the SMS code, then rolls into whatever is left. Only when the bank
         # integration is off is there nothing to roll into, so only then is the

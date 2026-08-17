@@ -32,7 +32,10 @@ from utility.providers import (
 from wallet.models import Wallet
 from wallet.services import get_or_create_wallet, wema_account_reference
 
-from .models import OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier
+from .models import (
+    OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier,
+    password_rejection,
+)
 
 # The shared design system in common.emails is the only place email HTML lives.
 # This alias keeps the name that accounts, whatsapp and admin already import.
@@ -78,19 +81,17 @@ def _otp_code() -> str:
 
 
 def _weak_password(password: str, user=None) -> str | None:
-    """Run Django's configured password validators server-side; returns a
-    user-facing error string if the password is too weak (too short / too common
-    / all-numeric / too similar to the user's own details), else None. Enforced
-    here because the client strength hints are advisory — a direct API call could
-    otherwise set a trivially guessable password on a money account."""
-    from django.contrib.auth.password_validation import validate_password
-    from django.core.exceptions import ValidationError
+    """Returns a user-facing reason if the password is unacceptable, else None.
 
-    try:
-        validate_password(password, user)
-        return None
-    except ValidationError as e:
-        return " ".join(e.messages)
+    Delegates to accounts.models.password_rejection, which is also what the
+    WhatsApp signup Flow calls. The rule has to be one function: the strength
+    tick-boxes on the sign-up screen ("a letter, a number, a special character")
+    were CLIENT-side only, so a direct API call could set a password the app
+    would have refused to let anyone type — and once WhatsApp became a second
+    front door, two independent rules would have meant the weaker one is the one
+    that gets used.
+    """
+    return password_rejection(password, user) or None
 
 
 @ratelimit("signin", limit=10, window=300)
@@ -675,10 +676,15 @@ def _save_verified_identity(user, identity_type: str, raw: str) -> bool:
 
 def _email_verification_required(user) -> bool:
     """Chat-onboarded accounts must confirm their email in the app before any
-    KYC step. The email was typed into a WhatsApp chat, unverified — one typo
-    from being someone else's inbox — and the phone re-proves itself on the way
-    in (no usable password, so the app entry runs the OTP password reset). The
-    email round-trip is the half the entry flow cannot cover."""
+    KYC step. The email was typed during a WhatsApp signup — one typo from being
+    someone else's inbox — and an address nobody has proved control of must not
+    become the recovery channel for a money account.
+
+    It fires only when the address is still UNVERIFIED, so a signup whose email
+    code round-trip succeeded passes straight through. That is now the common
+    case rather than the exception: the signup Flow sends the code, and it also
+    sets an app password, so these customers sign in directly instead of
+    arriving through the OTP password reset this gate once leaned on."""
     return bool(user.onboarded_via_whatsapp and not user.email_verified)
 
 
