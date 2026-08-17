@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
@@ -59,6 +60,7 @@ const Kyc = () => {
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('');
   const [statePicker, setStatePicker] = useState(false);
+  const [docSource, setDocSource] = useState(false);
   const [addressDoc, setAddressDoc] = useState(''); // base64 proof of address
   const [idImage, setIdImage] = useState(''); // base64 of the government ID
   const [emailOtp, setEmailOtp] = useState('');
@@ -147,24 +149,67 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
 
-  // --- Generic photo picker (NIN slip / ID document) ---
-  const pickImage = async (set: (b64: string) => void) => {
+  // --- Generic photo picker (NIN slip / ID document / proof of address) ---
+  //
+  // `crop` is opt-IN. It used to be forced on for every document, and the crop UI
+  // imposes an aspect ratio: on a full-page utility bill that means the customer
+  // trims their own proof of address, and the line the verifier is looking for —
+  // the address — is one of the things most easily trimmed off. Nothing here
+  // needs a squared-off image, so nothing here asks for one by default.
+  const pickImage = async (set: (b64: string) => void, crop = false) => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your document.'); return; }
     beginExternalActivity(); // don't let the app-lock fire while the picker is up
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.25, allowsEditing: true,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.25, allowsEditing: crop,
       });
       if (res.canceled || !res.assets?.[0]?.base64) return;
       if (res.assets[0].base64.length > MAX_IMAGE_BASE64) {
-        notify('Image too large', 'Choose or crop a photo under 2 MB.');
+        notify('Image too large', 'Choose a photo under 2 MB.');
         return;
       }
       set(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
   const pickNinSlip = () => pickImage(setNinImage);
+
+  // --- PDF picker (proof of address) ---
+  //
+  // A bank statement or utility bill arrives as a PDF far more often than as a
+  // photo — it is emailed, not photographed — and the photo picker cannot see one.
+  //
+  // Kept SEPARATE from the image path rather than merged into one file browser,
+  // because the two need different handling: ImagePicker re-encodes a photo at
+  // quality 0.25, which is what keeps a phone camera's 4MB original under the
+  // upload cap. A document browser hands back the bytes as they are, so routing
+  // photos through it would start rejecting exactly the uploads that work today.
+  const pickPdf = async (set: (b64: string) => void) => {
+    beginExternalActivity();
+    try {
+      const res = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf', copyToCacheDirectory: true, multiple: false,
+      });
+      if (res.canceled || !res.assets?.[0]?.uri) return;
+      const asset = res.assets[0];
+      // Checked before reading, not after: base64 of the file is ~1.37x its size,
+      // and there is no reason to pull a 20MB statement into memory to find that
+      // out.
+      if (typeof asset.size === 'number' && asset.size * 1.37 > MAX_IMAGE_BASE64) {
+        notify('File too large', 'Choose a PDF under 2 MB.');
+        return;
+      }
+      const FS = await import('expo-file-system/legacy');
+      const b64 = await FS.readAsStringAsync(asset.uri, { encoding: 'base64' });
+      if (b64.length > MAX_IMAGE_BASE64) {
+        notify('File too large', 'Choose a PDF under 2 MB.');
+        return;
+      }
+      set(b64);
+    } catch {
+      notify('Could not read that file', 'Try another file, or upload a photo instead.');
+    } finally { endExternalActivity(); }
+  };
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove). ---
@@ -344,9 +389,23 @@ const Kyc = () => {
             server refuses this step without a document, and a rejection after
             the fact is a worse way to learn the requirement. */}
         <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>
-          Upload a utility bill, bank statement or tenancy agreement showing this address (issued in the last 3 months).
+          Upload a utility bill, bank statement or tenancy agreement showing this address (issued in the last 3 months). JPEG, PNG or PDF, up to 2 MB.
         </Text>
-        <Btn label={addressDoc ? 'Proof of address added ✓' : 'Upload proof of address'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => pickImage(setAddressDoc)} />
+        <Btn label={addressDoc ? 'Proof of address added ✓' : 'Upload proof of address'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => setDocSource(true)} />
+        {/* Two sources, named, because they are genuinely different files: a photo
+            of a bill, or the PDF the bank emailed. Asking is one tap and removes
+            the guesswork of a file browser that may or may not show photos. */}
+        <PickerSheet
+          open={docSource}
+          onClose={() => setDocSource(false)}
+          title="Upload proof of address"
+          value=""
+          options={[
+            { v: 'photo', label: 'Photo (JPEG or PNG)', sub: 'From your gallery', icon: 'copy' },
+            { v: 'pdf', label: 'PDF file', sub: 'A statement or bill you were emailed', icon: 'copy' },
+          ]}
+          onPick={(v) => { if (v === 'pdf') pickPdf(setAddressDoc); else pickImage(setAddressDoc); }}
+        />
         <View style={{ height: 10 }} />
         <Btn label="Verify address" size="md" disabled={busy || address.trim().length < 6 || !addressDoc}
           onPress={() => submit('/api/kyc/address/', { address, city, state: canonicalState(stateName) || stateName, document: addressDoc }, 'Address')} />
