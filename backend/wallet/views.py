@@ -511,6 +511,13 @@ def transaction_history(request):
                 "date": t.created.strftime("%Y-%m-%d %H:%M"),
                 "reference": t.reference,
                 "direction": t.direction,
+                # The customer's own note. `note` is what a bank transfer stores
+                # (execute_payout) and `narration` what a bill or top-up stores
+                # (run_provider_purchase) — two keys for one idea, named
+                # differently long before there was a field to fill either, and
+                # wallet.alerts._narration_line already reads both the same way.
+                "narration": str((t.meta or {}).get("note")
+                                 or (t.meta or {}).get("narration") or "")[:120],
             }
             for t in txns
         ],

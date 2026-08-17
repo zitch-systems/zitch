@@ -1076,6 +1076,8 @@ export type Txn = {
   icon: string;
   dir: 'in' | 'out';
   reference?: string;
+  /** The customer's own note for this payment, when they gave one. */
+  narration?: string;
   /** Epoch ms parsed from the backend's date string, or undefined when it
    *  couldn't be read. Grouping by month needs a real instant; `detail` is a
    *  pre-formatted display string and cannot be sorted or bucketed. */
