@@ -113,7 +113,11 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
           >
             <WhatsAppGlyph size={30} color="#fff" />
           </View>
-          <Text style={{ fontSize: 10.5, marginTop: -2, fontFamily: font.semibold, color: '#0FA295' }}>WhatsApp</Text>
+          {/* "WhatsApp banking", not "WhatsApp": the label sits under a WhatsApp glyph,
+              so naming the app again says nothing the icon has not. What a customer
+              cannot tell from the icon is that this opens THEIR BANK there rather
+              than the messenger. Two lines, because the bar has no width for one. */}
+          <Text style={{ fontSize: 10, marginTop: -2, fontFamily: font.semibold, color: '#0FA295', textAlign: 'center', lineHeight: 11 }}>WhatsApp{'\n'}banking</Text>
         </Pressable>
 
         {RIGHT.map((it) => <Tab key={it.name} it={it} />)}

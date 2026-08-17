@@ -377,12 +377,17 @@ def _success_screen(message: str, status: str = "") -> dict:
 # request handler (decrypted payload -> response dict)
 # --------------------------------------------------------------------------- #
 def _screen_contract() -> dict:
-    """screen id -> the exact set of data properties the PUBLISHED Flow declares.
+    """screen id -> {data property: declared type} for the PUBLISHED Flow.
 
     Read from the shipped flow_assets/pin_flow.json, which is the same document
     uploaded to Meta, so the contract cannot drift from the one the device is
     holding us to. Empty on any read failure — a guard that cannot load its rules
-    must not start refusing valid screens.
+    must not start refusing valid payments.
+
+    The TYPE matters as much as the key: most properties are strings, but the
+    Dropdown sources (`banks`, `plans`, `networks`) are arrays of objects. A guard
+    that knew only the key names would happily stringify a bank list into
+    "[{'id': 'gtb', ...}]" and break every screen it was meant to protect.
     """
     global _CONTRACT
     if _CONTRACT is None:
@@ -393,40 +398,78 @@ def _screen_contract() -> dict:
             path = os.path.join(os.path.dirname(__file__), "flow_assets", "pin_flow.json")
             with open(path, encoding="utf-8") as fh:
                 doc = json.load(fh)
-            _CONTRACT = {s["id"]: set((s.get("data") or {}).keys())
-                         for s in doc.get("screens", []) if s.get("id")}
+            _CONTRACT = {
+                s["id"]: {k: str((v or {}).get("type") or "string")
+                          for k, v in (s.get("data") or {}).items()}
+                for s in doc.get("screens", []) if s.get("id")}
         except Exception:  # noqa: BLE001 — never block a payment to validate one
             log.exception("could not read the Flow screen contract")
             _CONTRACT = {}
     return _CONTRACT
 
 
+#: What an absent property becomes, per declared type. A declared-but-missing key
+#: is as unrenderable as a wrong one, and a blank of the right shape is the only
+#: substitute that renders.
+_EMPTY_FOR = {"string": "", "array": [], "boolean": False, "number": 0}
+
+
+def _conform(value, declared_type: str):
+    """Coerce one value to its declared type, or to that type's blank."""
+    if value is None:
+        return _EMPTY_FOR.get(declared_type, "")
+    if declared_type == "string":
+        # str() rather than the value as-is: `Outcome` is a str subclass and
+        # encodes fine, but a Decimal reaching a declared string property is the
+        # same unrenderable screen by a different route.
+        return str(value)
+    if declared_type == "array":
+        # Never stringify a Dropdown's source, and never hand it a non-list: an
+        # empty list renders as an empty dropdown, which is recoverable; a string
+        # where an array belongs takes the whole screen down.
+        return value if isinstance(value, (list, tuple)) else []
+    return value
+
+
 _CONTRACT: dict | None = None
 
 
 def _check_contract(response: dict) -> dict:
-    """Log loudly when a response's data keys don't match its screen's declaration.
+    """Force a response's data to match its screen's declaration, and log when it
+    didn't.
 
-    WhatsApp renders ANY mismatch — a missing declared property or an extra
-    undeclared one — as "Couldn't load content. Try again later." on the device,
-    with nothing in it to say which screen or which key. That message is what a
-    customer saw after a payment that had in fact gone through, because the
-    endpoint's own error screen was built by hand and omitted `status`.
+    WhatsApp renders ANY mismatch — a missing declared property, an extra
+    undeclared one, or a value that is not the declared type — as "Couldn't load
+    content. Try again later." on the device. The customer has already entered
+    their PIN by then, so the sentence they read is about a payment that in fact
+    went through, and the device says nothing about which screen or which key.
 
-    Deliberately does not repair the response: guessing a value for a property
-    the caller forgot would paper over the bug that produced it. It records
-    exactly which key is wrong, so the next occurrence is findable in one grep
-    instead of a device screenshot.
+    This used to only log, on the reasoning that filling in a value the caller
+    forgot papers over the bug that produced it. That trade was wrong for a
+    banking channel: papering over a missing subtitle costs a blank line, and
+    NOT papering over it costs the customer the outcome of their payment. So the
+    response is now conformed to the contract — declared-but-absent keys are
+    filled with "", undeclared keys are dropped, and every value is coerced to a
+    string — and the mismatch is still logged at ERROR with the exact key, so the
+    underlying bug is as findable as it was before.
+
+    Only the endpoint's half of the contract is enforceable here; `contract` is
+    read from the repo's pin_flow.json, so this cannot detect a Flow that Meta
+    has published one revision behind the code. `published_flow_report()` checks
+    that other half, and its verdict is on /healthz as
+    whatsapp_flow_published.drifted_screens.
     """
     contract = _screen_contract()
     screen = str(response.get("screen") or "")
     if not contract or screen not in contract:
         return response
-    sent = set((response.get("data") or {}).keys())
+    data = response.get("data") or {}
     declared = contract[screen]
-    if sent != declared:
+    sent, expected = set(data.keys()), set(declared)
+    if sent != expected:
         log.error("wa_flow_contract_mismatch screen=%s missing=%s unexpected=%s",
-                  screen, sorted(declared - sent), sorted(sent - declared))
+                  screen, sorted(expected - sent), sorted(sent - expected))
+    response["data"] = {k: _conform(data.get(k), t) for k, t in declared.items()}
     return response
 
 
@@ -434,7 +477,15 @@ def handle_flow_request(payload: dict) -> dict:
     """Route a decrypted Flows request to its response. Never raises — any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
-    return _check_contract(_handle_flow_request(payload))
+    response = _check_contract(_handle_flow_request(payload))
+    # One line per answered exchange. Without it the only trace of a Flow session
+    # in Render was gunicorn's access log — a 200 and a byte count — which is why
+    # "every request succeeded" and "the customer saw an error screen" were both
+    # true and neither was diagnosable. No values are logged: the payload carries
+    # balances, account names and the customer's own narration.
+    log.info("wa_flow_response screen=%s keys=%s",
+             response.get("screen") or "-", sorted((response.get("data") or {}).keys()))
+    return response
 
 
 def _handle_flow_request(payload: dict) -> dict:
@@ -1401,11 +1452,17 @@ def _submit_vtu_details(pa, data: dict) -> dict:
     return _pin_screen(fields, screen=PIN_CHAIN)
 
 
-def _transfer_form_screen(error: str = "", candidates=None) -> dict:
+def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
+                          hint: str = "") -> dict:
+    """`hint` is the server talking back about a narrowing, which is not an error
+    and must not read like one. Both are always supplied — the screen declares
+    them, and a declared-but-absent property is the mismatch WhatsApp renders as
+    "Couldn't load content. Try again later."."""
     from .router import _bank_items
 
     return {"screen": TRANSFER_FORM,
-            "data": {"banks": _bank_items(candidates), "error": error or ""}}
+            "data": {"banks": _bank_items(candidates, query=query),
+                     "error": error or "", "hint": hint or ""}}
 
 
 def _submit_transfer_form(token: str, data: dict) -> dict:
@@ -1433,6 +1490,35 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     if pa is None:
         return _success_screen("This request has expired. Please start again in the chat.")
     user = pa.user
+
+    # A search, not a submit. Handled FIRST and before any validation: the
+    # customer who is still hunting for their bank has not finished filling the
+    # form, and answering "enter a valid amount" to someone who typed "kuda" is
+    # refusing the thing they actually asked for.
+    #
+    # The rule is `bank_search` set AND `bank` empty. Once a bank is picked the
+    # search text is ignored, so leftover text can never trap someone in a loop
+    # of narrowing instead of paying — which is the failure mode of treating the
+    # search as a mode rather than as a state.
+    #
+    # Re-rendering the SAME screen id is what makes this usable: WhatsApp keeps a
+    # form's client-side values on a same-screen answer, so the amount and account
+    # number the customer already typed survive the narrowing. That retention is
+    # a nuisance on the PIN pages — it is why PIN_RETRY exists as a separate
+    # screen — and here it is exactly the behaviour wanted.
+    search = " ".join(str(data.get("bank_search", "") or "").split())[:40]
+    if search and not str(data.get("bank", "")).strip():
+        from .router import _bank_items
+
+        shown = _bank_items(query=search)
+        full = _bank_items()
+        if len(shown) == len(full):
+            hint = (f'No bank name contains "{search}" — showing all of them. '
+                    "Check the spelling, or just pick from the list.")
+        else:
+            hint = (f'Showing {len(shown)} bank{"" if len(shown) == 1 else "s"} '
+                    f'matching "{search}". Pick yours, then tap Continue.')
+        return _transfer_form_screen(query=search, hint=hint)
 
     try:
         amount = Decimal(str(data.get("amount", "")).strip())
