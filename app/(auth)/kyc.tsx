@@ -7,7 +7,8 @@ import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, money, NText } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, money, NText, SelectRow, PickerSheet } from '@/components/design/ui';
+import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
 
@@ -57,6 +58,7 @@ const Kyc = () => {
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('');
+  const [statePicker, setStatePicker] = useState(false);
   const [addressDoc, setAddressDoc] = useState(''); // base64 proof of address
   const [idImage, setIdImage] = useState(''); // base64 of the government ID
   const [emailOtp, setEmailOtp] = useState('');
@@ -316,8 +318,27 @@ const Kyc = () => {
         <View style={{ height: 10 }} />
         <View style={{ flexDirection: 'row', gap: 10 }}>
           <View style={{ flex: 1 }}><Field value={city} onChangeText={setCity} placeholder="City / LGA" /></View>
-          <View style={{ flex: 1 }}><Field value={stateName} onChangeText={setStateName} placeholder="State" /></View>
+          {/* A closed list, not free text. "Lagos", "lagos", "Lagos State" and
+              "LAG" all used to arrive as different values for one place, and
+              every reader downstream — address verification, the compliance
+              export, anything grouping by region — had to guess which meant the
+              same thing. The sheet is searchable, so 37 entries stay a list you
+              type at rather than one you scroll. */}
+          <View style={{ flex: 1 }}>
+            <SelectRow compact placeholder="State" value={stateName} onPress={() => setStatePicker(true)} />
+          </View>
         </View>
+        <PickerSheet
+          open={statePicker}
+          onClose={() => setStatePicker(false)}
+          title="State"
+          searchable
+          searchPlaceholder="Type a state"
+          emptyLabel="No Nigerian state matches that."
+          options={NIGERIAN_STATES.map((v) => ({ v, label: v }))}
+          value={stateName}
+          onPick={setStateName}
+        />
         <View style={{ height: 10 }} />
         {/* Named so the user knows what counts before opening the picker — the
             server refuses this step without a document, and a rejection after
@@ -328,7 +349,7 @@ const Kyc = () => {
         <Btn label={addressDoc ? 'Proof of address added ✓' : 'Upload proof of address'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => pickImage(setAddressDoc)} />
         <View style={{ height: 10 }} />
         <Btn label="Verify address" size="md" disabled={busy || address.trim().length < 6 || !addressDoc}
-          onPress={() => submit('/api/kyc/address/', { address, city, state: stateName, document: addressDoc }, 'Address')} />
+          onPress={() => submit('/api/kyc/address/', { address, city, state: canonicalState(stateName) || stateName, document: addressDoc }, 'Address')} />
       </KycRow>
 
       <KycRow icon="shield" title="Government ID" sub="Passport, driver's licence or voter's card — unlocks Tier 3" done={!!status?.id_document_verified}>

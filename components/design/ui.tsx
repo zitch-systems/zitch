@@ -963,25 +963,69 @@ export const SelectRow = ({
 // same component serves a flat filter list and the file-type chooser.
 export type PickerOption = { v: string; label: string; sub?: string; icon?: string };
 
-export const PickerSheet = ({
-  open,
-  onClose,
-  title,
-  options,
-  value,
-  onPick,
-}: {
+type PickerSheetProps = {
   open: boolean;
   onClose: () => void;
   title: string;
   options: PickerOption[];
   value: string;
   onPick: (v: string) => void;
-}) => {
+  /** Show a filter box above the list. Opt-in, so a short list (two networks,
+   *  three plans) does not grow a search field it does not need — but a long one
+   *  (37 states) stops being a list you scroll and becomes one you type at. */
+  searchable?: boolean;
+  searchPlaceholder?: string;
+  emptyLabel?: string;
+};
+
+/**
+ * Deliberately a hook-free shell around the body, so a closed picker holds NO
+ * state. The filter box then resets on every open for free, rather than needing
+ * an effect to clear it — and reopening onto someone's last filter looks like the
+ * list has lost most of its entries. This mirrors what `Sheet` does one level
+ * down, and for the same reason.
+ */
+export const PickerSheet = (props: PickerSheetProps) => (props.open ? <PickerSheetBody {...props} /> : null);
+
+const PickerSheetBody = ({
+  open,
+  onClose,
+  title,
+  options,
+  value,
+  onPick,
+  searchable,
+  searchPlaceholder,
+  emptyLabel,
+}: PickerSheetProps) => {
   const { c } = useTheme();
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
+  // Substring, not prefix: people look for "ibom" and "river" as readily as they
+  // type the first letters, and a 37-item list is far too small for the
+  // difference to cost anything.
+  const shown = q
+    ? options.filter((o) => o.label.toLowerCase().includes(q) || o.v.toLowerCase().includes(q))
+    : options;
   return (
     <Sheet open={open} onClose={onClose} title={title}>
-      {options.map((o) => {
+      {searchable ? (
+        <View style={{ marginBottom: 6 }}>
+          <Field
+            value={query}
+            onChangeText={setQuery}
+            placeholder={searchPlaceholder ?? 'Type to search'}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+        </View>
+      ) : null}
+      {searchable && shown.length === 0 ? (
+        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, paddingVertical: 18, textAlign: 'center' }}>
+          {emptyLabel ?? 'Nothing matches that.'}
+        </Text>
+      ) : null}
+      {shown.map((o) => {
         const on = o.v === value;
         return (
           <Pressable
