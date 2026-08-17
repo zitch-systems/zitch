@@ -2,14 +2,14 @@
 // screen can make a request, so even direct fetch() call sites aren't edge-blocked
 // as anonymous bots.
 import "@/lib/netPatch";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppState, Linking, Platform, Text as RNText, TextInput as RNTextInput } from "react-native";
 import { useFonts } from "expo-font";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { router, SplashScreen, Stack } from "expo-router";
+import { router, SplashScreen, Stack, usePathname } from "expo-router";
 import { ThemeProvider, appFonts, font, useTheme } from "@/lib/theme";
 import { WalletProvider } from "@/lib/wallet";
 import { MonoLauncherProvider } from "@/lib/mono";
@@ -115,6 +115,13 @@ const RootLayout = () => {
   // navigator mounted and router.replace() would throw "Attempted to navigate
   // before mounting the Root Layout component" — from an un-awaited async
   // function, i.e. as an unhandled rejection, with the lock bounce silently lost.
+  // Read through a ref: the lock effect below depends only on [ready], so closing
+  // over `pathname` directly would capture whatever route was showing at mount and
+  // never see a change.
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+  useEffect(() => { pathnameRef.current = pathname; }, [pathname]);
+
   // Effects run child-first, so by the time this one fires the Stack below is
   // mounted and the redirect lands.
   useEffect(() => {
@@ -122,13 +129,21 @@ const RootLayout = () => {
     // App lock: re-opening the app (or returning from background) requires a
     // biometric/password unlock — not just after the idle timeout. The token
     // survives the lock so unlock is instant; a full sign-out clears it.
+    // Never replace the route with the one already showing. This check runs on
+    // launch, on every foreground, and on a 30-second timer, so while the unlock
+    // screen is up it fires repeatedly and the session is still locked every
+    // time — each redundant replace remounted /signin, which reset its
+    // "already auto-prompted" ref and asked for the same fingerprint again.
+    const goToSignin = () => {
+      if (pathnameRef.current !== "/signin") router.replace("/signin");
+    };
     const check = async () => {
       // A session idle past the absolute cap is cleared outright (token dropped),
       // forcing a password sign-in — checked before the softer idle lock.
-      if (await enforceHardExpiry()) { router.replace("/signin"); return; }
+      if (await enforceHardExpiry()) { goToSignin(); return; }
       await lockIfAwayTooLong(); // re-lock only if backgrounded >= 1 min
       await enforceIdleTimeout();
-      if (await isSessionLocked()) router.replace("/signin");
+      if (await isSessionLocked()) goToSignin();
     };
     // Storage or the router failing is not a reason to take the app down with
     // it: the lock is re-checked on every foreground and on the timer below.
