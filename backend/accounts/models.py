@@ -43,6 +43,50 @@ def transaction_pin_rejection(pin: str) -> str:
     return ""
 
 
+#: The composition rules the sign-up screen has always drawn tick-boxes for.
+#: They lived ONLY in the mobile client, so they were advice, not policy: a
+#: direct API call could set "password" and be accepted, because Django's
+#: configured validators require length and non-numeric but neither a digit nor
+#: a symbol. Now that WhatsApp creates the same credential through a second
+#: front door, the rule has to live in one place both doors call, or the two
+#: channels disagree about what a valid password is — and the weaker one becomes
+#: the one attackers use.
+_PASSWORD_MIN = 8
+
+
+def password_rejection(password: str, user=None) -> str:
+    """Return a customer-safe reason when a chosen password is unacceptable, or
+    "" when it is fine.
+
+    Composition first, then Django's configured validators (common-password,
+    too-similar-to-your-own-details, all-numeric). Composition is checked first
+    because its messages name the missing ingredient, which is what someone
+    typing at a phone keyboard can act on; Django's are the backstop for the
+    passwords that satisfy the tick-boxes and are still terrible ("Password1!").
+
+    Existing password hashes are untouched: this runs only when a customer
+    CHOOSES a password, exactly as transaction_pin_rejection does for PINs.
+    """
+    pw = password or ""
+    if len(pw) < _PASSWORD_MIN:
+        return f"Your password must be at least {_PASSWORD_MIN} characters"
+    if not re.search(r"[A-Za-z]", pw):
+        return "Your password must include a letter"
+    if not re.search(r"[0-9]", pw):
+        return "Your password must include a number"
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        return "Your password must include a special character, like ! @ # $"
+
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
+
+    try:
+        validate_password(pw, user)
+    except ValidationError as exc:
+        return " ".join(exc.messages)
+    return ""
+
+
 def hash_identifier(value: str) -> str:
     """Keyed HMAC-SHA256 of a sensitive government ID (BVN/NIN). Keyed with a
     secret that is not in the database, so the small 11-digit space can't be

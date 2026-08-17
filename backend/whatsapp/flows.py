@@ -112,6 +112,17 @@ FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is
 FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is pending
 FLOW_PHONE_STATE = "flow_phone"             # ...while the signup phone page is open
 FLOW_PHONE_CODE_STATE = "flow_phone_code"   # ...while the signup phone SMS code is pending
+FLOW_PASSWORD_STATE = "flow_password"       # ...while the app-password page is open
+
+#: The signup page that sets the password used to sign in to the MOBILE APP.
+#:
+#: It lives in the Flow, never in the chat, and that is the whole design. A
+#: password typed as a WhatsApp message is stored forever in the customer's own
+#: chat history, in ours, and on Meta's servers — readable by anyone who picks
+#: up the unlocked phone. Inside a Flow it is encrypted to this endpoint,
+#: appears in no transcript, and is hashed before it is written anywhere. Same
+#: reason the PIN and the BVN are collected here.
+SIGNUP_PASSWORD = "SIGNUP_PASSWORD"
 FLOW_FORM_STATE = "flow_transfer_form"   # PendingAction.state while the transfer form is open
 FLOW_VTU_STATE = "flow_vtu"   # ...while the airtime/data form is open (payload["vtu_step"] says which page)
 FLOW_ID_STATE = "flow_identity"   # PendingAction.state while the identity Flow is armed
@@ -166,7 +177,7 @@ def resolve_onboarding_token(token: str):
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
     if ob is None or ob.expired or ob.step not in (
             FLOW_SIGNUP_STATE, FLOW_EMAIL_CODE_STATE, FLOW_PHONE_STATE,
-            FLOW_PHONE_CODE_STATE, FLOW_PIN_STATE):
+            FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE):
         return None
     if not hmac.compare_digest(sig, _sig(f"{_OB_PREFIX}{ob.id}:{ob.msisdn}")):
         return None
@@ -524,6 +535,8 @@ def _handle_flow_request(payload: dict) -> dict:
                 return _submit_signup_phone(ob, data)
             if ob.step == FLOW_PHONE_CODE_STATE:
                 return _submit_signup_phone_code(ob, data)
+            if ob.step == FLOW_PASSWORD_STATE:
+                return _submit_signup_password(ob, data)
             return _submit_onboarding_pin(ob, data)
         if ob.step == FLOW_SIGNUP_STATE:
             return _signup_screen()
@@ -533,6 +546,8 @@ def _handle_flow_request(payload: dict) -> dict:
             return _signup_phone_screen()
         if ob.step == FLOW_PHONE_CODE_STATE:
             return _signup_phone_code_screen(ob)
+        if ob.step == FLOW_PASSWORD_STATE:
+            return _signup_password_screen()
         return (_confirm_pin_screen() if ob.payload.get("flow_pin_hash")
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
@@ -745,7 +760,88 @@ def _submit_signup_phone(ob, data: dict) -> dict:
     return _signup_to_pin(ob)
 
 
+def signup_password_live() -> bool:
+    """Is SIGNUP_PASSWORD actually PUBLISHED on Meta's side yet?
+
+    Same gate, and the same hard-won reason, as result_screen_live(): the Flow
+    JSON ships in this repo but is published by hand, so this code can reach
+    production before the screen does — and answering with a screen Meta has
+    never heard of is the "Couldn't load content. Try again later." failure, here
+    in the middle of somebody's signup.
+
+    Defaults OFF. While it is off, signup behaves exactly as it does today: the
+    account is created with no app password, and the customer sets one with
+    "Forgot password" in the app. Flip WHATSAPP_FLOW['PASSWORD_SCREEN'] on once
+    `publish_flow` lists SIGNUP_PASSWORD among the live screens.
+    """
+    return bool((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("PASSWORD_SCREEN", False))
+
+
+def _signup_password_screen(error: str = "") -> dict:
+    return {"screen": SIGNUP_PASSWORD,
+            "data": {"summary": "This is the password you'll use to sign in to "
+                                "the Zitch app. Your PIN comes next.",
+                     "error": f"⚠️ {error}" if error else ""}}
+
+
+def _submit_signup_password(ob, data: dict) -> dict:
+    """The app password, typed twice on one encrypted screen.
+
+    Both boxes are on the same screen rather than across two round-trips (which
+    is how the PIN does it) because a Flow screen can hold two masked inputs and
+    the published PIN pad holds one. Typing it twice is the point: this is the
+    credential the customer will next use days later, from a different device,
+    with no way to see what they typed.
+
+    What is NEVER done here: keep the password. It is validated, hashed, and only
+    the hash is written to the onboarding row — so a signup abandoned halfway,
+    or a database read by anyone, yields a hash and not a credential. The raw
+    string exists for the length of this function and is never logged, never put
+    on a screen, and never sent to the chat.
+    """
+    from accounts.models import password_rejection
+    from django.contrib.auth.hashers import make_password
+
+    password = str(data.get("password", ""))
+    confirm = str(data.get("confirm_password", ""))
+    if not password:
+        return _signup_password_screen(error="Please choose a password.")
+    # Mismatch first: telling someone their two entries differ is more useful
+    # than critiquing the composition of one they may have mistyped.
+    if password != confirm:
+        return _signup_password_screen(error="Those two passwords don't match. Try again.")
+    # The same rule the app's own endpoints apply — one function, so the two
+    # front doors cannot disagree about what a valid password is.
+    rejection = password_rejection(password, _ob_user_shape(ob))
+    if rejection:
+        return _signup_password_screen(error=rejection)
+    ob.payload["flow_pw_hash"] = make_password(password)
+    ob.step = FLOW_PIN_STATE
+    ob.payload["flow_screen"] = PIN_CHAIN
+    ob.save(update_fields=["payload", "step"])
+    return _pin_screen(_ob_summary(ob), screen=PIN_CHAIN)
+
+
+def _ob_user_shape(ob):
+    """An unsaved User carrying just the signup's own details, so Django's
+    similarity validator can refuse a password that IS the customer's name or
+    email. Unsaved deliberately — the real account does not exist yet, and this
+    must never touch the database."""
+    from accounts.models import User
+
+    return User(username=(ob.payload.get("phone") or ""),
+                email=(ob.payload.get("email") or ""),
+                first_name=(ob.payload.get("first_name") or ""),
+                last_name=(ob.payload.get("last_name") or ""))
+
+
 def _signup_to_pin(ob) -> dict:
+    """The step after the phone is settled: the app password when that screen is
+    published, otherwise straight to the PIN as before."""
+    if signup_password_live() and not ob.payload.get("flow_pw_hash"):
+        ob.step = FLOW_PASSWORD_STATE
+        ob.save(update_fields=["step"])
+        return _signup_password_screen()
     ob.payload["flow_screen"] = PIN_CHAIN   # SIGNUP pages route to PIN_CHAIN
     ob.step = FLOW_PIN_STATE
     ob.save(update_fields=["payload", "step"])
