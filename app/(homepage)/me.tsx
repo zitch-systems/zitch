@@ -11,7 +11,7 @@ import { Hero } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
-import { clearSession, getToken, saveTransactionPin } from '@/lib/secureStore';
+import { clearSession, getToken, getRefreshToken, saveTransactionPin } from '@/lib/secureStore';
 import { isBiometricAvailable, isBiometricEnabled, setBiometricEnabled, isBiometricTxnEnabled, setBiometricTxnEnabled, authenticate } from '@/lib/biometrics';
 import { TERMS_URL, PRIVACY_URL } from '@/components/configFiles/links';
 
@@ -146,9 +146,13 @@ const Me = () => {
   const openUrl = (url: string) => Linking.openURL(url).catch(() => notify('Error', 'Could not open this link.'));
 
   const handleLogout = async () => {
-    // Revoke the token server-side first so a leaked copy can't be replayed;
-    // best-effort — a network error must not block signing out locally.
-    try { await apiPost('/api/logout/'); } catch { /* fall through to local clear */ }
+    // Revoke the session server-side first so a leaked copy can't be replayed;
+    // best-effort — a network error must not block signing out locally. The
+    // refresh token goes with it: revoking only the access token would leave the
+    // chain alive, so "sign out" would mean "signed out for a few hours".
+    try {
+      await apiPost('/api/logout/', { refresh_token: (await getRefreshToken()) || '' });
+    } catch { /* fall through to local clear */ }
     await clearSession();
     router.replace('/signin');
   };

@@ -172,6 +172,21 @@ TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
 # leaked back-office token is high blast-radius, so keep the window short.
 ADMIN_TOKEN_TTL_HOURS = int(os.environ.get("ADMIN_TOKEN_TTL_HOURS", "2"))
 
+# --- Refresh tokens (accounts.RefreshToken) -------------------------------
+# The app used to be signed out every TOKEN_TTL_HOURS, which is why biometric
+# sign-in kept falling back to email+password. The alternative fix — a longer
+# access-token window — is strictly worse: an access token rides on EVERY API
+# call, so a longer life multiplies the value of one intercepted bearer, and it
+# cannot be ended early. A refresh token goes to one endpoint, rotates on every
+# use, and revokes as a family, so the access token stays short and this carries
+# the session.
+#
+# Idle window: a session survives this long between refreshes. Absolute: the
+# whole chain dies this long after the password was last proven, however active
+# it has been, so a session cannot outlive its credential indefinitely.
+REFRESH_TOKEN_TTL_DAYS = int(os.environ.get("REFRESH_TOKEN_TTL_DAYS", "30"))
+REFRESH_ABSOLUTE_DAYS = int(os.environ.get("REFRESH_ABSOLUTE_DAYS", "90"))
+
 # Manual wallet credit guardrails (admin_api.wallet_credit). A single manual
 # credit can't exceed ADMIN_MAX_MANUAL_CREDIT, and one operator's manual credits
 # can't exceed ADMIN_MANUAL_CREDIT_DAILY_CAP in a rolling 24h — so a compromised
