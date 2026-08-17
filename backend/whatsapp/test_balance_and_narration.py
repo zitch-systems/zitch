@@ -204,3 +204,47 @@ class NarrationFromTheAITests(TestCase):
     def test_a_non_money_flow_is_never_narrated(self):
         pa = router._new_flow(self.user, MSISDN, "unlock", "pin", {"pin_attempts": 0})
         self.assertNotIn("narration", pa.payload)
+
+
+class ExamConfirmSaysWhatIsBeingBoughtTests(TestCase):
+    """The exam flow fell through to the bare "Confirm your payment" fallback, so
+    the one card that should say WHICH PIN and HOW MANY said nothing about either
+    — on a purchase where that is the entire content. _flow_fields itemised it
+    already; _flow_summary, which the Flow message body and the chat card are
+    built from, did not."""
+
+    def setUp(self):
+        self.user = _make_user()
+
+    def _exam(self, **extra):
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="exam",
+            state=flows.FLOW_PIN_STATE,
+            payload={"amount": "6200", "quantity": 1, "exam_name": "JAMB",
+                     "description": "UTME / DE PIN", "phone": "08010000000",
+                     "pin_attempts": 0, **extra},
+            expires_at=timezone.now() + timedelta(minutes=5))
+
+    def test_the_summary_names_the_exam_the_count_and_the_price(self):
+        line = router._flow_summary(self._exam())
+        self.assertNotEqual(line, "Confirm your payment")
+        self.assertIn("JAMB", line)
+        self.assertIn("UTME", line)
+        self.assertIn("6,200", line)
+
+    def test_the_quantity_is_shown_because_it_multiplies_the_price(self):
+        self.assertIn("×3", router._flow_summary(self._exam(quantity=3, amount="18600")))
+
+    def test_a_payload_missing_its_amount_still_falls_back_safely(self):
+        pa = self._exam()
+        pa.payload.pop("amount")
+        pa.save(update_fields=["payload"])
+        self.assertEqual(router._flow_summary(pa), "Confirm your payment")
+
+    def test_the_pin_screen_and_the_card_agree(self):
+        """Both halves are built from the same payload; they must not disagree
+        about what is being bought."""
+        pa = self._exam()
+        fields = router._flow_fields(pa)
+        self.assertIn("JAMB", fields["recipient"])
+        self.assertIn("JAMB", router._flow_summary(pa))

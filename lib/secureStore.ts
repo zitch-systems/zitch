@@ -151,5 +151,15 @@ export async function getDisplayName(): Promise<string> {
 export async function clearSession(): Promise<void> {
   await clearToken();
   await clearTransactionPin();
-  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', BIOPAY_OFFERED_KEY, DISPLAY_NAME_KEY]);
+  // BIOPAY_OFFERED_KEY is deliberately NOT cleared. It records that we have
+  // already asked this person once whether they want to approve payments with a
+  // fingerprint — a UI preference, not a credential, and nothing about signing
+  // out makes that question unasked.
+  //
+  // Clearing it is why the offer came back after "every transaction". Nobody was
+  // signing out: enforceHardExpiry() calls clearSession() after HARD_EXPIRE_MS
+  // (12 hours) of inactivity, and a customer who opens the app about once a day
+  // crosses that every single time. So the flag was wiped daily and the nag
+  // returned on the next transfer, exactly as if it had never been set.
+  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', DISPLAY_NAME_KEY]);
 }

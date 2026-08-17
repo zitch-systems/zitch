@@ -453,6 +453,17 @@ def _flow_summary(pa: PendingAction) -> str:
         if at == "cable":
             return (f"{CABLE_NAMES.get(p.get('prov', ''), '')} {p.get('plan_name', '')}"
                     f" · card {p.get('iuc', '')} · {_money(Decimal(p['price']))}")
+        if at == "exam":
+            # Without this the exam flow fell through to the bare "Confirm your
+            # payment" fallback below, so the one card that says what is being
+            # bought said nothing about it — on a purchase whose whole point is
+            # WHICH exam PIN and how many. _flow_fields already itemised it; this
+            # is the other half, and it is what the Flow message body and the chat
+            # card are built from.
+            quantity = int(p.get("quantity", 1))
+            return (f"{p.get('exam_name', 'Exam')} {p.get('description', 'PIN')}"
+                    f" ×{quantity} → {p.get('phone', '')}"
+                    f" · {_money(Decimal(p['amount']))}")
         if at == "convert":
             return "Confirm your currency conversion"
         if at == "unlock":
