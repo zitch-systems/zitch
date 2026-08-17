@@ -447,6 +447,10 @@
         "error": {
           "type": "string",
           "__example__": ""
+        },
+        "hint": {
+          "type": "string",
+          "__example__": "Showing 3 banks matching \"kuda\"."
         }
       },
       "layout": {
@@ -468,6 +472,10 @@
             "text": "${data.error}"
           },
           {
+            "type": "TextBody",
+            "text": "${data.hint}"
+          },
+          {
             "type": "Form",
             "name": "transfer_form",
             "children": [
@@ -485,6 +493,15 @@
                 "input-type": "number",
                 "required": true,
                 "helper-text": "10 digits — we'll confirm the account name"
+              },
+              {
+                "type": "TextInput",
+                "name": "bank_search",
+                "label": "Search bank (optional)",
+                "input-type": "text",
+                "required": false,
+                "helper-text": "Type a name and tap Continue to shorten the list",
+                "max-chars": 40
               },
               {
                 "type": "Dropdown",
@@ -511,7 +528,8 @@
                     "amount": "${form.amount}",
                     "account_number": "${form.account_number}",
                     "bank": "${form.bank}",
-                    "narration": "${form.narration}"
+                    "narration": "${form.narration}",
+                    "bank_search": "${form.bank_search}"
                   }
                 }
               }

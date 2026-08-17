@@ -3321,7 +3321,22 @@ def _start_transfer(user, msisdn: str) -> None:
     # bad sync), and when it happens the chat interrogation below still works
     # perfectly well. So the emptiness decides which rung we open on, rather
     # than being discovered on the customer's screen.
-    banks = _bank_items()
+    # A bank the customer ALREADY named in chat narrows the list to it, so the
+    # form opens on their answer instead of asking the same question again. Only
+    # ever a narrowing: `_bank_items` falls back to the full list when the name
+    # matches nothing, so a misheard bank cannot strand someone on a list that
+    # excludes theirs.
+    named = _ai_bank.get("")
+    banks = _bank_items(query=named)
+    hint = ""
+    if named:
+        if len(banks) < len(_bank_items()):
+            hint = (f'Showing the {len(banks)} bank{"" if len(banks) == 1 else "s"} '
+                    f'matching "{named}" from your message. '
+                    "Clear the search box to see them all.")
+        else:
+            hint = (f'I could not match "{named}" to a bank — here is the full list. '
+                    "You can type in the search box to shorten it.")
     if not banks:
         log.warning("wa_transfer_form_skipped reason=no_active_banks")
     if flows_live() and banks:
@@ -3330,7 +3345,13 @@ def _start_transfer(user, msisdn: str) -> None:
             msisdn, sign_flow_token(pa),
             header="Send money", body="Fill in the details privately — we'll confirm the "
                                       "account name before anything moves.",
-            screen=TRANSFER_FORM, screen_data={"banks": banks, "error": ""},
+            # Every property the screen declares, including `hint`, which this
+            # send has nothing to say into. Declared-but-absent is the mismatch
+            # WhatsApp renders as "Couldn't load content" — the contract test in
+            # test_flows caught this one before it left the branch, which is the
+            # second time that test has paid for itself on this screen.
+            screen=TRANSFER_FORM,
+            screen_data={"banks": banks, "error": "", "hint": hint},
             cta="Send money",
         )
         if res.get("success"):
@@ -3631,12 +3652,31 @@ def _match_banks(text: str) -> list:
     return [b for b in banks if t and (t in b.name.lower() or b.name.lower() in t)]
 
 
-def _bank_items(candidates=None) -> list:
+def _bank_items(candidates=None, query: str = "") -> list:
     """Dropdown data for the transfer form: {id, title} per active bank, popular
     first. When `candidates` (Bank rows) is given they lead the list — the
     NUBAN-narrowed suggestions — with everything else after, because a checksum
-    match is a suggestion and the customer must stay able to pick any bank."""
+    match is a suggestion and the customer must stay able to pick any bank.
+
+    `query` narrows the list to name matches. It exists because a Flow JSON
+    Dropdown cannot be searched on the device — there is no filter property and
+    no way for a TextInput to narrow one client-side — so the only place a bank
+    list of this length can be searched at all is here, on a submit. Substring
+    and case-insensitive: people look for "kuda" and "opay" in lower case, and
+    for "ibom" as readily as they type the first letters.
+
+    A query that matches NOTHING returns the full list rather than an empty one.
+    A Dropdown bound to an empty array does not render at all — the customer gets
+    a blank sheet with no way forward, which this repo has already been bitten by
+    once (#357) — so a bad search must degrade to "no narrowing", never to a
+    screen with nothing on it.
+    """
     banks = list(Bank.objects.filter(active=True).order_by("-popular", "name")[:200])
+    q = " ".join(str(query or "").split()).lower()
+    if q:
+        hits = [b for b in banks if q in b.name.lower()]
+        if hits:
+            banks = hits
     if candidates:
         heads = [b for b in banks if b.code in {c.code for c in candidates}]
         banks = heads + [b for b in banks if b.code not in {c.code for c in candidates}]
@@ -4030,6 +4070,16 @@ def _meter_type(text) -> str | None:
 #: cannot leak into the next message; a ContextVar (not a global) so concurrent
 #: requests on the same worker cannot read each other's.
 _ai_narration: contextvars.ContextVar[str] = contextvars.ContextVar("ai_narration", default="")
+
+#: The bank the CURRENT message named, for the length of dispatching it.
+#:
+#: Same mechanism and same reason as the narration above. A customer who says
+#: "send 5k to my Kuda account" has already told us the bank; opening the transfer
+#: form on the full list of every Nigerian bank asks them again, which is the
+#: channel telling them it did not read their message. The AI extracts bank_name
+#: whenever it is stated, and _start_transfer used to throw it away — the same
+#: discard that lost the narration on this exact path.
+_ai_bank: contextvars.ContextVar[str] = contextvars.ContextVar("ai_bank", default="")
 
 #: Action types with money and a receipt behind them — the only ones a narration
 #: means anything for. An unlock or a PIN reset has nothing to narrate.
@@ -4960,10 +5010,12 @@ def dispatch_intent(user, msisdn: str, intent: dict, text: str = "") -> bool:
     # ONE message, and one that outlived its dispatch would attach the last
     # customer's words to the next customer's payment.
     token = _ai_narration.set(clean_narration(p.get("narration")))
+    bank_token = _ai_bank.set(" ".join(str(p.get("bank_name") or "").split())[:40])
     try:
         return _dispatch_intent(user, msisdn, name, p)
     finally:
         _ai_narration.reset(token)
+        _ai_bank.reset(bank_token)
 
 
 def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
