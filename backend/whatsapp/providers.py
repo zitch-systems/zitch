@@ -195,27 +195,52 @@ def send_list(msisdn: str, body: str, rows: list,
 
 
 def send_flow(msisdn: str, flow_token: str, header: str, body: str,
-              screen: str, screen_data: dict, cta: str = "") -> dict:
-    """Send an interactive Flow message â€” the secure PIN pad. Opens directly to
-    `screen` with `screen_data` (flow_action=navigate); the screen's submit does
-    a data_exchange to our endpoint. `flow_token` ties the Flow session back to
-    the pending money action. MOCK mode logs and returns success."""
+              screen: str, screen_data: dict, cta: str = "",
+              on_open: str = "navigate") -> dict:
+    """Send an interactive Flow message - the secure PIN pad.
+
+    `on_open` decides WHO picks the first screen when the customer taps the
+    button, and the difference matters more than it looks:
+
+    * ``navigate`` bakes `screen` and `screen_data` INTO the message. WhatsApp
+      renders them on the device with no request to us, so the card opens
+      instantly and opens even if our endpoint is down. It also means the card
+      never stops opening. A WhatsApp message cannot be recalled, expired or
+      disabled by the business that sent it, so a card from last week still
+      opens with last week's amount - and the customer can type their PIN into a
+      payment that has already completed before anything tells them otherwise.
+    * ``data_exchange`` sends no screen at all. Tapping the button calls our
+      endpoint (action ``INIT``) and OUR reply picks the screen, so server state
+      decides: a card whose payment is finished answers with the terminal screen
+      instead of a PIN pad.
+
+    The money confirm therefore uses data_exchange; everything else keeps
+    navigate. The trade is that opening the card now needs the endpoint, so if it
+    is down the card will not open. That is not a NEW dependency - the endpoint
+    has always been required to complete a payment - it just fails before a PIN
+    is typed instead of after, which is the better half of the same outage.
+
+    `screen` is still passed either way: rejection logging is keyed on it, and
+    the fields the caller persisted are what INIT answers with.
+    """
     cfg = getattr(settings, "WHATSAPP_FLOW", {}) or {}
+    parameters = {
+        "flow_message_version": "3",
+        "flow_token": flow_token,
+        "flow_id": cfg.get("FLOW_ID", ""),
+        "flow_cta": (cta or cfg.get("CTA", "Confirm with PIN"))[:30],
+        "flow_action": on_open,
+    }
+    if on_open == "navigate":
+        # Only legal for navigate. Naming a screen alongside data_exchange is a
+        # contradiction - the endpoint is the thing being asked which screen to
+        # show - and Meta rejects the message for it.
+        parameters["flow_action_payload"] = {"screen": screen, "data": screen_data}
     payload = {"type": "interactive", "interactive": {
         "type": "flow",
         "header": {"type": "text", "text": header[:60]},
         "body": {"text": body[:1024]},
-        "action": {
-            "name": "flow",
-            "parameters": {
-                "flow_message_version": "3",
-                "flow_token": flow_token,
-                "flow_id": cfg.get("FLOW_ID", ""),
-                "flow_cta": (cta or cfg.get("CTA", "Confirm with PIN"))[:30],
-                "flow_action": "navigate",
-                "flow_action_payload": {"screen": screen, "data": screen_data},
-            },
-        },
+        "action": {"name": "flow", "parameters": parameters},
     }}
     res = _send_payload(msisdn, payload, f"[flow] {header} -> {screen}")
     if not res.get("success"):

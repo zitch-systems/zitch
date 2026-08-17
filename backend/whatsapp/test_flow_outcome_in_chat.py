@@ -18,7 +18,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from whatsapp import flows
+from whatsapp import flows, router
 from whatsapp.models import PendingAction
 from whatsapp.test_flows import MSISDN, _make_user
 
@@ -110,3 +110,60 @@ def flows_last_try() -> int:
     from whatsapp.router import PIN_FLOW_ATTEMPTS
 
     return PIN_FLOW_ATTEMPTS - 1
+
+
+class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
+    """A Flow card cannot be recalled, expired or disabled by the business that
+    sent it, so the confirm card stays in the thread and stays tappable forever.
+
+    The money was never at risk: the flow token stops resolving the moment the
+    action leaves the PIN state, so a second submit checks no PIN and moves
+    nothing. What was wrong is what the customer SAW — a live-looking PIN pad
+    showing a payment they had already made, which they could type their PIN into
+    and only be told afterwards. Opening now asks the endpoint first.
+    """
+
+    def setUp(self):
+        self.user = _make_user()
+
+    def _open(self, pa):
+        return flows.handle_flow_request(
+            {"action": "INIT", "flow_token": flows.sign_flow_token(pa)})
+
+    def test_a_live_payment_still_opens_its_pin_pad(self):
+        pa = _armed(self.user)
+        screen = self._open(pa)
+        self.assertEqual(screen["screen"], flows.PIN_SCREEN)
+        self.assertNotEqual(screen["screen"], flows.SUCCESS_SCREEN)
+
+    def test_a_completed_payment_answers_its_outcome_instead(self):
+        """The reported bug. The executor clears the action on success, so by the
+        time the card is tapped again there is nothing to confirm."""
+        pa = _armed(self.user)
+        token = flows.sign_flow_token(pa)
+        pa.delete()                                  # what _clear_actions does on success
+        screen = flows.handle_flow_request({"action": "INIT", "flow_token": token})
+        self.assertEqual(screen["screen"], flows.SUCCESS_SCREEN)
+        self.assertEqual(screen["data"]["status"], "❌ Not completed")
+        self.assertIn("already done", screen["data"]["message"])
+
+    def test_a_payment_mid_execution_does_not_reopen_either(self):
+        """Authorised and queued is past the point of confirming. Reopening the
+        pad there invites a second PIN for a payment already on its way."""
+        pa = _armed(self.user)
+        pa.state = router.EXECUTING_STATE
+        pa.save(update_fields=["state"])
+        self.assertEqual(self._open(pa)["screen"], flows.SUCCESS_SCREEN)
+
+    def test_the_money_confirm_asks_the_server_which_screen_to_open(self):
+        """The mechanism behind all of the above: `navigate` bakes the pad into
+        the message and never consults us, so it could not have been fixed
+        server-side at all."""
+        pa = _armed(self.user)
+        sent = {}
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow",
+                          side_effect=lambda m, t, **kw: sent.update(kw) or {"success": True}), \
+             patch.object(router, "reply"):
+            router._send_pin_flow(pa, self.user)
+        self.assertEqual(sent["on_open"], "data_exchange")
