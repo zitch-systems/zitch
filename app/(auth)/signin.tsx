@@ -4,7 +4,7 @@ import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import { publicPost } from '@/lib/api';
 import { saveToken, getToken, getDisplayName } from '@/lib/secureStore';
-import { unlockSession } from '@/lib/session';
+import { unlockSession, beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -55,7 +55,21 @@ const Signin = () => {
       notify('Biometric sign-in', 'Enable biometrics from Me → Face ID / Fingerprint after signing in with your password.');
       return;
     }
-    const ok = await authenticate('Sign in to Zitch');
+    // The OS biometric sheet backgrounds the app, exactly like the image picker
+    // and the camera — and lib/session's grace period names this prompt as one of
+    // the excursions it exists to cover, but only the picker, camera and contacts
+    // were ever wired to it. Without the guard, showing the sheet stamped a
+    // "backgrounded at" time; the app-lock check that runs on return then read a
+    // still-locked session (unlockSession only lands after this await resolves)
+    // and replaced the route with /signin — remounting this screen, resetting
+    // autoPrompted, and asking for the same fingerprint a second time.
+    beginExternalActivity();
+    let ok = false;
+    try {
+      ok = await authenticate('Sign in to Zitch');
+    } finally {
+      endExternalActivity();
+    }
     if (ok) {
       // Clear any idle lock and refresh activity before entering the app.
       await unlockSession();

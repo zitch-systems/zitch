@@ -106,6 +106,12 @@ class User(AbstractUser):
     PIN_LOCKOUT_ESCALATED_MINUTES = 24 * 60     # locked again without a correct PIN since
 
     phone = models.CharField(max_length=20, unique=True, null=True, blank=True)
+    #: A limit the CUSTOMER chose for themselves, at or below their tier ceiling.
+    #: NULL means "no self-limit" and the tier ceiling applies — deliberately
+    #: distinct from 0, which is a customer who has frozen their own spending.
+    #: Only ever tightens `transaction_limit`; see that property.
+    self_txn_limit = models.DecimalField(max_digits=14, decimal_places=2,
+                                        null=True, blank=True)
     transaction_pin = models.CharField(max_length=128, blank=True, default="")
     pin_failed_attempts = models.PositiveSmallIntegerField(default=0)
     pin_locked_until = models.DateTimeField(null=True, blank=True)
@@ -230,8 +236,28 @@ class User(AbstractUser):
         return self.pin_locked and self.pin_lockout_strikes >= 2
 
     @property
-    def transaction_limit(self) -> Decimal:
+    def tier_transaction_limit(self) -> Decimal:
+        """The ceiling KYC allows at this tier. The compliance bound, and the one
+        a customer can never raise."""
         return self.TIER_LIMITS.get(self.tier, self.TIER_LIMITS[0])
+
+    @property
+    def transaction_limit(self) -> Decimal:
+        """What this account may actually move in one transaction.
+
+        The tier ceiling, unless the customer has set themselves a LOWER one. The
+        min() is the whole point and is deliberately not a max(): a self-imposed
+        limit is a guardrail against a bad day or a stolen session, so it may only
+        ever tighten what KYC already allows. Raising a limit is earned by
+        verifying identity, never by asking for it in settings.
+
+        min() also means a stale self-limit can never become a loophole in the
+        other direction — a customer who set 500,000 at Tier 3 and later dropped
+        to Tier 1 is bounded by Tier 1, not by the number they once chose.
+        """
+        ceiling = self.tier_transaction_limit
+        chosen = self.self_txn_limit
+        return min(ceiling, chosen) if chosen is not None else ceiling
 
     @property
     def daily_transfer_limit(self) -> Decimal:

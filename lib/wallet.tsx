@@ -57,6 +57,7 @@ const mapTxn = (raw: any, i: number): Txn => {
     icon,
     dir: raw?.direction === 'in' || raw?.direction === 'out' ? raw.direction : inflow ? 'in' : 'out',
     reference: String(raw?.reference ?? ''),
+    narration: String(raw?.narration ?? ''),
   };
 };
 

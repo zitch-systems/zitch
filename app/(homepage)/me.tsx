@@ -162,6 +162,10 @@ const Me = () => {
     // customer to "open Me → Verify identity"; sending them to a row called
     // "Account Limits" makes them hunt for a screen they were just pointed at.
     { icon: 'chart', title: 'Verify identity', sub: 'KYC tiers & transaction limits', go: () => router.push('/kyc') },
+    // Separate from "Verify identity" on purpose. That row RAISES the ceiling by
+    // proving who you are; this one LOWERS your own limit under it. Same number
+    // on screen, opposite directions, and one row for both would explain neither.
+    { icon: 'shield', title: 'Transaction limit', sub: 'Set your own lower spending limit', go: () => router.push('/limits') },
     { icon: 'card', title: 'Cards', sub: 'Your virtual cards', go: () => router.push('/cards') },
   ];
   const preferences: Row[] = [

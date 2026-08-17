@@ -30,6 +30,7 @@ const TxnDetail = () => {
   const [busy, setBusy] = useState(false);
   const p = useLocalSearchParams<{
     type?: string; amount?: string; status?: string; dir?: string; detail?: string; reference?: string; icon?: string;
+    narration?: string;
   }>();
 
   const inflow = p.dir === 'in';
@@ -55,8 +56,15 @@ const TxnDetail = () => {
     bank: bankName,
   });
 
+  // The customer's own note, when they gave one — absent rather than blank
+  // otherwise, because an empty "Narration —" row on an exported receipt reads
+  // as something that failed to render. It sits with the description, not after
+  // the reference and the channel, which are for us rather than for whoever is
+  // being shown the receipt.
+  const note = (p.narration || '').trim();
   const rows: ReceiptRow[] = [
     ['Description', p.type || 'Transaction'],
+    ...(note ? ([['Narration', note]] as ReceiptRow[]) : []),
     ...(p.detail ? ([['Date', p.detail]] as ReceiptRow[]) : []),
     ['Reference', p.reference || '—'],
     ['Channel', 'Zitch Wallet'],
@@ -84,6 +92,7 @@ const TxnDetail = () => {
 
         <View style={{ marginTop: 22, marginBottom: 4, borderRadius: 18, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, paddingHorizontal: 16, paddingBottom: 8 }}>
           <Row2 k="Description" v={p.type || 'Transaction'} />
+          {note ? <Row2 k="Narration" v={note} /> : null}
           {p.detail ? <Row2 k="Date" v={p.detail} /> : null}
           <Row2 k="Reference" v={p.reference || '—'} />
           <Row2 k="Channel" v="Zitch Wallet" />

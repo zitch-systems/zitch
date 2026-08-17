@@ -28,6 +28,7 @@ const ServicesScreenLayout = () => {
         <Stack.Screen name="settings" />
         <Stack.Screen name="statement" />
         <Stack.Screen name="accountlimits" />
+        <Stack.Screen name="limits" />
         <Stack.Screen name="safetytips" />
         <Stack.Screen name="bizpayment" />
         <Stack.Screen name="junior" />

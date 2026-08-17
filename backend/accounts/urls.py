@@ -19,6 +19,8 @@ urlpatterns = [
     path("email/verify/start/", views.email_verify_start),
     path("email/verify/confirm/", views.email_verify_confirm),
     path("kyc/status/", views.kyc_status),
+    path("limits/", views.transaction_limits),
+    path("limits/transaction/", views.set_transaction_limit),
     path("kyc/bvn/", views.kyc_bvn),
     path("kyc/bvn/start/", views.kyc_bvn_start),
     path("kyc/bvn/confirm/", views.kyc_bvn_confirm),

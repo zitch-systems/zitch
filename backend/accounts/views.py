@@ -5,6 +5,7 @@ import logging
 import re
 import secrets
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.cache import cache
@@ -727,6 +728,96 @@ def _kyc_image_error(value) -> str | None:
     if len(value) > MAX_KYC_IMAGE_BASE64:
         return "Image is too large. Choose a photo under 2 MB."
     return None
+
+
+@api
+@require_user
+def set_transaction_limit(request):
+    """POST /api/limits/transaction/ {access_token, limit, pin}
+
+    Lets a customer tighten their own per-transaction limit. `limit` is a naira
+    amount, or the string "off"/"" to remove the self-limit and go back to the
+    tier ceiling.
+
+    THE LIMIT CAN ONLY GO DOWN. The tier ceiling is a KYC/compliance bound and is
+    not negotiable from settings: a higher limit is earned by verifying identity,
+    never by asking. So a value above the ceiling is refused rather than clamped —
+    silently storing something other than what the customer typed, on the screen
+    that tells them what their limit is, would be its own bug.
+
+    The PIN is required for the same reason it guards a payment. A self-imposed
+    limit is a control a thief holding a live session would want gone first, and
+    raising it back to the ceiling is worth exactly as much to them as a transfer.
+    It goes through the brute-force-protected checker, so this cannot be used as
+    an unlimited PIN oracle.
+    """
+    from common.http import evaluate_transaction_pin
+
+    user = request.user_obj
+    raw = str(request.data.get("limit") or "").strip().lower()
+    pin = (request.data.get("pin") or "").strip()
+
+    if not user.transaction_pin:
+        return fail("Set a transaction PIN first", status=403, code="no_pin")
+    ok_pin, code, message = evaluate_transaction_pin(user, pin)
+    if not ok_pin:
+        return fail(message, status=403, code=code)
+
+    ceiling = user.tier_transaction_limit
+    if raw in ("", "off", "none", "null"):
+        chosen = None
+    else:
+        try:
+            # Commas and a naira sign are how people write an amount; rejecting
+            # "50,000" as malformed would be pedantry, not validation.
+            chosen = Decimal(raw.replace(",", "").replace("\u20a6", "").strip())
+        except (InvalidOperation, ValueError):
+            return fail("Enter the limit as a number, e.g. 50000")
+        # Order matters. is_finite() first, because NaN compares False against
+        # everything and Infinity would sail past a naive upper bound. The ceiling
+        # next, because it is what bounds the magnitude \u2014 quantize() on something
+        # like 1e9999 RAISES rather than returning a value, so it can only run
+        # once the number is known to be sane. A test pins each of the three.
+        if not chosen.is_finite():
+            return fail("Enter the limit as a number, e.g. 50000")
+        if chosen < 0:
+            return fail("A limit cannot be negative")
+        if chosen > ceiling:
+            return fail(
+                f"Your Tier {user.tier} limit is \u20a6{ceiling:,.0f} per transaction. "
+                "Verify more of your identity to raise it.",
+                code="above_tier_ceiling")
+        if chosen != chosen.quantize(Decimal("0.01")):
+            return fail("Enter the limit to at most two decimal places")
+
+    user.self_txn_limit = chosen
+    user.save(update_fields=["self_txn_limit"])
+    return ok(success=True,
+              message=("Limit removed \u2014 your tier limit applies" if chosen is None
+                       else "Transaction limit updated"),
+              **_limit_state(user))
+
+
+def _limit_state(user) -> dict:
+    """What the limits screen renders. `self_txn_limit` is null when unset, which
+    the app shows as "tier default" rather than as zero — a customer who has
+    frozen their own spending at 0 is a different state from one who never set a
+    limit, and the two must not read the same."""
+    return {
+        "tier": user.tier,
+        "tier_transaction_limit": str(user.tier_transaction_limit),
+        "self_txn_limit": None if user.self_txn_limit is None else str(user.self_txn_limit),
+        "transaction_limit": str(user.transaction_limit),
+        "daily_transfer_limit": str(user.daily_transfer_limit),
+        "daily_bill_limit": str(user.daily_bill_limit),
+    }
+
+
+@api
+@require_user
+def transaction_limits(request):
+    """POST /api/limits/ {access_token} -> the customer's limits and their ceiling."""
+    return ok(success=True, **_limit_state(request.user_obj))
 
 
 @api

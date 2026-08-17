@@ -163,7 +163,7 @@ const History = () => {
                       key={x.id}
                       txn={{ ...x, detail: x.ts ? txnDate(x.ts) : x.detail }}
                       last={i === g.rows.length - 1}
-                      onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+                      onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon, narration: x.narration ?? '' } })}
                     />
                   ))}
                 </View>
