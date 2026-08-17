@@ -416,6 +416,160 @@ class AccessToken(models.Model):
         return f"{self.user} · {self.key[:8]}…"
 
 
+class RefreshToken(models.Model):
+    """The long-lived half of a mobile session, used only to mint access tokens.
+
+    The problem it solves: TOKEN_TTL_HOURS is 24, so the app signed a customer
+    out once a day and biometric sign-in fell back to email+password. The two
+    ways to stop that are raising the access-token window or adding this. Raising
+    the window is strictly worse — an access token travels on every single API
+    call, so a longer life multiplies the value of one intercepted or
+    log-scraped bearer, and there is no way to end it early short of deleting
+    the row. A refresh token is presented to exactly ONE endpoint, rotates on
+    every use, and can be revoked as a family. So the access token gets SHORTER,
+    not longer, and this carries the session.
+
+    Three properties do the security work:
+
+    * **Rotation.** Each refresh mints a new refresh token and burns the old
+      one. A stolen token is therefore only useful until the real client next
+      refreshes.
+    * **Reuse detection.** Because rotation burns the old token, a SECOND
+      presentation of one is proof that two parties hold it — the definition of
+      a theft. That revokes the whole family, so the attacker and the victim are
+      both signed out and the victim notices, which is the outcome to want.
+      Silently issuing a fresh token to whoever asked would hide the breach.
+    * **An absolute ceiling.** Rotation alone lets a family live forever. The
+      family expires REFRESH_ABSOLUTE_DAYS after the password was last proven,
+      so a session cannot outlive the credential behind it indefinitely.
+
+    Only the SHA-256 hash is stored, for the same reason as AccessToken: 256 bits
+    of CSPRNG output has nothing to brute-force, and a leaked backup must not be
+    replayable.
+    """
+
+    key = models.CharField(max_length=64, unique=True, db_index=True)  # sha256 hex
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="refresh_tokens")
+    # Every token minted from one sign-in shares a family id, so reuse detection
+    # can revoke the whole chain rather than the single presented row — which
+    # would leave the thief's newer token working.
+    family = models.CharField(max_length=32, db_index=True)
+    # Bound to the install that signed in, exactly as the access token is: a
+    # refresh token lifted from storage or a log must not work on another client.
+    device_id = models.CharField(max_length=64, blank=True, default="")
+    created = models.DateTimeField(auto_now_add=True)
+    # When the family began — carried forward across rotations so the absolute
+    # ceiling measures from the sign-in, not from the last refresh.
+    family_started = models.DateTimeField(default=timezone.now)
+    # Set when this row is spent. A spent row is KEPT (not deleted) because its
+    # existence is what makes a replay detectable.
+    used_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "family"])]
+
+    #: Why a refresh was refused. The endpoint maps all of them to one 401
+    #: message — telling a caller WHICH of these it hit is a free oracle — but
+    #: they are distinguished here so the logs and the tests can tell a routine
+    #: expiry from a live token theft.
+    UNKNOWN = "unknown"
+    REUSED = "reused"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+    DEVICE = "device_mismatch"
+    INACTIVE = "inactive"
+
+    @staticmethod
+    def _hash(raw: str) -> str:
+        return hashlib.sha256((raw or "").encode()).hexdigest()
+
+    @classmethod
+    def _idle_ttl(cls) -> timedelta:
+        return timedelta(days=int(getattr(settings, "REFRESH_TOKEN_TTL_DAYS", 30)))
+
+    @classmethod
+    def _absolute_ttl(cls) -> timedelta:
+        return timedelta(days=int(getattr(settings, "REFRESH_ABSOLUTE_DAYS", 90)))
+
+    @classmethod
+    def issue(cls, user, device_id: str = "", family: str = "",
+              family_started=None) -> "RefreshToken":
+        """Mint a refresh token. As with AccessToken.issue, the returned instance
+        carries the RAW token on `.key` in memory and the DB holds only its hash,
+        so the instance must not be re-saved."""
+        raw = secrets.token_hex(32)
+        tok = cls.objects.create(
+            key=cls._hash(raw), user=user,
+            family=family or secrets.token_hex(16),
+            device_id=(device_id or "").strip()[:64],
+            family_started=family_started or timezone.now())
+        tok.key = raw  # transient
+        return tok
+
+    @classmethod
+    def revoke_family(cls, user_id: int, family: str) -> int:
+        """Kill every token in one sign-in's chain. Returns the number closed."""
+        return cls.objects.filter(user_id=user_id, family=family,
+                                  revoked_at__isnull=True).update(
+            revoked_at=timezone.now())
+
+    @classmethod
+    def rotate(cls, raw: str, device_id: str | None = None):
+        """Spend `raw` and return (new_refresh_token, user), or (None, reason).
+
+        Row-locked and single-statement-guarded: two requests racing with the
+        same token must not both succeed, because "two holders" is precisely the
+        signal reuse detection exists to catch. The winning UPDATE is conditional
+        on used_at still being NULL, so the loser is treated as a replay.
+        """
+        from django.db import transaction as db_transaction
+
+        if not raw:
+            return None, cls.UNKNOWN
+        with db_transaction.atomic():
+            tok = (cls.objects.select_for_update()
+                   .select_related("user")
+                   .filter(key=cls._hash(raw)).first())
+            if tok is None:
+                return None, cls.UNKNOWN
+            now = timezone.now()
+            if tok.used_at is not None:
+                # A second presentation of a spent token: the real client and
+                # someone else both hold this chain. End the whole family.
+                revoked = cls.revoke_family(tok.user_id, tok.family)
+                log.warning("refresh_token_reuse user=%s family=%s revoked=%s",
+                            tok.user_id, tok.family, revoked)
+                return None, cls.REUSED
+            if tok.revoked_at is not None:
+                return None, cls.REVOKED
+            if (now - tok.created > cls._idle_ttl()
+                    or now - tok.family_started > cls._absolute_ttl()):
+                return None, cls.EXPIRED
+            # Same binding rule as the access token, including the `None`
+            # compatibility path for internal callers and tests. HTTP always
+            # passes a string, so stripping the header cannot bypass a binding.
+            if tok.device_id and device_id is not None:
+                if not hmac.compare_digest(tok.device_id,
+                                           (device_id or "").strip()[:64]):
+                    log.warning("refresh_device_mismatch user=%s family=%s",
+                                tok.user_id, tok.family)
+                    return None, cls.DEVICE
+            if not tok.user.is_active:
+                return None, cls.INACTIVE
+            # Conditional burn — the loser of a race sees 0 rows updated and is
+            # sent back through the reuse path on its next attempt.
+            burned = cls.objects.filter(pk=tok.pk, used_at__isnull=True).update(used_at=now)
+            if not burned:
+                return None, cls.REUSED
+            fresh = cls.issue(tok.user, device_id=tok.device_id,
+                              family=tok.family, family_started=tok.family_started)
+        return fresh, tok.user
+
+    def __str__(self):
+        return f"{self.user} · {self.family[:8]}…"
+
+
 class OTP(models.Model):
     """One-time code sent during phone verification or account recovery.
 

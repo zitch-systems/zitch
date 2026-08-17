@@ -32,7 +32,7 @@ from utility.providers import (
 from wallet.models import Wallet
 from wallet.services import get_or_create_wallet, wema_account_reference
 
-from .models import OTP, AccessToken, PushDevice, User, hash_identifier
+from .models import OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier
 
 # The shared design system in common.emails is the only place email HTML lives.
 # This alias keeps the name that accounts, whatsapp and admin already import.
@@ -42,6 +42,24 @@ from common.emails import branded_message as _branded_email  # noqa: E402
 def _session_device_id(request) -> str:
     """Per-install identifier to bind a newly issued customer session."""
     return (request.headers.get("X-Zitch-Device") or "").strip()[:64]
+
+
+def _session_payload(user, request) -> dict:
+    """The fields every authenticating endpoint returns, so a session is issued
+    the same way whether it came from a sign-in, a signup OTP or a password reset.
+
+    `access_token` stays short-lived (TOKEN_TTL_HOURS) and `refresh_token` carries
+    the session past it. `expires_in` is advertised so a client CAN renew ahead of
+    the expiry; the app today does not, it refreshes on the 401 and retries the
+    request transparently, which the customer never sees. The field is here so
+    pre-emptive renewal doesn't need a second API change to become possible.
+    """
+    device_id = _session_device_id(request)
+    access = AccessToken.issue(user, device_id=device_id)
+    refresh = RefreshToken.issue(user, device_id=device_id)
+    return {"access_token": access.key,
+            "refresh_token": refresh.key,
+            "expires_in": int(settings.TOKEN_TTL_HOURS) * 3600}
 
 
 def _otp_on_cooldown(phone: str) -> bool:
@@ -105,8 +123,7 @@ def signin(request):
     # and it is what makes the new-device step-up on a large spend meaningful.
     from common.risk import evaluate_login
     evaluate_login(request, user)
-    token = AccessToken.issue(user, device_id=_session_device_id(request))
-    return ok(access_token=token.key, message="Signed in")
+    return ok(**_session_payload(user, request), message="Signed in")
 
 
 @ratelimit("otp_send", limit=5, window=60)
@@ -204,8 +221,7 @@ def verify_otp(request):
         user.last_name = last_name or user.last_name
         user.save(update_fields=["first_name", "last_name"])
     get_or_create_wallet(user)
-    token = AccessToken.issue(user, device_id=_session_device_id(request))
-    return ok(access_token=token.key, message="Verified")
+    return ok(**_session_payload(user, request), message="Verified")
 
 
 @ratelimit("otp_send", limit=5, window=60)
@@ -322,9 +338,12 @@ def password_reset(request):
     otp.save(update_fields=["used"])
     user.set_password(password)
     user.save(update_fields=["password"])
-    user.tokens.all().delete()  # a password reset invalidates every prior session
-    token = AccessToken.issue(user, device_id=_session_device_id(request))
-    return ok(access_token=token.key, message="Password reset")
+    # A password reset invalidates every prior session — access tokens AND the
+    # refresh chains behind them, or a stolen refresh token would outlive the
+    # password change that was meant to end it.
+    user.tokens.all().delete()
+    user.refresh_tokens.all().update(revoked_at=timezone.now())
+    return ok(**_session_payload(user, request), message="Password reset")
 
 
 @api
@@ -341,7 +360,50 @@ def logout(request):
     if device_id:
         PushDevice.objects.filter(user=request.user_obj, device_id=device_id).delete()
     AccessToken.objects.filter(key=AccessToken._hash(resolve_token(request))).delete()
+    # Deleting only the access token would leave the refresh chain live, so
+    # "sign out" would mean "signed out for a few hours". Revoke the presented
+    # chain when the client sends it, and fall back to this install's chains
+    # when it doesn't — an older client that has no refresh token to send must
+    # still get a real sign-out.
+    presented = (request.data.get("refresh_token") or "").strip()
+    if presented:
+        row = RefreshToken.objects.filter(key=RefreshToken._hash(presented),
+                                          user=request.user_obj).first()
+        if row is not None:
+            RefreshToken.revoke_family(row.user_id, row.family)
+    elif device_id:
+        RefreshToken.objects.filter(user=request.user_obj, device_id=device_id,
+                                    revoked_at__isnull=True).update(
+            revoked_at=timezone.now())
     return ok(message="Logged out")
+
+
+@ratelimit("token_refresh", limit=60, window=300)
+@api
+def token_refresh(request):
+    """POST /api/token/refresh/ {refresh_token} -> a new access + refresh pair.
+
+    Deliberately NOT behind @require_user: the whole point is to be reachable
+    with an access token that has already expired. The refresh token is the only
+    credential, and RefreshToken.rotate does every check.
+
+    One 401 message for every refusal — unknown, expired, revoked, reused, wrong
+    device, deactivated account. Naming which one would tell a caller holding a
+    stolen token whether it was ever valid, whether the chain is still live, and
+    whether they guessed the device, so the distinction stays in the logs (where
+    a `refresh_token_reuse` line is a theft signal worth alerting on) and out of
+    the response.
+    """
+    presented = (request.data.get("refresh_token") or "").strip()
+    fresh, outcome = RefreshToken.rotate(presented, device_id=_session_device_id(request))
+    if fresh is None:
+        log.info("token_refresh_refused reason=%s ip=%s", outcome, client_ip(request))
+        return fail("Your session has expired. Please sign in again.", status=401)
+    user = outcome
+    access = AccessToken.issue(user, device_id=fresh.device_id)
+    return ok(access_token=access.key, refresh_token=fresh.key,
+              expires_in=int(settings.TOKEN_TTL_HOURS) * 3600,
+              message="Session renewed")
 
 
 @api

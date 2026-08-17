@@ -4,7 +4,7 @@ import { notify } from '@/components/design/Notify';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { publicPost } from '@/lib/api';
-import { saveToken } from '@/lib/secureStore';
+import { storeSession } from '@/lib/secureStore';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header } from '@/components/design/ui';
 import { Stepper } from '@/components/design/Stepper';
@@ -49,7 +49,7 @@ const OTPVerification = () => {
       });
       const result = await response.json();
       if (response.ok && result.access_token) {
-        await saveToken(result.access_token);
+        await storeSession(result);
         await AsyncStorage.removeItem('otpPending'); // verification done
         router.replace('/setpassword');
       } else {

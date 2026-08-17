@@ -3,7 +3,7 @@ import { View, Text } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { publicPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
-import { saveToken } from '@/lib/secureStore';
+import { storeSession } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
@@ -34,7 +34,7 @@ const ResetPassword = () => {
       const response = await publicPost('/api/password/reset/', { email_or_phone: ident, otp, password: p1 });
       const result = await response.json();
       if (response.ok && result.access_token) {
-        await saveToken(result.access_token);
+        await storeSession(result);
         router.replace('/home');
       } else {
         notify('Error', result.message || 'Could not reset your password');

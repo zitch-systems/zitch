@@ -3,7 +3,7 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import { publicPost } from '@/lib/api';
-import { saveToken, getToken, getDisplayName } from '@/lib/secureStore';
+import { storeSession, getToken, getDisplayName } from '@/lib/secureStore';
 import { unlockSession, beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -107,7 +107,7 @@ const Signin = () => {
         // Persist the session BEFORE navigating so the auth guard sees a token.
         // (The legacy userID/sessionExpiration AsyncStorage stamps are gone —
         // nothing read them; session state lives in secureStore + lib/session.)
-        await saveToken(result.access_token);
+        await storeSession(result);
         await unlockSession(); // clear any idle lock + stamp activity
         await resumeAfterSignin();
       } else {

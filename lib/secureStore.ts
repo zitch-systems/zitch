@@ -12,6 +12,10 @@ import { Platform } from 'react-native';
  * local storage where any later XSS or browser-profile copy can recover it.
  */
 const TOKEN_KEY = 'access_token';
+// The long-lived half of the session. Kept in the same keychain item class as the
+// access token, and on web kept nowhere at all: a credential that survives a
+// reload is exactly what a browser session must not persist.
+const REFRESH_KEY = 'refresh_token';
 const isWeb = Platform.OS === 'web';
 
 // Bind secrets (session token + money PIN) to THIS device: `WHEN_UNLOCKED_THIS_
@@ -40,6 +44,7 @@ const TXN_PIN_KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
 // is updated on save and cleared on sign-out, and it never outlives the process.
 // `undefined` = not loaded yet; `null` = loaded and known-absent.
 let cachedToken: string | null | undefined;
+let cachedRefresh: string | null | undefined;
 
 export async function saveToken(token: string): Promise<void> {
   cachedToken = token;
@@ -49,6 +54,64 @@ export async function saveToken(token: string): Promise<void> {
     return;
   }
   await SecureStore.setItemAsync(TOKEN_KEY, token, KEYCHAIN_OPTS);
+}
+
+/**
+ * Persist a rotated refresh token.
+ *
+ * The server burns the old token on every refresh, and a second presentation of
+ * a burnt one is treated as theft and kills the whole chain. So this write must
+ * land before the replaced token is dropped — and the write happens BEFORE the
+ * retried request goes out, never after it, or a crash in between would sign the
+ * customer out and look like a break-in in the logs.
+ *
+ * An empty value clears the stored token rather than writing "" — the keychain
+ * would happily store an empty string, which then reads back as a token and gets
+ * sent as one.
+ */
+export async function saveRefreshToken(token: string): Promise<void> {
+  if (!token) { await clearRefreshToken(); return; }
+  cachedRefresh = token;
+  if (isWeb) {
+    await AsyncStorage.removeItem(REFRESH_KEY);
+    return;
+  }
+  await SecureStore.setItemAsync(REFRESH_KEY, token, KEYCHAIN_OPTS);
+}
+
+export async function getRefreshToken(): Promise<string | null> {
+  if (cachedRefresh !== undefined) return cachedRefresh;
+  if (isWeb) {
+    await AsyncStorage.removeItem(REFRESH_KEY);
+    cachedRefresh = null;
+    return null;
+  }
+  const token = await SecureStore.getItemAsync(REFRESH_KEY);
+  cachedRefresh = token;
+  return token;
+}
+
+/**
+ * Store a session from an authenticating response (sign-in, signup OTP, password
+ * reset). One helper for all three so a new surface cannot ship storing the
+ * access token and silently forgetting the refresh token — which would look
+ * perfectly fine for a day and then sign the customer out.
+ *
+ * The refresh token is written FIRST: if only one of the two lands, the session
+ * that survives should be the recoverable one.
+ */
+export async function storeSession(result: { access_token?: string; refresh_token?: string }): Promise<void> {
+  if (result?.refresh_token) await saveRefreshToken(result.refresh_token);
+  if (result?.access_token) await saveToken(result.access_token);
+}
+
+export async function clearRefreshToken(): Promise<void> {
+  cachedRefresh = null;
+  if (isWeb) {
+    await AsyncStorage.removeItem(REFRESH_KEY);
+    return;
+  }
+  await SecureStore.deleteItemAsync(REFRESH_KEY);
 }
 
 export async function getToken(): Promise<string | null> {
@@ -150,6 +213,7 @@ export async function getDisplayName(): Promise<string> {
 
 export async function clearSession(): Promise<void> {
   await clearToken();
+  await clearRefreshToken();
   await clearTransactionPin();
   // BIOPAY_OFFERED_KEY is deliberately NOT cleared. It records that we have
   // already asked this person once whether they want to approve payments with a
