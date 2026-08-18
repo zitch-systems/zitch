@@ -578,9 +578,17 @@ WHATSAPP_FLOW = {
     # JSON and the endpoint are a contract, and the publish is a manual step
     # that does not run from a deploy — so this code can reach production before
     # the screen does, and answering a screen Meta has never heard of is the
-    # "Couldn't load content" failure. Defaults OFF: the endings behave exactly
-    # as before until someone confirms `publish_flow` lists RESULT as live.
-    "RESULT_SCREEN": os.environ.get("WHATSAPP_FLOW_RESULT_SCREEN", "").strip().lower()
+    # "Couldn't load content" failure.
+    #
+    # Defaults ON now. It defaulted OFF while the fallback was believed harmless,
+    # and it is not: falling back meant answering {"screen": "SUCCESS", "data":
+    # {status, message}}, and "SUCCESS" is Meta's RESERVED completion value, so
+    # that response can never render — it IS the "Couldn't load content" failure,
+    # not the safe behaviour it was guarding. RESULT is published (verify with
+    # `publish_flow`, or whatsapp_flow_published on /healthz), so the off position
+    # now trades a working screen for a guaranteed error. Set
+    # WHATSAPP_FLOW_RESULT_SCREEN=false only to reproduce the old ending.
+    "RESULT_SCREEN": os.environ.get("WHATSAPP_FLOW_RESULT_SCREEN", "true").strip().lower()
                      in ("1", "true", "yes", "on"),
     # Same gate, same reason, for the signup page that sets the app password.
     # OFF means signup goes straight from the phone step to the PIN, exactly as

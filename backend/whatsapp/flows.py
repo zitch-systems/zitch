@@ -14,6 +14,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import time
 
 from django.conf import settings
 
@@ -374,11 +375,50 @@ def _result_screen(message: str, status: str = "") -> dict:
     return {"screen": RESULT_SCREEN, "data": data}
 
 
+#: Meta's reserved key for ending a Flow from the endpoint.
+_TERMINATION_KEY = "extension_message_response"
+
+
+def _close_flow(token: str) -> dict:
+    """END the Flow from the endpoint — the panel closes, no further screen.
+
+    This is the documented completion response, and it is NOT the same thing as
+    answering with the terminal screen:
+
+        {"screen": "SUCCESS",
+         "data": {"extension_message_response": {"params": {"flow_token": ...}}}}
+
+    "SUCCESS" here is a RESERVED value meaning "the Flow is finished", not a
+    request to render the screen we happen to have named SUCCESS. That collision
+    is what produced "Couldn't load content. Try again later." on every completed
+    payment: the endpoint answered {"screen": "SUCCESS", "data": {status, message}},
+    WhatsApp read the reserved name, looked for the completion envelope, found a
+    screen payload instead, and had nothing it could render. It is why the error
+    only ever appeared on the exchange that ENDS the Flow while every ordinary
+    screen in the same session rendered — see commit "Stop ending the Flow on the
+    terminal screen" for the production trace.
+
+    The customer sees the panel close. What happened is in the chat: the receipt
+    (or the failure line) is already sent by the executor before this returns.
+    """
+    return {"screen": SUCCESS_SCREEN,
+            "data": {_TERMINATION_KEY: {"params": {"flow_token": token}}}}
+
+
 def _success_screen(message: str, status: str = "") -> dict:
     """The terminal screen. `status` is one of router.Outcome's tags; anything
     else (including the default) closes on the neutral "Done" heading, which is
     right for the non-money terminals — an expired session, a signup that ended
-    in the chat — that have no transaction outcome to report."""
+    in the chat — that have no transaction outcome to report.
+
+    KNOWN DEFECT, deliberately not fixed here: SUCCESS is Meta's RESERVED
+    completion value, so a screen payload sent under it is read as a malformed
+    completion rather than a render — the same root cause as the payment ending
+    that _close_flow now fixes. Every caller of this helper therefore reaches the
+    customer as "Couldn't load content" instead of its sentence. Routing them all
+    to RESULT is the fix and it is a wider change than the payment ending: it
+    alters how signup, VTU and identity sessions close. Kept separate on purpose.
+    """
     return {"screen": SUCCESS_SCREEN,
             "data": {"status": _STATUS_HEADINGS.get(status or "done", _STATUS_HEADINGS["done"]),
                      "message": message or "Done ✅"}}
@@ -475,6 +515,13 @@ def _check_contract(response: dict) -> dict:
     if not contract or screen not in contract:
         return response
     data = response.get("data") or {}
+    # The Flow-TERMINATION response is not a screen render and has no screen
+    # contract to meet: it names SUCCESS but carries `extension_message_response`,
+    # which is Meta's reserved envelope for closing the Flow. Conforming it would
+    # drop that key as "undeclared" and fill status/message with "" — turning a
+    # valid completion into a malformed screen. See _close_flow.
+    if _TERMINATION_KEY in data:
+        return response
     declared = contract[screen]
     sent, expected = set(data.keys()), set(declared)
     if sent != expected:
@@ -488,14 +535,22 @@ def handle_flow_request(payload: dict) -> dict:
     """Route a decrypted Flows request to its response. Never raises — any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
+    started = time.monotonic()
     response = _check_contract(_handle_flow_request(payload))
     # One line per answered exchange. Without it the only trace of a Flow session
     # in Render was gunicorn's access log — a 200 and a byte count — which is why
     # "every request succeeded" and "the customer saw an error screen" were both
     # true and neither was diagnosable. No values are logged: the payload carries
     # balances, account names and the customer's own narration.
-    log.info("wa_flow_response screen=%s keys=%s",
-             response.get("screen") or "-", sorted((response.get("data") or {}).keys()))
+    #
+    # `ms` is here to separate two failure modes that look identical on the device.
+    # Meta drops a data_exchange that takes longer than about ten seconds, and the
+    # customer sees the same "Couldn't load content" as a malformed response —
+    # which matters because the one slow exchange is the one that executes the
+    # payment. Without a duration, a timeout and a bad payload are the same log line.
+    log.info("wa_flow_response screen=%s keys=%s ms=%d",
+             response.get("screen") or "-", sorted((response.get("data") or {}).keys()),
+             int((time.monotonic() - started) * 1000))
     return response
 
 
@@ -1341,22 +1396,25 @@ def _submit_pin(token: str, data: dict) -> dict:
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
     status = getattr(outcome, "status", "")
-    # ONLY a settled success closes the panel by itself — and only while RESULT is
-    # not live to hold it open instead.
+    # A settled success CLOSES the panel — one page, no Done to tap, and the
+    # receipt already waiting in the chat.
     #
-    # Production logs finally named this: in one session TRANSFER_FORM and
-    # PIN_CHAIN both answered and rendered, then the terminal SUCCESS answer drew
-    # "Couldn't load content. Try again later." with no contract mismatch logged.
-    # Every screen worked except the one that ENDS the Flow, which is the shape of
-    # a terminal-response problem rather than a data problem — and it is why the
-    # error always arrived after the PIN, on a payment that had gone through.
+    # This is the ending that used to draw "Couldn't load content. Try again
+    # later." on a payment that had gone through, and the reason is now known
+    # exactly: the endpoint answered {"screen": "SUCCESS", "data": {status,
+    # message}}, but "SUCCESS" is Meta's RESERVED completion value, not a request
+    # to render our screen of that name. WhatsApp looked for the completion
+    # envelope, found a screen payload, and had nothing to draw — which is why the
+    # error only ever appeared on the exchange that ENDS the Flow while every
+    # ordinary screen in the same session rendered fine.
     #
-    # RESULT is an ordinary published screen, so answering it is an ordinary
-    # navigation. It shows the same heading and sentence and lets the customer
-    # close the panel themselves, which is also the better ending: a Flow that
-    # vanishes the instant money moves gives them nothing to read.
-    if status == "success" and not result_screen_live():
-        return _success_screen(outcome, status)
+    # _close_flow sends the envelope Meta documents, so the Flow finishes instead
+    # of failing to render. Everything that is NOT a settled success still holds
+    # the panel open on RESULT: pending and failed endings have something the
+    # customer needs to read, and closing on those is what left people staring at
+    # a live-looking confirm card with no idea what happened.
+    if status == "success":
+        return _close_flow(token)
     # Pending keeps its own heading — "⏳ Pending" is the true thing to show a
     # customer whose money is with the rail, and calling it a failure would be
     # as wrong as calling it done.

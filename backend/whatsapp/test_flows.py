@@ -216,8 +216,12 @@ class FlowsHandlerTests(TestCase):
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_flow_token(pa),
                                     "data": {"pin": "1234"}})
+        # A settled success ENDS the Flow rather than rendering a last screen: the
+        # response is Meta's completion envelope, and the amount reaches the
+        # customer on the receipt already sent to the chat.
         self.assertEqual(resp["screen"], SUCCESS_SCREEN)
-        self.assertIn("5,000", resp["data"]["message"])
+        self.assertIn("extension_message_response", resp["data"])
+        self.assertNotIn("message", resp["data"])
         self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
         self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())   # consumed
 
