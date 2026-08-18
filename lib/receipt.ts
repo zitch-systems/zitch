@@ -31,6 +31,32 @@ export type ExportOutcome =
   | 'unsupported'  // platform can't do it (web)
   | 'failed';
 
+/**
+ * Why the last export failed, for the message the user reads.
+ *
+ * Every path here used to end in a bare `catch { return 'failed' }`, so a
+ * customer looking at "Could not create the receipt file" and an engineer
+ * reading the code had exactly the same information: none. The receipt is the
+ * only evidence of a payment someone still has, so a failure to produce one
+ * needs to say which step broke — capturing the card, rendering the PDF, or
+ * writing the file.
+ *
+ * Kept module-level and deliberately short-lived: it is read immediately by the
+ * caller building the message, and it holds no transaction data, only the name
+ * of the step and the platform error's own text.
+ */
+let lastFailure = '';
+
+export const lastExportFailure = (): string => lastFailure;
+
+const noteFailure = (step: string, error: unknown): 'failed' => {
+  const detail = error instanceof Error ? error.message : String(error ?? '');
+  lastFailure = detail ? `${step}: ${detail}` : step;
+  // Reaches the device log / crash reporter, where the message on screen cannot.
+  console.warn('[receipt] export failed —', lastFailure);
+  return 'failed';
+};
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
@@ -226,8 +252,8 @@ export const shareReceipt = async (format: ReceiptFormat, src: ReceiptSource): P
       UTI: format === 'pdf' ? 'com.adobe.pdf' : 'public.jpeg',
     });
     return 'shared';
-  } catch {
-    return 'failed';
+  } catch (error) {
+    return noteFailure(format === 'pdf' ? 'sharing the PDF' : 'sharing the image', error);
   }
 };
 
@@ -273,8 +299,8 @@ export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Pr
     if (!(await Sharing.isAvailableAsync())) return 'unsupported';
     await Sharing.shareAsync(uri, { mimeType: mime, dialogTitle: 'Save receipt', UTI: 'com.adobe.pdf' });
     return 'shared';
-  } catch {
-    return 'failed';
+  } catch (error) {
+    return noteFailure(format === 'pdf' ? 'saving the PDF' : 'saving the image', error);
   }
 };
 
@@ -286,7 +312,15 @@ export const outcomeMessage = (outcome: ExportOutcome, format: ReceiptFormat): s
     case 'shared': return `${what} ready to share`;
     case 'denied': return 'Zitch needs permission to save to your gallery';
     case 'unsupported': return 'Saving receipts is not available on this device';
-    case 'failed': return 'Could not create the receipt file';
+    case 'failed': {
+      // Naming the step turns an unactionable sentence into a bug report the
+      // customer can read out. The reference is still on screen behind this
+      // popup, so the payment itself is never in doubt.
+      const why = lastExportFailure();
+      return why
+        ? `Could not create the ${what.toLowerCase()} — ${why}. Your payment went through; the reference is on the receipt.`
+        : `Could not create the ${what.toLowerCase()} file`;
+    }
     case 'cancelled': return null;   // the user backed out; say nothing
   }
 };

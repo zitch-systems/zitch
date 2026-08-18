@@ -3,7 +3,10 @@ import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
 import { publicPost } from '@/lib/api';
-import { storeSession, getToken, getDisplayName } from '@/lib/secureStore';
+import {
+  storeSession, getToken, getDisplayName,
+  rememberIdentifier, getRememberedIdentifier,
+} from '@/lib/secureStore';
 import { unlockSession, beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
@@ -39,14 +42,21 @@ const Signin = () => {
   // supports them, and a previous session token is still on the device.
   useEffect(() => {
     (async () => {
-      const [enabled, available, token, name] = await Promise.all([
+      const [enabled, available, token, name, lastIdentifier] = await Promise.all([
         isBiometricEnabled(),
         isBiometricAvailable(),
         getToken(),
         getDisplayName(),
+        getRememberedIdentifier(),
       ]);
       setBioReady(enabled && available && !!token);
       setKnownName(name);
+      // Fill in who this device belongs to. A returning customer retyping their
+      // own email is the app failing to recognise someone it has known for
+      // months — and the field was blank even for people who had signed in from
+      // this phone a hundred times. Only the identifier: the password is a
+      // secret and is never pre-filled.
+      if (lastIdentifier) setForm((f) => (f.email ? f : { ...f, email: lastIdentifier }));
     })();
   }, []);
 
@@ -108,6 +118,9 @@ const Signin = () => {
         // (The legacy userID/sessionExpiration AsyncStorage stamps are gone —
         // nothing read them; session state lives in secureStore + lib/session.)
         await storeSession(result);
+        // Remember WHICH account, so the next sign-in starts filled in. Stored
+        // after success only, so a typo is never the thing we remember.
+        await rememberIdentifier(form.email);
         await unlockSession(); // clear any idle lock + stamp activity
         await resumeAfterSignin();
       } else {

@@ -95,7 +95,12 @@ class BankSearchTests(TestCase):
         # Fell through to validation, i.e. it was treated as a real submit.
         self.assertEqual(r["screen"], flows.TRANSFER_FORM)
         self.assertTrue(r["data"]["error"])
-        self.assertEqual(r["data"]["hint"], "")
+        # No SEARCH hint: the line is the standing explainer, not a report about
+        # a narrowing that did not happen. (It is never blank — the two
+        # bank-shaped fields need one sentence saying they are one question.)
+        self.assertNotIn("kuda", r["data"]["hint"])
+        self.assertNotIn("matching", r["data"]["hint"])
+        self.assertEqual(r["data"]["hint"], flows._DEFAULT_TRANSFER_HINT)
 
     def test_a_failed_search_says_so_and_still_shows_every_bank(self):
         r = self._submit(bank_search="zzzzz")

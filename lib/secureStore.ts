@@ -211,6 +211,27 @@ export async function getDisplayName(): Promise<string> {
   return (await AsyncStorage.getItem(DISPLAY_NAME_KEY)) || '';
 }
 
+// The identifier the customer last signed in WITH — their email or phone, so the
+// sign-in field is filled for them instead of blank every time.
+//
+// Not a credential: it is the half of the pair that is printed on their bank
+// statements and typed into every other app they own, and it is worthless
+// without the password. Deliberately survives sign-out, exactly like the
+// biometric-offer flag: "which account is this" is not a secret, and a returning
+// customer retyping their own email is the app failing to recognise someone it
+// has known for months. It is dropped only when the customer signs in as
+// somebody else, which overwrites it.
+const LAST_IDENTIFIER_KEY = 'z-last-identifier';
+
+export async function rememberIdentifier(identifier: string): Promise<void> {
+  const clean = (identifier || '').trim();
+  if (clean) await AsyncStorage.setItem(LAST_IDENTIFIER_KEY, clean);
+}
+
+export async function getRememberedIdentifier(): Promise<string> {
+  return (await AsyncStorage.getItem(LAST_IDENTIFIER_KEY)) || '';
+}
+
 export async function clearSession(): Promise<void> {
   await clearToken();
   await clearRefreshToken();
@@ -222,8 +243,13 @@ export async function clearSession(): Promise<void> {
   //
   // Clearing it is why the offer came back after "every transaction". Nobody was
   // signing out: enforceHardExpiry() calls clearSession() after HARD_EXPIRE_MS
-  // (12 hours) of inactivity, and a customer who opens the app about once a day
-  // crosses that every single time. So the flag was wiped daily and the nag
-  // returned on the next transfer, exactly as if it had never been set.
+  // of inactivity, and while that cap was twelve hours a customer who opened the
+  // app about once a day crossed it every single time. So the flag was wiped
+  // daily and the nag returned on the next transfer, exactly as if it had never
+  // been set. (The cap is seven days now — see lib/session — but the flag still
+  // does not belong to a session.)
+  //
+  // LAST_IDENTIFIER_KEY is not cleared either, and for the same reason: it says
+  // which account this device belongs to, not how to get into it.
   await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', DISPLAY_NAME_KEY]);
 }

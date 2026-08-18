@@ -1558,7 +1558,25 @@ def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
 
     return {"screen": TRANSFER_FORM,
             "data": {"banks": _bank_items(candidates, query=query),
-                     "error": error or "", "hint": hint or ""}}
+                     "error": error or "", "hint": hint or _DEFAULT_TRANSFER_HINT}}
+
+
+#: The line above the form when the server has nothing more specific to say.
+#:
+#: Two fields mentioning a bank read as two different questions — "why are we
+#: having 2 bank" was the first reaction to them. They are one question: the
+#: finder shortens the list, the list is where you pick. Saying so once, above
+#: both, is cheaper than trying to say it inside two labels; it also states what
+#: the screen otherwise never admits, which is that leaving the bank alone is the
+#: NORMAL path, because the account number usually identifies it on its own.
+#:
+#: It lives here rather than in the Flow JSON so the wording can change on a
+#: deploy. Rewording anything inside the published document costs a manual
+#: re-publish, and a screen nobody dares edit is a screen that stays wrong.
+_DEFAULT_TRANSFER_HINT = (
+    "Leave the bank blank — we'll work it out from the account number, and "
+    "confirm the account name before you pay. Only pick one if we ask."
+)
 
 
 def _submit_transfer_form(token: str, data: dict) -> dict:
