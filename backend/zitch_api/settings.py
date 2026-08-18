@@ -291,8 +291,13 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # (airtime/data/bills) and a NUBAN-keyed virtual card. Azure APIM: a per-PRODUCT
 # subscription key (Ocp-Apim-Subscription-Key) + a channel id (x-api-key / access).
 # Sandbox host https://apiplayground.alat.ng (LIVE differs — set WEMA_BASE_URL).
-# There is NO inbound-credit webhook: deposits AND payout settlement are handled by
-# the reconcile_wema poller. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
+# We do NOT credit from a webhook. Wallet Services does publish a Transaction
+# Notification API (the bank POSTs debit/credit events to a URL profiled against our
+# channelId), and wallet.wema_callbacks does receive it — but ALAT signs nothing, so
+# a handler that credited on that payload would be a money-printing primitive for
+# anyone who learns the URL. Deposits AND payout settlement are therefore decided by
+# the reconcile_wema poller, which re-reads balances over the authenticated APIM
+# channel; the notification is only ever a trigger. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
 # flow even in prod (no real money or debt). securityInfo is a per-reference
 # HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
 WEMA = {
