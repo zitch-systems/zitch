@@ -370,6 +370,38 @@ class ResultScreenRolloutTests(FlowContractMixin, TestCase):
         self.assertFalse(flows.result_screen_live())
         self.assertEqual(flows._result_screen("x")["screen"], SUCCESS_SCREEN)
 
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
+    def test_a_settled_success_also_stops_closing_the_panel_itself(self):
+        """The last ending still answering the TERMINAL screen was the successful
+        one — and production logs put the failure exactly there: in one session
+        TRANSFER_FORM and PIN_CHAIN both rendered, then the SUCCESS answer drew
+        "Couldn't load content. Try again later." with no contract mismatch
+        logged. Every screen worked except the one that ENDS the Flow.
+
+        So while RESULT is live it takes every outcome, success included. It also
+        reads better: a panel that vanishes the instant the money moves gives the
+        customer nothing to read.
+        """
+        from whatsapp.router import OUTCOME_SUCCESS, Outcome
+
+        outcome = Outcome("Sent — the receipt is in your chat.", OUTCOME_SUCCESS)
+        resp = flows._hold_open(None, "", str(outcome), status=outcome.status)
+        self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
+        self.assertNotIn(resp["screen"], self.terminals)
+        self.assertEqual(resp["data"]["status"], "\u2705 Successful")
+        self.assertScreen(resp, note="settled success on RESULT")
+
+    @override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": False})
+    def test_with_the_flag_off_a_success_still_closes_as_it_always_did(self):
+        """The fallback has to stay intact: RESULT is published by hand, and the
+        flag is what makes the deploy order not matter."""
+        from whatsapp.router import OUTCOME_SUCCESS, Outcome
+
+        resp = flows._result_screen(
+            Outcome("Sent.", OUTCOME_SUCCESS), status=OUTCOME_SUCCESS)
+        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertScreen(resp, note="settled success, flag off")
+
     def test_both_states_answer_the_same_data_shape(self):
         """RESULT and SUCCESS declare the same two properties, which is what
         makes the fallback a one-line swap rather than a second code path."""
