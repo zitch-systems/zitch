@@ -1746,8 +1746,8 @@
                 "name": "SUCCESS"
               },
               "payload": {
-                "status": "${data.status}",
-                "message": "${data.message}"
+                "status": "Done",
+                "message": "You can close this window — the receipt is in your chat."
               }
             }
           }
