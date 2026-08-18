@@ -133,6 +133,8 @@ services:
         sync: false
       - key: WEMA_WALLET_KEY
         sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
       - key: WEMA_CARD_KEY
         sync: false
       - key: WEMA_AIRTIME_KEY
@@ -185,6 +187,8 @@ services:
       - key: WEMA_VAS_STATUS_LEGEND
         sync: false
       - key: WEMA_BILLS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_REMITA_STATUS_LEGEND
         sync: false
       # Keep deterministic identity/OTP hashes stable independently of ordinary
       # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
@@ -400,6 +404,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
       - key: WEMA_WALLET_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
       - key: WEMA_CARD_KEY
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_KEY}
       - key: WEMA_AIRTIME_KEY
@@ -432,6 +438,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
       - key: WEMA_BILLS_STATUS_LEGEND
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
+      - key: WEMA_REMITA_STATUS_LEGEND
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_STATUS_LEGEND}
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: VTUNG_API_KEY
@@ -566,6 +574,8 @@ services:
         sync: false
       - key: WEMA_WALLET_KEY
         sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
       - key: WEMA_AIRTIME_KEY
         sync: false
       - key: WEMA_BILLS_KEY
@@ -581,6 +591,8 @@ services:
       - key: WEMA_VAS_STATUS_LEGEND
         sync: false
       - key: WEMA_BILLS_STATUS_LEGEND
+        sync: false
+      - key: WEMA_REMITA_STATUS_LEGEND
         sync: false
 
   # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:
@@ -612,6 +624,8 @@ services:
       - key: WEMA_CHANNEL_ID
         sync: false
       - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
       - key: WEMA_SOURCE_ACCOUNT
         sync: false
@@ -691,6 +705,8 @@ services:
         sync: false
       - key: WEMA_WALLET_KEY
         sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
       - key: WEMA_BASE_URL
         sync: false
       # Rail safety mode is sourced from the web service so a cron cannot call
@@ -735,6 +751,8 @@ services:
       - key: WEMA_CHANNEL_ID
         sync: false
       - key: WEMA_WALLET_KEY
+        sync: false
+      - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
       - key: WEMA_BASE_URL
         sync: false

@@ -308,6 +308,13 @@ WEMA = {
         # management, notifications and bills. Every product sold separately in
         # the portal requires its own key; never borrow this key across products.
         "wallet": os.environ.get("WEMA_WALLET_KEY", ""),
+        # The BVN onboarding path calls /account-creation, which the portal sells as
+        # its own product ("Account Creation - Address Verification") separately from
+        # Wallet Services. It falls back to the wallet key, which is right when one
+        # subscription covers both and an APIM 401 on every signup when it does not —
+        # so make it settable without a code change. Leave blank unless Wema issued a
+        # distinct key for Account Creation.
+        "wallet_bvn": os.environ.get("WEMA_ACCOUNT_CREATION_KEY", ""),
         "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional override; Wallet Services covers bills
@@ -364,6 +371,9 @@ WEMA = {
     # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
     "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
     "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
+    # Remita is its own ALAT product with its own status enum, so it gets its own
+    # legend rather than borrowing the airtime one.
+    "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),
 }
 # Fraud: a spend at or above this from a device the account has NEVER authenticated
 # from requires face verification first (see common.risk.new_device_step_up_error).

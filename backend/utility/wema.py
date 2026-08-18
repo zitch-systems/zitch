@@ -1110,6 +1110,18 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
 
 _VAS_OUTCOMES = ("success", "pending", "failed")
 
+# Which env-backed legend decodes each product's integer transactionStatus. Remita
+# has its own: it is a DIFFERENT ALAT product with its own status enum, and it used
+# to fall through to the airtime legend by way of _parse_vas's default argument. On a
+# deploy that buys Remita but not Airtime/Data — which is the shape of our
+# subscription — that meant the airtime legend was never set, so every integer-shaped
+# Remita result decoded to PENDING and every debited bill payment waited on a human.
+_LEGEND_SETTING = {
+    "airtime": "VAS_STATUS_LEGEND",
+    "bills": "BILLS_STATUS_LEGEND",
+    "remita": "REMITA_STATUS_LEGEND",
+}
+
 
 def _vas_legend(product: str) -> dict[str, str]:
     """The configured integer→outcome map for a VAS status check, or {} when unset.
@@ -1125,8 +1137,7 @@ def _vas_legend(product: str) -> dict[str, str]:
     (leave the purchase PENDING) is the only money-safe outcome: a typo that silently
     resolved to ``success`` would settle undelivered top-ups.
     """
-    raw = str(settings.WEMA.get("BILLS_STATUS_LEGEND" if product == "bills"
-                                else "VAS_STATUS_LEGEND") or "").strip()
+    raw = str(settings.WEMA.get(_LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")) or "").strip()
     if not raw:
         return {}
     legend: dict[str, str] = {}
@@ -1241,7 +1252,7 @@ def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = 
                 "description": description or f"Remita {rrr}",
                 "securityInfo": _security_info(op="remita", reference=reference, amount=amount_naira)}
         data = _post("remita", "/api/RemitaPayment/ProcessRemitaPayment", body).json()
-        return _parse_vas(data, reference)
+        return _parse_vas(data, reference, product="remita")
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
