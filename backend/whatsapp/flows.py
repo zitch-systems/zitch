@@ -1331,13 +1331,21 @@ def _submit_pin(token: str, data: dict) -> dict:
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
     status = getattr(outcome, "status", "")
-    # ONLY a settled success closes the panel. A Flow that closes itself is a
-    # statement that the job is done, and on a pending or failed payment that is
-    # the wrong thing to say — the customer is left looking at their own chat
-    # thread trying to work out whether their money moved. Everything else holds
-    # the panel open with the outcome written on it, and the customer dismisses
-    # it when they have read it.
-    if status == "success":
+    # ONLY a settled success closes the panel by itself — and only while RESULT is
+    # not live to hold it open instead.
+    #
+    # Production logs finally named this: in one session TRANSFER_FORM and
+    # PIN_CHAIN both answered and rendered, then the terminal SUCCESS answer drew
+    # "Couldn't load content. Try again later." with no contract mismatch logged.
+    # Every screen worked except the one that ENDS the Flow, which is the shape of
+    # a terminal-response problem rather than a data problem — and it is why the
+    # error always arrived after the PIN, on a payment that had gone through.
+    #
+    # RESULT is an ordinary published screen, so answering it is an ordinary
+    # navigation. It shows the same heading and sentence and lets the customer
+    # close the panel themselves, which is also the better ending: a Flow that
+    # vanishes the instant money moves gives them nothing to read.
+    if status == "success" and not result_screen_live():
         return _success_screen(outcome, status)
     # Pending keeps its own heading — "⏳ Pending" is the true thing to show a
     # customer whose money is with the rail, and calling it a failure would be
