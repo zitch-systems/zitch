@@ -2,8 +2,11 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
+  clearSession,
+  getRememberedIdentifier,
   getTransactionPin,
   hasTransactionPin,
+  rememberIdentifier,
   saveTransactionPin,
 } from '../secureStore';
 
@@ -53,6 +56,34 @@ describe('transaction PIN storage', () => {
     asyncStore.getItem.mockResolvedValue(null);
     expect(await hasTransactionPin()).toBe(false);
     expect(secure.getItemAsync).not.toHaveBeenCalled();
+    expect(secure.deleteItemAsync).toHaveBeenCalledWith('txn_pin');
+  });
+});
+
+describe('what survives a sign-out', () => {
+  it('remembers which account this device belongs to', async () => {
+    await rememberIdentifier('  ada@example.com  ');
+    expect(asyncStore.setItem).toHaveBeenCalledWith('z-last-identifier', 'ada@example.com');
+    asyncStore.getItem.mockResolvedValue('ada@example.com');
+    expect(await getRememberedIdentifier()).toBe('ada@example.com');
+  });
+
+  it('never stores a blank identifier over a good one', async () => {
+    await rememberIdentifier('   ');
+    expect(asyncStore.setItem).not.toHaveBeenCalled();
+  });
+
+  it('keeps the identifier and the biometric-offer flag through a sign-out', async () => {
+    // Both answer "which account is this / have we already asked", neither is a
+    // credential, and clearing them is what made a returning customer retype
+    // their own email and re-answer a question they had already answered.
+    await clearSession();
+    const removed = asyncStore.multiRemove.mock.calls.flat().flat();
+    expect(removed).not.toContain('z-last-identifier');
+    expect(removed).not.toContain('z-biopay-offered');
+    // ...while everything that IS a credential goes.
+    expect(secure.deleteItemAsync).toHaveBeenCalledWith('access_token');
+    expect(secure.deleteItemAsync).toHaveBeenCalledWith('refresh_token');
     expect(secure.deleteItemAsync).toHaveBeenCalledWith('txn_pin');
   });
 });

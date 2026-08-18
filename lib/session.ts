@@ -75,7 +75,29 @@ export async function enforceIdleTimeout(): Promise<boolean> {
  * lost-device window below the server token TTL; it does not shorten the server
  * bound or affect actively-used sessions (real activity keeps the stamp fresh).
  */
-export const HARD_EXPIRE_MS = 12 * 60 * 60 * 1000; // 12 hours
+/**
+ * Twelve hours was wrong, and wrong in a way that read as a broken app.
+ *
+ * A phone untouched overnight is not a lost phone — it is a phone. Someone who
+ * opens Zitch once a day crossed this cap EVERY time, and because expiry calls
+ * clearSession() they were fully signed out: biometric sign-in had no token left
+ * to unlock, so it fell back to email and password, and the money PIN went with
+ * it, so the "approve payments with your fingerprint?" offer came back as though
+ * they had never accepted it. Three separate complaints, one timer.
+ *
+ * The protection itself is sound — a genuinely abandoned device should not hold
+ * a usable session — so the cap stays; it is the duration that was mismeasured.
+ * Seven days is a device that has actually stopped being used, and the routine
+ * daily case is already covered by the FIVE MINUTE idle lock above, which keeps
+ * the token and demands a fingerprint to re-enter. That is the mechanism meant
+ * to be doing this work.
+ *
+ * The window is also no longer the only thing standing between a stolen phone
+ * and the account: sessions now rest on a refresh token that expires server-side
+ * (REFRESH_TOKEN_TTL_DAYS / REFRESH_ABSOLUTE_DAYS) and can be revoked from the
+ * server, which a client-side timer never could.
+ */
+export const HARD_EXPIRE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /** True if a session exists but has been idle past the absolute hard cap. */
 export async function isSessionHardExpired(): Promise<boolean> {

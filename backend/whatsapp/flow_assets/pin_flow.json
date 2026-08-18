@@ -578,23 +578,23 @@
               {
                 "type": "TextInput",
                 "name": "bank_search",
-                "label": "Search bank (optional)",
+                "label": "Find your bank",
                 "input-type": "text",
                 "required": false,
-                "helper-text": "Type a name and tap Continue to shorten the list",
+                "helper-text": "Type a few letters, tap Continue, and the list below shortens",
                 "max-chars": 40
               },
               {
                 "type": "Dropdown",
                 "name": "bank",
-                "label": "Bank (leave blank to auto-detect)",
+                "label": "Bank",
                 "required": false,
                 "data-source": "${data.banks}"
               },
               {
                 "type": "TextInput",
                 "name": "narration",
-                "label": "Narration (optional)",
+                "label": "Narration",
                 "input-type": "text",
                 "required": false,
                 "helper-text": "What this is for — shows on your receipt",
