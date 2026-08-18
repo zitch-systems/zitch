@@ -29,6 +29,11 @@ _MUTED = (92, 104, 110)
 _LINE = (230, 234, 236)
 _BG = (255, 255, 255)
 _WASH = (247, 251, 251)
+# The app's own success green and card surface (lib/theme palette.lime, c.surface),
+# so the mark and the rows card are the same colours on both surfaces rather than
+# two greens that almost match — which reads worse than two that plainly differ.
+_LIME = (0, 181, 29)
+_SURFACE = (255, 255, 255)
 
 # 820 design units × 2.7 ≈ 2214px wide, and a typical receipt runs taller than it
 # is wide — so the long edge clears 2160 (4K UHD's short edge) with room to spare.
@@ -114,23 +119,95 @@ def _watermark(size, font) -> Image.Image:
     return layer.crop((left, top, left + W, top + H))
 
 
-def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successful") -> bytes:
-    """Return JPEG bytes for a receipt titled `title` with `rows` = [(label, value)],
-    a status badge, and `ref`/timestamp in the footer.
+def _rounded_card(size, radius, fill, border):
+    """The app draws its rows on a rounded surface with a hairline border. Pillow
+    has no border-radius, so the card is composited as its own RGBA layer."""
+    card = Image.new("RGBA", size, (0, 0, 0, 0))
+    ImageDraw.Draw(card).rounded_rectangle(
+        [0, 0, size[0] - 1, size[1] - 1], radius=radius, fill=fill + (255,),
+        outline=border + (255,), width=max(1, _px(1)))
+    return card
 
-    An "Amount" row is promoted to the hero figure at the top and dropped from the
-    table — it is the one number the reader is looking for, and repeating it twice
-    reads as a mistake.
+
+def _status_art(status: str):
+    """(ring colour, disc colour, glyph) for the mark at the top.
+
+    The app draws a lime disc inside a pale lime ring for a success. A failure or
+    a pending payment must NOT borrow that: the mark is the first thing read, at a
+    glance, often without reading the words under it, so a red payment wearing a
+    green tick is the receipt telling a lie faster than it can be corrected.
+
+    `glyph` is None for pending \u2014 three dots typeset at this size sit high and
+    wide enough to read as two eyes and a nose, so they are drawn as circles.
+    """
+    key = (status or "").strip().lower()
+    if key.startswith("fail") or key.startswith("not"):
+        return (252, 228, 226), (200, 46, 38), "\u2715"
+    if key.startswith("pend"):
+        return (255, 244, 219), (176, 122, 6), None
+    return (223, 244, 226), _LIME, "\u2713"
+
+
+def tabulated_rows(rows: list, reference: str = "") -> list:
+    """Which rows go in the card, given everything the caller passed.
+
+    Only the AMOUNT is lifted out: the app prints it in the sentence under the
+    heading and not in the table, and printed twice it reads as a rendering
+    fault. Date, time and reference are rows on the app's card, so they are rows
+    here — moving them would be this renderer inventing a layout rather than
+    matching one.
+
+    Separate from the drawing so the choice can be asserted directly. Testing it
+    through the rendered image meant measuring pixel heights, which conflates
+    "this became a row" with "this made the sentence longer".
+    """
+    kept = [(str(k), str(v)) for k, v in rows if str(k).strip().lower() != "amount"]
+    if reference and not any(k.strip().lower() == "reference" for k, _ in kept):
+        kept.append(("Reference", reference))
+    return kept
+
+
+def _sent_verb(status: str) -> str:
+    """How the line under the heading describes the movement.
+
+    "\u20a62,000.00 sent to ADEYEMI WILLIAM" on a FAILED receipt is a false statement
+    about money, printed on the one document whose whole job is to be true about
+    money. Only a settled success may say "sent"; the others name the recipient
+    without claiming the transfer happened.
+    """
+    key = (status or "").strip().lower()
+    if key.startswith("fail") or key.startswith("not"):
+        return "to"
+    if key.startswith("pend"):
+        return "on its way to"
+    return "sent to"
+
+
+def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successful") -> bytes:
+    """Return JPEG bytes for a receipt titled `title` with `rows` = [(label, value)].
+
+    Laid out as the MOBILE APP lays it out — centred status mark, title, one line
+    saying what happened, then a rounded card of label/value rows and a small
+    "zitch · zitch.ng" line. The two used to be visibly different documents: a
+    customer who saw the app receipt and then a WhatsApp one could reasonably
+    wonder whether the same company produced both, which is precisely the doubt a
+    receipt exists to remove.
+
+    An "Amount" row is folded into the sentence under the title, exactly as the
+    app does, and left out of the table — the app shows it once, so this shows it
+    once. `Reference`, `Date` and `Time` stay as ordinary rows here, because that
+    is where the app puts them.
     """
     from django.utils import timezone
 
     reg = _font("DejaVuSans.ttf", 26)
-    bold = _font("DejaVuSans-Bold.ttf", 26)
-    wordmark = _font("DejaVuSans-Bold.ttf", 44)
-    hero = _font("DejaVuSans-Bold.ttf", 62)
-    small = _font("DejaVuSans.ttf", 21)
-    tiny = _font("DejaVuSans.ttf", 19)
+    semi = _font("DejaVuSans-Bold.ttf", 25)
+    heading = _font("DejaVuSans-Bold.ttf", 44)
+    small = _font("DejaVuSans.ttf", 25)
+    tiny = _font("DejaVuSans.ttf", 21)
+    wordmark = _font("DejaVuSans-Bold.ttf", 28)
     mark_font = _font("DejaVuSans-Bold.ttf", 34)
+    glyph_font = _font("DejaVuSans-Bold.ttf", 62)
 
     naira_ok = _has_glyph(reg, _NAIRA)
 
@@ -142,106 +219,128 @@ def render_receipt(title: str, rows: list, ref: str, *, status: str = "Successfu
     def pick(label: str) -> str:
         return next((v for k, v in rows if k.strip().lower() == label), "")
 
-    # Amount, reference and date each have a home of their own — the hero and the
-    # footer. Left in the table as well they read as a rendering mistake, and the
-    # duplicate date was actively wrong: the footer used to stamp render time, so
-    # a receipt re-sent later contradicted its own Date row.
     amount = pick("amount")
-    stamp = pick("date")
+    recipient = pick("to") or pick("recipient") or pick("beneficiary")
     reference = pick("reference") or ref
-    _OWN_PLACE = {"amount", "reference", "date"}
-    body_rows = [(k, v) for k, v in rows if k.strip().lower() not in _OWN_PLACE]
+    body_rows = tabulated_rows(rows, reference)
+
+    # The sentence under the heading, in the app's words.
+    if amount and recipient:
+        message = f"{money_safe(amount)} {_sent_verb(status)} {recipient}."
+    elif amount:
+        message = f"{money_safe(amount)} — {title.lower()}."
+    else:
+        message = ""
 
     W = _px(820)
-    pad = _px(56)
-    band_h = _px(150)
-    hero_h = _px(210) if amount else _px(96)
-    row_h = _px(62)
-    foot_h = _px(120)
+    pad = _px(58)
+    card_pad = _px(26)
+    row_h = _px(64)
 
-    # Measure first: a value too long to sit beside its label wraps onto its own
-    # line, and the sheet has to be tall enough for that before anything is drawn.
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+    def wrap(text: str, font, width: int) -> list:
+        words, lines, line = text.split(), [], ""
+        for word in words:
+            trial = f"{line} {word}".strip()
+            if probe.textlength(trial, font=font) <= width or not line:
+                line = trial
+            else:
+                lines.append(line)
+                line = word
+        if line:
+            lines.append(line)
+        return lines
+
+    message_lines = wrap(message, small, W - 2 * pad - _px(80)) if message else []
+
+    # Measure the rows before drawing: a value too long to sit beside its label
+    # drops onto its own line, and the sheet has to be tall enough for that first.
+    value_width = W - 2 * pad - 2 * card_pad
     heights = []
     for k, v in body_rows:
-        wide = (probe.textlength(money_safe(v), font=bold)
-                > W - 2 * pad - probe.textlength(k, font=small) - _px(30))
-        heights.append(row_h + (_px(30) if wide else 0))
+        room = value_width - probe.textlength(k, font=small) - _px(30)
+        heights.append(row_h + (_px(34) if probe.textlength(money_safe(v), font=semi) > room else 0))
 
-    H = band_h + hero_h + sum(heights) + _px(40) + foot_h
+    mark_top = _px(52)
+    ring = _px(150)
+    head_h = mark_top + ring + _px(30) + _px(56) + (len(message_lines) * _px(38)) + _px(34)
+    card_h = sum(heights) + 2 * _px(8)
+    foot_h = _px(112)
+    H = head_h + card_h + foot_h
 
     img = Image.new("RGB", (W, H), _BG)
-    img.paste(_gradient(W, band_h, _BRAND, _BRAND_DEEP), (0, 0))
     d = ImageDraw.Draw(img)
 
-    # --- header band ---------------------------------------------------------
-    mark = _load_mark(_px(62))
-    x = pad
-    if mark:
-        img.paste(_white(mark), (x, (band_h - mark.height) // 2 - _px(8)), _white(mark))
-        x += mark.width + _px(20)
-    d.text((x, band_h // 2 - _px(38)), "zitch", font=wordmark, fill=(255, 255, 255))
-    d.text((x + _px(2), band_h // 2 + _px(6)), "TRANSACTION RECEIPT", font=tiny,
-           fill=(226, 246, 243))
-    site = "zitch.ng"
-    d.text((W - pad - d.textlength(site, font=small), band_h // 2 - _px(12)),
-           site, font=small, fill=(226, 246, 243))
-
-    # --- hero: amount + status ----------------------------------------------
-    y = band_h
-    if amount:
-        d.rectangle([0, y, W, y + hero_h], fill=_WASH)
-        d.text((pad, y + _px(34)), money_safe(title).upper(), font=tiny, fill=_MUTED)
-        d.text((pad, y + _px(66)), money_safe(amount), font=hero, fill=_INK)
-        badge = f"✓ {status}"
-        bw = d.textlength(badge, font=small)
-        by = y + _px(152)
-        d.rounded_rectangle([pad, by, pad + bw + _px(34), by + _px(44)],
-                            radius=_px(22), fill=(226, 244, 240))
-        d.text((pad + _px(17), by + _px(9)), badge, font=small, fill=_BRAND_DEEP)
-        d.line([0, y + hero_h, W, y + hero_h], fill=_LINE, width=max(1, _px(1)))
+    # --- status mark, centred ------------------------------------------------
+    ring_rgb, disc_rgb, glyph = _status_art(status)
+    cx = W // 2
+    d.ellipse([cx - ring // 2, mark_top, cx + ring // 2, mark_top + ring], fill=ring_rgb)
+    disc = _px(106)
+    dy = mark_top + (ring - disc) // 2
+    d.ellipse([cx - disc // 2, dy, cx + disc // 2, dy + disc], fill=disc_rgb)
+    if glyph is None:
+        mid = dy + disc // 2
+        radius, gap = _px(9), _px(26)
+        for offset in (-gap, 0, gap):
+            d.ellipse([cx + offset - radius, mid - radius,
+                       cx + offset + radius, mid + radius], fill=(255, 255, 255))
     else:
-        d.text((pad, y + _px(28)), money_safe(title), font=bold, fill=_INK)
-    y += hero_h
+        gw = d.textlength(glyph, font=glyph_font)
+        bbox = glyph_font.getbbox(glyph)
+        d.text((cx - gw / 2, dy + (disc - (bbox[3] - bbox[1])) / 2 - bbox[1]), glyph,
+               font=glyph_font, fill=(255, 255, 255))
 
-    # The watermark goes over the body only: across the header band it would
-    # muddy the wordmark, and the band is already unmistakably ours.
-    body_box = (0, band_h, W, H - foot_h)
-    body = img.crop(body_box).convert("RGBA")
-    body.alpha_composite(_watermark((W, H - foot_h - band_h), mark_font))
-    img.paste(body.convert("RGB"), body_box[:2])
+    y = mark_top + ring + _px(30)
+    tw = d.textlength(title, font=heading)
+    d.text((cx - tw / 2, y), title, font=heading, fill=_INK)
+    y += _px(56)
+    for line in message_lines:
+        lw = d.textlength(line, font=small)
+        d.text((cx - lw / 2, y), line, font=small, fill=_MUTED)
+        y += _px(38)
+
+    # --- the rows card -------------------------------------------------------
+    y = head_h
+    card = _rounded_card((W - 2 * pad, card_h), _px(26), _SURFACE, _LINE)
+    img.paste(card, (pad, y), card)
     d = ImageDraw.Draw(img)
 
-    # --- rows ----------------------------------------------------------------
-    y += _px(20)
-    for (k, v), h in zip(body_rows, heights):
+    ry = y + _px(8)
+    for index, ((k, v), h) in enumerate(zip(body_rows, heights)):
+        if index:
+            d.line([pad + card_pad, ry, W - pad - card_pad, ry],
+                   fill=_LINE, width=max(1, _px(1)))
         val = money_safe(v)
-        d.text((pad, y + _px(14)), k, font=small, fill=_MUTED)
+        d.text((pad + card_pad, ry + _px(18)), k, font=small, fill=_MUTED)
         if h > row_h:
-            d.text((pad, y + _px(44)), val, font=bold, fill=_INK)
+            d.text((pad + card_pad, ry + _px(50)), val, font=semi, fill=_INK)
         else:
-            d.text((W - pad - d.textlength(val, font=bold), y + _px(10)), val,
-                   font=bold, fill=_INK)
-        y += h
-        d.line([pad, y, W - pad, y], fill=_LINE, width=max(1, _px(1)))
+            d.text((W - pad - card_pad - d.textlength(val, font=semi), ry + _px(16)),
+                   val, font=semi, fill=_INK)
+        ry += h
 
-    # --- footer --------------------------------------------------------------
-    fy = H - foot_h
-    d.rectangle([0, fy, W, H], fill=_WASH)
-    d.text((pad, fy + _px(26)), f"Reference  {reference}", font=small, fill=_INK)
-    d.text((pad, fy + _px(58)),
-           stamp or timezone.localtime().strftime("%d %b %Y, %I:%M %p"),
-           font=small, fill=_MUTED)
-    note = "Generated by Zitch · zitch.ng"
-    d.text((W - pad - d.textlength(note, font=small), fy + _px(26)), note,
-           font=small, fill=_BRAND_DEEP)
-    keep = "Keep this receipt for your records."
-    d.text((W - pad - d.textlength(keep, font=tiny), fy + _px(60)), keep,
+    # --- footer: the app's own one-line signature ----------------------------
+    fy = y + card_h + _px(34)
+    sig_w = d.textlength("zitch", font=wordmark) + _px(10) + d.textlength("\u00b7 zitch.ng", font=tiny)
+    sx = cx - sig_w / 2
+    d.text((sx, fy), "zitch", font=wordmark, fill=_BRAND)
+    d.text((sx + d.textlength("zitch", font=wordmark) + _px(10), fy + _px(6)),
+           "\u00b7 zitch.ng", font=tiny, fill=_MUTED)
+    stamp = pick("date") or timezone.localtime().strftime("%d %b %Y")
+    keep = f"Keep this receipt for your records \u00b7 {stamp}"
+    d.text((cx - d.textlength(keep, font=tiny) / 2, fy + _px(40)), keep,
            font=tiny, fill=_MUTED)
+
+    # The watermark rides over the rows, as it does in the app and the PDF, so a
+    # crop cannot lift a clean region out of the middle of the document.
+    layer = img.convert("RGBA")
+    layer.alpha_composite(_watermark((W, H), mark_font))
+    img = layer.convert("RGB")
 
     buf = io.BytesIO()
     # subsampling=0 keeps chroma at full resolution: the default halves it, which
-    # is invisible on a photo and visibly softens small text on teal.
+    # is invisible on a photo and visibly softens small text.
     img.save(buf, format="JPEG", quality=94, subsampling=0, optimize=True)
     return buf.getvalue()
 
