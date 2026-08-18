@@ -1330,23 +1330,68 @@ class WhatsAppReceiptTests(TestCase):
         self.assertGreaterEqual(img.width, 2000)
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
-    def test_the_receipt_does_not_print_the_same_field_twice(self):
-        """Amount, reference and date each have a home — the hero and the footer.
-        Left in the table as well they read as a rendering fault, and the date did
-        worse than that: the footer stamped render time, so a receipt re-sent later
-        contradicted its own Date row."""
+    def test_the_amount_is_shown_once_and_the_rest_are_ordinary_rows(self):
+        """The receipt is laid out as the MOBILE APP lays it out, because a
+        customer who sees one of each and cannot tell they came from the same
+        company is being given exactly the doubt a receipt exists to remove.
+
+        The app puts the amount in the sentence under the heading and NOT in the
+        table (printed twice it reads as a fault), while date, time and reference
+        are rows on its card. So they are rows here."""
         import io
 
         from PIL import Image
 
         from whatsapp.receipt import render_receipt
-        rows = [("To", "ADA"), ("Amount", "₦500.00"),
-                ("Reference", "ZTC-1"), ("Date", "01 Jan 2026, 09:00")]
-        full = Image.open(io.BytesIO(render_receipt("Transfer receipt", rows, "ZTC-1")))
-        lean = Image.open(io.BytesIO(render_receipt("Transfer receipt", rows[:2], "ZTC-1")))
-        # Both sheets tabulate exactly one row ("To") and both carry the amount
-        # hero, so they are the same height — reference and date added no rows.
-        self.assertEqual(full.height, lean.height)
+        base = [("Recipient", "ADA"), ("Amount", "₦500.00")]
+        lean = Image.open(io.BytesIO(render_receipt("Money sent", base, "ZTC-1")))
+        full = Image.open(io.BytesIO(render_receipt(
+            "Money sent",
+            base + [("Reference", "ZTC-1"), ("Date", "01 Jan 2026")], "ZTC-1")))
+        # Two more rows means a taller sheet: they are tabulated, not swallowed.
+        self.assertGreater(full.height, lean.height)
+
+        # ...and the amount is never one of them. Asserted on the row choice
+        # itself rather than on pixel heights, which conflate "this became a row"
+        # with "this made the sentence under the heading longer".
+        from whatsapp.receipt import tabulated_rows
+
+        labels = [k for k, _ in tabulated_rows(base, "ZTC-1")]
+        self.assertNotIn("Amount", labels)
+        self.assertEqual(labels, ["Recipient", "Reference"])
+        # A reference already in the rows is not appended a second time.
+        self.assertEqual(
+            [k for k, _ in tabulated_rows(base + [("Reference", "ZTC-1")], "ZTC-1")],
+            ["Recipient", "Reference"])
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_a_failed_receipt_never_claims_the_money_was_sent(self):
+        """"₦2,000.00 sent to ADEYEMI WILLIAM" on a FAILED receipt is a false
+        statement about money, on the one document whose whole job is to be true
+        about money. Only a settled success may say "sent"."""
+        from whatsapp.receipt import _sent_verb
+
+        self.assertEqual(_sent_verb("Successful"), "sent to")
+        self.assertEqual(_sent_verb("Failed"), "to")
+        self.assertEqual(_sent_verb("Not completed"), "to")
+        self.assertEqual(_sent_verb("Pending"), "on its way to")
+
+    @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
+    def test_a_refused_payment_does_not_wear_the_success_mark(self):
+        """The mark is read at a glance, often before the words under it, so a
+        failed payment carrying a green tick misinforms faster than the text can
+        correct it."""
+        from whatsapp.receipt import _LIME, _status_art
+
+        ok_ring, ok_disc, ok_glyph = _status_art("Successful")
+        self.assertEqual(ok_disc, _LIME)
+        self.assertEqual(ok_glyph, "✓")
+        for refused in ("Failed", "Not completed"):
+            _ring, disc, glyph = _status_art(refused)
+            self.assertNotEqual(disc, _LIME)
+            self.assertEqual(glyph, "✕")
+        # Pending draws its dots rather than typesetting them — see _status_art.
+        self.assertIsNone(_status_art("Pending")[2])
 
     @unittest.skipUnless(_HAS_PIL, "Pillow not installed")
     def test_reply_receipt_sends_an_inline_image_when_live(self):
