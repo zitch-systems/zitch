@@ -611,4 +611,30 @@ def wema_face_callback(request, state=""):
             user.recompute_tier()
             user.save(update_fields=["face_verified", "tier"])
     request.wema_action = "verified"
+    _tell_whatsapp_face_passed(user)
     return JsonResponse({"status": True}, status=200)
+
+
+def _tell_whatsapp_face_passed(user) -> None:
+    """Close the loop for a customer who started this in chat.
+
+    The result arrives on OUR server, so a chat customer is left staring at a link
+    with no idea whether it worked. Sent AFTER the transaction commits and never
+    allowed to fail the callback: the tier is already lifted, and a messaging hiccup
+    must not turn a completed verification into a 500 the bank will retry.
+    """
+    from whatsapp.models import WhatsAppLink
+
+    try:
+        msisdn = (WhatsAppLink.objects
+                  .filter(user=user, status=WhatsAppLink.ACTIVE)
+                  .exclude(wa_msisdn="")
+                  .values_list("wa_msisdn", flat=True).first())
+        if not msisdn:
+            return
+        from whatsapp.router import reply
+        reply(msisdn, "✅ *Face check confirmed.*\n\n"
+                      f"You're now Tier {user.tier} — up to "
+                      f"₦{user.transaction_limit:,.0f} per transaction.")
+    except Exception:  # noqa: BLE001
+        log.warning("wa_face_notify_failed user=%s", user.id, exc_info=True)

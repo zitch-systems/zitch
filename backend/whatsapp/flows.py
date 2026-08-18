@@ -982,6 +982,16 @@ def _submit_identity(pa, data: dict) -> dict:
                                 screen=IDENTITY_RETRY)
 
     try:
+        # Same screen, third purpose: the number is being forwarded to the bank's
+        # face verifier rather than verified here, so it must not run back through
+        # the identity checks (which would re-queue an already-verified BVN for
+        # review). Checked before the action_type split because the purpose, not
+        # the action, is what decides.
+        if pa.payload.get("id_purpose") == "face":
+            from .router import _kyc_send_face_link
+
+            _kyc_send_face_link(pa, pa.user, pa.msisdn, kind, number)
+            return _success_screen("Check the chat for your face-check link.")
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
