@@ -190,6 +190,11 @@ services:
         sync: false
       - key: WEMA_REMITA_STATUS_LEGEND
         sync: false
+      # ALAT's face-biometric web app. The default is their DEV verifier, which
+      # answers happily and proves nothing — wema_preflight FAILS go-live until this
+      # points at the production host Wema gives you.
+      - key: WEMA_FACE_VERIFY_URL
+        sync: false
       # Keep deterministic identity/OTP hashes stable independently of ordinary
       # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
       # stored identity hashes are deliberately migrated at the same time.
@@ -440,6 +445,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
       - key: WEMA_REMITA_STATUS_LEGEND
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_STATUS_LEGEND}
+      - key: WEMA_FACE_VERIFY_URL
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_VERIFY_URL}
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: VTUNG_API_KEY
@@ -593,6 +600,11 @@ services:
       - key: WEMA_BILLS_STATUS_LEGEND
         sync: false
       - key: WEMA_REMITA_STATUS_LEGEND
+        sync: false
+      # ALAT's face-biometric web app. The default is their DEV verifier, which
+      # answers happily and proves nothing — wema_preflight FAILS go-live until this
+      # points at the production host Wema gives you.
+      - key: WEMA_FACE_VERIFY_URL
         sync: false
 
   # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:

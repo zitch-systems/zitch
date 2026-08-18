@@ -374,6 +374,13 @@ WEMA = {
     # Remita is its own ALAT product with its own status enum, so it gets its own
     # legend rather than borrowing the airtime one.
     "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),
+    # ALAT's face-biometric web app (Account Creation product). Liveness is a hosted
+    # WEB flow, not an API call: the customer is sent here with their BVN/NIN and the
+    # bank returns a correlationId proving the check passed. The default is ALAT's
+    # DEV host — wema_preflight fails go-live while it is still in use, because a
+    # dev verifier proves nothing about a real customer.
+    "FACE_VERIFY_URL": os.environ.get(
+        "WEMA_FACE_VERIFY_URL", "https://face-verification-dev.azurewebsites.net/"),
 }
 # Fraud: a spend at or above this from a device the account has NEVER authenticated
 # from requires face verification first (see common.risk.new_device_step_up_error).

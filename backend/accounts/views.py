@@ -26,10 +26,11 @@ log = logging.getLogger("zitch.security")
 from utility import wema
 from utility.providers import (
     email_live, kyc_verify_address, kyc_verify_face, kyc_verify_id_document,
-    kyc_verify_nin_document, mock_disabled_in_prod, send_email, send_sms, sms_live,
+    kyc_provider, kyc_verify_nin_document, mock_disabled_in_prod, send_email, send_sms,
+    sms_live,
     verify_bvn, verify_nin,
 )
-from wallet.models import Wallet
+from wallet.models import Wallet, WemaFaceSession
 from wallet.services import get_or_create_wallet, wema_account_reference
 
 from .models import (
@@ -787,6 +788,14 @@ def _kyc_state(user) -> dict:
         # Wema on the dedicated NUBAN itself.
         "bank_tier": bank_tier,
         "bank_tier_limits": bank_limits,
+        # Which rail each step runs on, so the screen renders what will ACTUALLY
+        # happen rather than a fixed set of inputs. The face and address steps look
+        # completely different on the bank rail — one opens the bank's own verifier,
+        # the other stops asking for a document — and a screen that guesses wrong
+        # either asks for a file nobody will read or hides the only working button.
+        "face_rail": "wema" if wema.face_verify_live() else "document",
+        "address_rail": ("wema" if (kyc_provider() == "wema" and wema.address_verify_live())
+                         else "document"),
     }
 
 
@@ -1260,6 +1269,88 @@ def kyc_nin_confirm(request):
     return ok(success=True, message="NIN verified", **_kyc_state(user))
 
 
+FACE_SESSION_TTL_MINUTES = 20
+
+
+def _face_callback_url(state: str) -> str:
+    """The absolute URL ALAT POSTs the face-check result to.
+
+    Built from this service's own public origin and carrying the same path secret as
+    the other bank callbacks, so the endpoint is protected exactly like them (token +
+    source IP) rather than inventing a second, weaker scheme.
+    """
+    base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
+    token = (settings.WEMA.get("CALLBACK_TOKEN", "") or "").strip() or "dev"
+    return f"{base}/webhooks/wema/face/{token}/{state}"
+
+
+@api
+@ratelimit("kyc_face_start", limit=10, window=600)
+@require_user
+def kyc_face_start(request):
+    """POST /api/kyc/face/start/ {access_token, bvn|nin} -> {url, session}
+
+    Opens a run of ALAT's face-biometric web app. The customer presents their face to
+    the BANK's verifier against their own BVN/NIN; we never see or store an image.
+
+    The BVN/NIN is used to build the URL and then discarded — only its keyed hash is
+    kept on the session, which is what the bank's callback is later matched against.
+    """
+    user = request.user_obj
+    gate = _email_gate(user)
+    if gate:
+        return gate
+    bvn = (request.data.get("bvn") or "").strip()
+    nin = (request.data.get("nin") or "").strip()
+    identity_type, raw = ("bvn", bvn) if bvn else ("nin", nin)
+    if not raw.isdigit() or len(raw) != 11:
+        return fail("Enter your 11-digit BVN or NIN")
+    if _identity_owned_by_another_user(user, identity_type, raw):
+        return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    if not wema.face_verify_live():
+        # Never fabricate a passed biometric check. Off a configured deploy this is
+        # an outage, and in local development it stays an outage too: a mock that
+        # marked face_verified would lift a tier and clear the large-transfer
+        # step-up on nothing at all.
+        return fail("Face verification is temporarily unavailable. Please try again later.",
+                    status=503)
+    session = WemaFaceSession.objects.create(
+        user=user,
+        state=secrets.token_urlsafe(32)[:64],
+        identity_type=identity_type,
+        identity_hash=hash_identifier(raw),
+        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+    )
+    url = wema.face_verification_url(identity_type, raw, _face_callback_url(session.state))
+    log.info("wema_face_start user=%s type=%s session=%s", user.id, identity_type, session.state[:8])
+    return ok(success=True, url=url, session=session.state,
+              expires_in=FACE_SESSION_TTL_MINUTES * 60,
+              message="Complete the face check to continue.")
+
+
+@api
+@ratelimit("kyc_face_status", limit=120, window=600)
+@require_user
+def kyc_face_status(request):
+    """GET/POST /api/kyc/face/status/ {access_token, session} -> {status}
+
+    Polled by the app while the customer is inside the bank's web app, because the
+    result arrives on OUR server (cb_uri) rather than back through the WebView.
+
+    Scoped to the caller's own sessions, so the handle is not a lookup oracle for
+    somebody else's verification state.
+    """
+    user = request.user_obj
+    state = (request.data.get("session") or request.GET.get("session") or "").strip()
+    session = WemaFaceSession.objects.filter(user=user, state=state).first() if state else None
+    if session is None:
+        return fail("Unknown verification session", status=404)
+    status = session.status
+    if status == WemaFaceSession.PENDING and session.expired:
+        status = "expired"
+    return ok(success=True, status=status, **_kyc_state(user))
+
+
 @api
 @require_user
 def kyc_face(request):
@@ -1318,19 +1409,38 @@ def kyc_address(request):
     state = (request.data.get("state") or "").strip()
     full = ", ".join(p for p in [address, city, state] if p)
     document = request.data.get("document") or request.data.get("image") or ""
-    image_error = _kyc_image_error(document)
-    if image_error:
-        return fail("Upload a proof of address (utility bill or bank statement)"
-                    if image_error == "Upload a clear image" else image_error)
-    result = kyc_verify_address(full, document=document)
-    if not result.get("success"):
-        return fail(result.get("message", "Couldn't verify your address"), status=400)
+    address_fields = {"fullAddress": full, "city": city, "state": state}
+    bank_rail = kyc_provider() == "wema" and wema.address_verify_live()
+    if bank_rail:
+        # The BANK verifies the address and lifts the NUBAN to its Tier 3 on the
+        # strength of it. That is a stronger control than a document we OCR, so the
+        # upload stops being mandatory here — but the result is now authoritative:
+        # a refusal from the bank is a refusal, not something to fall back from.
+        # Falling back to the document rail on a bank refusal would let anyone
+        # rejected by Wema retry with a utility bill and pass, which is worse than
+        # having no bank check at all.
+        acct = getattr(getattr(user, "wallet", None), "account_number", "") or ""
+        if not acct:
+            return fail("Set up your account number first — address verification is done by the bank.",
+                        status=409)
+        result = wema.upgrade_tier3(acct, address_fields)
+        if not result.get("success"):
+            return fail(result.get("message") or "Couldn't verify your address", status=400)
+    else:
+        image_error = _kyc_image_error(document)
+        if image_error:
+            return fail("Upload a proof of address (utility bill or bank statement)"
+                        if image_error == "Upload a clear image" else image_error)
+        result = kyc_verify_address(full, document=document)
+        if not result.get("success"):
+            return fail(result.get("message", "Couldn't verify your address"), status=400)
     user.set_address(full)
     user.address_verified = True
     user.recompute_tier()
     user.save(update_fields=["address", "address_verified", "tier"])
-    # Sync the bank-side NUBAN tier (best-effort; needs only the address + NUBAN).
-    _sync_wema_tier3(user, {"fullAddress": full, "city": city, "state": state})
+    if not bank_rail:
+        # Document rail: still sync the bank-side tier, best-effort as before.
+        _sync_wema_tier3(user, address_fields)
     return ok(success=True, message="Address verified", **_kyc_state(user))
 
 

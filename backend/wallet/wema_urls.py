@@ -22,4 +22,7 @@ urlpatterns = [
     *_both("authorize/<str:token>", cb.wema_authenticate_callback, "wema_cb_auth"),
     *_both("transaction/<str:token>", cb.wema_transaction_callback, "wema_cb_txn"),
     *_both("notification/<str:token>", cb.wema_notification_callback, "wema_cb_notify"),
+    # The face-biometric result carries a per-session state as a second path
+    # segment, so one customer's completed check can never stand in for another's.
+    *_both("face/<str:token>/<str:state>", cb.wema_face_callback, "wema_cb_face"),
 ]

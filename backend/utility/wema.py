@@ -449,6 +449,61 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
         return _unreachable(exc)
 
 
+def address_verify_live() -> bool:
+    """Whether the bank can verify a residential address for real.
+
+    Address verification is the Tier 3 upgrade call, so it rides the Account Upgrade
+    subscription. Unkeyed, the KYC screen falls back to the document rail rather
+    than silently marking addresses verified against a mock.
+    """
+    return _product_live("upgrade")
+
+
+def face_verify_live() -> bool:
+    """Whether the ALAT face-biometric web app can be used for real.
+
+    It rides the Account Creation subscription, so it needs that product's key (or
+    the Wallet Services key it falls back to) and a configured base URL.
+    """
+    return bool(_product_live("wallet_bvn") and settings.WEMA.get("FACE_VERIFY_URL"))
+
+
+def face_verify_on_dev_host() -> bool:
+    """True while the face app points at ALAT's DEV verifier.
+
+    Separate from face_verify_live() because the dev host answers happily — it just
+    does not prove anything about a real person, which makes it exactly the kind of
+    thing that survives to production unnoticed.
+    """
+    return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
+
+
+def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
+    """Build the customer-facing URL for ALAT's face-biometric web app.
+
+    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}&cb_uri={callback}`.
+    On success it POSTs {success, c_id, id, id_type} to `cb_uri`.
+
+    We pass cb_uri, never rd_uri. A redirect hands the result to whatever opened the
+    page — which for WhatsApp onboarding is a browser we do not control, and for the
+    app is a WebView whose navigation a determined user can drive by hand. The server
+    callback is the only variant where the bank tells US the outcome directly.
+
+    SECURITY, unavoidable: `x_tk` is our APIM subscription key, and the bank's design
+    puts it in a URL the customer's browser loads. Anyone who inspects that page can
+    read it. It is scoped to the Account Creation product, so treat it as public and
+    keep every money-moving product on a DIFFERENT subscription key — never reuse the
+    wallet key here once Wema issues a separate one (WEMA_ACCOUNT_CREATION_KEY).
+    """
+    from urllib.parse import quote, urlencode
+
+    base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
+    kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
+    query = urlencode({kind: identity_value, "x_tk": _sub_key("wallet_bvn"),
+                       "cb_uri": callback_url}, quote_via=quote)
+    return f"{base}/?{query}"
+
+
 def get_account_details(phone: str, *, bvn: bool = False) -> dict:
     """Step 3 — fetch the created account (poll until accountNumber is populated)."""
     if not wema_live():

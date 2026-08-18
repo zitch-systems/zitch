@@ -193,12 +193,55 @@ class Command(BaseCommand):
         # become unreachable and the selfie step-up on transfers at or above the face
         # threshold refuses every one of them. Nothing here checked that, so a deploy
         # could pass preflight and still be unable to lift a single customer's tier.
+        # Hard gate: the face-biometric web app must not still be ALAT's DEV verifier.
+        # It answers happily and returns a correlationId, so nothing downstream can
+        # tell it apart from the real one — the check simply proves nothing about the
+        # person, while lifting a tier and clearing the large-transfer step-up.
+        from utility.wema import address_verify_live, face_verify_live, face_verify_on_dev_host
+        if face_verify_live():
+            checks.append((
+                True, "Face biometric host",
+                FAIL if face_verify_on_dev_host() else PASS,
+                "WEMA_FACE_VERIFY_URL still points at ALAT's DEV verifier — a dev face "
+                "check lifts real tiers on no evidence" if face_verify_on_dev_host()
+                else "live verifier"))
+        else:
+            checks.append((False, "Face biometric (ALAT)", WARN,
+                           "no Account Creation key or WEMA_FACE_VERIFY_URL — the face "
+                           "step falls back to the document rail"))
+        checks.append((False, "Address verification (ALAT)",
+                       PASS if address_verify_live() else WARN,
+                       "bank-verified (Tier 3 upgrade)" if address_verify_live()
+                       else "WEMA_UPGRADE_KEY unset — address falls back to the document rail"))
+
         prembly_keyed = bool(settings.PREMBLY.get("API_KEY") and settings.PREMBLY.get("APP_ID"))
         checks.append((False, "Prembly (selfie / address / ID document)",
                        PASS if prembly_keyed else WARN,
                        "keyed" if prembly_keyed
-                       else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
-                            "the large-transfer selfie step-up fail closed"))
+                       else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — ID-document (Tier 3) "
+                            "fails closed; face/address are on the bank rail"
+                            if (face_verify_live() and address_verify_live())
+                            else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
+                                 "the large-transfer selfie step-up fail closed"))
+
+        # SOFT — electricity/betting on the Wema rail need a mapped packageId. Without
+        # one they silently stay on VTU.ng, which is safe but is NOT what
+        # VAS_PROVIDER=wema was set to achieve, and nothing else would say so.
+        if vas_provider() == "wema":
+            from django.db import DatabaseError
+
+            from utility.models import WemaBiller
+            try:
+                mapped = WemaBiller.objects.filter(active=True).exclude(package_id="").count()
+            except DatabaseError:
+                # Unmigrated database. A readiness check that dies on one unreadable
+                # counter reports nothing at all about the eleven gates above it.
+                mapped = 0
+            checks.append((False, "Wema biller catalogue (electricity / betting)",
+                           PASS if mapped else WARN,
+                           f"{mapped} service(s) mapped" if mapped
+                           else "no packageIds mapped — electricity and betting stay on "
+                                "VTU.ng; run `manage.py seed_wema_plans --only billers`"))
 
         # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
         # the purchase PENDING), so this can never be a gate; but an unset legend means

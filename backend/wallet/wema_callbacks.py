@@ -538,3 +538,77 @@ def wema_notification_callback(request):
     body = request.wema_body
     log.info("wema_notify_cb keys=%s ip=%s", sorted(body), request.wema_ip)
     return JsonResponse({"status": True}, status=200)
+
+
+@wema_callback("face")
+def wema_face_callback(request, state=""):
+    """The bank reports the outcome of a face-biometric check.
+
+    Payload: {success, c_id, id, id_type} — `c_id` is the correlationId proving the
+    check passed, `id` the BVN/NIN it was run against.
+
+    THE PAYLOAD DOES NOT SAY WHO THIS IS. It names an identity number, and an
+    identity number is not a secret: it appears on forms, in bank branches, and in
+    every breach dump. Honouring it on its own would let anyone who reaches this URL
+    lift the tier of whichever customer holds that BVN. So the decision rests on the
+    session we minted instead:
+
+      * `state` must match a PENDING session we opened for one specific user;
+      * the returned identity must hash to the one that session was opened with;
+      * the session must not have expired, and is consumed either way.
+
+    Only then is `face_verified` set. Always answers 200 — a non-2xx invites a retry
+    of something we have already recorded.
+    """
+    from accounts.models import hash_identifier
+
+    from .models import WemaFaceSession
+
+    body = request.wema_body
+    correlation = str(body.get("c_id") or "")[:160]
+    identity = str(body.get("id") or "")
+    claimed = bool(body.get("success"))
+    # Log key names and outcomes only — never the identity number itself.
+    log.info("wema_face_cb state=%s success=%s has_cid=%s ip=%s",
+             (state or "")[:8], claimed, bool(correlation), request.wema_ip)
+
+    with db_transaction.atomic():
+        session = (WemaFaceSession.objects
+                   .select_for_update()
+                   .filter(state=state, status=WemaFaceSession.PENDING)
+                   .select_related("user").first())
+        if session is None:
+            request.wema_action = "denied:unknown_session"
+            return JsonResponse({"status": True}, status=200)
+        if session.expired:
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:expired"
+            return JsonResponse({"status": True}, status=200)
+        if not claimed or not correlation:
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:not_verified"
+            return JsonResponse({"status": True}, status=200)
+        if not hmac.compare_digest(hash_identifier(identity), session.identity_hash):
+            # The bank verified a face against a DIFFERENT identity than the one this
+            # session was opened with. Never lift a tier on that.
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            log.warning("wema_face_identity_mismatch state=%s user=%s",
+                        (state or "")[:8], session.user_id)
+            alert("Wema face callback identity mismatch", level="warning",
+                  session=(state or "")[:8])
+            request.wema_action = "denied:identity_mismatch"
+            return JsonResponse({"status": True}, status=200)
+
+        session.status = WemaFaceSession.VERIFIED
+        session.correlation_id = correlation
+        session.save(update_fields=["status", "correlation_id", "updated"])
+        user = session.user
+        if not user.face_verified:
+            user.face_verified = True
+            user.recompute_tier()
+            user.save(update_fields=["face_verified", "tier"])
+    request.wema_action = "verified"
+    return JsonResponse({"status": True}, status=200)

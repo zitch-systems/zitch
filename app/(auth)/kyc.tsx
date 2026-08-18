@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as WebBrowser from 'expo-web-browser';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
@@ -21,6 +22,12 @@ type Status = {
   email?: string; email_verified?: boolean; email_verification_required?: boolean;
   bank_tier?: number;
   bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
+  // Which rail each step runs on. The server decides, because it is the only side
+  // that knows which bank products are actually keyed on this deploy — a screen
+  // that hardcoded "bank" would show a button that 503s, and one that hardcoded
+  // "document" would ask for a utility bill nobody reads.
+  face_rail?: 'wema' | 'document';
+  address_rail?: 'wema' | 'document';
 };
 
 const MAX_IMAGE_BASE64 = 2_800_000;
@@ -67,6 +74,13 @@ const Kyc = () => {
   const [emailAddr, setEmailAddr] = useState('');
   const [emailOtpSent, setEmailOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Bank face check: which identity the customer is presenting, and the number
+  // itself (held only long enough to build the bank's URL — never persisted).
+  const [faceIdType, setFaceIdType] = useState<'bvn' | 'nin'>('bvn');
+  const [faceId, setFaceId] = useState('');
+  const [facePolling, setFacePolling] = useState(false);
+  // The address rail decides whether a proof-of-address document is even asked for.
+  const bankAddress = status?.address_rail === 'wema';
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -209,6 +223,61 @@ const Kyc = () => {
     } catch {
       notify('Could not read that file', 'Try another file, or upload a photo instead.');
     } finally { endExternalActivity(); }
+  };
+
+  // --- Face check, bank rail: the BANK runs liveness in its own hosted verifier.
+  //
+  // We open it, and that is all we do. The result never comes back through the
+  // browser — the bank POSTs it to our server, which is the only version an app
+  // cannot fake by driving its own WebView. So the flow is: start (server mints a
+  // one-time session), open, then poll our own API until the server says verified.
+  //
+  // The identity number is asked for again rather than reused, because we keep only
+  // a keyed hash of it: the raw BVN/NIN is sent to the bank and dropped. Retyping
+  // eleven digits is the cost of not storing them.
+  const verifyFaceWithBank = async () => {
+    const raw = faceId.trim();
+    if (raw.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN or NIN.'); return; }
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/kyc/face/start/', faceIdType === 'bvn' ? { bvn: raw } : { nin: raw });
+      if (!res.success || !res.url) {
+        notify('Not available', res.message || 'Face verification is unavailable right now.');
+        return;
+      }
+      setFacePolling(true);
+      beginExternalActivity(); // the app-lock must not fire while the bank's page is up
+      try {
+        await WebBrowser.openBrowserAsync(res.url);
+      } finally { endExternalActivity(); }
+      // Closing the browser is not the same as passing: the customer may have
+      // abandoned it, and the bank's callback may still be in flight. Poll rather
+      // than assume either way.
+      await pollFace(res.session);
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); setFacePolling(false); }
+  };
+
+  const pollFace = async (session: string) => {
+    for (let i = 0; i < 20; i += 1) {
+      try {
+        const res = await apiJson('/api/kyc/face/status/', { session });
+        if (res.status === 'verified') {
+          setStatus(res);
+          setFaceId('');
+          notify('Success', 'Face verification complete');
+          return;
+        }
+        if (res.status === 'failed' || res.status === 'expired') {
+          notify('Not verified', 'The face check did not complete. You can try again.');
+          return;
+        }
+      } catch { /* keep polling — a dropped request is not a failed check */ }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    // Out of patience, not out of hope: the callback can still land, and the next
+    // screen load will show it. Never tell the customer it failed when we don't know.
+    notify('Still checking', 'We haven’t heard back yet. Reopen this screen shortly.');
   };
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
@@ -354,11 +423,45 @@ const Kyc = () => {
         )}
       </KycRow>
 
-      <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>
-        <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
-      </KycRow>
+      {status?.face_rail === 'wema' ? (
+        <KycRow icon="faceid" title="Face verification"
+          sub="Verified by your bank — unlocks Tier 2" done={!!status?.face_verified}>
+          <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 10, fontFamily: font.regular, lineHeight: 19 }}>
+            Your bank runs this check against your BVN or NIN. We open their secure page —
+            your face is never sent to or stored by Zitch.
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
+            {(['bvn', 'nin'] as const).map((k) => (
+              <View key={k} style={{ flex: 1 }}>
+                <Btn label={k.toUpperCase()} size="md"
+                  variant={faceIdType === k ? 'primary' : 'outline'}
+                  disabled={busy}
+                  onPress={() => { setFaceIdType(k); setFaceId(''); }} />
+              </View>
+            ))}
+          </View>
+          <Field value={faceId} onChangeText={(v) => setFaceId(v.replace(/\D/g, '').slice(0, 11))}
+            keyboardType="number-pad" placeholder={`Enter your 11-digit ${faceIdType.toUpperCase()}`} />
+          <View style={{ height: 10 }} />
+          <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with your bank'} icon="faceid" size="md"
+            disabled={busy || facePolling || faceId.length !== 11} onPress={verifyFaceWithBank} />
+          {facePolling ? (
+            <Text style={{ fontSize: 12, color: c.ink3, marginTop: 10, textAlign: 'center', fontFamily: font.regular }}>
+              Finish the check in the page that opened, then come back here.
+            </Text>
+          ) : null}
+        </KycRow>
+      ) : (
+        <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>
+          <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
+        </KycRow>
+      )}
 
-      <KycRow icon="home" title="Residential address" sub="Address + proof of address — unlocks Tier 2" done={!!status?.address_verified}>
+      <KycRow icon="home"
+        title="Residential address"
+        sub={bankAddress ? 'Verified by your bank — unlocks Tier 2'
+                         : 'Address + proof of address — unlocks Tier 2'}
+        done={!!status?.address_verified}>
         <Field value={address} onChangeText={setAddress} placeholder="Street address" />
         <View style={{ height: 10 }} />
         <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -385,6 +488,16 @@ const Kyc = () => {
           onPick={setStateName}
         />
         <View style={{ height: 10 }} />
+        {/* On the bank rail the document section is not merely optional — it is
+            absent. Wema verifies the address itself and lifts the NUBAN to its
+            Tier 3 on that; asking for a utility bill nobody reads would be
+            theatre, and a slow, 2 MB one at that. */}
+        {bankAddress ? (
+          <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular, lineHeight: 19 }}>
+            Your bank verifies this address directly — no document upload needed.
+          </Text>
+        ) : (
+        <>
         {/* Named so the user knows what counts before opening the picker — the
             server refuses this step without a document, and a rejection after
             the fact is a worse way to learn the requirement. */}
@@ -406,8 +519,11 @@ const Kyc = () => {
           ]}
           onPick={(v) => { if (v === 'pdf') pickPdf(setAddressDoc); else pickImage(setAddressDoc); }}
         />
+        </>
+        )}
         <View style={{ height: 10 }} />
-        <Btn label="Verify address" size="md" disabled={busy || address.trim().length < 6 || !addressDoc}
+        <Btn label={bankAddress ? 'Verify with your bank' : 'Verify address'} size="md"
+          disabled={busy || address.trim().length < 6 || (!bankAddress && !addressDoc)}
           onPress={() => submit('/api/kyc/address/', { address, city, state: canonicalState(stateName) || stateName, document: addressDoc }, 'Address')} />
       </KycRow>
 

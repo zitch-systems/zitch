@@ -88,10 +88,27 @@ def _wema_vas_route(service_id: str, payload: dict):
     """Resolve how Wema would fulfil this purchase, or None to stay on VTU.ng.
 
     Returns {"type": "airtime"|"data"|"bill", "code": <wema code>, "amount": <naira>}.
-    Airtime always resolves; data/cable resolve only when the plan's `wema_code` has
-    been synced (blank => None => VTU.ng); electricity/betting always return None."""
+    Airtime always resolves; data/cable resolve once the plan's `wema_code` has been
+    synced; electricity/betting resolve once a WemaBiller row maps their service_id.
+    A missing code returns None and keeps that ONE service on VTU.ng — never an
+    error, so a partly-synced catalogue degrades per service instead of failing.
+
+    Electricity and betting take their amount from the request rather than a plan
+    row: the customer types it, there is no bundle with a price to read."""
     if service_id.endswith("-airtime"):
         return {"type": "airtime", "code": "", "amount": payload.get("amount")}
+    if service_id.endswith("-electric") or service_id.endswith("-betting"):
+        from .models import WemaBiller
+        b = (WemaBiller.objects.filter(service_id=service_id, active=True)
+             .only("package_id").first())
+        if not (b and b.package_id):
+            return None
+        amount = payload.get("amount")
+        if amount in (None, ""):
+            # A variable-amount bill with no amount cannot be paid on either rail;
+            # returning None hands it to VTU.ng, which reports the error properly.
+            return None
+        return {"type": "bill", "code": b.package_id, "amount": amount}
     var = str(payload.get("variation_code", "") or "")
     if not var:
         return None  # no plan code -> nothing to map to a Wema catalogue code
@@ -183,9 +200,30 @@ def vtu_requery(reference: str) -> dict:
 
 
 def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "") -> dict:
-    """Validate a meter / smartcard number, returning the customer name. Validation is
-    read-only and stays on VTU.ng (the purchase rail is chosen separately in
-    vtu_purchase)."""
+    """Validate a meter / smartcard number, returning the customer name.
+
+    Validation follows the PURCHASE rail rather than always asking VTU.ng. It used
+    not to, which was harmless while the two rails agreed and is not once a service
+    routes to Wema: the customer would be shown a name VTU.ng resolved, then have the
+    payment executed against a Wema packageId that may reject the same identifier —
+    confirming a name against one biller and paying another. Falls back to VTU.ng
+    whenever Wema has no code for this service, which is the same rail the purchase
+    will take."""
+    if vas_provider() == "wema":
+        route = _wema_vas_route(service_id, {"variation_code": variation,
+                                             "billersCode": billers_code,
+                                             # Validation carries no amount; supply a
+                                             # placeholder so a variable-amount biller
+                                             # still resolves its package id.
+                                             "amount": "0"})
+        if route is not None and route["type"] == "bill" and route["code"]:
+            from . import wema
+            res = wema.validate_bill_customer(package_id=route["code"], identifier=billers_code)
+            if res.get("success"):
+                return res
+            # A Wema validation failure is not proof the identifier is bad (an
+            # unmapped package or a gateway hiccup looks the same), so fall through
+            # rather than telling the customer their own meter number is wrong.
     from .vtung import vt_verify_customer
     return vt_verify_customer(service_id, billers_code, variation)
 
