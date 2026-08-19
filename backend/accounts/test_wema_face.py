@@ -318,3 +318,32 @@ class TheFaceRailRefusesWhatItCannotAuthenticateTests(TestCase):
         self.assertNotIn("face-verification-dev",
                          str(importlib.import_module("zitch_api.settings").WEMA.get(
                              "FACE_VERIFY_URL", "") or ""))
+
+
+@override_settings(
+    WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
+          "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
+          "FACE_CALLBACK_IPS": [], "KEYS": {"wallet": "k"}, "CHANNEL_ID": "c",
+          "SIMULATION": False, "FACE_VERIFY_URL": "https://face.example/"})
+class TheRawIdentityNeverReachesTheForensicTableTests(TestCase):
+    """WebhookEvent is deliberately immutable, which makes it the worst place for a
+    raw BVN to land. ALAT names the identity number "id" — a key generic enough to
+    walk straight past a redaction list built from the field names we expected."""
+
+    def test_the_recorded_payload_holds_a_fingerprint_not_the_number(self):
+        from whatsapp.models import WebhookEvent
+
+        session = WemaFaceSession.objects.create(
+            user=User.objects.create_user(username="w1", phone="08050000001",
+                                          password="Str0ng!pass1"),
+            state="w" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+        self.client.post(f"/webhooks/wema/face/{session.state}",
+                         {"success": True, "c_id": "C1", "id": "22222222222"},
+                         content_type="application/json")
+        row = WebhookEvent.objects.filter(source="wema.face").order_by("-id").first()
+        self.assertIsNotNone(row)
+        blob = str(row.payload)
+        self.assertNotIn("22222222222", blob)
+        self.assertIn("sha256:", blob)

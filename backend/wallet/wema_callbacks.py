@@ -581,6 +581,14 @@ def wema_face_callback(request, state=""):
     correlation = str(body.get("c_id") or "")[:160]
     identity = str(body.get("id") or "")
     claimed = bool(body.get("success"))
+    # ALAT names the identity number "id", and the decorator records this body into
+    # WebhookEvent — the one table we keep deliberately immutable — after we return.
+    # Replace it in place with a non-reversible marker so a raw BVN is never written
+    # there. Scrubbed here rather than by the global redaction list because "id" is
+    # also every WhatsApp message's correlation handle, where redacting it would
+    # blind the forensic trail instead of protecting anything.
+    if identity:
+        body["id"] = _fingerprint(identity)
     # Log key names and outcomes only — never the identity number itself.
     log.info("wema_face_cb state=%s success=%s has_cid=%s ip=%s",
              (state or "")[:8], claimed, bool(correlation), request.wema_ip)

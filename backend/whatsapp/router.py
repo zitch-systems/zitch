@@ -3465,7 +3465,10 @@ def _blocked_from_spending(user, msisdn: str) -> bool:
 # the photo rather than pretend to launch anything. Saying "tap 📎 → Camera" is a
 # real instruction; a button that silently does nothing would not be.
 # --------------------------------------------------------------------------- #
-QR_WAIT_STATE = "qr_photo"      # waiting for the picture
+#: How long a scanner link stays usable. Mirrors scan_views.SCAN_TTL_MINUTES; named
+#: here so the chat copy and the server agree without importing at module load.
+_SCAN_TTL = 15
+QR_WAIT_STATE = "qr_photo"      # scanner link sent, waiting for a result
 QR_AMOUNT_STATE = "qr_amount"   # code read, needs an amount before it can be paid
 
 
@@ -3477,11 +3480,28 @@ def _start_qr_scan(user, msisdn: str) -> None:
         user=user, msisdn=msisdn, action_type="qr", state=QR_WAIT_STATE,
         payload={}, expires_at=_flow_deadline("idle"),
     )
-    return reply(msisdn, "📷 *Scan a QR code*\n\n"
-                         "Tap 📎 → *Camera* and take a clear photo of the QR code, then send "
-                         "it here. It can be from any bank.\n\n"
-                         "_I'll read the account and amount off it. "
-                         'Reply "cancel" to stop._')
+    # A BUTTON that opens the camera, not an instruction to photograph something and
+    # send it. WhatsApp cannot launch a camera from a message, but it opens URLs —
+    # and a web page can open a camera. So the scanner is a page we host, and the
+    # customer's next tap is the camera rather than four taps through the attachment
+    # menu and a message they have to remember to send.
+    from .scan_views import new_scan_session, scan_url
+
+    session = new_scan_session(user, msisdn)
+    sent = send_cta_url(
+        msisdn,
+        "📷 *Scan a payment code*\n\n"
+        "Tap below to open your camera and point it at any bank's QR code. "
+        "I'll read the account and amount off it.\n\n"
+        f"_The link works for {_SCAN_TTL} minutes._",
+        scan_url(session), cta="Open camera", footer="Zitch secure scanner")
+    if sent.get("success"):
+        return None
+    # The interactive type was refused. The scanner link carries no secret and no
+    # identity — only a single-use session id — so unlike the face link it is safe
+    # to send as text, and a tappable link beats no scanner at all.
+    return reply(msisdn, "📷 *Scan a payment code*\n\nOpen this to use your camera:\n"
+                         f"{scan_url(session)}")
 
 
 def _qr_summary(intent: dict) -> str:
@@ -3568,8 +3588,10 @@ def _advance_qr(pa: PendingAction, user, msisdn: str, text: str) -> None:
         if _is_new_command(text):
             _clear_actions(msisdn)
             return handle_inbound(msisdn, text)
-        return reply(msisdn, "📷 Send a *photo* of the QR code — tap 📎 → Camera. "
-                             'Or reply "cancel".')
+        # A photo sent into the chat still works — the media path decodes it the same
+        # way — so this only answers someone who TYPED while the scanner is open.
+        return reply(msisdn, "📷 Tap *Open camera* above to scan the code — "
+                             'or send a photo of it. Reply "cancel" to stop.')
     amount = parse_amount(text)
     if amount is None or amount <= 0:
         return reply(msisdn, "Enter the amount to send, like *2500*.")

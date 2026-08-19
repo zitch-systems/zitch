@@ -332,12 +332,13 @@ class WebhookEvent(models.Model):
         "accesstoken", "token", "authorization", "nuban", "accountnumber",
         "email", "phone", "phonenumber", "msisdn", "from", "nubanname", "accountname",
         "customerid", "billerscode", "meter", "meternumber", "smartcard", "iuc",
-        # ALAT's face-biometric callback names the identity number plainly as "id"
-        # ({success, c_id, id, id_type}), so without this a raw BVN is written into
-        # this table in clear — and this table is the one place we keep deliberately
-        # immutable, for forensics. A generic key name is exactly how identity data
-        # slips past a redaction list built from the field names we expected.
-        "id", "identityvalue", "identifiervalue", "bvnornin",
+        # ALAT's face callback names the identity number "id" — but so does every
+        # WhatsApp message envelope, where it is a correlation handle rather than
+        # PII, and redacting those would blind the forensic trail this table exists
+        # for. "id" is therefore scrubbed AT THE FACE HANDLER instead (see
+        # wallet.wema_callbacks.wema_face_callback), which is the only place the key
+        # carries an identity number.
+        "identityvalue", "identifiervalue", "bvnornin",
     })
 
     source = models.CharField(max_length=40)          # wema.account | whatsapp | mono …
@@ -515,3 +516,38 @@ class ApprovalRequest(models.Model):
 
     def __str__(self):
         return f"{self.action} {self.status} (by u_{self.requested_by_id})"
+
+
+class ScanSession(models.Model):
+    """One run of the hosted QR scanner page.
+
+    WhatsApp cannot open a camera from a message, but it can open a URL — and a web
+    page CAN open the camera. So the scanner is a page we host: the customer taps a
+    button in the chat, the camera opens immediately, and the decoded code comes back
+    to our server rather than being photographed and sent as a message.
+
+    The token in the page's URL is what ties a scan to the chat that started it. It
+    is single-use and short-lived for the ordinary reason, but the stakes here are
+    much lower than the face check's: a scan only ever PROPOSES a transfer, which
+    still has to clear name enquiry, the confirm card and the PIN. Someone who forged
+    a scan could at most make a confirm card appear in a customer's own chat.
+    """
+
+    token = models.CharField(max_length=64, unique=True)
+    msisdn = models.CharField(max_length=20, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="scan_sessions")
+    used_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["expires_at"], name="scan_expiry_idx")]
+
+    @property
+    def usable(self) -> bool:
+        from django.utils import timezone
+        return self.used_at is None and timezone.now() < self.expires_at
+
+    def __str__(self):
+        return f"scan:{self.msisdn}"

@@ -35,13 +35,13 @@ class ScanEntryTests(TestCase):
     def test_the_menu_offers_it(self):
         self.assertIn("Scan a QR code", router.menu_text())
 
-    def test_starting_a_scan_asks_for_a_photo_and_says_how(self):
-        # "Tap the camera" is a real instruction; a button that silently does
-        # nothing would not be.
-        with patch.object(router, "reply") as rep:
+    def test_starting_a_scan_opens_the_camera_rather_than_asking_for_a_photo(self):
+        # WhatsApp cannot launch a camera from a message, but it opens URLs — and a
+        # page can open a camera. The customer's next tap is the camera, not four
+        # taps through the attachment menu. Covered in depth in test_scan_page.
+        with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
             router._start_qr_scan(self.user, MSISDN)
-        body = str(rep.call_args.args[1])
-        self.assertIn("Camera", body)
+        self.assertIn("/scan/", cta.call_args.args[2])
         self.assertTrue(PendingAction.objects.filter(
             msisdn=MSISDN, action_type="qr", state=router.QR_WAIT_STATE).exists())
 
@@ -52,7 +52,7 @@ class ScanEntryTests(TestCase):
             expires_at=router._flow_deadline("idle"))
         with patch.object(router, "reply") as rep:
             router._advance_qr(pa, self.user, MSISDN, "0123456789")
-        self.assertIn("photo", str(rep.call_args.args[1]).lower())
+        self.assertIn("camera", str(rep.call_args.args[1]).lower())
 
     def test_a_new_command_escapes_the_scan_rather_than_trapping_them(self):
         pa = PendingAction.objects.create(

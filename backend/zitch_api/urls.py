@@ -5,6 +5,8 @@ from django.conf import settings
 from django.contrib import admin
 from django.http import HttpResponse, JsonResponse
 from django.urls import include, path
+
+from whatsapp import scan_views as whatsapp_scan
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
@@ -739,6 +741,11 @@ urlpatterns = [
     # Authentication URL. The trailing path segment is a shared secret; they sit
     # outside /api/ because they are bank-authenticated, not user-authenticated.
     path("webhooks/wema/", include("wallet.wema_urls")),
+    # The hosted QR scanner, opened from a WhatsApp button. Outside /api/ because it
+    # is a PAGE for a customer's browser, not an authenticated JSON endpoint — the
+    # single-use token in the path is what ties a scan to the chat that started it.
+    path("scan/<str:token>", whatsapp_scan.scan_page, name="qr_scan_page"),
+    path("scan/<str:token>/frame", whatsapp_scan.scan_frame, name="qr_scan_frame"),
     path("api/admin/", include("admin_api.urls")),
     path("api/whatsapp/", include("whatsapp.urls")),
     path("api/ops/", include("portal.urls")),
