@@ -2483,6 +2483,14 @@ def _do_support(msisdn: str) -> None:
 _KYC_STEPS = ("phone", "email", "bvn", "nin", "face")
 
 
+#: PendingAction.state while the face step is waiting for an identity number that
+#: arrived in the CHAT rather than the Flow. It needs its own state because the
+#: answer is forwarded to the bank, not verified here — routing it through the
+#: ordinary "bvn"/"nin" states would re-run verification on an identity the
+#: customer has already proven, and never send the face link.
+FACE_ID_STATE = "face_id"
+
+
 def _face_step_available() -> bool:
     """Whether the chat can offer the bank's face check.
 
@@ -2876,6 +2884,24 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
                                  'or reply "cancel".')
         return _kyc_submit_identity(pa, user, msisdn, state, digits)
 
+    if state == FACE_ID_STATE:
+        # The face step asks for the identity in the Flow, but a customer can always
+        # type it into the thread instead — and this state had no branch, so they
+        # were told "Got it" and then dumped at the main menu with their BVN sitting
+        # in the chat and no face check ever started.
+        #
+        # The number is already in their history by the time we get here, so refusing
+        # it now would cost them the step and save nothing. Take it, name the one
+        # thing that still removes it, and carry on.
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) != 11:
+            kind = str(pa.payload.get("id_kind", "bvn")).upper()
+            return reply(msisdn, f"That should be exactly 11 digits. Enter your {kind} again, "
+                                 'or reply "cancel".')
+        reply(msisdn, "🔐 Got it." + _DELETE_TIP)
+        return _kyc_send_face_link(pa, user, msisdn,
+                                   str(pa.payload.get("id_kind", "bvn")).lower(), digits)
+
     _clear_actions(msisdn)
     return send_menu(msisdn)
 
@@ -3028,7 +3054,7 @@ def _kyc_start_face_step(pa: PendingAction, user, msisdn: str) -> None:
     """
     kind = "bvn" if user.bvn_verified else "nin"
     pa.payload["id_purpose"] = "face"
-    if _send_identity_flow(pa, kind, fallback_state="face_id"):
+    if _send_identity_flow(pa, kind, fallback_state=FACE_ID_STATE):
         return None
     # No Flow on this deploy (dev/preview). Unlike the identity ladder there is no
     # chat fallback worth having: the number is not being verified here, only

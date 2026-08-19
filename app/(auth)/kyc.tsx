@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -31,6 +31,9 @@ type Status = {
 };
 
 const MAX_IMAGE_BASE64 = 2_800_000;
+// Matches FACE_SESSION_TTL_MINUTES on the server. Polling past the point where the
+// session can still be completed only burns battery and requests.
+const FACE_SESSION_MAX_MS = 20 * 60 * 1000;
 
 const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: string; sub: string; done: boolean; children?: React.ReactNode }) => {
   const { c } = useTheme();
@@ -81,6 +84,10 @@ const Kyc = () => {
   const [facePolling, setFacePolling] = useState(false);
   // The bank's page, shown inside the app rather than handed to the system browser.
   const [faceUrl, setFaceUrl] = useState('');
+  // The session being polled. A ref, not state: it is the poll loop's cancellation
+  // token, and it has to be readable by a loop that started before the render that
+  // would have updated a state value.
+  const faceSession = useRef('');
   // The address rail decides whether a proof-of-address document is even asked for.
   const bankAddress = status?.address_rail === 'wema';
 
@@ -94,6 +101,9 @@ const Kyc = () => {
     } catch { /* keep */ }
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  // Leaving the screen stops the loop. Without this it keeps polling — and calling
+  // setState — against a component nobody is looking at any more.
+  useEffect(() => () => { faceSession.current = ''; }, []);
 
   const submit = async (path: string, body: object, label: string) => {
     setBusy(true);
@@ -241,44 +251,73 @@ const Kyc = () => {
     const raw = faceId.trim();
     if (raw.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN or NIN.'); return; }
     setBusy(true);
+    let started: { url: string; session: string } | null = null;
     try {
       const res = await apiJson('/api/kyc/face/start/', faceIdType === 'bvn' ? { bvn: raw } : { nin: raw });
       if (!res.success || !res.url) {
         notify('Not available', res.message || 'Face verification is unavailable right now.');
         return;
       }
-      setFacePolling(true);
-      setFaceUrl(res.url);
-      // Poll alongside the sheet rather than after it. The result never comes back
-      // through the page — the bank posts it to our server — so the customer closing
-      // the sheet proves nothing either way, and a check that completes while they
-      // are still looking at it should land immediately.
-      await pollFace(res.session);
-      setFaceUrl('');
+      started = { url: res.url, session: res.session };
     } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); setFacePolling(false); }
+    finally {
+      // Released here, not after the check. The poll below runs for as long as the
+      // bank's session lives, and holding `busy` across it would disable every other
+      // button on this screen for twenty minutes.
+      setBusy(false);
+    }
+    if (!started) return;
+    faceSession.current = started.session;
+    setFaceUrl(started.url);
+    // Polled alongside the sheet, never in place of it. The result arrives on our
+    // server from the bank, so nothing the page does tells us the answer — and the
+    // customer closing the sheet proves nothing either way.
+    pollFace(started.session);
   };
 
+  /** Stop polling and take the sheet down. Safe to call twice. */
+  const closeFace = useCallback(() => {
+    faceSession.current = '';
+    setFaceUrl('');
+    setFacePolling(false);
+  }, []);
+
   const pollFace = async (session: string) => {
-    for (let i = 0; i < 20; i += 1) {
-      try {
-        const res = await apiJson('/api/kyc/face/status/', { session });
+    setFacePolling(true);
+    // Poll for as long as the SERVER's session can still be completed. The first
+    // version gave up after a minute and then closed the sheet — which pulled the
+    // bank's page away mid-capture, because reading the instructions, granting the
+    // camera and positioning a face takes longer than sixty seconds. Nothing here
+    // may close the sheet on a timer; only a verdict or the customer does that.
+    const deadline = Date.now() + FACE_SESSION_MAX_MS;
+    try {
+      while (faceSession.current === session && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
+        // Re-checked after the wait: the customer may have closed the sheet, or
+        // started a second attempt, while we were sleeping.
+        if (faceSession.current !== session) return;
+        let res;
+        try {
+          res = await apiJson('/api/kyc/face/status/', { session });
+        } catch {
+          continue; // a dropped request is not a failed check
+        }
         if (res.status === 'verified') {
           setStatus(res);
           setFaceId('');
+          closeFace();
           notify('Success', 'Face verification complete');
           return;
         }
         if (res.status === 'failed' || res.status === 'expired') {
+          closeFace();
           notify('Not verified', 'The face check did not complete. You can try again.');
           return;
         }
-      } catch { /* keep polling — a dropped request is not a failed check */ }
-      await new Promise((r) => setTimeout(r, 3000));
+      }
+    } finally {
+      setFacePolling(false);
     }
-    // Out of patience, not out of hope: the callback can still land, and the next
-    // screen load will show it. Never tell the customer it failed when we don't know.
-    notify('Still checking', 'We haven’t heard back yet. Reopen this screen shortly.');
   };
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
@@ -446,7 +485,7 @@ const Kyc = () => {
           <View style={{ height: 10 }} />
           <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with your bank'} icon="faceid" size="md"
             disabled={busy || facePolling || faceId.length !== 11} onPress={verifyFaceWithBank} />
-          <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => setFaceUrl('')} />
+          <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => { closeFace(); load(); }} />
         </KycRow>
       ) : (
         <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>

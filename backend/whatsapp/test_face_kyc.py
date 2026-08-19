@@ -165,3 +165,55 @@ class FaceCallbackNotifiesChatTests(TestCase):
         self.assertEqual(res.status_code, 200)
         user.refresh_from_db()
         self.assertTrue(user.face_verified)
+
+
+@override_settings(WEMA=FACE_ON)
+class TypedInChatTests(TestCase):
+    """The face step asks for the identity in the Flow — but a customer can always
+    type it into the thread instead, and that path had no branch at all.
+
+    They were told "Got it", dropped at the main menu, and no face check was ever
+    started — with their BVN left sitting in the chat. Refusing the number at that
+    point would cost them the step and save nothing, since it is already in their
+    history, so it is accepted and the deletion tip is named.
+    """
+
+    def setUp(self):
+        self.user = _user()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc",
+            state=router.FACE_ID_STATE, payload={"id_kind": "bvn", "id_purpose": "face"},
+            expires_at=router._flow_deadline("idle"))
+
+    def test_a_typed_number_still_starts_the_face_check(self):
+        with patch.object(router, "send_cta_url") as cta, \
+             patch.object(router, "reply"), patch.object(router, "_kyc_next"):
+            router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
+        cta.assert_called_once()
+        self.assertIn("face.example", cta.call_args.args[2])
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+
+    def test_the_customer_is_told_how_to_remove_it_from_the_thread(self):
+        with patch.object(router, "send_cta_url"), \
+             patch.object(router, "reply") as rep, patch.object(router, "_kyc_next"):
+            router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
+        sent = " ".join(str(c.args[1]) for c in rep.call_args_list).lower()
+        self.assertIn("delete", sent)
+
+    def test_a_short_number_is_re_asked_not_dumped_to_the_menu(self):
+        with patch.object(router, "send_cta_url") as cta, \
+             patch.object(router, "reply") as rep, patch.object(router, "send_menu") as menu:
+            router._advance_kyc(self.pa, self.user, MSISDN, "12345")
+        cta.assert_not_called()
+        menu.assert_not_called()
+        self.assertIn("11 digits", str(rep.call_args.args[1]))
+
+    def test_the_identity_is_not_re_verified(self):
+        # It is forwarded to the bank, not checked here. Routing it through the
+        # ordinary bvn/nin branch would re-run verification on an identity the
+        # customer has already proven — and never send the link.
+        with patch.object(router, "send_cta_url"), patch.object(router, "reply"), \
+             patch.object(router, "_kyc_next"), \
+             patch.object(router, "_kyc_submit_identity") as submit:
+            router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
+        submit.assert_not_called()
