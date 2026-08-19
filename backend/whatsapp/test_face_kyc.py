@@ -22,13 +22,11 @@ from .models import PendingAction, WhatsAppLink
 User = get_user_model()
 MSISDN = "2348011113333"
 
-# wallet_bvn, not wallet: the face rail refuses the Wallet Services fallback so a
-# money-moving key can never reach the customer's browser (utility.wema._face_key).
-FACE_ON = {"KEYS": {"wallet": "k", "wallet_bvn": "facekey"}, "CHANNEL_ID": "c",
-           "SIMULATION": False,
+FACE_ON = {"KEYS": {"wallet": "k"}, "CHANNEL_ID": "c", "SIMULATION": False,
            "FACE_VERIFY_URL": "https://face.example/", "CALLBACK_TOKEN": "tok",
            "CALLBACK_TOKEN_PREV": "", "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": []}
-FACE_OFF = {**FACE_ON, "KEYS": {}, "FACE_VERIFY_URL": ""}
+# The face rail needs the channel id (x_tk) and a base URL — see utility.wema._face_key.
+FACE_OFF = {**FACE_ON, "CHANNEL_ID": "", "FACE_VERIFY_URL": ""}
 
 
 def _user(**flags):

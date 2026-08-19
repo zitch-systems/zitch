@@ -466,34 +466,33 @@ def address_verify_live() -> bool:
 
 
 def _face_key() -> str:
-    """The subscription key sent to the face-biometric WEB app — and the ONE key in
-    this module that must never fall back to Wallet Services.
+    """The value ALAT's face-biometric web app expects as `x_tk`.
 
-    Every other product may borrow the wallet key when it has no key of its own,
-    because those keys travel server-to-server inside an HTTPS request header. This
-    one does not: ALAT's face verifier takes it as `x_tk` in a URL the CUSTOMER'S
-    BROWSER loads, so it is readable by the customer, their browser history, and
-    anything with sight of the address bar.
+    It is the CHANNEL ID (the x-api-key), not an APIM subscription key. Wema
+    confirmed this directly, with a sample URL whose x_tk is the same GUID shape as
+    the channel id — subscription keys are 32 hex characters with no dashes, so the
+    two are not interchangeable and sending the wrong one simply fails the check.
 
-    Wallet Services includes the Debit Wallet API. Borrowing that key here would
-    publish a credential that can move money to every customer who verifies their
-    face. So this reads WEMA_ACCOUNT_CREATION_KEY alone; unset, the face rail simply
-    reports itself unavailable (the app falls back to the document rail and the chat
-    hides the step) rather than leaking the money key.
+    Worth stating plainly because of where this value goes: `x_tk` travels in a URL
+    the CUSTOMER'S BROWSER loads, so it is readable by the customer, their history,
+    and anything with sight of the address bar. Treat the channel id as public.
+    That it is only half the credential pair — every APIM call also needs
+    Ocp-Apim-Subscription-Key, which never leaves our server — is what makes the
+    bank's design survivable. Never put a subscription key here.
     """
-    return (settings.WEMA.get("KEYS") or {}).get("wallet_bvn", "")
+    return settings.WEMA.get("CHANNEL_ID", "")
 
 
 def face_verify_live() -> bool:
     """Whether the ALAT face-biometric web app can be used for real.
 
-    Needs the Account Creation subscription key specifically — see _face_key for why
-    the usual Wallet Services fallback is refused here — plus a configured base URL.
+    Needs the channel id (what ALAT calls x_tk — see _face_key) and a base URL. It
+    does NOT need a product subscription key: the web app authenticates the customer,
+    not us.
     """
     if wema_simulation():
         return False
-    return bool(settings.WEMA.get("CHANNEL_ID") and _face_key()
-                and settings.WEMA.get("FACE_VERIFY_URL"))
+    return bool(_face_key() and settings.WEMA.get("FACE_VERIFY_URL"))
 
 
 def face_verify_on_dev_host() -> bool:
@@ -517,12 +516,10 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     app is a WebView whose navigation a determined user can drive by hand. The server
     callback is the only variant where the bank tells US the outcome directly.
 
-    SECURITY: `x_tk` is an APIM subscription key and the bank's design puts it in a
-    URL the customer's browser loads, so treat it as PUBLIC. It comes from _face_key,
-    which reads WEMA_ACCOUNT_CREATION_KEY and deliberately refuses the Wallet Services
-    fallback every other product gets — Wallet Services includes the Debit Wallet API,
-    and publishing a money-moving key to every customer who verifies their face is not
-    a trade worth making for one fewer environment variable.
+    SECURITY: `x_tk` is the channel id (see _face_key), and the bank's design puts it
+    in a URL the customer's browser loads — so treat the channel id as public. It is
+    only half the credential pair; every APIM call also needs a subscription key,
+    which never leaves our server. A subscription key must never be sent here.
     """
     from urllib.parse import quote, urlencode
 

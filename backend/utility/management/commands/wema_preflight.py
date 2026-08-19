@@ -66,7 +66,10 @@ class Command(BaseCommand):
                 True, "ALAT Airtime/Data subscription",
                 PASS if product_keys.get("airtime") else FAIL,
                 "dedicated key set" if product_keys.get("airtime")
-                else "VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY; Wallet Services does not cover it"))
+                else ("VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. If your Wallet Services "
+                      "subscription includes the Airtime and Data API, set it to the wallet "
+                      "key; the fallback is deliberately not automatic, because a tenant "
+                      "where it is a separate product would fail at purchase time instead")))
         if card_provider() == "wema":
             card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
             checks.append((
@@ -207,8 +210,8 @@ class Command(BaseCommand):
                 else "live verifier"))
         else:
             checks.append((False, "Face biometric (ALAT)", WARN,
-                           "no Account Creation key or WEMA_FACE_VERIFY_URL — the face "
-                           "step falls back to the document rail"))
+                           "no channel id or WEMA_FACE_VERIFY_URL — the face step falls "
+                           "back to the document rail"))
         checks.append((False, "Address verification (ALAT)",
                        PASS if address_verify_live() else WARN,
                        "bank-verified (Tier 3 upgrade)" if address_verify_live()
