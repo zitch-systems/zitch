@@ -3,7 +3,6 @@ import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import * as WebBrowser from 'expo-web-browser';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
@@ -13,6 +12,7 @@ import { Screen, Header, Field, Btn, money, NText, SelectRow, PickerSheet } from
 import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
+import FaceVerifyModal from '@/components/design/FaceVerifyModal';
 
 type Status = {
   tier: number; tier_name?: string; transaction_limit: string;
@@ -79,6 +79,8 @@ const Kyc = () => {
   const [faceIdType, setFaceIdType] = useState<'bvn' | 'nin'>('bvn');
   const [faceId, setFaceId] = useState('');
   const [facePolling, setFacePolling] = useState(false);
+  // The bank's page, shown inside the app rather than handed to the system browser.
+  const [faceUrl, setFaceUrl] = useState('');
   // The address rail decides whether a proof-of-address document is even asked for.
   const bankAddress = status?.address_rail === 'wema';
 
@@ -246,14 +248,13 @@ const Kyc = () => {
         return;
       }
       setFacePolling(true);
-      beginExternalActivity(); // the app-lock must not fire while the bank's page is up
-      try {
-        await WebBrowser.openBrowserAsync(res.url);
-      } finally { endExternalActivity(); }
-      // Closing the browser is not the same as passing: the customer may have
-      // abandoned it, and the bank's callback may still be in flight. Poll rather
-      // than assume either way.
+      setFaceUrl(res.url);
+      // Poll alongside the sheet rather than after it. The result never comes back
+      // through the page — the bank posts it to our server — so the customer closing
+      // the sheet proves nothing either way, and a check that completes while they
+      // are still looking at it should land immediately.
       await pollFace(res.session);
+      setFaceUrl('');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); setFacePolling(false); }
   };
@@ -445,11 +446,7 @@ const Kyc = () => {
           <View style={{ height: 10 }} />
           <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with your bank'} icon="faceid" size="md"
             disabled={busy || facePolling || faceId.length !== 11} onPress={verifyFaceWithBank} />
-          {facePolling ? (
-            <Text style={{ fontSize: 12, color: c.ink3, marginTop: 10, textAlign: 'center', fontFamily: font.regular }}>
-              Finish the check in the page that opened, then come back here.
-            </Text>
-          ) : null}
+          <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => setFaceUrl('')} />
         </KycRow>
       ) : (
         <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>

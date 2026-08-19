@@ -75,31 +75,40 @@ class FaceLinkTests(TestCase):
             user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
             payload={}, expires_at=router._flow_deadline("idle"))
 
-    def test_the_link_is_sent_and_nothing_is_marked_verified(self):
-        with patch.object(router, "reply") as rep:
+    def test_the_link_is_sent_as_a_button_and_nothing_is_marked_verified(self):
+        with patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
             router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", "22222222222")
         self.user.refresh_from_db()
         self.assertFalse(self.user.face_verified)
-        sent = " ".join(str(c.args[1]) for c in rep.call_args_list)
-        self.assertIn("face.example", sent)
+        cta.assert_called_once()
+        self.assertIn("face.example", cta.call_args.args[2])
 
     def test_the_session_binds_the_identity_that_was_entered(self):
         from accounts.models import hash_identifier
-        with patch.object(router, "reply"):
+        with patch.object(router, "send_cta_url"), patch.object(router, "reply"):
             router._kyc_send_face_link(self.pa, self.user, MSISDN, "nin", "33333333333")
         s = WemaFaceSession.objects.get(user=self.user)
         self.assertEqual(s.identity_type, "nin")
         self.assertEqual(s.identity_hash, hash_identifier("33333333333"))
         self.assertEqual(s.status, WemaFaceSession.PENDING)
 
-    def test_the_number_never_appears_in_the_chat_message(self):
-        with patch.object(router, "reply") as rep:
+    def test_the_number_never_appears_in_the_chat_body(self):
+        # The URL carries the BVN to the bank, but it rides inside a CTA button where
+        # only the label shows. The message BODY must not repeat it — pasted into the
+        # text it would sit in the customer's history in clear, forever.
+        with patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
             router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", "22222222222")
-        # The URL carries it to the bank; the prose around it must not repeat it.
-        for call in rep.call_args_list:
-            body = str(call.args[1])
-            without_url = " ".join(w for w in body.split() if "face.example" not in w)
-            self.assertNotIn("22222222222", without_url)
+        body = str(cta.call_args.args[1])
+        self.assertNotIn("22222222222", body)
+        self.assertNotIn("http", body)
+
+    def test_the_session_state_is_never_shown_to_the_customer(self):
+        # It is the capability that completes the verification; it belongs in the
+        # callback URL and nowhere a screenshot could carry it.
+        with patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
+            router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", "22222222222")
+        state = WemaFaceSession.objects.get(user=self.user).state
+        self.assertNotIn(state, str(cta.call_args.args[1]))
 
     def test_without_a_flow_the_step_is_skipped_not_asked_in_chat(self):
         # The number is only being forwarded, so a clear-text BVN in the thread

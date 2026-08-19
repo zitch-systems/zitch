@@ -53,7 +53,8 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STAT
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
-from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
+from .providers import (flows_live, send_buttons, send_cta_url, send_flow, send_image,
+                        send_list, send_text)
 
 User = get_user_model()
 log = logging.getLogger("whatsapp")
@@ -3061,12 +3062,19 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
     )
     url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
     log.info("wa_face_link_sent user=%s kind=%s session=%s", user.pk, kind, session.state[:8])
-    reply(msisdn, "🤳 *One last step — the face check*\n\n"
-                  "Tap the link below and follow your bank's instructions. It opens their "
-                  "own secure page; your photo never passes through Zitch or this chat.\n\n"
-                  f"{url}\n\n"
-                  f"_The link expires in {FACE_SESSION_TTL_MINUTES} minutes. "
-                  "I'll message you as soon as the bank confirms._")
+    # A BUTTON, not a pasted link. The URL carries the customer's own BVN in its
+    # query string, and WhatsApp would render that as visible tappable text sitting
+    # in their history forever — while also looking exactly like the phishing
+    # messages we tell people to ignore. The CTA opens in WhatsApp's own browser
+    # with only the label showing.
+    send_cta_url(
+        msisdn,
+        "🤳 *One last step — the face check*\n\n"
+        "Your bank runs this check on their own secure page. Your photo never "
+        "passes through Zitch or this chat.\n\n"
+        f"_Expires in {FACE_SESSION_TTL_MINUTES} minutes. I'll message you as soon "
+        "as the bank confirms._",
+        url, cta="Start face check", footer="Secured by your bank")
     _touch(pa, state="idle", payload=pa.payload)
     return _kyc_next(pa, user, msisdn)
 
