@@ -21,7 +21,7 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand
 
 from utility import wema
-from utility.models import CablePlan, DataPlan
+from utility.models import CablePlan, DataPlan, WemaBiller
 
 _NET = {"1": "mtn", "2": "glo", "3": "airtel", "4": "9mobile", "MTN": "mtn",
         "GLO": "glo", "AIRTEL": "airtel", "9MOBILE": "9mobile", "ETISALAT": "9mobile"}
@@ -67,7 +67,8 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--dry-run", action="store_true", help="Report matches; write nothing.")
-        parser.add_argument("--only", choices=["data", "cable"], help="Sync only one catalogue.")
+        parser.add_argument("--only", choices=["data", "cable", "billers"],
+                            help="Sync only one catalogue.")
 
     def handle(self, *args, **opts):
         dry, only = opts["dry_run"], opts.get("only")
@@ -76,10 +77,12 @@ class Command(BaseCommand):
                 "Wema is not configured (no live keys). Set WEMA_CHANNEL_ID + the VAS "
                 "product keys, then re-run. Nothing changed."))
             return
-        if only != "cable":
+        if only in (None, "data"):
             self._sync_data(dry)
-        if only != "data":
+        if only in (None, "cable"):
             self._sync_cable(dry)
+        if only in (None, "billers"):
+            self._sync_billers(dry)
 
     def _sync_data(self, dry):
         # wema.get_data_plans() flattens ALAT's result[].dataPackages[] into
@@ -129,3 +132,78 @@ class Command(BaseCommand):
                     plan.wema_code = code
                     plan.save(update_fields=["wema_code"])
         self.stdout.write(self.style.SUCCESS(f"cable: {matched} bouquet(s) mapped{' (dry-run)' if dry else ''}"))
+
+    # Disco slug (as the app builds service_id) -> words that identify the biller in
+    # ALAT's catalogue. Matching is by name because ALAT publishes no stable code we
+    # share; each entry needs only enough words to be unambiguous among Nigerian
+    # discos. A slug that matches nothing is REPORTED, never guessed — a wrong
+    # packageId here would pay a stranger's electricity bill.
+    _DISCO_WORDS = {
+        "ikeja": ("ikeja",), "eko": ("eko",), "abuja": ("abuja",), "kano": ("kano",),
+        "port harcourt": ("portharcourt", "phed"), "jos": ("jos",),
+        "kaduna": ("kaduna",), "enugu": ("enugu", "eedc"), "ibadan": ("ibadan",),
+    }
+
+    def _sync_billers(self, dry):
+        """Map electricity and betting service_ids onto ALAT packageIds.
+
+        Unlike data and cable, these have no plan row to hang a code on, so they get
+        their own table (WemaBiller). Only rows we can identify by name are written;
+        anything ambiguous is printed for a human, because the failure mode of a bad
+        mapping is paying the wrong biller, not a missing feature.
+        """
+        from utility.views import DISCO_NAMES
+        res = wema.get_bills()
+        rows = res.get("bills", []) or [] if res.get("success") else []
+        if not rows:
+            self.stdout.write(self.style.WARNING(
+                "billers: catalogue empty — electricity/betting stay on VTU.ng"))
+            return
+        wanted = {f"{DISCO_NAMES[k].lower()}-electric": self._DISCO_WORDS.get(DISCO_NAMES[k].lower(), ())
+                  for k in DISCO_NAMES}
+        # Scope to electricity billers before matching, exactly as _sync_cable scopes
+        # to the provider. ALAT's catalogue carries state water boards, waste boards
+        # and revenue agencies alongside the discos, and several share a state name —
+        # so an unscoped search for "kano" can match "Kano State Water Board" and map
+        # a customer's electricity payment to somebody's water bill. Falls back to the
+        # full set only when no row declares a power category, so a catalogue that
+        # labels things differently still maps rather than silently mapping nothing.
+        power = [r for r in rows
+                 if any(w in _norm(f"{r.get('category', '')} {r.get('biller', '')}")
+                        for w in ("electric", "power", "disco", "energy"))]
+        pool = power or rows
+        if not power:
+            self.stdout.write(self.style.WARNING(
+                "  billers: no electricity category found — matching against the whole "
+                "catalogue, so REVIEW each mapping below before applying"))
+        mapped = unmatched = 0
+        for service_id, words in sorted(wanted.items()):
+            hits = [r for r in pool
+                    if any(w in _norm(f"{r.get('biller', '')} {_name(r)}") for w in words)]
+            if len(hits) != 1:
+                unmatched += 1
+                self.stdout.write(self.style.WARNING(
+                    f"  biller {service_id:26} {len(hits)} candidate(s) — left on VTU.ng"))
+                continue
+            code = _code(hits[0])
+            if not code:
+                unmatched += 1
+                continue
+            mapped += 1
+            self.stdout.write(f"  biller {service_id:26} -> {code}  ({hits[0].get('biller', '')})")
+            if not dry:
+                # `active` is deliberately NOT in defaults. An operator switches a row
+                # off to stop a bad mapping taking payments; a catalogue sync is not a
+                # decision to undo that, and silently re-enabling it would resume the
+                # exact routing somebody had intervened to halt.
+                WemaBiller.objects.update_or_create(
+                    service_id=service_id,
+                    defaults={"package_id": code, "biller_id": str(hits[0].get("biller", ""))[:60],
+                              "name": _name(hits[0])[:120]},
+                )
+        self.stdout.write(self.style.SUCCESS(
+            f"billers: {mapped} mapped, {unmatched} unresolved{' (dry-run)' if dry else ''}"))
+        if unmatched:
+            self.stdout.write(
+                "  Unresolved services keep working on VTU.ng. Map them by hand in the "
+                "admin (utility > Wema billers) once you can see the ALAT catalogue.")

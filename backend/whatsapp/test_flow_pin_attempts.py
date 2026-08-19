@@ -29,7 +29,7 @@ from transfers.models import Bank
 from wallet.services import credit, get_or_create_wallet
 
 from .flows import (FLOW_PIN_STATE, PIN_CHAIN, PIN_CONFIRM, PIN_CONFIRM_RETRY,
-                    PIN_RETRY, PIN_SCREEN, SUCCESS_SCREEN, _PIN_CONFIRM_ATTEMPTS,
+                    PIN_RETRY, PIN_SCREEN, RESULT_SCREEN, SUCCESS_SCREEN, _PIN_CONFIRM_ATTEMPTS,
                     _PIN_CREATE_ATTEMPTS, handle_flow_request, sign_flow_token,
                     sign_onboarding_token)
 from .models import PendingAction, WaOnboarding, WhatsAppLink
@@ -53,12 +53,16 @@ def _user(pin="1234", balance="50000"):
     return u
 
 
+#: Screens that END a session and carry no input field. Repeats of these are
+#: harmless — a resolved-away token answering one twice retains nothing and
+#: strands no one — so they are exempt from the no-repeat rule below.
+_ENDINGS = (SUCCESS_SCREEN, RESULT_SCREEN)
+
+
 def _no_id_twice_in_a_row(screens):
-    """Consecutive repeats of an INPUT-bearing screen id — the defect. SUCCESS is
-    exempt: it is terminal and carries no field, so a resolved-away token
-    answering it repeatedly retains nothing and strands no one."""
+    """Consecutive repeats of an INPUT-bearing screen id — the defect."""
     return [(a, b) for a, b in zip(screens, screens[1:])
-            if a == b and a != SUCCESS_SCREEN]
+            if a == b and a not in _ENDINGS]
 
 
 class MoneyPathPinAttemptsTests(TestCase):
@@ -88,7 +92,9 @@ class MoneyPathPinAttemptsTests(TestCase):
         token = sign_flow_token(pa)
         screens = [self._submit(token, "9999"), self._submit(token, "8888")]
 
-        self.assertEqual(screens, [PIN_RETRY, SUCCESS_SCREEN])
+        # RESULT, not SUCCESS: a cancelled payment has something the customer needs
+        # to read, so the panel holds open with a Done button rather than closing.
+        self.assertEqual(screens, [PIN_RETRY, RESULT_SCREEN])
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())  # fails closed
 
@@ -123,7 +129,8 @@ class MoneyPathPinAttemptsTests(TestCase):
 
         resp = handle_flow_request({"action": "data_exchange", "flow_token": token,
                                     "data": {"pin": "9999"}})
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        # The no-PIN ending is a FAILURE, so it holds the panel open on RESULT.
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.assertIn("set pin", resp["data"]["message"])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
         # The token no longer resolves, so there is nothing left to loop on.
@@ -339,7 +346,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_flow_token(self._action()),
                                     "data": {"pin": "1234"}})
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         return resp["data"]["message"]
 
     def test_the_flow_names_the_reset_only_once_the_lock_is_a_day(self):
@@ -379,7 +386,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_flow_token(pa),
                                     "data": {"pin": "0000"}})  # the fifth lands here
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.assertIn("about 24 hours", resp["data"]["message"])
         self.assertIn("reset pin", resp["data"]["message"])
 

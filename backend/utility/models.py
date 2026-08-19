@@ -37,3 +37,35 @@ class CablePlan(models.Model):
 
     def __str__(self):
         return f"{self.get_provider_display()} {self.name}"
+
+
+class WemaBiller(models.Model):
+    """A Wema/ALAT bills-catalogue code for a service that has no plan catalogue.
+
+    Data and cable carry their Wema code on the plan row itself (DataPlan.wema_code /
+    CablePlan.wema_code) because the customer picks a bundle. Electricity and betting
+    have no bundle to pick — the customer types a meter number or a betting ID and an
+    amount — so their Wema `packageId` has nowhere to live. Without it those two
+    services could not route to Wema at all, which is why they stayed on VTU.ng.
+
+    Keyed by the same `service_id` the app and the WhatsApp router already send
+    ("ikeja-electric", "bet9ja-betting"), so routing is a lookup rather than another
+    naming scheme to keep in sync.
+
+    A missing row is not an error: it keeps that one service on VTU.ng, exactly as
+    before. That matters because the codes are synced from a live catalogue
+    (`manage.py seed_wema_plans --only billers`) and a partial sync must degrade
+    service-by-service rather than break the ones it did map.
+    """
+    service_id = models.CharField(max_length=60, unique=True)
+    # ALAT's integer packageId — what ValidateCustomer and PayBill actually take.
+    package_id = models.CharField(max_length=60)
+    # The biller this package belongs to, kept for operator review of a synced
+    # catalogue; not sent in any request.
+    biller_id = models.CharField(max_length=60, blank=True, default="")
+    name = models.CharField(max_length=120, blank=True, default="")
+    active = models.BooleanField(default=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.service_id} -> {self.package_id}"

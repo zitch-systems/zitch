@@ -291,8 +291,13 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # (airtime/data/bills) and a NUBAN-keyed virtual card. Azure APIM: a per-PRODUCT
 # subscription key (Ocp-Apim-Subscription-Key) + a channel id (x-api-key / access).
 # Sandbox host https://apiplayground.alat.ng (LIVE differs — set WEMA_BASE_URL).
-# There is NO inbound-credit webhook: deposits AND payout settlement are handled by
-# the reconcile_wema poller. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
+# We do NOT credit from a webhook. Wallet Services does publish a Transaction
+# Notification API (the bank POSTs debit/credit events to a URL profiled against our
+# channelId), and wallet.wema_callbacks does receive it — but ALAT signs nothing, so
+# a handler that credited on that payload would be a money-printing primitive for
+# anyone who learns the URL. Deposits AND payout settlement are therefore decided by
+# the reconcile_wema poller, which re-reads balances over the authenticated APIM
+# channel; the notification is only ever a trigger. Blank keys => MOCK; WEMA_SIMULATION=true serves the mock
 # flow even in prod (no real money or debt). securityInfo is a per-reference
 # HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
 WEMA = {
@@ -303,6 +308,13 @@ WEMA = {
         # management, notifications and bills. Every product sold separately in
         # the portal requires its own key; never borrow this key across products.
         "wallet": os.environ.get("WEMA_WALLET_KEY", ""),
+        # The BVN onboarding path calls /account-creation, which the portal sells as
+        # its own product ("Account Creation - Address Verification") separately from
+        # Wallet Services. It falls back to the wallet key, which is right when one
+        # subscription covers both and an APIM 401 on every signup when it does not —
+        # so make it settable without a code change. Leave blank unless Wema issued a
+        # distinct key for Account Creation.
+        "wallet_bvn": os.environ.get("WEMA_ACCOUNT_CREATION_KEY", ""),
         "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional override; Wallet Services covers bills
@@ -359,6 +371,27 @@ WEMA = {
     # can never turn an unknown code into a settlement. See utility.wema._vas_legend.
     "VAS_STATUS_LEGEND": os.environ.get("WEMA_VAS_STATUS_LEGEND", ""),
     "BILLS_STATUS_LEGEND": os.environ.get("WEMA_BILLS_STATUS_LEGEND", ""),
+    # Remita is its own ALAT product with its own status enum, so it gets its own
+    # legend rather than borrowing the airtime one.
+    "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),
+    # ALAT's face-biometric web app (Account Creation product). Liveness is a hosted
+    # WEB flow, not an API call: the customer is sent here with their BVN/NIN and the
+    # bank returns a correlationId proving the check passed.
+    #
+    # NO DEFAULT. It used to default to ALAT's DEV verifier, which fails OPEN: a dev
+    # check answers happily and proves nothing about a real person, and the only
+    # thing standing between that and a lifted tier was a preflight command somebody
+    # had to remember to run. Unset now means the face rail reports itself
+    # unavailable — the app falls back to the document rail, the chat hides the step
+    # — which is the correct behaviour for a control we cannot perform.
+    "FACE_VERIFY_URL": os.environ.get("WEMA_FACE_VERIFY_URL", ""),
+    # Source IPs the face verifier calls us back from. SEPARATE from CALLBACK_IPS:
+    # that list is ALAT's transaction gateway, and the face app is a different Azure
+    # host. The face callback carries no shared token (its URL is shown to the
+    # customer), so this allowlist IS its authentication — without it, anyone who
+    # reads the URL out of their own browser could assert their own face check.
+    "FACE_CALLBACK_IPS": [ip.strip() for ip in
+                          os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
 }
 # Fraud: a spend at or above this from a device the account has NEVER authenticated
 # from requires face verification first (see common.risk.new_device_step_up_error).
@@ -556,9 +589,17 @@ WHATSAPP_FLOW = {
     # JSON and the endpoint are a contract, and the publish is a manual step
     # that does not run from a deploy — so this code can reach production before
     # the screen does, and answering a screen Meta has never heard of is the
-    # "Couldn't load content" failure. Defaults OFF: the endings behave exactly
-    # as before until someone confirms `publish_flow` lists RESULT as live.
-    "RESULT_SCREEN": os.environ.get("WHATSAPP_FLOW_RESULT_SCREEN", "").strip().lower()
+    # "Couldn't load content" failure.
+    #
+    # Defaults ON now. It defaulted OFF while the fallback was believed harmless,
+    # and it is not: falling back meant answering {"screen": "SUCCESS", "data":
+    # {status, message}}, and "SUCCESS" is Meta's RESERVED completion value, so
+    # that response can never render — it IS the "Couldn't load content" failure,
+    # not the safe behaviour it was guarding. RESULT is published (verify with
+    # `publish_flow`, or whatsapp_flow_published on /healthz), so the off position
+    # now trades a working screen for a guaranteed error. Set
+    # WHATSAPP_FLOW_RESULT_SCREEN=false only to reproduce the old ending.
+    "RESULT_SCREEN": os.environ.get("WHATSAPP_FLOW_RESULT_SCREEN", "true").strip().lower()
                      in ("1", "true", "yes", "on"),
     # Same gate, same reason, for the signup page that sets the app password.
     # OFF means signup goes straight from the phone step to the PIN, exactly as

@@ -53,7 +53,8 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STAT
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
-from .providers import flows_live, send_buttons, send_flow, send_image, send_list, send_text
+from .providers import (flows_live, send_buttons, send_cta_url, send_flow, send_image,
+                        send_list, send_text)
 
 User = get_user_model()
 log = logging.getLogger("whatsapp")
@@ -170,7 +171,8 @@ MENU_BODY = (
     "7️⃣  🧾 My account details\n"
     "8️⃣  ✅ Verify my identity\n"
     "9️⃣  🧾 Transaction history\n"
-    "🔟  🎓 Exam PIN\n\n"
+    "🔟  🎓 Exam PIN\n"
+    "1️⃣1️⃣  📷 Scan a QR code\n\n"
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -1310,6 +1312,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
+    if low in ("11", "scan", "scan qr", "qr", "qr code", "scan code", "scan a qr code"):
+        return _start_qr_scan(user, msisdn)
     if low in ("9", "history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
     if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
@@ -2479,7 +2483,25 @@ def _do_support(msisdn: str) -> None:
 # the chat. Each step drives the same server-side checks the app uses, and the
 # tier is DERIVED at the end (recompute_tier), never granted by this flow.
 # --------------------------------------------------------------------------- #
-_KYC_STEPS = ("phone", "email", "bvn", "nin")
+_KYC_STEPS = ("phone", "email", "bvn", "nin", "face")
+
+
+#: PendingAction.state while the face step is waiting for an identity number that
+#: arrived in the CHAT rather than the Flow. It needs its own state because the
+#: answer is forwarded to the bank, not verified here — routing it through the
+#: ordinary "bvn"/"nin" states would re-run verification on an identity the
+#: customer has already proven, and never send the face link.
+FACE_ID_STATE = "face_id"
+
+
+def _face_step_available() -> bool:
+    """Whether the chat can offer the bank's face check.
+
+    Gated on the rail rather than always shown: with no Account Creation key the
+    step would list an item the customer can never complete, and a ladder with a
+    permanently unchecked rung reads as a broken account, not an optional extra.
+    """
+    return wema_provider.face_verify_live()
 
 
 def _kyc_test_code(user) -> str:
@@ -2511,8 +2533,15 @@ def _kyc_outstanding(user) -> list:
         "email": user.email_verified,
         "bvn": user.bvn_verified,
         "nin": user.nin_verified,
+        "face": user.face_verified,
     }
-    return [step for step in _KYC_STEPS if not done[step]]
+    steps = _KYC_STEPS if _face_step_available() else _KYC_STEPS[:-1]
+    # The face check runs against a BVN/NIN the customer has already proven, so it
+    # is never offered before one of them is verified — otherwise the chat would
+    # send them to the bank with a number we have no reason to trust.
+    if not (user.bvn_verified or user.nin_verified):
+        steps = tuple(s for s in steps if s != "face")
+    return [step for step in steps if not done[step]]
 
 
 def _kyc_status_lines(user) -> str:
@@ -2522,7 +2551,7 @@ def _kyc_status_lines(user) -> str:
         f"{mark(user.email_verified)} Email address",
         f"{mark(user.bvn_verified)} BVN",
         f"{mark(user.nin_verified)} NIN",
-    ])
+    ] + ([f"{mark(user.face_verified)} Face check"] if _face_step_available() else []))
 
 
 def _start_kyc(user, msisdn: str) -> None:
@@ -2536,7 +2565,7 @@ def _start_kyc(user, msisdn: str) -> None:
         payload={}, expires_at=_flow_deadline("idle"),
     )
     reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user)
-          + "\n\nAll four are needed to raise your limits. Let's do the rest now — "
+          + "\n\nThese raise your limits. Let's do the rest now — "
             'reply "cancel" to stop anytime.')
     return _kyc_next(pa, user, msisdn)
 
@@ -2557,6 +2586,8 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_phone_code(pa, user, msisdn)
     if step == "email":
         return _kyc_send_email_code(pa, user, msisdn)
+    if step == "face":
+        return _kyc_start_face_step(pa, user, msisdn)
     if _send_identity_flow(pa, step):
         return None
     if flows_live():
@@ -2856,6 +2887,24 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
                                  'or reply "cancel".')
         return _kyc_submit_identity(pa, user, msisdn, state, digits)
 
+    if state == FACE_ID_STATE:
+        # The face step asks for the identity in the Flow, but a customer can always
+        # type it into the thread instead — and this state had no branch, so they
+        # were told "Got it" and then dumped at the main menu with their BVN sitting
+        # in the chat and no face check ever started.
+        #
+        # The number is already in their history by the time we get here, so refusing
+        # it now would cost them the step and save nothing. Take it, name the one
+        # thing that still removes it, and carry on.
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) != 11:
+            kind = str(pa.payload.get("id_kind", "bvn")).upper()
+            return reply(msisdn, f"That should be exactly 11 digits. Enter your {kind} again, "
+                                 'or reply "cancel".')
+        reply(msisdn, "🔐 Got it." + _DELETE_TIP)
+        return _kyc_send_face_link(pa, user, msisdn,
+                                   str(pa.payload.get("id_kind", "bvn")).lower(), digits)
+
     _clear_actions(msisdn)
     return send_menu(msisdn)
 
@@ -2994,6 +3043,87 @@ def _record_identity_review(kind: str, reason: str) -> None:
                                     kind, str(reason)[:150]))[:255])
     except Exception:  # noqa: BLE001 — diagnostics never break the ladder
         log.debug("could not record identity review reason", exc_info=True)
+
+
+def _kyc_start_face_step(pa: PendingAction, user, msisdn: str) -> None:
+    """Collect the identity for the bank's face check — in the Flow, never the chat.
+
+    The bank verifies a live face against a BVN or NIN, so the number has to reach
+    the URL we build. We hold only a keyed hash of the one the customer already
+    verified, so it must be entered again — and it goes through the same encrypted
+    screen every other identity uses. Typing an eleven-digit BVN into the thread
+    would leave it in the customer's own history forever, which is exactly what the
+    Flow exists to prevent.
+    """
+    kind = "bvn" if user.bvn_verified else "nin"
+    pa.payload["id_purpose"] = "face"
+    if _send_identity_flow(pa, kind, fallback_state=FACE_ID_STATE):
+        return None
+    # No Flow on this deploy (dev/preview). Unlike the identity ladder there is no
+    # chat fallback worth having: the number is not being verified here, only
+    # forwarded to the bank, so a clear-text BVN in the thread would buy nothing.
+    pa.payload.pop("id_purpose", None)
+    pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
+    _touch(pa, state="idle", payload=pa.payload)
+    reply(msisdn, "📱 The face check opens a secure page from the bank. Finish it in the "
+                  "Zitch app under *Verify identity* — your other steps are saved.")
+    return _kyc_next(pa, user, msisdn)
+
+
+def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits: str) -> None:
+    """Mint a one-time face session and send the customer the bank's link.
+
+    The result never comes back through this chat: the bank posts it to our own
+    callback, which is the only version a customer cannot fake by opening the page
+    and claiming success. So nothing here marks anything verified — it hands over a
+    link and moves on, and the tier lifts if and when the bank says so.
+    """
+    from accounts.models import hash_identifier
+    from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
+                                _identity_owned_by_another_user, face_identity_error)
+    from wallet.models import WemaFaceSession
+
+    # The SAME binding the app enforces. This rail had neither check, so a number
+    # the API answered with a 409 was accepted here — and a session could be opened
+    # against an identity this account has never proven, which is the substitution
+    # the face step exists to catch.
+    if _identity_owned_by_another_user(user, kind, digits):
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ That number is already linked to another Zitch account. "
+                             "Please contact support if this is unexpected.")
+    refusal = face_identity_error(user, kind, digits)
+    if refusal:
+        _clear_actions(msisdn)
+        return reply(msisdn, f"⚠️ {refusal}")
+
+    pa.payload.pop("id_purpose", None)
+    pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
+    session = WemaFaceSession.objects.create(
+        user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
+        identity_hash=hash_identifier(digits),
+        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+    )
+    url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
+    log.info("wa_face_link_sent user=%s kind=%s session=%s", user.pk, kind, session.state[:8])
+    # A BUTTON, not a pasted link. The URL carries the customer's own BVN in its
+    # query string, and WhatsApp would render that as visible tappable text sitting
+    # in their history forever — while also looking exactly like the phishing
+    # messages we tell people to ignore. The CTA opens in WhatsApp's own browser
+    # with only the label showing.
+    send_cta_url(
+        msisdn,
+        "🤳 *One last step — the face check*\n\n"
+        "Your bank runs this check on their own secure page. Your photo never "
+        "passes through Zitch or this chat.\n\n"
+        f"_Expires in {FACE_SESSION_TTL_MINUTES} minutes. I'll message you as soon "
+        "as the bank confirms._",
+        url, cta="Start face check", footer="Secured by your bank",
+        # NEVER paste this one as text. The URL carries the customer's raw BVN in a
+        # query string; send_cta_url's ordinary fallback would put it in the thread
+        # in clear, permanently, which is the exact thing the button exists to stop.
+        allow_text_fallback=False)
+    _touch(pa, state="idle", payload=pa.payload)
+    return _kyc_next(pa, user, msisdn)
 
 
 def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
@@ -3326,6 +3456,155 @@ def _blocked_from_spending(user, msisdn: str) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# QR scan — read any bank's payment QR from a photo.
+#
+# WhatsApp gives no way to open the camera from a message: there is no API for it,
+# and a Flow has no camera component at this Flow-JSON version. What WhatsApp DOES
+# have is a camera one tap from the compose box, so the honest design is to ask for
+# the photo rather than pretend to launch anything. Saying "tap 📎 → Camera" is a
+# real instruction; a button that silently does nothing would not be.
+# --------------------------------------------------------------------------- #
+#: How long a scanner link stays usable. Mirrors scan_views.SCAN_TTL_MINUTES; named
+#: here so the chat copy and the server agree without importing at module load.
+_SCAN_TTL = 15
+QR_WAIT_STATE = "qr_photo"      # scanner link sent, waiting for a result
+QR_AMOUNT_STATE = "qr_amount"   # code read, needs an amount before it can be paid
+
+
+def _start_qr_scan(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
+    _clear_actions(msisdn)
+    PendingAction.objects.create(
+        user=user, msisdn=msisdn, action_type="qr", state=QR_WAIT_STATE,
+        payload={}, expires_at=_flow_deadline("idle"),
+    )
+    # A BUTTON that opens the camera, not an instruction to photograph something and
+    # send it. WhatsApp cannot launch a camera from a message, but it opens URLs —
+    # and a web page can open a camera. So the scanner is a page we host, and the
+    # customer's next tap is the camera rather than four taps through the attachment
+    # menu and a message they have to remember to send.
+    from .scan_views import new_scan_session, scan_url
+
+    session = new_scan_session(user, msisdn)
+    sent = send_cta_url(
+        msisdn,
+        "📷 *Scan a payment code*\n\n"
+        "Tap below to open your camera and point it at any bank's QR code. "
+        "I'll read the account and amount off it.\n\n"
+        f"_The link works for {_SCAN_TTL} minutes._",
+        scan_url(session), cta="Open camera", footer="Zitch secure scanner")
+    if sent.get("success"):
+        return None
+    # The interactive type was refused. The scanner link carries no secret and no
+    # identity — only a single-use session id — so unlike the face link it is safe
+    # to send as text, and a tappable link beats no scanner at all.
+    return reply(msisdn, "📷 *Scan a payment code*\n\nOpen this to use your camera:\n"
+                         f"{scan_url(session)}")
+
+
+def _qr_summary(intent: dict) -> str:
+    """What we read off the code, as lines the customer can check against the poster
+    in front of them. Every field is shown as found — a scanner that silently
+    normalises what it read gives the customer nothing to compare."""
+    rows = []
+    if intent.get("merchant_name"):
+        rows.append(("Merchant", intent["merchant_name"]))
+    if intent.get("merchant_city"):
+        rows.append(("Location", intent["merchant_city"]))
+    if intent.get("account"):
+        rows.append(("Account", intent["account"]))
+    if intent.get("amount") is not None:
+        rows.append(("Amount", f"₦{intent['amount']:,.2f}"))
+    if intent.get("reference"):
+        rows.append(("Reference", intent["reference"]))
+    return "\n".join(f"{k}: {v}" for k, v in rows)
+
+
+def handle_scanned_qr(msisdn: str, intent: dict) -> None:
+    """A decoded payment QR -> the next step in the chat.
+
+    Reached only from the media path, which is why it takes the parsed intent
+    rather than an image: decoding is the media layer's job and paying is this
+    one's, and keeping the seam there means a malformed code can never reach the
+    money paths at all.
+    """
+    link = active_link_for(msisdn)
+    user = getattr(link, "user", None)
+    if user is None:
+        return reply(msisdn, "Link your Zitch account first to scan payment codes.")
+    pa = PendingAction.objects.filter(msisdn=msisdn, action_type="qr").first()
+
+    kind = intent.get("kind")
+    if intent.get("corrupt"):
+        # The checksum failed, so every field including the account number is
+        # suspect. Never show a number we cannot vouch for — the customer would
+        # read it back off the screen and believe it.
+        return reply(msisdn, "⚠️ That code didn't scan cleanly — the photo may be blurred "
+                             "or cut off. Take another photo of the whole code and send it again.")
+    if kind == "other":
+        return reply(msisdn, "🤔 That QR isn't a payment code — it doesn't contain an "
+                             "account or a merchant. If you're paying someone, ask them for "
+                             "their account number instead.")
+
+    summary = _qr_summary(intent)
+    if not intent.get("payable"):
+        # A merchant QR that settles through the scheme rather than to a NUBAN.
+        # It parsed perfectly; we simply cannot pay it, and saying which is which
+        # is the difference between a limitation and a bug.
+        _clear_actions(msisdn)
+        return reply(msisdn, "📷 *Code read*\n" + (f"\n{summary}\n" if summary else "")
+                             + "\nThis is a merchant code that settles through the QR scheme, "
+                               "which Zitch doesn't support yet — so I can't pay it from here. "
+                               "Ask for their account number and I'll send it as a transfer.")
+
+    account = intent["account"]
+    amount = intent.get("amount")
+    if amount is None:
+        if pa is None:
+            pa = PendingAction.objects.create(
+                user=user, msisdn=msisdn, action_type="qr", state=QR_AMOUNT_STATE,
+                payload={}, expires_at=_flow_deadline("idle"))
+        pa.payload["account"] = account
+        _touch(pa, state=QR_AMOUNT_STATE, payload=pa.payload)
+        return reply(msisdn, "📷 *Code read*\n" + (f"\n{summary}\n" if summary else "")
+                             + "\nHow much would you like to send?")
+
+    _clear_actions(msisdn)
+    reply(msisdn, "📷 *Code read*\n" + (f"\n{summary}\n" if summary else ""))
+    # Straight into the ordinary transfer: same name enquiry, same confirm card,
+    # same PIN. A scanned code is a faster way to type an account number, never a
+    # way to skip a step.
+    if not _begin_bank_transfer(user, msisdn, amount, account, ""):
+        reply(msisdn, "I couldn't work out which bank that account belongs to. "
+                      "Reply *2* to send money and pick the bank yourself.")
+    return None
+
+
+def _advance_qr(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """The amount for a scanned code that carried none (a static merchant poster)."""
+    if pa.state == QR_WAIT_STATE:
+        if _is_new_command(text):
+            _clear_actions(msisdn)
+            return handle_inbound(msisdn, text)
+        # A photo sent into the chat still works — the media path decodes it the same
+        # way — so this only answers someone who TYPED while the scanner is open.
+        return reply(msisdn, "📷 Tap *Open camera* above to scan the code — "
+                             'or send a photo of it. Reply "cancel" to stop.')
+    amount = parse_amount(text)
+    if amount is None or amount <= 0:
+        return reply(msisdn, "Enter the amount to send, like *2500*.")
+    account = str(pa.payload.get("account") or "")
+    _clear_actions(msisdn)
+    if not account:
+        return reply(msisdn, "That code expired. Reply *11* to scan again.")
+    if not _begin_bank_transfer(user, msisdn, amount, account, ""):
+        reply(msisdn, "I couldn't work out which bank that account belongs to. "
+                      "Reply *2* to send money and pick the bank yourself.")
+    return None
+
+
 def _start_transfer(user, msisdn: str) -> None:
     if _blocked_from_spending(user, msisdn):
         return None
@@ -3590,6 +3869,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "pick_service": _advance_pick_service,
         "add_account": _advance_add_account,
         "kyc": _advance_kyc,
+        "qr": _advance_qr,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)

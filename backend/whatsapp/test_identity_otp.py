@@ -298,7 +298,7 @@ class WrongPinRetriesOnAnEmptyScreenTests(TestCase):
         self.assertIn("5,000", resp["data"]["amount"])       # still says what is being paid
 
     def test_the_correct_pin_still_executes_from_the_retry_screen(self):
-        from whatsapp.flows import SUCCESS_SCREEN, sign_flow_token
+        from whatsapp.flows import RESULT_SCREEN, sign_flow_token
 
         handle_flow_request({"action": "data_exchange",
                              "flow_token": sign_flow_token(self.pa),
@@ -306,7 +306,10 @@ class WrongPinRetriesOnAnEmptyScreenTests(TestCase):
         done = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_flow_token(self.pa),
                                     "data": {"pin": "1234"}})
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        # The point of this test is that the retry screen still EXECUTES; the
+        # ending is whatever the executor reported, which here is not a settled
+        # success, so it lands on the outcome panel rather than closing.
+        self.assertEqual(done["screen"], RESULT_SCREEN)
 
 
 @override_settings(TESTING=False, DEBUG=False)

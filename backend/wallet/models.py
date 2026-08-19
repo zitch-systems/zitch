@@ -261,3 +261,62 @@ class FxQuote(models.Model):
 
     def __str__(self):
         return f"{self.sell_amount} {self.from_currency}->{self.to_currency} @ {self.rate}"
+
+
+class WemaFaceSession(models.Model):
+    """One run of Wema's face-biometric web app.
+
+    ALAT's Account Creation product does liveness in a WEB app, not an API: we send
+    the customer to it with their BVN/NIN, they present their face, and the bank
+    hands back a `correlationId` proving the check passed. That id — not any image
+    and not a client claim — is what marks the customer face-verified here.
+
+    The row exists to bind the three parties together. Without it the bank's callback
+    carries only an identity number, so anyone able to reach the callback URL could
+    name someone else's BVN and lift THEIR tier. Instead the app is sent to a
+    single-use `state` we minted for one user, and the callback is only honoured when
+    the identity it returns hashes to the one that session was opened with.
+
+    Nothing sensitive is retained: the raw BVN/NIN is used to build the URL and then
+    dropped, exactly as in WemaProvisioningAttempt, and only its keyed hash is kept.
+    """
+
+    BVN = "bvn"
+    NIN = "nin"
+    IDENTITY_TYPES = [(BVN, "BVN"), (NIN, "NIN")]
+
+    PENDING = "pending"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    STATUSES = [(PENDING, PENDING), (VERIFIED, VERIFIED), (FAILED, FAILED)]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        related_name="wema_face_sessions",
+    )
+    # The unguessable handle that appears in the callback/redirect URL. Unique and
+    # single-use: a completed session can never be replayed to re-verify.
+    state = models.CharField(max_length=64, unique=True)
+    identity_type = models.CharField(max_length=3, choices=IDENTITY_TYPES)
+    identity_hash = models.CharField(max_length=64)
+    # Wema's proof that the face check passed. Kept for audit and dispute handling —
+    # it is an opaque reference, not biometric data.
+    correlation_id = models.CharField(max_length=160, blank=True, default="")
+    status = models.CharField(max_length=10, choices=STATUSES, default=PENDING)
+    expires_at = models.DateTimeField()
+    created = models.DateTimeField(auto_now_add=True)
+    updated = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "status", "expires_at"],
+                         name="wema_face_lookup_idx"),
+        ]
+
+    @property
+    def expired(self) -> bool:
+        from django.utils import timezone
+        return timezone.now() >= self.expires_at
+
+    def __str__(self):
+        return f"face:{self.user_id}:{self.status}"

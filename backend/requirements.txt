@@ -11,3 +11,5 @@ anthropic>=0.40,<1.0   # WhatsApp LLM intent layer (lazy-imported; only used whe
 sentry-sdk[django]>=2.0,<3   # error reporting (lazy-init; only active when SENTRY_DSN is set)
 redis>=5.0,<7   # shared cache backend (only used when REDIS_URL is set)
 Pillow>=12.2,<13   # WhatsApp receipt image rendering. Floor: PYSEC-2026-165 + CVE-2026-259xx batch.
+zxing-cpp>=2.2,<4   # payment-QR decoding (manylinux wheels; no system libzbar needed)
+qrcode>=8.0,<9   # QR rendering, and building fixture codes in the QR tests

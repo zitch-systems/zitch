@@ -114,7 +114,7 @@ def _token_ok(supplied: str) -> bool:
     return any(hmac.compare_digest(supplied, known) for known in (current, previous) if known)
 
 
-def _ip_ok(request) -> tuple:
+def _ip_ok(request, kind: str = "") -> tuple:
     """(allowed, ip). Uses the shared client_ip helper, which selects the entry at the
     configured trusted-proxy hop from the RIGHT of X-Forwarded-For — reading the
     left-most value would let any client forge the allowlist by prepending a header.
@@ -123,14 +123,23 @@ def _ip_ok(request) -> tuple:
     ip = client_ip(request)
     if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
         return True, ip
+    if kind == "face":
+        # The face callback has no shared token — its URL is handed to the customer
+        # — so this allowlist is the whole of its authentication. It is therefore
+        # enforced unconditionally, including under WEMA_SIMULATION: a simulated
+        # deploy that accepted a forged face result would still be lifting real KYC
+        # tiers on real accounts. An empty list allows nothing, and face_verify_live()
+        # refuses to offer the rail at all in that state.
+        return (ip in set(_conf("FACE_CALLBACK_IPS") or ())), ip
     if wema_provider.wema_simulation() or not _conf("CALLBACK_ENFORCE_IPS", False):
         return True, ip
     allowed = set(_conf("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS)
     return (ip in allowed), ip
 
 
-def wema_callback(kind: str):
-    """csrf-exempt, POST-only, token + IP authenticated, JSON-parsed.
+def wema_callback(kind: str, token_required: bool = True):
+    """csrf-exempt, POST-only, IP authenticated, JSON-parsed — and token
+    authenticated unless `token_required` is False.
 
     Order is load-bearing: transport auth runs before the body is parsed or anything
     from it is logged, so an unauthenticated flood can't write attacker-controlled
@@ -152,12 +161,12 @@ def wema_callback(kind: str):
                 record_webhook(source, outcome=WebhookEvent.REJECTED_METHOD,
                                http_status=405, remote_ip=client_ip(request))
                 return JsonResponse({"message": "Method not allowed"}, status=405)
-            if not _token_ok(token):
+            if token_required and not _token_ok(token):
                 log.warning("wema_cb_bad_token kind=%s ip=%s", kind, client_ip(request))
                 record_webhook(source, outcome=WebhookEvent.REJECTED_TOKEN,
                                http_status=403, remote_ip=client_ip(request))
                 return JsonResponse({"message": "Forbidden"}, status=403)
-            allowed, ip = _ip_ok(request)
+            allowed, ip = _ip_ok(request, kind)
             if not allowed:
                 log.warning("wema_cb_bad_ip kind=%s ip=%s", kind, ip)
                 alert("Wema callback from unexpected source IP", level="warning",
@@ -538,3 +547,115 @@ def wema_notification_callback(request):
     body = request.wema_body
     log.info("wema_notify_cb keys=%s ip=%s", sorted(body), request.wema_ip)
     return JsonResponse({"status": True}, status=200)
+
+
+# No shared token on this one. Its URL is given to the CUSTOMER — it is the cb_uri
+# inside the bank page's address — so a token here would be published rather than
+# kept. The per-session state carries the entropy instead, and the source-IP
+# allowlist carries the authentication.
+@wema_callback("face", token_required=False)
+def wema_face_callback(request, state=""):
+    """The bank reports the outcome of a face-biometric check.
+
+    Payload: {success, c_id, id, id_type} — `c_id` is the correlationId proving the
+    check passed, `id` the BVN/NIN it was run against.
+
+    THE PAYLOAD DOES NOT SAY WHO THIS IS. It names an identity number, and an
+    identity number is not a secret: it appears on forms, in bank branches, and in
+    every breach dump. Honouring it on its own would let anyone who reaches this URL
+    lift the tier of whichever customer holds that BVN. So the decision rests on the
+    session we minted instead:
+
+      * `state` must match a PENDING session we opened for one specific user;
+      * the returned identity must hash to the one that session was opened with;
+      * the session must not have expired, and is consumed either way.
+
+    Only then is `face_verified` set. Always answers 200 — a non-2xx invites a retry
+    of something we have already recorded.
+    """
+    from accounts.models import hash_identifier
+
+    from .models import WemaFaceSession
+
+    body = request.wema_body
+    correlation = str(body.get("c_id") or "")[:160]
+    identity = str(body.get("id") or "")
+    claimed = bool(body.get("success"))
+    # ALAT names the identity number "id", and the decorator records this body into
+    # WebhookEvent — the one table we keep deliberately immutable — after we return.
+    # Replace it in place with a non-reversible marker so a raw BVN is never written
+    # there. Scrubbed here rather than by the global redaction list because "id" is
+    # also every WhatsApp message's correlation handle, where redacting it would
+    # blind the forensic trail instead of protecting anything.
+    if identity:
+        body["id"] = _fingerprint(identity)
+    # Log key names and outcomes only — never the identity number itself.
+    log.info("wema_face_cb state=%s success=%s has_cid=%s ip=%s",
+             (state or "")[:8], claimed, bool(correlation), request.wema_ip)
+
+    with db_transaction.atomic():
+        session = (WemaFaceSession.objects
+                   .select_for_update()
+                   .filter(state=state, status=WemaFaceSession.PENDING)
+                   .select_related("user").first())
+        if session is None:
+            request.wema_action = "denied:unknown_session"
+            return JsonResponse({"status": True}, status=200)
+        if session.expired:
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:expired"
+            return JsonResponse({"status": True}, status=200)
+        if not claimed or not correlation:
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:not_verified"
+            return JsonResponse({"status": True}, status=200)
+        if not hmac.compare_digest(hash_identifier(identity), session.identity_hash):
+            # The bank verified a face against a DIFFERENT identity than the one this
+            # session was opened with. Never lift a tier on that.
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            log.warning("wema_face_identity_mismatch state=%s user=%s",
+                        (state or "")[:8], session.user_id)
+            alert("Wema face callback identity mismatch", level="warning",
+                  session=(state or "")[:8])
+            request.wema_action = "denied:identity_mismatch"
+            return JsonResponse({"status": True}, status=200)
+
+        session.status = WemaFaceSession.VERIFIED
+        session.correlation_id = correlation
+        session.save(update_fields=["status", "correlation_id", "updated"])
+        user = session.user
+        if not user.face_verified:
+            user.face_verified = True
+            user.recompute_tier()
+            user.save(update_fields=["face_verified", "tier"])
+    request.wema_action = "verified"
+    _tell_whatsapp_face_passed(user)
+    return JsonResponse({"status": True}, status=200)
+
+
+def _tell_whatsapp_face_passed(user) -> None:
+    """Close the loop for a customer who started this in chat.
+
+    The result arrives on OUR server, so a chat customer is left staring at a link
+    with no idea whether it worked. Sent AFTER the transaction commits and never
+    allowed to fail the callback: the tier is already lifted, and a messaging hiccup
+    must not turn a completed verification into a 500 the bank will retry.
+    """
+    from whatsapp.models import WhatsAppLink
+
+    try:
+        msisdn = (WhatsAppLink.objects
+                  .filter(user=user, status=WhatsAppLink.ACTIVE)
+                  .exclude(wa_msisdn="")
+                  .values_list("wa_msisdn", flat=True).first())
+        if not msisdn:
+            return
+        from whatsapp.router import reply
+        reply(msisdn, "✅ *Face check confirmed.*\n\n"
+                      f"You're now Tier {user.tier} — up to "
+                      f"₦{user.transaction_limit:,.0f} per transaction.")
+    except Exception:  # noqa: BLE001
+        log.warning("wa_face_notify_failed user=%s", user.id, exc_info=True)

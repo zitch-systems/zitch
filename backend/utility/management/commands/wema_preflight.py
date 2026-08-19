@@ -66,7 +66,10 @@ class Command(BaseCommand):
                 True, "ALAT Airtime/Data subscription",
                 PASS if product_keys.get("airtime") else FAIL,
                 "dedicated key set" if product_keys.get("airtime")
-                else "VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY; Wallet Services does not cover it"))
+                else ("VAS_PROVIDER=wema requires WEMA_AIRTIME_KEY. If your Wallet Services "
+                      "subscription includes the Airtime and Data API, set it to the wallet "
+                      "key; the fallback is deliberately not automatic, because a tenant "
+                      "where it is a separate product would fail at purchase time instead")))
         if card_provider() == "wema":
             card_ready = bool(product_keys.get("card") and settings.WEMA.get("CARD_PRODUCT_KEY"))
             checks.append((
@@ -176,19 +179,109 @@ class Command(BaseCommand):
                        PASS if sms_live() else WARN,
                        "keyed" if sms_live()
                        else "TERMII_API_KEY unset — no SMS/OTP-by-SMS"))
-        checks.append((False, "Card issuer",
-                       PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
-                       "keyed" if settings.CARD_ISSUER["API_KEY"]
-                       else "no issuer key — virtual cards disabled"))
+        # Only ask about the generic issuer when it is the rail actually in use.
+        # On a Wema-card deploy the ALAT subscription gate above already decided
+        # this, and warning "virtual cards disabled" next to that PASS told the
+        # operator running the go-live check that a working feature was off.
+        if card_provider() != "wema":
+            checks.append((False, "Card issuer",
+                           PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
+                           "keyed" if settings.CARD_ISSUER["API_KEY"]
+                           else "no issuer key — virtual cards disabled"))
+
+        # SOFT — Prembly. Wema verifies BVN/NIN through account creation, but it has
+        # no image checks, so selfie/liveness, address and ID-document all stay on
+        # Prembly. Unkeyed in production those fail CLOSED (providers.
+        # _kyc_mock_or_unavailable), which is safe but not harmless: Tier 2 and Tier 3
+        # become unreachable and the selfie step-up on transfers at or above the face
+        # threshold refuses every one of them. Nothing here checked that, so a deploy
+        # could pass preflight and still be unable to lift a single customer's tier.
+        # Hard gate: the face-biometric web app must not still be ALAT's DEV verifier.
+        # It answers happily and returns a correlationId, so nothing downstream can
+        # tell it apart from the real one — the check simply proves nothing about the
+        # person, while lifting a tier and clearing the large-transfer step-up.
+        from utility.wema import address_verify_live, face_verify_live, face_verify_on_dev_host
+        # HARD: the face callback carries no shared token — its URL is shown to the
+        # customer — so the source-IP allowlist is the whole of its authentication.
+        # Without it, anyone who reads that URL out of their own browser can assert
+        # their own face check, lifting a tier and clearing the large-transfer gate.
+        # Scoped to deploys that actually intend to run the rail. A deployment with
+        # no WEMA_FACE_VERIFY_URL is not using face verification at all, and blocking
+        # its go-live on the allowlist for a feature it does not have would be a gate
+        # nobody can satisfy or learn anything from.
+        face_ips = [ip for ip in (settings.WEMA.get("FACE_CALLBACK_IPS") or []) if ip]
+        if settings.WEMA.get("FACE_VERIFY_URL"):
+            checks.append((
+                True, "Face callback IP allowlist",
+                PASS if face_ips else FAIL,
+                f"enforced for {len(face_ips)} face-verifier IP(s)" if face_ips
+                else "WEMA_FACE_VERIFY_URL is set but WEMA_FACE_CALLBACK_IPS is not — the "
+                     "face callback carries no shared token, so without the allowlist it "
+                     "has no authentication at all; ask Wema for the face app's egress IPs"))
+        if face_verify_live():
+            checks.append((
+                True, "Face biometric host",
+                FAIL if face_verify_on_dev_host() else PASS,
+                "WEMA_FACE_VERIFY_URL still points at ALAT's DEV verifier — a dev face "
+                "check lifts real tiers on no evidence" if face_verify_on_dev_host()
+                else "live verifier"))
+        else:
+            checks.append((False, "Face biometric (ALAT)", WARN,
+                           "no channel id or WEMA_FACE_VERIFY_URL — the face step falls "
+                           "back to the document rail"))
+        checks.append((False, "Address verification (ALAT)",
+                       PASS if address_verify_live() else WARN,
+                       "bank-verified (Tier 3 upgrade)" if address_verify_live()
+                       else "WEMA_UPGRADE_KEY unset — address falls back to the document rail"))
+
+        prembly_keyed = bool(settings.PREMBLY.get("API_KEY") and settings.PREMBLY.get("APP_ID"))
+        checks.append((False, "Prembly (selfie / address / ID document)",
+                       PASS if prembly_keyed else WARN,
+                       "keyed" if prembly_keyed
+                       else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — ID-document (Tier 3) "
+                            "fails closed; face/address are on the bank rail"
+                            if (face_verify_live() and address_verify_live())
+                            else "PREMBLY_API_KEY + PREMBLY_APP_ID unset — Tier 2/3 upgrades and "
+                                 "the large-transfer selfie step-up fail closed"))
+
+        # SOFT — electricity/betting on the Wema rail need a mapped packageId. Without
+        # one they silently stay on VTU.ng, which is safe but is NOT what
+        # VAS_PROVIDER=wema was set to achieve, and nothing else would say so.
+        if vas_provider() == "wema":
+            from django.db import DatabaseError
+
+            from utility.models import WemaBiller
+            try:
+                mapped = WemaBiller.objects.filter(active=True).exclude(package_id="").count()
+            except DatabaseError:
+                # Unmigrated database. A readiness check that dies on one unreadable
+                # counter reports nothing at all about the eleven gates above it.
+                mapped = 0
+            checks.append((False, "Wema biller catalogue (electricity / betting)",
+                           PASS if mapped else WARN,
+                           f"{mapped} service(s) mapped" if mapped
+                           else "no packageIds mapped — electricity and betting stay on "
+                                "VTU.ng; run `manage.py seed_wema_plans --only billers`"))
 
         # SOFT — the VAS status legends. Money-safe either way (an unknown code leaves
         # the purchase PENDING), so this can never be a gate; but an unset legend means
-        # timed-out airtime/data/bill buys accumulate as PENDING rows that only a human
-        # can clear, which ops should know before launch rather than discover from a
-        # queue. Wema owes us these two maps — see docs/wema-migration.md.
-        from utility.wema import _vas_legend
-        for product, env_var in (("airtime", "WEMA_VAS_STATUS_LEGEND"),
-                                 ("bills", "WEMA_BILLS_STATUS_LEGEND")):
+        # timed-out VAS buys accumulate as PENDING rows that only a human can clear,
+        # which ops should know before launch rather than discover from a queue. Wema
+        # owes us one map per product — see docs/wema-migration.md.
+        from utility.wema import _vas_legend, _vas_live
+        legend_products = [("airtime", "WEMA_VAS_STATUS_LEGEND"),
+                           ("bills", "WEMA_BILLS_STATUS_LEGEND"),
+                           ("remita", "WEMA_REMITA_STATUS_LEGEND")]
+        # Only ask about products this deploy can actually reach. Airtime and bills
+        # go through Wema only when the VAS rail is Wema; Remita is a standalone
+        # subscription and is live whenever its key is. Warning about a legend for a
+        # product we never call trains the operator to ignore the section that also
+        # carries the one that matters.
+        for product, env_var in legend_products:
+            if product in ("airtime", "bills") and vas_provider() != "wema":
+                continue
+            if product == "remita" and not _vas_live("remita"):
+                continue
             legend = _vas_legend(product)
             checks.append((
                 False, f"VAS status legend ({product})",

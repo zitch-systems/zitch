@@ -3,7 +3,7 @@ import io
 from django.contrib import admin, messages
 from django.core.management import call_command
 
-from .models import CablePlan, DataPlan
+from .models import CablePlan, DataPlan, WemaBiller
 
 
 class _WemaCatalogueSyncMixin:
@@ -63,3 +63,20 @@ class CablePlanAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
     search_fields = ("name", "cable_plan_code")
     actions = ["preview_wema_codes", "apply_wema_codes"]
     wema_sync_only = "cable"
+
+
+@admin.register(WemaBiller)
+class WemaBillerAdmin(_WemaCatalogueSyncMixin, admin.ModelAdmin):
+    """Electricity and betting codes — the two services with no plan catalogue.
+
+    The sync resolves discos by name; betting companies it cannot, because their
+    slugs come from whatever the app offers rather than a list we control. Those are
+    added here by hand, which is also the escape hatch when a disco's catalogue name
+    changes and the sync reports it unresolved. A service with no row here simply
+    stays on VTU.ng.
+    """
+    list_display = ("service_id", "package_id", "biller_id", "name", "active", "updated")
+    list_filter = ("active",)
+    search_fields = ("service_id", "package_id", "name")
+    actions = ["preview_wema_codes", "apply_wema_codes"]
+    wema_sync_only = "billers"

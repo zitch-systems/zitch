@@ -180,6 +180,46 @@ def send_buttons(msisdn: str, body: str, buttons: list) -> dict:
     return _send_payload(msisdn, payload, f"[buttons] {body} {[b[0] for b in buttons]}")
 
 
+def send_cta_url(msisdn: str, body: str, url: str, cta: str = "Open",
+                 header: str = "", footer: str = "",
+                 allow_text_fallback: bool = True) -> dict:
+    """Interactive CTA-URL message — a labelled BUTTON that opens `url`.
+
+    Used instead of pasting the link into the body. A bare https:// URL in a bank's
+    chat is the exact shape of a phishing message, and one carrying the customer's
+    own BVN in its query string is worse: WhatsApp renders it as tappable text with
+    the whole query visible, and it stays in their history. The CTA button shows the
+    label and hides the target, and it opens in WhatsApp's own in-app browser rather
+    than handing the customer to whatever app claims https.
+
+    Falls back to a plain text message if the Cloud API rejects the interactive type
+    (older API versions do), because a link the customer can still tap beats a step
+    that silently never arrives — but ONLY when the caller allows it. A URL whose
+    query string carries a secret or an identity number must never be pasted into a
+    thread as a consolation prize: that is the harm the button was preventing, and a
+    fallback that undoes it on an unrelated API error is worse than no message.
+    """
+    interactive = {"type": "cta_url",
+                   "body": {"text": body[:1024]},
+                   "action": {"name": "cta_url",
+                              "parameters": {"display_text": (cta or "Open")[:20], "url": url}}}
+    if header:
+        interactive["header"] = {"type": "text", "text": header[:60]}
+    if footer:
+        interactive["footer"] = {"text": footer[:60]}
+    res = _send_payload(msisdn, {"type": "interactive", "interactive": interactive},
+                        f"[cta_url] {cta} -> {url}")
+    if res.get("success"):
+        return res
+    if not allow_text_fallback:
+        log.warning("wa_cta_url_rejected recipient=%s — no text fallback (sensitive URL)",
+                    mask_pii(msisdn))
+        return res
+    log.warning("wa_cta_url_rejected recipient=%s — falling back to a text link",
+                mask_pii(msisdn))
+    return send_text(msisdn, f"{body}\n\n{url}")
+
+
 def send_list(msisdn: str, body: str, rows: list,
               button_label: str = "Choose", section_title: str = "Options") -> dict:
     """Interactive list message (max 10 rows). ``rows`` = [(id, title, description)] â€”

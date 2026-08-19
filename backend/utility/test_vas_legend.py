@@ -39,6 +39,25 @@ class VasLegendParsingTests(TestCase):
             self.assertEqual(_vas_legend("airtime")["3"], "success")
             self.assertEqual(_vas_legend("bills")["3"], "failed")
 
+    def test_remita_has_its_own_ladder_and_never_borrows_airtime(self):
+        # Remita is a separately-sold ALAT product with its own status enum. It used
+        # to decode against the airtime legend (via _parse_vas's default argument),
+        # so a deploy that buys Remita but not Airtime/Data — ours — had no legend at
+        # all for its only Wema VAS product, and every integer-shaped Remita result
+        # sat PENDING with the customer already debited.
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "3=failed",
+                                             "REMITA_STATUS_LEGEND": "3=success"}):
+            self.assertEqual(_vas_legend("remita")["3"], "success")
+            self.assertEqual(_vas_legend("airtime")["3"], "failed")
+
+    def test_remita_with_no_legend_of_its_own_stays_pending(self):
+        # Specifically: an airtime legend must not decide a Remita outcome.
+        with mock.patch.dict(settings.WEMA, {"VAS_STATUS_LEGEND": "3=success",
+                                             "REMITA_STATUS_LEGEND": ""}):
+            out = _parse_vas(_int_shape(3), "REF1", product="remita")
+        self.assertTrue(out["pending"])
+        self.assertFalse(out["success"])
+
     def test_bad_entries_are_dropped_not_defaulted(self):
         with mock.patch.dict(settings.WEMA, {
                 "VAS_STATUS_LEGEND": "1=success,2=maybe,three=failed,4,5=SUCCESS"}):

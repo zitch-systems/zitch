@@ -142,13 +142,19 @@ def _mock_blocked() -> bool:
     return mock_disabled_in_prod() and not wema_simulation()
 
 
-# Products authenticated by the Wallet Services subscription. The live product page
-# lists exactly: wallet creation, credit wallet, debit wallet, bills payment,
-# transaction notification and account management. The portal sells Virtual Naira
-# Card, Remita, BNPL, Address Verification, scheduled debit, statements and
-# Pay-with-Bank as separate subscriptions; an unrelated wallet key must never be sent
-# to those products. Airtime/Data and Account Upgrade are also separate API products
-# in the catalogue, so they require their own keys when used.
+# Products this module will let the Wallet Services key authenticate BY DEFAULT.
+#
+# Deliberately narrower than what a given Wema tenant may actually allow. Ours, for
+# instance, has one Wallet Services subscription whose API list also covers Airtime
+# and Data, Bills, Card Management, Account Upgrade, Remita, KYC and Face Biometric —
+# but that is a fact about our tenant, not about ALAT, and widening the default here
+# would send the wallet key to those products on EVERY deploy, including ones where
+# APIM rejects it. Point a product's own env var at the wallet key when the tenant
+# permits it (WEMA_AIRTIME_KEY=<wallet key>, and so on); explicit beats inferred, and
+# it stays visible when the products are later split onto their own subscriptions.
+#
+# One product is excluded from any fallback on purpose: the key the face-biometric
+# WEB app receives travels in a URL the customer's browser loads. See _face_key.
 _WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit", "bills")
 
 
@@ -447,6 +453,90 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
         return {"success": _ok(data), "message": _msg(data)}
     except requests.RequestException as exc:
         return _unreachable(exc)
+
+
+def address_verify_live() -> bool:
+    """Whether the bank can verify a residential address for real.
+
+    Address verification is the Tier 3 upgrade call, so it rides the Account Upgrade
+    subscription. Unkeyed, the KYC screen falls back to the document rail rather
+    than silently marking addresses verified against a mock.
+    """
+    return _product_live("upgrade")
+
+
+def _face_key() -> str:
+    """The value ALAT's face-biometric web app expects as `x_tk`.
+
+    It is the CHANNEL ID (the x-api-key), not an APIM subscription key. Wema
+    confirmed this directly, with a sample URL whose x_tk is the same GUID shape as
+    the channel id — subscription keys are 32 hex characters with no dashes, so the
+    two are not interchangeable and sending the wrong one simply fails the check.
+
+    Worth stating plainly because of where this value goes: `x_tk` travels in a URL
+    the CUSTOMER'S BROWSER loads, so it is readable by the customer, their history,
+    and anything with sight of the address bar. Treat the channel id as public.
+    That it is only half the credential pair — every APIM call also needs
+    Ocp-Apim-Subscription-Key, which never leaves our server — is what makes the
+    bank's design survivable. Never put a subscription key here.
+    """
+    return settings.WEMA.get("CHANNEL_ID", "")
+
+
+def face_verify_live() -> bool:
+    """Whether the ALAT face-biometric web app can be used for real.
+
+    Needs the channel id (what ALAT calls x_tk — see _face_key) and a base URL. It
+    does NOT need a product subscription key: the web app authenticates the customer,
+    not us.
+    """
+    if wema_simulation():
+        return False
+    if not (_face_key() and settings.WEMA.get("FACE_VERIFY_URL")):
+        return False
+    # The callback that grants the tier is authenticated by source IP alone (its URL
+    # is shown to the customer, so it can carry no secret). With no allowlist there
+    # is nothing to authenticate it WITH, and offering the rail would mean granting
+    # face_verified to anyone who read the URL out of their own browser. Local
+    # development and tests are exempt because _ip_ok already short-circuits there.
+    if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
+        return True
+    return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
+
+
+def face_verify_on_dev_host() -> bool:
+    """True while the face app points at ALAT's DEV verifier.
+
+    Separate from face_verify_live() because the dev host answers happily — it just
+    does not prove anything about a real person, which makes it exactly the kind of
+    thing that survives to production unnoticed.
+    """
+    return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
+
+
+def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
+    """Build the customer-facing URL for ALAT's face-biometric web app.
+
+    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}&cb_uri={callback}`.
+    On success it POSTs {success, c_id, id, id_type} to `cb_uri`.
+
+    We pass cb_uri, never rd_uri. A redirect hands the result to whatever opened the
+    page — which for WhatsApp onboarding is a browser we do not control, and for the
+    app is a WebView whose navigation a determined user can drive by hand. The server
+    callback is the only variant where the bank tells US the outcome directly.
+
+    SECURITY: `x_tk` is the channel id (see _face_key), and the bank's design puts it
+    in a URL the customer's browser loads — so treat the channel id as public. It is
+    only half the credential pair; every APIM call also needs a subscription key,
+    which never leaves our server. A subscription key must never be sent here.
+    """
+    from urllib.parse import quote, urlencode
+
+    base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
+    kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
+    query = urlencode({kind: identity_value, "x_tk": _face_key(),
+                       "cb_uri": callback_url}, quote_via=quote)
+    return f"{base}/?{query}"
 
 
 def get_account_details(phone: str, *, bvn: bool = False) -> dict:
@@ -1110,6 +1200,18 @@ def vas_status(reference: str, txn_type: str = "") -> dict:
 
 _VAS_OUTCOMES = ("success", "pending", "failed")
 
+# Which env-backed legend decodes each product's integer transactionStatus. Remita
+# has its own: it is a DIFFERENT ALAT product with its own status enum, and it used
+# to fall through to the airtime legend by way of _parse_vas's default argument. On a
+# deploy that buys Remita but not Airtime/Data — which is the shape of our
+# subscription — that meant the airtime legend was never set, so every integer-shaped
+# Remita result decoded to PENDING and every debited bill payment waited on a human.
+_LEGEND_SETTING = {
+    "airtime": "VAS_STATUS_LEGEND",
+    "bills": "BILLS_STATUS_LEGEND",
+    "remita": "REMITA_STATUS_LEGEND",
+}
+
 
 def _vas_legend(product: str) -> dict[str, str]:
     """The configured integer→outcome map for a VAS status check, or {} when unset.
@@ -1125,8 +1227,7 @@ def _vas_legend(product: str) -> dict[str, str]:
     (leave the purchase PENDING) is the only money-safe outcome: a typo that silently
     resolved to ``success`` would settle undelivered top-ups.
     """
-    raw = str(settings.WEMA.get("BILLS_STATUS_LEGEND" if product == "bills"
-                                else "VAS_STATUS_LEGEND") or "").strip()
+    raw = str(settings.WEMA.get(_LEGEND_SETTING.get(product, "VAS_STATUS_LEGEND")) or "").strip()
     if not raw:
         return {}
     legend: dict[str, str] = {}
@@ -1241,7 +1342,7 @@ def pay_remita(amount_naira, reference: str, *, rrr: str, source_account: str = 
                 "description": description or f"Remita {rrr}",
                 "securityInfo": _security_info(op="remita", reference=reference, amount=amount_naira)}
         data = _post("remita", "/api/RemitaPayment/ProcessRemitaPayment", body).json()
-        return _parse_vas(data, reference)
+        return _parse_vas(data, reference, product="remita")
     except requests.RequestException as exc:
         return {"success": False, "pending": True, "message": f"Bank gateway unreachable: {exc}"}
 
