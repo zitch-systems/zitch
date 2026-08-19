@@ -24,7 +24,7 @@ class InterpretTests(TestCase):
              patch("whatsapp.llm.configured", return_value=True), \
              patch("whatsapp.providers.download_media", return_value=(b"ogg", "audio/ogg")), \
              patch("whatsapp.llm.transcribe_audio", return_value="send 5k to Ada"):
-            said, instead = media.interpret("audio", "mid-1")
+            said, instead, _scanned = media.interpret("audio", "mid-1")
         self.assertEqual(said, "send 5k to Ada")
         self.assertEqual(instead, "")
 
@@ -33,7 +33,7 @@ class InterpretTests(TestCase):
         to hear it — and the customer gets a sentence they can act on."""
         with patch("whatsapp.llm.transcribes", return_value=False), \
              patch("whatsapp.providers.download_media") as fetch:
-            said, instead = media.interpret("audio", "mid-1")
+            said, instead, _scanned = media.interpret("audio", "mid-1")
         fetch.assert_not_called()
         self.assertEqual(said, "")
         self.assertIn("type your request", instead)
@@ -42,7 +42,7 @@ class InterpretTests(TestCase):
         with patch("whatsapp.llm.configured", return_value=True), \
              patch("whatsapp.providers.download_media", return_value=(b"jpg", "image/jpeg")), \
              patch("whatsapp.llm.describe_image", return_value="A slip: GTBank 0123456789"):
-            said, instead = media.interpret("image", "mid-2")
+            said, instead, _scanned = media.interpret("image", "mid-2")
         self.assertIn("0123456789", said)
         self.assertEqual(instead, "")
 
@@ -52,7 +52,7 @@ class InterpretTests(TestCase):
         with patch("whatsapp.llm.configured", return_value=True), \
              patch("whatsapp.providers.download_media", return_value=(b"jpg", "image/jpeg")), \
              patch("whatsapp.llm.describe_image", return_value="GTBank 0123456789"):
-            said, _instead = media.interpret("image", "mid-2", caption="send 5k to this")
+            said, _instead, _scanned = media.interpret("image", "mid-2", caption="send 5k to this")
         self.assertTrue(said.startswith("send 5k to this"))
         self.assertIn("GTBank 0123456789", said)
 
@@ -60,7 +60,7 @@ class InterpretTests(TestCase):
         with patch("whatsapp.llm.configured", return_value=True), \
              patch("whatsapp.llm.transcribes", return_value=True), \
              patch("whatsapp.providers.download_media", return_value=(b"", "")):
-            said, instead = media.interpret("audio", "mid-3")
+            said, instead, _scanned = media.interpret("audio", "mid-3")
         self.assertEqual(said, "")
         self.assertIn("type it instead", instead)
 
@@ -69,7 +69,7 @@ class InterpretTests(TestCase):
              patch("whatsapp.llm.configured", return_value=True), \
              patch("whatsapp.providers.download_media", return_value=(b"ogg", "audio/ogg")), \
              patch("whatsapp.llm.transcribe_audio", return_value="   "):
-            said, instead = media.interpret("audio", "mid-4")
+            said, instead, _scanned = media.interpret("audio", "mid-4")
         self.assertEqual(said, "")
         self.assertTrue(instead)
 

@@ -201,6 +201,23 @@ class Command(BaseCommand):
         # tell it apart from the real one — the check simply proves nothing about the
         # person, while lifting a tier and clearing the large-transfer step-up.
         from utility.wema import address_verify_live, face_verify_live, face_verify_on_dev_host
+        # HARD: the face callback carries no shared token — its URL is shown to the
+        # customer — so the source-IP allowlist is the whole of its authentication.
+        # Without it, anyone who reads that URL out of their own browser can assert
+        # their own face check, lifting a tier and clearing the large-transfer gate.
+        # Scoped to deploys that actually intend to run the rail. A deployment with
+        # no WEMA_FACE_VERIFY_URL is not using face verification at all, and blocking
+        # its go-live on the allowlist for a feature it does not have would be a gate
+        # nobody can satisfy or learn anything from.
+        face_ips = [ip for ip in (settings.WEMA.get("FACE_CALLBACK_IPS") or []) if ip]
+        if settings.WEMA.get("FACE_VERIFY_URL"):
+            checks.append((
+                True, "Face callback IP allowlist",
+                PASS if face_ips else FAIL,
+                f"enforced for {len(face_ips)} face-verifier IP(s)" if face_ips
+                else "WEMA_FACE_VERIFY_URL is set but WEMA_FACE_CALLBACK_IPS is not — the "
+                     "face callback carries no shared token, so without the allowlist it "
+                     "has no authentication at all; ask Wema for the face app's egress IPs"))
         if face_verify_live():
             checks.append((
                 True, "Face biometric host",

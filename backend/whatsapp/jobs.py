@@ -210,10 +210,17 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
             # Here, not in the webhook: this downloads bytes from Meta and calls
             # a model, which together are the slowest thing the channel does, and
             # Meta retries a webhook it considers slow to acknowledge.
-            said, instead = media.interpret(
+            said, instead, scanned = media.interpret(
                 str(payload.get("media_kind") or ""), str(payload["media_id"]),
                 str(payload.get("media_caption") or ""))
-            if said:
+            if scanned:
+                # A payment QR is an instruction with an exact meaning, so it goes
+                # to its own handler rather than through the text router — nothing
+                # about it needs parsing out of a sentence.
+                from .router import handle_scanned_qr
+
+                handle_scanned_qr(row.msisdn, scanned)
+            elif said:
                 # Routed as if typed — same parsing, same redaction before the
                 # intent call, same confirm card, same PIN. Media buys the
                 # customer a way to say something, never a way to skip a step.

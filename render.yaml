@@ -195,6 +195,10 @@ services:
       # points at the production host Wema gives you.
       - key: WEMA_FACE_VERIFY_URL
         sync: false
+      # The face callback carries no shared token (its URL is shown to the customer),
+      # so this allowlist IS its authentication. Unset, the face rail refuses to run.
+      - key: WEMA_FACE_CALLBACK_IPS
+        sync: false
       # Keep deterministic identity/OTP hashes stable independently of ordinary
       # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
       # stored identity hashes are deliberately migrated at the same time.
@@ -447,6 +451,8 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_STATUS_LEGEND}
       - key: WEMA_FACE_VERIFY_URL
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_VERIFY_URL}
+      - key: WEMA_FACE_CALLBACK_IPS
+        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_CALLBACK_IPS}
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: VTUNG_API_KEY
@@ -605,6 +611,10 @@ services:
       # answers happily and proves nothing — wema_preflight FAILS go-live until this
       # points at the production host Wema gives you.
       - key: WEMA_FACE_VERIFY_URL
+        sync: false
+      # The face callback carries no shared token (its URL is shown to the customer),
+      # so this allowlist IS its authentication. Unset, the face rail refuses to run.
+      - key: WEMA_FACE_CALLBACK_IPS
         sync: false
 
   # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:

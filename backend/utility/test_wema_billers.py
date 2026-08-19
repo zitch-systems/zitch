@@ -62,7 +62,8 @@ class VerifyCustomerRailTests(TestCase):
                         return_value={"success": True, "name": "AMINA BELLO"}) as v:
             res = vtu_verify_customer("kano-electric", "555000111")
         v.assert_called_once()
-        self.assertEqual(res["name"], "AMINA BELLO")
+        # The VTU.ng contract, which is what every caller actually reads.
+        self.assertEqual(res["customer_name"], "AMINA BELLO")
 
     def test_an_unmapped_service_still_validates_on_vtung(self):
         with mock.patch("utility.vtung.vt_verify_customer",
@@ -93,3 +94,33 @@ class VtungRailUnaffectedTests(TestCase):
                         return_value={"success": True}) as p:
             vtu_purchase("ikeja-electric", {"amount": "1000"}, "REF1")
         p.assert_called_once()
+
+
+@override_settings(VAS_PROVIDER="wema", WEMA=WEMA_ON)
+class ValidationContractTests(TestCase):
+    """Both rails must answer in the SAME shape.
+
+    The meter-owner name is the only control that catches a mistyped meter number
+    before the money leaves, and it is read as `customer_name` everywhere. A rail
+    that answers `name` disables that control without failing anything.
+    """
+
+    def setUp(self):
+        WemaBiller.objects.create(service_id="ikeja-electric", package_id="70")
+
+    def test_the_wema_rail_answers_in_the_vtung_shape(self):
+        with mock.patch("utility.wema.validate_bill_customer",
+                        return_value={"success": True, "name": "AMINA BELLO"}):
+            res = vtu_verify_customer("ikeja-electric", "555000111")
+        self.assertEqual(res["customer_name"], "AMINA BELLO")
+
+    def test_a_clean_envelope_with_no_name_is_not_a_confirmed_owner(self):
+        # ALAT can answer hasError:false with no customerName. Treating that as a
+        # verified meter shows the customer a blank owner and lets them confirm.
+        with mock.patch("utility.wema.validate_bill_customer",
+                        return_value={"success": True, "name": ""}), \
+             mock.patch("utility.vtung.vt_verify_customer",
+                        return_value={"success": True, "customer_name": "FALLBACK"}) as vt:
+            res = vtu_verify_customer("ikeja-electric", "555000111")
+        vt.assert_called_once()
+        self.assertEqual(res["customer_name"], "FALLBACK")

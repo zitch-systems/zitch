@@ -22,7 +22,9 @@ urlpatterns = [
     *_both("authorize/<str:token>", cb.wema_authenticate_callback, "wema_cb_auth"),
     *_both("transaction/<str:token>", cb.wema_transaction_callback, "wema_cb_txn"),
     *_both("notification/<str:token>", cb.wema_notification_callback, "wema_cb_notify"),
-    # The face-biometric result carries a per-session state as a second path
-    # segment, so one customer's completed check can never stand in for another's.
-    *_both("face/<str:token>/<str:state>", cb.wema_face_callback, "wema_cb_face"),
+    # The face result is keyed by its SESSION STATE alone — no shared token. This
+    # URL is handed to the customer (it rides in the bank page's cb_uri, visible in
+    # a WebView address bar and WhatsApp's browser), so it must not carry the secret
+    # that guards the payout-authorisation callback above.
+    *_both("face/<str:state>", cb.wema_face_callback, "wema_cb_face"),
 ]

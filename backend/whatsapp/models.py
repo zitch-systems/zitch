@@ -332,6 +332,12 @@ class WebhookEvent(models.Model):
         "accesstoken", "token", "authorization", "nuban", "accountnumber",
         "email", "phone", "phonenumber", "msisdn", "from", "nubanname", "accountname",
         "customerid", "billerscode", "meter", "meternumber", "smartcard", "iuc",
+        # ALAT's face-biometric callback names the identity number plainly as "id"
+        # ({success, c_id, id, id_type}), so without this a raw BVN is written into
+        # this table in clear — and this table is the one place we keep deliberately
+        # immutable, for forensics. A generic key name is exactly how identity data
+        # slips past a redaction list built from the field names we expected.
+        "id", "identityvalue", "identifiervalue", "bvnornin",
     })
 
     source = models.CharField(max_length=40)          # wema.account | whatsapp | mono …

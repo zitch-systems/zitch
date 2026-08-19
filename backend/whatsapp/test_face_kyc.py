@@ -29,11 +29,18 @@ FACE_ON = {"KEYS": {"wallet": "k"}, "CHANNEL_ID": "c", "SIMULATION": False,
 FACE_OFF = {**FACE_ON, "CHANNEL_ID": "", "FACE_VERIFY_URL": ""}
 
 
+#: The identity this test account has actually PROVEN. The face session must bind
+#: to it — see accounts.views.face_identity_error.
+VERIFIED_BVN = "22222222222"
+
+
 def _user(**flags):
+    from accounts.models import hash_identifier
     u = User.objects.create(username="f1", phone="08010000009", email="f@z.ng",
                             first_name="Ada", last_name="Eze", tier=1,
                             email_verified=True, phone_verified=True,
-                            bvn_verified=True, nin_verified=True, **flags)
+                            bvn_verified=True, nin_verified=True,
+                            bvn_hash=hash_identifier(VERIFIED_BVN), **flags)
     u.save()
     get_or_create_wallet(u)
     WhatsAppLink.objects.create(user=u, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
@@ -86,10 +93,10 @@ class FaceLinkTests(TestCase):
     def test_the_session_binds_the_identity_that_was_entered(self):
         from accounts.models import hash_identifier
         with patch.object(router, "send_cta_url"), patch.object(router, "reply"):
-            router._kyc_send_face_link(self.pa, self.user, MSISDN, "nin", "33333333333")
+            router._kyc_send_face_link(self.pa, self.user, MSISDN, "bvn", VERIFIED_BVN)
         s = WemaFaceSession.objects.get(user=self.user)
-        self.assertEqual(s.identity_type, "nin")
-        self.assertEqual(s.identity_hash, hash_identifier("33333333333"))
+        self.assertEqual(s.identity_type, "bvn")
+        self.assertEqual(s.identity_hash, hash_identifier(VERIFIED_BVN))
         self.assertEqual(s.status, WemaFaceSession.PENDING)
 
     def test_the_number_never_appears_in_the_chat_body(self):
@@ -136,7 +143,7 @@ class FaceCallbackNotifiesChatTests(TestCase):
             identity_hash=hash_identifier("22222222222"),
             expires_at=timezone.now() + timedelta(minutes=20))
         with patch("whatsapp.router.reply") as rep:
-            res = self.client.post(f"/webhooks/wema/face/tok/{session.state}",
+            res = self.client.post(f"/webhooks/wema/face/{session.state}",
                                    {"success": True, "c_id": "C1", "id": "22222222222"},
                                    content_type="application/json")
         self.assertEqual(res.status_code, 200)
@@ -159,7 +166,7 @@ class FaceCallbackNotifiesChatTests(TestCase):
             identity_hash=hash_identifier("22222222222"),
             expires_at=timezone.now() + timedelta(minutes=20))
         with patch("whatsapp.router.reply", side_effect=RuntimeError("wa down")):
-            res = self.client.post(f"/webhooks/wema/face/tok/{session.state}",
+            res = self.client.post(f"/webhooks/wema/face/{session.state}",
                                    {"success": True, "c_id": "C1", "id": "22222222222"},
                                    content_type="application/json")
         self.assertEqual(res.status_code, 200)

@@ -171,7 +171,8 @@ MENU_BODY = (
     "7️⃣  🧾 My account details\n"
     "8️⃣  ✅ Verify my identity\n"
     "9️⃣  🧾 Transaction history\n"
-    "🔟  🎓 Exam PIN\n\n"
+    "🔟  🎓 Exam PIN\n"
+    "1️⃣1️⃣  📷 Scan a QR code\n\n"
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -1311,6 +1312,8 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("lock", "lock chat", "chat lock", "fingerprint", "face id", "biometric",
                "biometrics", "secure chat"):
         return reply(msisdn, _chat_lock_tip())
+    if low in ("11", "scan", "scan qr", "qr", "qr code", "scan code", "scan a qr code"):
+        return _start_qr_scan(user, msisdn)
     if low in ("9", "history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
     if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
@@ -3076,8 +3079,22 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
     link and moves on, and the tier lifts if and when the bank says so.
     """
     from accounts.models import hash_identifier
-    from accounts.views import FACE_SESSION_TTL_MINUTES, _face_callback_url
+    from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
+                                _identity_owned_by_another_user, face_identity_error)
     from wallet.models import WemaFaceSession
+
+    # The SAME binding the app enforces. This rail had neither check, so a number
+    # the API answered with a 409 was accepted here — and a session could be opened
+    # against an identity this account has never proven, which is the substitution
+    # the face step exists to catch.
+    if _identity_owned_by_another_user(user, kind, digits):
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ That number is already linked to another Zitch account. "
+                             "Please contact support if this is unexpected.")
+    refusal = face_identity_error(user, kind, digits)
+    if refusal:
+        _clear_actions(msisdn)
+        return reply(msisdn, f"⚠️ {refusal}")
 
     pa.payload.pop("id_purpose", None)
     pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
@@ -3100,7 +3117,11 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
         "passes through Zitch or this chat.\n\n"
         f"_Expires in {FACE_SESSION_TTL_MINUTES} minutes. I'll message you as soon "
         "as the bank confirms._",
-        url, cta="Start face check", footer="Secured by your bank")
+        url, cta="Start face check", footer="Secured by your bank",
+        # NEVER paste this one as text. The URL carries the customer's raw BVN in a
+        # query string; send_cta_url's ordinary fallback would put it in the thread
+        # in clear, permanently, which is the exact thing the button exists to stop.
+        allow_text_fallback=False)
     _touch(pa, state="idle", payload=pa.payload)
     return _kyc_next(pa, user, msisdn)
 
@@ -3435,6 +3456,133 @@ def _blocked_from_spending(user, msisdn: str) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# QR scan — read any bank's payment QR from a photo.
+#
+# WhatsApp gives no way to open the camera from a message: there is no API for it,
+# and a Flow has no camera component at this Flow-JSON version. What WhatsApp DOES
+# have is a camera one tap from the compose box, so the honest design is to ask for
+# the photo rather than pretend to launch anything. Saying "tap 📎 → Camera" is a
+# real instruction; a button that silently does nothing would not be.
+# --------------------------------------------------------------------------- #
+QR_WAIT_STATE = "qr_photo"      # waiting for the picture
+QR_AMOUNT_STATE = "qr_amount"   # code read, needs an amount before it can be paid
+
+
+def _start_qr_scan(user, msisdn: str) -> None:
+    if _blocked_from_spending(user, msisdn):
+        return None
+    _clear_actions(msisdn)
+    PendingAction.objects.create(
+        user=user, msisdn=msisdn, action_type="qr", state=QR_WAIT_STATE,
+        payload={}, expires_at=_flow_deadline("idle"),
+    )
+    return reply(msisdn, "📷 *Scan a QR code*\n\n"
+                         "Tap 📎 → *Camera* and take a clear photo of the QR code, then send "
+                         "it here. It can be from any bank.\n\n"
+                         "_I'll read the account and amount off it. "
+                         'Reply "cancel" to stop._')
+
+
+def _qr_summary(intent: dict) -> str:
+    """What we read off the code, as lines the customer can check against the poster
+    in front of them. Every field is shown as found — a scanner that silently
+    normalises what it read gives the customer nothing to compare."""
+    rows = []
+    if intent.get("merchant_name"):
+        rows.append(("Merchant", intent["merchant_name"]))
+    if intent.get("merchant_city"):
+        rows.append(("Location", intent["merchant_city"]))
+    if intent.get("account"):
+        rows.append(("Account", intent["account"]))
+    if intent.get("amount") is not None:
+        rows.append(("Amount", f"₦{intent['amount']:,.2f}"))
+    if intent.get("reference"):
+        rows.append(("Reference", intent["reference"]))
+    return "\n".join(f"{k}: {v}" for k, v in rows)
+
+
+def handle_scanned_qr(msisdn: str, intent: dict) -> None:
+    """A decoded payment QR -> the next step in the chat.
+
+    Reached only from the media path, which is why it takes the parsed intent
+    rather than an image: decoding is the media layer's job and paying is this
+    one's, and keeping the seam there means a malformed code can never reach the
+    money paths at all.
+    """
+    link = active_link_for(msisdn)
+    user = getattr(link, "user", None)
+    if user is None:
+        return reply(msisdn, "Link your Zitch account first to scan payment codes.")
+    pa = PendingAction.objects.filter(msisdn=msisdn, action_type="qr").first()
+
+    kind = intent.get("kind")
+    if intent.get("corrupt"):
+        # The checksum failed, so every field including the account number is
+        # suspect. Never show a number we cannot vouch for — the customer would
+        # read it back off the screen and believe it.
+        return reply(msisdn, "⚠️ That code didn't scan cleanly — the photo may be blurred "
+                             "or cut off. Take another photo of the whole code and send it again.")
+    if kind == "other":
+        return reply(msisdn, "🤔 That QR isn't a payment code — it doesn't contain an "
+                             "account or a merchant. If you're paying someone, ask them for "
+                             "their account number instead.")
+
+    summary = _qr_summary(intent)
+    if not intent.get("payable"):
+        # A merchant QR that settles through the scheme rather than to a NUBAN.
+        # It parsed perfectly; we simply cannot pay it, and saying which is which
+        # is the difference between a limitation and a bug.
+        _clear_actions(msisdn)
+        return reply(msisdn, "📷 *Code read*\n" + (f"\n{summary}\n" if summary else "")
+                             + "\nThis is a merchant code that settles through the QR scheme, "
+                               "which Zitch doesn't support yet — so I can't pay it from here. "
+                               "Ask for their account number and I'll send it as a transfer.")
+
+    account = intent["account"]
+    amount = intent.get("amount")
+    if amount is None:
+        if pa is None:
+            pa = PendingAction.objects.create(
+                user=user, msisdn=msisdn, action_type="qr", state=QR_AMOUNT_STATE,
+                payload={}, expires_at=_flow_deadline("idle"))
+        pa.payload["account"] = account
+        _touch(pa, state=QR_AMOUNT_STATE, payload=pa.payload)
+        return reply(msisdn, "📷 *Code read*\n" + (f"\n{summary}\n" if summary else "")
+                             + "\nHow much would you like to send?")
+
+    _clear_actions(msisdn)
+    reply(msisdn, "📷 *Code read*\n" + (f"\n{summary}\n" if summary else ""))
+    # Straight into the ordinary transfer: same name enquiry, same confirm card,
+    # same PIN. A scanned code is a faster way to type an account number, never a
+    # way to skip a step.
+    if not _begin_bank_transfer(user, msisdn, amount, account, ""):
+        reply(msisdn, "I couldn't work out which bank that account belongs to. "
+                      "Reply *2* to send money and pick the bank yourself.")
+    return None
+
+
+def _advance_qr(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """The amount for a scanned code that carried none (a static merchant poster)."""
+    if pa.state == QR_WAIT_STATE:
+        if _is_new_command(text):
+            _clear_actions(msisdn)
+            return handle_inbound(msisdn, text)
+        return reply(msisdn, "📷 Send a *photo* of the QR code — tap 📎 → Camera. "
+                             'Or reply "cancel".')
+    amount = parse_amount(text)
+    if amount is None or amount <= 0:
+        return reply(msisdn, "Enter the amount to send, like *2500*.")
+    account = str(pa.payload.get("account") or "")
+    _clear_actions(msisdn)
+    if not account:
+        return reply(msisdn, "That code expired. Reply *11* to scan again.")
+    if not _begin_bank_transfer(user, msisdn, amount, account, ""):
+        reply(msisdn, "I couldn't work out which bank that account belongs to. "
+                      "Reply *2* to send money and pick the bank yourself.")
+    return None
+
+
 def _start_transfer(user, msisdn: str) -> None:
     if _blocked_from_spending(user, msisdn):
         return None
@@ -3699,6 +3847,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "pick_service": _advance_pick_service,
         "add_account": _advance_add_account,
         "kyc": _advance_kyc,
+        "qr": _advance_qr,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)

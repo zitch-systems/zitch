@@ -181,7 +181,8 @@ def send_buttons(msisdn: str, body: str, buttons: list) -> dict:
 
 
 def send_cta_url(msisdn: str, body: str, url: str, cta: str = "Open",
-                 header: str = "", footer: str = "") -> dict:
+                 header: str = "", footer: str = "",
+                 allow_text_fallback: bool = True) -> dict:
     """Interactive CTA-URL message — a labelled BUTTON that opens `url`.
 
     Used instead of pasting the link into the body. A bare https:// URL in a bank's
@@ -192,8 +193,11 @@ def send_cta_url(msisdn: str, body: str, url: str, cta: str = "Open",
     than handing the customer to whatever app claims https.
 
     Falls back to a plain text message if the Cloud API rejects the interactive type
-    (older API versions do), because a link the customer can still tap beats a
-    verification step that silently never arrives.
+    (older API versions do), because a link the customer can still tap beats a step
+    that silently never arrives — but ONLY when the caller allows it. A URL whose
+    query string carries a secret or an identity number must never be pasted into a
+    thread as a consolation prize: that is the harm the button was preventing, and a
+    fallback that undoes it on an unrelated API error is worse than no message.
     """
     interactive = {"type": "cta_url",
                    "body": {"text": body[:1024]},
@@ -206,6 +210,10 @@ def send_cta_url(msisdn: str, body: str, url: str, cta: str = "Open",
     res = _send_payload(msisdn, {"type": "interactive", "interactive": interactive},
                         f"[cta_url] {cta} -> {url}")
     if res.get("success"):
+        return res
+    if not allow_text_fallback:
+        log.warning("wa_cta_url_rejected recipient=%s — no text fallback (sensitive URL)",
+                    mask_pii(msisdn))
         return res
     log.warning("wa_cta_url_rejected recipient=%s — falling back to a text link",
                 mask_pii(msisdn))

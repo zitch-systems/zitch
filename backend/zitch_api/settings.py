@@ -376,11 +376,22 @@ WEMA = {
     "REMITA_STATUS_LEGEND": os.environ.get("WEMA_REMITA_STATUS_LEGEND", ""),
     # ALAT's face-biometric web app (Account Creation product). Liveness is a hosted
     # WEB flow, not an API call: the customer is sent here with their BVN/NIN and the
-    # bank returns a correlationId proving the check passed. The default is ALAT's
-    # DEV host — wema_preflight fails go-live while it is still in use, because a
-    # dev verifier proves nothing about a real customer.
-    "FACE_VERIFY_URL": os.environ.get(
-        "WEMA_FACE_VERIFY_URL", "https://face-verification-dev.azurewebsites.net/"),
+    # bank returns a correlationId proving the check passed.
+    #
+    # NO DEFAULT. It used to default to ALAT's DEV verifier, which fails OPEN: a dev
+    # check answers happily and proves nothing about a real person, and the only
+    # thing standing between that and a lifted tier was a preflight command somebody
+    # had to remember to run. Unset now means the face rail reports itself
+    # unavailable — the app falls back to the document rail, the chat hides the step
+    # — which is the correct behaviour for a control we cannot perform.
+    "FACE_VERIFY_URL": os.environ.get("WEMA_FACE_VERIFY_URL", ""),
+    # Source IPs the face verifier calls us back from. SEPARATE from CALLBACK_IPS:
+    # that list is ALAT's transaction gateway, and the face app is a different Azure
+    # host. The face callback carries no shared token (its URL is shown to the
+    # customer), so this allowlist IS its authentication — without it, anyone who
+    # reads the URL out of their own browser could assert their own face check.
+    "FACE_CALLBACK_IPS": [ip.strip() for ip in
+                          os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
 }
 # Fraud: a spend at or above this from a device the account has NEVER authenticated
 # from requires face verification first (see common.risk.new_device_step_up_error).

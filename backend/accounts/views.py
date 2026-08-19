@@ -1272,16 +1272,47 @@ def kyc_nin_confirm(request):
 FACE_SESSION_TTL_MINUTES = 20
 
 
+def face_identity_error(user, identity_type: str, raw: str) -> str:
+    """Why this identity may NOT open a face session for this user, or "".
+
+    The face check only means something when it runs against an identity the account
+    has already PROVEN. Without this the session bound to whatever eleven digits the
+    caller supplied, and the callback then compared the bank's answer to that same
+    self-chosen value — a loop that is internally consistent and establishes nothing.
+
+    The attack it closes: someone who has taken over an account documented to another
+    person passes the bank's liveness check honestly, using their OWN unused BVN. The
+    face matches the BVN they presented, the bank says yes, and the tier lifts on the
+    victim's account — which is the exact substitution the face step exists to catch.
+
+    Shared by both entry points on purpose. The chat rail had no check at all, so a
+    number the API answered with a 409 was accepted in WhatsApp.
+    """
+    if not getattr(user, f"{identity_type}_verified", False):
+        return (f"Verify your {identity_type.upper()} first — the face check runs against it.")
+    stored = getattr(user, f"{identity_type}_hash", "") or ""
+    if not stored or not hmac.compare_digest(hash_identifier(raw), stored):
+        return (f"That {identity_type.upper()} isn't the one on this account. "
+                f"Enter the {identity_type.upper()} you verified.")
+    return ""
+
+
 def _face_callback_url(state: str) -> str:
     """The absolute URL ALAT POSTs the face-check result to.
 
-    Built from this service's own public origin and carrying the same path secret as
-    the other bank callbacks, so the endpoint is protected exactly like them (token +
-    source IP) rather than inventing a second, weaker scheme.
+    Carries the per-session state and NOTHING ELSE. It deliberately does not carry
+    WEMA_CALLBACK_TOKEN, even though every other bank callback does, because this URL
+    is not a server-to-server secret: it is handed to the customer, rendered in a
+    WebView address bar and WhatsApp's in-app browser, passed through Meta as a CTA
+    target, and logged by ALAT's own web app. The token guards the payout
+    AUTHORISATION endpoint, so putting it here published the secret that decides
+    whether a transfer may proceed — to every customer who verified their face.
+
+    The state is 32 bytes of CSPRNG, single-use and bound to one user, which is the
+    right shape for a value that must appear in a URL somebody can read.
     """
     base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
-    token = (settings.WEMA.get("CALLBACK_TOKEN", "") or "").strip() or "dev"
-    return f"{base}/webhooks/wema/face/{token}/{state}"
+    return f"{base}/webhooks/wema/face/{state}"
 
 
 @api
@@ -1307,6 +1338,9 @@ def kyc_face_start(request):
         return fail("Enter your 11-digit BVN or NIN")
     if _identity_owned_by_another_user(user, identity_type, raw):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    binding = face_identity_error(user, identity_type, raw)
+    if binding:
+        return fail(binding, status=400)
     if not wema.face_verify_live():
         # Never fabricate a passed biometric check. Off a configured deploy this is
         # an outage, and in local development it stays an outage too: a mock that

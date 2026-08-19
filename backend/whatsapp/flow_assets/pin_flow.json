@@ -1747,7 +1747,7 @@
               },
               "payload": {
                 "status": "Done",
-                "message": "You can close this window — the receipt is in your chat."
+                "message": "You can close this window."
               }
             }
           }

@@ -30,8 +30,13 @@ class ResultNotDuplicatedTests(SimpleTestCase):
                              f"RESULT still forwards its own {key} — the customer sees "
                              "the same verdict twice")
 
-    def test_the_close_out_says_where_the_receipt_is(self):
-        self.assertIn("receipt", FOOTER["on-click-action"]["payload"]["message"].lower())
+    def test_the_close_out_claims_nothing_about_the_outcome(self):
+        # RESULT carries pending and FAILED endings too, so the close-out must not
+        # promise a receipt: a payment that did not go through has none, and telling
+        # someone to look for one is worse than saying nothing.
+        message = FOOTER["on-click-action"]["payload"]["message"].lower()
+        for word in ("receipt", "success", "sent", "complete"):
+            self.assertNotIn(word, message)
 
     def test_result_stays_non_terminal(self):
         # Guards the fix this screen was built for: a terminal screen returned by

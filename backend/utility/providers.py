@@ -219,8 +219,20 @@ def vtu_verify_customer(service_id: str, billers_code: str, variation: str = "")
         if route is not None and route["type"] == "bill" and route["code"]:
             from . import wema
             res = wema.validate_bill_customer(package_id=route["code"], identifier=billers_code)
-            if res.get("success"):
-                return res
+            # Translated to the VTU.ng contract every caller reads. Wema answers
+            # `name`; the app, the chat and utility.views all read `customer_name`,
+            # so returning Wema's dict verbatim rendered the meter owner as blank —
+            # silently disabling the ONE control that catches a mistyped meter
+            # number before ₦20,000 goes to a stranger's meter.
+            #
+            # Success also requires a resolved NAME, not just a clean envelope.
+            # vt_verify_customer returns success=bool(name); Wema's returns the
+            # envelope's own flag, so a `hasError: false` reply with no customerName
+            # counted as a confirmed owner.
+            name = str(res.get("name") or "").strip()
+            if res.get("success") and name:
+                return {**res, "success": True, "customer_name": name,
+                        "customer_address": res.get("address", "")}
             # A Wema validation failure is not proof the identifier is bad (an
             # unmapped package or a gateway hiccup looks the same), so fall through
             # rather than telling the customer their own meter number is wrong.

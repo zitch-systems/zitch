@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Modal, View, Text, ActivityIndicator, Pressable, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -47,6 +47,24 @@ const FaceVerifyModal = ({
   };
 
   const close = () => { release(); onClose(); };
+
+  // The hold has to be released on EVERY exit, not just the ones that go through
+  // the close button. The parent takes the sheet down itself when the bank confirms
+  // — and unmounting the screen skips `close` entirely — so without this the
+  // app-lock stays suppressed for the rest of the session on the happy path, which
+  // is the one customers actually hit.
+  useEffect(() => {
+    if (!visible) release();
+    return release;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  // Each open starts clean. These used to persist across opens, so one transient
+  // network error left the error state latched: every later attempt showed
+  // "couldn't open" without trying, and only killing the app cleared it.
+  useEffect(() => {
+    if (visible) { setLoading(true); setFailed(false); }
+  }, [visible]);
 
   return (
     <Modal visible={visible} animationType="slide" onShow={hold} onRequestClose={close}>
@@ -108,8 +126,11 @@ const FaceVerifyModal = ({
         )}
 
         {loading && !failed ? (
-          <View style={{
-            position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
+          // Below the header, never over it. Covering the whole sheet hid the close
+          // button, so a page that hung left the customer with no way out at all on
+          // iOS, where there is no system back gesture to fall back on.
+          <View pointerEvents="none" style={{
+            position: 'absolute', left: 0, right: 0, top: 64, bottom: 0,
             alignItems: 'center', justifyContent: 'center', backgroundColor: c.bg,
           }}>
             <ActivityIndicator color={c.brand} />
@@ -132,10 +153,12 @@ const FaceVerifyModal = ({
 
 /** `https://host/path?x=1` -> `https://host/*`, for the navigation whitelist. */
 function originOf(url: string): string {
-  const m = /^(https?:\/\/[^/?#]+)/i.exec(url || '');
-  // No match means we have no URL worth opening; '' whitelists nothing, which fails
-  // closed rather than defaulting to '*'.
-  return m ? `${m[1]}/*` : '';
+  const m = /^(https:\/\/[^/?#]+)/i.exec(url || '');
+  // A pattern that matches NOTHING, not an empty string. react-native-webview
+  // treats an empty entry as "no restriction", so the previous '' failed OPEN — the
+  // inverse of what its comment claimed. https only: this sheet is labelled with
+  // the bank's name and must never render a plaintext page under it.
+  return m ? `${m[1]}/*` : 'about:blank';
 }
 
 export default FaceVerifyModal;

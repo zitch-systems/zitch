@@ -53,10 +53,12 @@ def can_interpret(kind: str) -> bool:
     return kind in AUDIO_TYPES + IMAGE_TYPES
 
 
-def interpret(kind: str, media_id: str, caption: str = "") -> tuple[str, str]:
-    """One inbound media message -> (text_to_route, message_to_send_instead).
+def interpret(kind: str, media_id: str, caption: str = "") -> tuple:
+    """One inbound media message -> (text_to_route, message_instead, scanned_qr).
 
-    Exactly one side of the pair is ever non-empty. `text_to_route` is fed to the
+    Exactly one of the three is ever set. `scanned_qr` is a parsed payment intent
+    (utility.qr.parse_payment) and takes precedence over the other two: a photo of
+    a payment code is an instruction, not a picture to describe. `text_to_route` is fed to the
     router as the customer's message; `message_to_send_instead` is a sentence to
     reply with when there is nothing to route.
 
@@ -70,14 +72,32 @@ def interpret(kind: str, media_id: str, caption: str = "") -> tuple[str, str]:
     if kind in AUDIO_TYPES and not llm.transcribes():
         # Said before the download, not after: there is no point pulling a
         # megabyte of audio down to a deployment that has nothing to hear it.
-        return "", NO_AUDIO_SUPPORT
-    if not llm.configured():
-        return "", CANNOT_READ.get("image" if kind in IMAGE_TYPES else "audio",
-                                   CANNOT_READ["other"])
+        return "", NO_AUDIO_SUPPORT, None
+    # An IMAGE is worth downloading even with no model configured, because a QR
+    # code is read arithmetically rather than described. Gating that behind the
+    # LLM would have made the scanner unavailable on exactly the deploys most
+    # likely to want a deterministic reader.
+    if not llm.configured() and kind not in IMAGE_TYPES:
+        return "", CANNOT_READ["audio"], None
 
     data, mime = download_media(media_id)
     if not data:
-        return "", CANNOT_READ["audio" if kind in AUDIO_TYPES else "image"]
+        return "", CANNOT_READ["audio" if kind in AUDIO_TYPES else "image"], None
+
+    if kind in IMAGE_TYPES:
+        # QR FIRST, always. It is exact where a description is a guess, it costs
+        # no model call, and an image of a payment code has one obvious meaning —
+        # asking a model to write a sentence about it and then parsing the
+        # sentence would be strictly worse at the thing the customer wants.
+        from utility.qr import decode_image, parse_payment
+
+        decoded = decode_image(data)
+        if decoded:
+            intent = parse_payment(decoded)
+            if intent.get("kind") != "other":
+                return "", "", intent
+        if not llm.configured():
+            return "", CANNOT_READ["image"], None
 
     if kind in AUDIO_TYPES:
         # Stripped here rather than trusted from the provider call: a silent
@@ -85,13 +105,13 @@ def interpret(kind: str, media_id: str, caption: str = "") -> tuple[str, str]:
         # would route an empty message into the router, which reads as the bot
         # ignoring them — the exact failure this feature exists to remove.
         said = llm.transcribe_audio(data, mime).strip()
-        return (said, "") if said else ("", CANNOT_READ["audio"])
+        return (said, "", None) if said else ("", CANNOT_READ["audio"], None)
 
     described = llm.describe_image(data, mime).strip()
     if not described:
-        return "", CANNOT_READ["image"]
+        return "", CANNOT_READ["image"], None
     # The caption leads: it is what the customer actually asked for, and the
     # description is context for it. Reversed, a model reading the pair tends to
     # answer the picture instead of the request.
     return (f"{caption.strip()}\n\n(Attached image shows: {described})"
-            if caption.strip() else described), ""
+            if caption.strip() else described), "", None

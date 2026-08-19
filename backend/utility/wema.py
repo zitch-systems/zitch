@@ -492,7 +492,16 @@ def face_verify_live() -> bool:
     """
     if wema_simulation():
         return False
-    return bool(_face_key() and settings.WEMA.get("FACE_VERIFY_URL"))
+    if not (_face_key() and settings.WEMA.get("FACE_VERIFY_URL")):
+        return False
+    # The callback that grants the tier is authenticated by source IP alone (its URL
+    # is shown to the customer, so it can carry no secret). With no allowlist there
+    # is nothing to authenticate it WITH, and offering the rail would mean granting
+    # face_verified to anyone who read the URL out of their own browser. Local
+    # development and tests are exempt because _ip_ok already short-circuits there.
+    if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
+        return True
+    return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
 
 
 def face_verify_on_dev_host() -> bool:

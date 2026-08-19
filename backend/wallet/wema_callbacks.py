@@ -114,7 +114,7 @@ def _token_ok(supplied: str) -> bool:
     return any(hmac.compare_digest(supplied, known) for known in (current, previous) if known)
 
 
-def _ip_ok(request) -> tuple:
+def _ip_ok(request, kind: str = "") -> tuple:
     """(allowed, ip). Uses the shared client_ip helper, which selects the entry at the
     configured trusted-proxy hop from the RIGHT of X-Forwarded-For — reading the
     left-most value would let any client forge the allowlist by prepending a header.
@@ -123,14 +123,23 @@ def _ip_ok(request) -> tuple:
     ip = client_ip(request)
     if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
         return True, ip
+    if kind == "face":
+        # The face callback has no shared token — its URL is handed to the customer
+        # — so this allowlist is the whole of its authentication. It is therefore
+        # enforced unconditionally, including under WEMA_SIMULATION: a simulated
+        # deploy that accepted a forged face result would still be lifting real KYC
+        # tiers on real accounts. An empty list allows nothing, and face_verify_live()
+        # refuses to offer the rail at all in that state.
+        return (ip in set(_conf("FACE_CALLBACK_IPS") or ())), ip
     if wema_provider.wema_simulation() or not _conf("CALLBACK_ENFORCE_IPS", False):
         return True, ip
     allowed = set(_conf("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS)
     return (ip in allowed), ip
 
 
-def wema_callback(kind: str):
-    """csrf-exempt, POST-only, token + IP authenticated, JSON-parsed.
+def wema_callback(kind: str, token_required: bool = True):
+    """csrf-exempt, POST-only, IP authenticated, JSON-parsed — and token
+    authenticated unless `token_required` is False.
 
     Order is load-bearing: transport auth runs before the body is parsed or anything
     from it is logged, so an unauthenticated flood can't write attacker-controlled
@@ -152,12 +161,12 @@ def wema_callback(kind: str):
                 record_webhook(source, outcome=WebhookEvent.REJECTED_METHOD,
                                http_status=405, remote_ip=client_ip(request))
                 return JsonResponse({"message": "Method not allowed"}, status=405)
-            if not _token_ok(token):
+            if token_required and not _token_ok(token):
                 log.warning("wema_cb_bad_token kind=%s ip=%s", kind, client_ip(request))
                 record_webhook(source, outcome=WebhookEvent.REJECTED_TOKEN,
                                http_status=403, remote_ip=client_ip(request))
                 return JsonResponse({"message": "Forbidden"}, status=403)
-            allowed, ip = _ip_ok(request)
+            allowed, ip = _ip_ok(request, kind)
             if not allowed:
                 log.warning("wema_cb_bad_ip kind=%s ip=%s", kind, ip)
                 alert("Wema callback from unexpected source IP", level="warning",
@@ -540,7 +549,11 @@ def wema_notification_callback(request):
     return JsonResponse({"status": True}, status=200)
 
 
-@wema_callback("face")
+# No shared token on this one. Its URL is given to the CUSTOMER — it is the cb_uri
+# inside the bank page's address — so a token here would be published rather than
+# kept. The per-session state carries the entropy instead, and the source-IP
+# allowlist carries the authentication.
+@wema_callback("face", token_required=False)
 def wema_face_callback(request, state=""):
     """The bank reports the outcome of a face-biometric check.
 

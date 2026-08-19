@@ -161,9 +161,24 @@ class Command(BaseCommand):
             return
         wanted = {f"{DISCO_NAMES[k].lower()}-electric": self._DISCO_WORDS.get(DISCO_NAMES[k].lower(), ())
                   for k in DISCO_NAMES}
+        # Scope to electricity billers before matching, exactly as _sync_cable scopes
+        # to the provider. ALAT's catalogue carries state water boards, waste boards
+        # and revenue agencies alongside the discos, and several share a state name —
+        # so an unscoped search for "kano" can match "Kano State Water Board" and map
+        # a customer's electricity payment to somebody's water bill. Falls back to the
+        # full set only when no row declares a power category, so a catalogue that
+        # labels things differently still maps rather than silently mapping nothing.
+        power = [r for r in rows
+                 if any(w in _norm(f"{r.get('category', '')} {r.get('biller', '')}")
+                        for w in ("electric", "power", "disco", "energy"))]
+        pool = power or rows
+        if not power:
+            self.stdout.write(self.style.WARNING(
+                "  billers: no electricity category found — matching against the whole "
+                "catalogue, so REVIEW each mapping below before applying"))
         mapped = unmatched = 0
         for service_id, words in sorted(wanted.items()):
-            hits = [r for r in rows
+            hits = [r for r in pool
                     if any(w in _norm(f"{r.get('biller', '')} {_name(r)}") for w in words)]
             if len(hits) != 1:
                 unmatched += 1
@@ -177,10 +192,15 @@ class Command(BaseCommand):
             mapped += 1
             self.stdout.write(f"  biller {service_id:26} -> {code}  ({hits[0].get('biller', '')})")
             if not dry:
+                # `active` is deliberately NOT in defaults. An operator switches a row
+                # off to stop a bad mapping taking payments; a catalogue sync is not a
+                # decision to undo that, and silently re-enabling it would resume the
+                # exact routing somebody had intervened to halt.
                 WemaBiller.objects.update_or_create(
                     service_id=service_id,
                     defaults={"package_id": code, "biller_id": str(hits[0].get("biller", ""))[:60],
-                              "name": _name(hits[0])[:120], "active": True})
+                              "name": _name(hits[0])[:120]},
+                )
         self.stdout.write(self.style.SUCCESS(
             f"billers: {mapped} mapped, {unmatched} unresolved{' (dry-run)' if dry else ''}"))
         if unmatched:

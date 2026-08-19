@@ -17,7 +17,9 @@ from django.utils import timezone
 from accounts.models import User, hash_identifier
 from wallet.models import WemaFaceSession
 
-CB = "/webhooks/wema/face/tok/{}"
+# No token segment: this URL is handed to the customer, so it carries the
+# per-session state alone. See accounts.views._face_callback_url.
+CB = "/webhooks/wema/face/{}"
 
 
 @override_settings(
@@ -210,3 +212,109 @@ class TheFaceUrlCarriesTheChannelIdTests(TestCase):
         from utility import wema
         with override_settings(WEMA={**self.LIVE, "CHANNEL_ID": ""}):
             self.assertFalse(wema.face_verify_live())
+
+
+class TheCallbackUrlCarriesNoSharedSecretTests(TestCase):
+    """This URL is handed to the CUSTOMER.
+
+    It rides in the bank page's `cb_uri`, so it is visible in a WebView address bar,
+    in WhatsApp's in-app browser and its history, in Meta's CTA target, and in ALAT's
+    own request logs. It once carried WEMA_CALLBACK_TOKEN — the single shared secret
+    that also guards the payout AUTHORISATION callback — which published to every
+    customer who verified their face the value that decides whether a transfer may
+    proceed.
+    """
+
+    def test_the_shared_callback_token_never_appears_in_the_url(self):
+        from accounts.views import _face_callback_url
+        with override_settings(
+                WEMA={"CALLBACK_TOKEN": "SUPERSECRETTOKENVALUE0123456789ab",
+                      "FACE_CALLBACK_IPS": ["1.2.3.4"]},
+                ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"}):
+            url = _face_callback_url("STATE123")
+        self.assertNotIn("SUPERSECRETTOKENVALUE", url)
+        self.assertTrue(url.endswith("/webhooks/wema/face/STATE123"))
+
+
+@override_settings(
+    WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
+          "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
+          "FACE_CALLBACK_IPS": ["9.9.9.9"],
+          "KEYS": {"wallet": "k"}, "CHANNEL_ID": "c", "SIMULATION": False,
+          "FACE_VERIFY_URL": "https://face.example/"})
+class FaceSessionBindsToTheProvenIdentityTests(TestCase):
+    """A face check against an identity the account never proved establishes nothing.
+
+    The session used to bind to whatever eleven digits the caller sent, and the
+    callback then compared the bank's answer to that same self-chosen value — a loop
+    that agrees with itself. Someone who had taken over an account documented to
+    another person could pass liveness honestly with their OWN BVN and lift the
+    victim's tier, which is precisely the substitution this step exists to catch.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="b1", phone="08040000001",
+                                             password="Str0ng!pass1", email="b@z.ng")
+        self.user.email_verified = True
+        self.user.bvn_verified = True
+        self.user.bvn_hash = hash_identifier("22222222222")
+        self.user.save()
+        from accounts.models import AccessToken
+        self.token = AccessToken.issue(self.user).key
+
+    def _start(self, **body):
+        return self.client.post("/api/kyc/face/start/",
+                                {"access_token": self.token, **body},
+                                content_type="application/json")
+
+    def test_the_proven_identity_opens_a_session(self):
+        res = self._start(bvn="22222222222")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+
+    def test_a_different_identity_is_refused(self):
+        res = self._start(bvn="33333333333")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+    def test_an_unverified_identity_type_is_refused(self):
+        # NIN is not verified on this account, so it cannot anchor a face check.
+        res = self._start(nin="44444444444")
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+
+class TheFaceRailRefusesWhatItCannotAuthenticateTests(TestCase):
+    """With no source-IP allowlist the callback has no authentication at all.
+
+    It carries no shared token by design, so the allowlist is the whole control. An
+    unset list must mean "do not offer the rail", not "accept anything" — otherwise
+    reading the URL out of your own browser is enough to grant yourself a tier.
+    """
+
+    def test_without_face_callback_ips_the_rail_is_unavailable(self):
+        from utility import wema
+        with override_settings(
+                DEBUG=False, TESTING=False,
+                WEMA={"CHANNEL_ID": "c", "SIMULATION": False,
+                      "FACE_VERIFY_URL": "https://face.example/",
+                      "FACE_CALLBACK_IPS": []}):
+            self.assertFalse(wema.face_verify_live())
+
+    def test_with_the_allowlist_configured_the_rail_is_available(self):
+        from utility import wema
+        with override_settings(
+                DEBUG=False, TESTING=False,
+                WEMA={"CHANNEL_ID": "c", "SIMULATION": False,
+                      "FACE_VERIFY_URL": "https://face.example/",
+                      "FACE_CALLBACK_IPS": ["9.9.9.9"]}):
+            self.assertTrue(wema.face_verify_live())
+
+    def test_an_unset_verifier_url_is_not_a_dev_default(self):
+        # It used to default to ALAT's DEV verifier, which answers happily and
+        # proves nothing — a fail-OPEN default guarded only by a preflight command.
+        from django.conf import settings
+        import importlib
+        self.assertNotIn("face-verification-dev",
+                         str(importlib.import_module("zitch_api.settings").WEMA.get(
+                             "FACE_VERIFY_URL", "") or ""))

@@ -282,6 +282,19 @@ const Kyc = () => {
     setFacePolling(false);
   }, []);
 
+  /** The customer closing the sheet themselves.
+   *
+   * The sheet comes down, but the POLL KEEPS RUNNING: they may well have finished
+   * the check a second before closing, and the bank's callback can still be in
+   * flight. Cancelling on close and reading the status once would race it — and
+   * lose, often enough — leaving somebody who passed looking at an unverified
+   * screen. The loop stops on its own when the verdict lands or the session dies.
+   */
+  const dismissFace = useCallback(() => {
+    setFaceUrl('');
+    load();
+  }, [load]);
+
   const pollFace = async (session: string) => {
     setFacePolling(true);
     // Poll for as long as the SERVER's session can still be completed. The first
@@ -290,9 +303,16 @@ const Kyc = () => {
     // camera and positioning a face takes longer than sixty seconds. Nothing here
     // may close the sheet on a timer; only a verdict or the customer does that.
     const deadline = Date.now() + FACE_SESSION_MAX_MS;
+    const startedAt = Date.now();
     try {
       while (faceSession.current === session && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 3000));
+        // Tight at first, then slow down. A flat 3s for twenty minutes is 400
+        // requests against a 120-per-600s limit, so the poll would start getting
+        // 429s — which this loop cannot tell apart from "not verified yet", and
+        // would sit through in silence. The check itself takes a minute or two, so
+        // the fast window is where it actually pays.
+        const elapsed = Date.now() - startedAt;
+        await new Promise((r) => setTimeout(r, elapsed < 60_000 ? 3000 : 10_000));
         // Re-checked after the wait: the customer may have closed the sheet, or
         // started a second attempt, while we were sleeping.
         if (faceSession.current !== session) return;
@@ -485,7 +505,7 @@ const Kyc = () => {
           <View style={{ height: 10 }} />
           <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with your bank'} icon="faceid" size="md"
             disabled={busy || facePolling || faceId.length !== 11} onPress={verifyFaceWithBank} />
-          <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => { closeFace(); load(); }} />
+          <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={dismissFace} />
         </KycRow>
       ) : (
         <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>
