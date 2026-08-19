@@ -48,26 +48,36 @@ const FaceVerifyModal = ({
 
   const close = () => { release(); onClose(); };
 
+  /** Every open starts clean.
+   *
+   * `loading` and `failed` used to persist across opens, so one transient network
+   * error latched the error state: every later attempt showed "couldn't open"
+   * without trying, and only killing the app cleared it.
+   *
+   * Done on the Modal's own onShow rather than in an effect keyed on `visible` —
+   * setting state inside an effect body triggers the cascading render React warns
+   * about, and this is genuinely an event ("the sheet opened"), not a state
+   * synchronisation.
+   */
+  const open = () => {
+    setLoading(true);
+    setFailed(false);
+    hold();
+  };
+
   // The hold has to be released on EVERY exit, not just the ones that go through
   // the close button. The parent takes the sheet down itself when the bank confirms
   // — and unmounting the screen skips `close` entirely — so without this the
   // app-lock stays suppressed for the rest of the session on the happy path, which
-  // is the one customers actually hit.
+  // is the one customers actually hit. No setState here: `release` only touches the
+  // session module and a ref.
   useEffect(() => {
     if (!visible) release();
     return release;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
-
-  // Each open starts clean. These used to persist across opens, so one transient
-  // network error left the error state latched: every later attempt showed
-  // "couldn't open" without trying, and only killing the app cleared it.
-  useEffect(() => {
-    if (visible) { setLoading(true); setFailed(false); }
   }, [visible]);
 
   return (
-    <Modal visible={visible} animationType="slide" onShow={hold} onRequestClose={close}>
+    <Modal visible={visible} animationType="slide" onShow={open} onRequestClose={close}>
       <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
         <View style={{
           flexDirection: 'row', alignItems: 'center', gap: 12,
