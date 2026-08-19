@@ -142,13 +142,19 @@ def _mock_blocked() -> bool:
     return mock_disabled_in_prod() and not wema_simulation()
 
 
-# Products authenticated by the Wallet Services subscription. The live product page
-# lists exactly: wallet creation, credit wallet, debit wallet, bills payment,
-# transaction notification and account management. The portal sells Virtual Naira
-# Card, Remita, BNPL, Address Verification, scheduled debit, statements and
-# Pay-with-Bank as separate subscriptions; an unrelated wallet key must never be sent
-# to those products. Airtime/Data and Account Upgrade are also separate API products
-# in the catalogue, so they require their own keys when used.
+# Products this module will let the Wallet Services key authenticate BY DEFAULT.
+#
+# Deliberately narrower than what a given Wema tenant may actually allow. Ours, for
+# instance, has one Wallet Services subscription whose API list also covers Airtime
+# and Data, Bills, Card Management, Account Upgrade, Remita, KYC and Face Biometric —
+# but that is a fact about our tenant, not about ALAT, and widening the default here
+# would send the wallet key to those products on EVERY deploy, including ones where
+# APIM rejects it. Point a product's own env var at the wallet key when the tenant
+# permits it (WEMA_AIRTIME_KEY=<wallet key>, and so on); explicit beats inferred, and
+# it stays visible when the products are later split onto their own subscriptions.
+#
+# One product is excluded from any fallback on purpose: the key the face-biometric
+# WEB app receives travels in a URL the customer's browser loads. See _face_key.
 _WALLET_COVERED = ("wallet_nin", "wallet_bvn", "acct_mgt", "credit", "debit", "bills")
 
 
@@ -459,13 +465,35 @@ def address_verify_live() -> bool:
     return _product_live("upgrade")
 
 
+def _face_key() -> str:
+    """The subscription key sent to the face-biometric WEB app — and the ONE key in
+    this module that must never fall back to Wallet Services.
+
+    Every other product may borrow the wallet key when it has no key of its own,
+    because those keys travel server-to-server inside an HTTPS request header. This
+    one does not: ALAT's face verifier takes it as `x_tk` in a URL the CUSTOMER'S
+    BROWSER loads, so it is readable by the customer, their browser history, and
+    anything with sight of the address bar.
+
+    Wallet Services includes the Debit Wallet API. Borrowing that key here would
+    publish a credential that can move money to every customer who verifies their
+    face. So this reads WEMA_ACCOUNT_CREATION_KEY alone; unset, the face rail simply
+    reports itself unavailable (the app falls back to the document rail and the chat
+    hides the step) rather than leaking the money key.
+    """
+    return (settings.WEMA.get("KEYS") or {}).get("wallet_bvn", "")
+
+
 def face_verify_live() -> bool:
     """Whether the ALAT face-biometric web app can be used for real.
 
-    It rides the Account Creation subscription, so it needs that product's key (or
-    the Wallet Services key it falls back to) and a configured base URL.
+    Needs the Account Creation subscription key specifically — see _face_key for why
+    the usual Wallet Services fallback is refused here — plus a configured base URL.
     """
-    return bool(_product_live("wallet_bvn") and settings.WEMA.get("FACE_VERIFY_URL"))
+    if wema_simulation():
+        return False
+    return bool(settings.WEMA.get("CHANNEL_ID") and _face_key()
+                and settings.WEMA.get("FACE_VERIFY_URL"))
 
 
 def face_verify_on_dev_host() -> bool:
@@ -489,17 +517,18 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     app is a WebView whose navigation a determined user can drive by hand. The server
     callback is the only variant where the bank tells US the outcome directly.
 
-    SECURITY, unavoidable: `x_tk` is our APIM subscription key, and the bank's design
-    puts it in a URL the customer's browser loads. Anyone who inspects that page can
-    read it. It is scoped to the Account Creation product, so treat it as public and
-    keep every money-moving product on a DIFFERENT subscription key — never reuse the
-    wallet key here once Wema issues a separate one (WEMA_ACCOUNT_CREATION_KEY).
+    SECURITY: `x_tk` is an APIM subscription key and the bank's design puts it in a
+    URL the customer's browser loads, so treat it as PUBLIC. It comes from _face_key,
+    which reads WEMA_ACCOUNT_CREATION_KEY and deliberately refuses the Wallet Services
+    fallback every other product gets — Wallet Services includes the Debit Wallet API,
+    and publishing a money-moving key to every customer who verifies their face is not
+    a trade worth making for one fewer environment variable.
     """
     from urllib.parse import quote, urlencode
 
     base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
     kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
-    query = urlencode({kind: identity_value, "x_tk": _sub_key("wallet_bvn"),
+    query = urlencode({kind: identity_value, "x_tk": _face_key(),
                        "cb_uri": callback_url}, quote_via=quote)
     return f"{base}/?{query}"
 

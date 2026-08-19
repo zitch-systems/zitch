@@ -107,7 +107,9 @@ class FaceUrlTests(TestCase):
     def test_the_url_carries_the_identity_key_and_a_server_callback(self):
         from utility import wema
         with override_settings(WEMA={"FACE_VERIFY_URL": "https://face.example/",
-                                     "KEYS": {"wallet": "SUBKEY"}, "CHANNEL_ID": "c",
+                                     # The Account Creation key, not the wallet key —
+                                     # see TheFaceKeyIsNeverTheMoneyKeyTests.
+                                     "KEYS": {"wallet_bvn": "SUBKEY"}, "CHANNEL_ID": "c",
                                      "SIMULATION": False}):
             url = wema.face_verification_url("nin", "12345678901", "https://api.z/cb")
         self.assertIn("nin=12345678901", url)
@@ -171,3 +173,44 @@ class AddressRailTests(TestCase):
         self.user.wallet.save(update_fields=["account_number"])
         res = self._post()
         self.assertEqual(res.status_code, 409)
+
+
+class TheFaceKeyIsNeverTheMoneyKeyTests(TestCase):
+    """The one subscription key that reaches a customer's browser.
+
+    ALAT's face verifier takes `x_tk` in a URL the customer loads, so that key is
+    public in practice. Wallet Services — the key every other product falls back to —
+    includes the Debit Wallet API. Borrowing it here would hand a money-moving
+    credential to every customer who verifies their face.
+    """
+
+    def test_the_wallet_key_is_never_sent_to_the_browser(self):
+        from utility import wema
+        with override_settings(WEMA={"FACE_VERIFY_URL": "https://face.example/",
+                                     "CHANNEL_ID": "c", "SIMULATION": False,
+                                     "KEYS": {"wallet": "MONEY_KEY"}}):
+            # No Account Creation key configured: the rail must report itself
+            # unavailable rather than borrowing the money key.
+            self.assertFalse(wema.face_verify_live())
+            url = wema.face_verification_url("bvn", "22222222222", "https://api.z/cb")
+        self.assertNotIn("MONEY_KEY", url)
+
+    def test_the_account_creation_key_is_what_travels(self):
+        from utility import wema
+        with override_settings(WEMA={"FACE_VERIFY_URL": "https://face.example/",
+                                     "CHANNEL_ID": "c", "SIMULATION": False,
+                                     "KEYS": {"wallet": "MONEY_KEY",
+                                              "wallet_bvn": "FACE_KEY"}}):
+            self.assertTrue(wema.face_verify_live())
+            url = wema.face_verification_url("bvn", "22222222222", "https://api.z/cb")
+        self.assertIn("x_tk=FACE_KEY", url)
+        self.assertNotIn("MONEY_KEY", url)
+
+    def test_server_side_account_creation_may_still_borrow_the_wallet_key(self):
+        # The refusal is scoped to the BROWSER-facing key. The /account-creation
+        # endpoints themselves are server-to-server and keep the ordinary fallback,
+        # or a deploy with one subscription could not onboard anyone.
+        from utility import wema
+        with override_settings(WEMA={"CHANNEL_ID": "c", "SIMULATION": False,
+                                     "KEYS": {"wallet": "MONEY_KEY"}}):
+            self.assertEqual(wema._sub_key("wallet_bvn"), "MONEY_KEY")
