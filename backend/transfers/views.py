@@ -47,8 +47,14 @@ def list_banks(request):
     almost everyone sends to before the long alphabetical tail.
     """
     banks = Bank.objects.filter(active=True).order_by("-popular", "name")
-    return ok(banks=[{"code": b.code, "name": b.name, "color": b.color, "logo": b.logo}
-                     for b in banks])
+    aliases = {
+        "gtb": ["GT", "GTBank"], "uba": ["UBA"], "fcmb": ["FCMB"],
+        "access": ["Access"], "zenith": ["Zenith"], "first": ["FirstBank", "First"],
+        "fidelity": ["Fidelity"], "sterling": ["Sterling"], "kuda": ["Kuda"],
+        "opay": ["OPay"], "palmpay": ["PalmPay"], "moniepoint": ["Moniepoint"],
+    }
+    return ok(banks=[{"code": b.code, "name": b.name, "aliases": aliases.get(b.code, []),
+                      "color": b.color, "logo": b.logo} for b in banks])
 
 
 def _beneficiary(b) -> dict:
