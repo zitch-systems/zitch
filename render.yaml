@@ -399,132 +399,159 @@ services:
           type: keyvalue
           name: zitch-cache
           property: connectionString
+      # The rail credentials and provider selectors below are set on THIS service
+      # rather than inherited from zitch-api.
+      #
+      # They used to be `fromService: {..., envVarKey: X}`, which reads well and
+      # cannot be synced: a fromService reference requires the key to already
+      # EXIST on the source service, and all of these are `sync: false` there —
+      # meaning they exist only once somebody has typed them into the dashboard.
+      # Any one of them still blank failed the whole Blueprint with
+      #
+      #   environment variable not found: "PAYMENT_PROVIDER" for zitch-api
+      #
+      # so the worker could not be created at all, and every one that got set
+      # only moved the error to the next blank key. A background worker that does
+      # not exist is a worse outcome than two places to paste a credential.
+      #
+      # The values that MUST be byte-identical are still inherited above and
+      # below — the Django secret and hash keys (a worker with a different
+      # DJANGO_KYC_HASH_KEY would compute identity hashes nobody else can match)
+      # and the simulation flags (a worker running in simulation while the API is
+      # live would answer real customers with invented money). Those are also the
+      # ones known to be set, so they resolve.
+      #
+      # If the duplication becomes a drift problem, the fix is a Render
+      # environment group shared by both services. That is a migration rather
+      # than an edit: values currently held on zitch-api would have to be
+      # re-entered in the group, so it is not something to do while the rails are
+      # carrying traffic.
       - key: CARD_PROVIDER
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_PROVIDER}
+        sync: false
       - key: PAYMENT_PROVIDER
-        fromService: {type: web, name: zitch-api, envVarKey: PAYMENT_PROVIDER}
+        sync: false
       - key: PAYOUT_PROVIDER
-        fromService: {type: web, name: zitch-api, envVarKey: PAYOUT_PROVIDER}
+        sync: false
       - key: VAS_PROVIDER
-        fromService: {type: web, name: zitch-api, envVarKey: VAS_PROVIDER}
+        sync: false
       - key: KYC_PROVIDER
-        fromService: {type: web, name: zitch-api, envVarKey: KYC_PROVIDER}
+        sync: false
       - key: WEMA_CHANNEL_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CHANNEL_ID}
+        sync: false
       - key: WEMA_WALLET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_WALLET_KEY}
+        sync: false
       - key: WEMA_ACCOUNT_CREATION_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_ACCOUNT_CREATION_KEY}
+        sync: false
       - key: WEMA_CARD_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_KEY}
+        sync: false
       - key: WEMA_AIRTIME_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_AIRTIME_KEY}
+        sync: false
       - key: WEMA_BILLS_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_KEY}
+        sync: false
       - key: WEMA_UPGRADE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_UPGRADE_KEY}
+        sync: false
       - key: WEMA_KYC_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_KYC_KEY}
+        sync: false
       - key: WEMA_REMITA_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_KEY}
+        sync: false
       - key: WEMA_BNPL_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_KEY}
+        sync: false
       - key: WEMA_CARD_PRODUCT_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_CARD_PRODUCT_KEY}
+        sync: false
       - key: WEMA_BNPL_MERCHANT_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_MERCHANT_ID}
+        sync: false
       - key: WEMA_BNPL_AUTH_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BNPL_AUTH_KEY}
+        sync: false
       - key: WEMA_SOURCE_ACCOUNT
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SOURCE_ACCOUNT}
+        sync: false
       - key: WEMA_SECURITY_INFO
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_SECURITY_INFO}
+        sync: false
       - key: WEMA_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BASE_URL}
+        sync: false
       - key: WEMA_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: WEMA_SIMULATION}
       - key: WEMA_VAS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_VAS_STATUS_LEGEND}
+        sync: false
       - key: WEMA_BILLS_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_BILLS_STATUS_LEGEND}
+        sync: false
       - key: WEMA_REMITA_STATUS_LEGEND
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_REMITA_STATUS_LEGEND}
+        sync: false
       - key: WEMA_FACE_VERIFY_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_VERIFY_URL}
+        sync: false
       - key: WEMA_FACE_CALLBACK_IPS
-        fromService: {type: web, name: zitch-api, envVarKey: WEMA_FACE_CALLBACK_IPS}
+        sync: false
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: VTUNG_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: VTUNG_API_KEY}
+        sync: false
       - key: VTUNG_USERNAME
-        fromService: {type: web, name: zitch-api, envVarKey: VTUNG_USERNAME}
+        sync: false
       - key: VTUNG_PASSWORD
-        fromService: {type: web, name: zitch-api, envVarKey: VTUNG_PASSWORD}
+        sync: false
       - key: TERMII_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+        sync: false
       - key: TERMII_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+        sync: false
       - key: TERMII_SENDER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+        sync: false
       - key: TERMII_CHANNEL
-        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+        sync: false
       - key: RESEND_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+        sync: false
       - key: RESEND_FROM_EMAIL
-        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+        sync: false
       # The worker settles funding and reconciles VTU, so ledger rows reach
       # Successful in this process too — it has to alert on the same terms.
       - key: TXN_ALERTS_SMS
-        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_SMS}
+        sync: false
       - key: PREMBLY_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_API_KEY}
+        sync: false
       - key: PREMBLY_APP_ID
-        fromService: {type: web, name: zitch-api, envVarKey: PREMBLY_APP_ID}
+        sync: false
       - key: CARD_ISSUER_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_API_KEY}
+        sync: false
       - key: CARD_ISSUER_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_BASE_URL}
+        sync: false
       - key: CARD_ISSUER_BRAND
-        fromService: {type: web, name: zitch-api, envVarKey: CARD_ISSUER_BRAND}
+        sync: false
       - key: FINCRA_SECRET_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: FINCRA_SECRET_KEY}
+        sync: false
       - key: FINCRA_BUSINESS_ID
-        fromService: {type: web, name: zitch-api, envVarKey: FINCRA_BUSINESS_ID}
+        sync: false
       - key: WHATSAPP_MODE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
+        sync: false
       - key: WHATSAPP_BASE_URL
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
+        sync: false
       - key: WHATSAPP_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
+        sync: false
       - key: WHATSAPP_PHONE_NUMBER_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+        sync: false
       - key: WHATSAPP_VERIFY_TOKEN
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+        sync: false
       - key: WHATSAPP_APP_SECRET
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
+        sync: false
       - key: WHATSAPP_BUSINESS_NUMBER
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+        sync: false
       - key: WHATSAPP_QUEUE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
+        sync: false
       - key: WHATSAPP_QUEUE_KEY_PREV
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
+        sync: false
       - key: WHATSAPP_ALLOW_CHAT_SIGNUP
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_ALLOW_CHAT_SIGNUP}
+        sync: false
       - key: WHATSAPP_FLOW_ID
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_ID}
+        sync: false
       - key: WHATSAPP_FLOW_PRIVATE_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY}
+        sync: false
       - key: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_PRIVATE_KEY_PASSPHRASE}
+        sync: false
       - key: WHATSAPP_FLOW_CTA
-        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_FLOW_CTA}
+        sync: false
       - key: LLM_API_KEY
-        fromService: {type: web, name: zitch-api, envVarKey: LLM_API_KEY}
+        sync: false
       - key: LLM_MODEL
-        fromService: {type: web, name: zitch-api, envVarKey: LLM_MODEL}
+        sync: false
       - key: SENTRY_DSN
-        fromService: {type: web, name: zitch-api, envVarKey: SENTRY_DSN}
+        sync: false
 
   # Daily Fixed Save maturity sweep — pays out matured plans, including for
   # users who never open the app. REQUIRES A PAID RENDER PLAN: the cron service

@@ -11,7 +11,7 @@ from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
-from .models import Bank, Beneficiary
+from .models import AUTO_SAVE_AFTER, Bank, Beneficiary
 
 
 class BankTransferTests(TestCase):
@@ -674,3 +674,111 @@ class SavedBeneficiaryTests(TestCase):
         self.assertTrue(body.get("success"), body)
         row = Beneficiary.objects.get(user=self.user, account_number="0777777777")
         self.assertEqual(body["beneficiary_id"], row.id)
+
+
+class PayoutFrequencyTests(TestCase):
+    """A recipient earns their place in the address book.
+
+    Every payout is remembered — that is what fills the send screen in from a
+    typed account number — but being remembered is not the same as being kept.
+    Keeping is the customer's own decision, or the conclusion of having paid
+    somebody so many times that asking would be pedantic.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="500000")
+        self.bank = Bank.objects.create(code="gtb", name="GTBank", bank_code="058")
+
+    def pay(self):
+        from .services import execute_payout
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            return execute_payout(self.user, Decimal("1000"), "0123456789", self.bank,
+                                  "JOHN DOE", channel="app")
+
+    def row(self):
+        return Beneficiary.objects.get(user=self.user, account_number="0123456789")
+
+    def test_every_payout_is_counted(self):
+        for _ in range(3):
+            self.pay()
+        self.assertEqual(self.row().times_paid, 3)
+
+    def test_nobody_is_offered_before_the_third_payout(self):
+        self.assertFalse(self.pay().beneficiary_offer_save)
+        self.assertFalse(self.pay().beneficiary_offer_save)
+
+    def test_the_third_payout_is_worth_offering(self):
+        self.pay(); self.pay()
+        self.assertTrue(self.pay().beneficiary_offer_save)
+
+    def test_a_saved_recipient_is_never_offered_again(self):
+        self.pay(); self.pay(); self.pay()
+        r = self.row(); r.saved = True; r.save()
+        self.assertFalse(self.pay().beneficiary_offer_save)
+
+    def test_fifty_payouts_keep_the_recipient_without_asking(self):
+        Beneficiary.objects.create(
+            user=self.user, name="JOHN DOE", account_number="0123456789",
+            bank_name="GTBank", times_paid=AUTO_SAVE_AFTER - 1)
+        self.pay()
+        self.assertTrue(self.row().saved)
+
+    def test_the_count_survives_two_payouts_settling_at_once(self):
+        # Read-modify-write would lose one, and the count is what decides whether
+        # somebody is offered and when they are kept outright.
+        self.pay()
+        Beneficiary.objects.filter(pk=self.row().pk).update(times_paid=7)
+        self.pay()
+        self.assertEqual(self.row().times_paid, 8)
+
+
+class BankShortFormTests(TestCase):
+    """What people actually call the banks.
+
+    We store one name each, usually the short trading name, so the legal name off
+    a statement matched nothing at all — which reads as the bank not existing
+    rather than as us knowing it by another name.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test")
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", active=True)
+        Bank.objects.create(code="uba", name="UBA", bank_code="033", active=True)
+        Bank.objects.create(code="scb", name="Standard Chartered", bank_code="068", active=True)
+
+    def test_the_legal_name_finds_the_bank(self):
+        from whatsapp.router import _match_banks
+        for phrase in ("guaranty trust bank", "guaranty trust", "gtco", "gt"):
+            hits = _match_banks(phrase)
+            self.assertEqual([b.code for b in hits], ["gtb"], phrase)
+
+    def test_an_initialism_finds_the_bank(self):
+        from whatsapp.router import _match_banks
+        self.assertEqual([b.code for b in _match_banks("scb")], ["scb"])
+        self.assertEqual([b.code for b in _match_banks("united bank for africa")], ["uba"])
+
+    def test_an_unknown_phrase_still_matches_nothing(self):
+        from whatsapp.router import _match_banks
+        self.assertEqual(_match_banks("not a bank at all"), [])
+
+    def test_no_alias_is_claimed_by_two_banks(self):
+        # An alias is matched exactly and wins outright, so one claimed twice
+        # would silently route money to whichever sorted first.
+        from .bank_aliases import BANK_ALIASES
+        seen = {}
+        for slug, (_short, names) in BANK_ALIASES.items():
+            for n in names:
+                self.assertNotIn(n, seen, f"{n!r} claimed by {seen.get(n)} and {slug}")
+                seen[n] = slug
+
+    def test_the_app_is_told_the_short_form(self):
+        res = self.client.post("/api/transfers/banks/", data=json.dumps({}),
+                               content_type="application/json")
+        rows = {b["code"]: b for b in res.json()["banks"]}
+        self.assertEqual(rows["gtb"]["short"], "GT")
+        self.assertIn("guaranty trust bank", rows["gtb"]["aliases"])
+        # Additive: everything a shipped build reads is still there.
+        self.assertEqual(rows["gtb"]["name"], "GTBank")

@@ -17,7 +17,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken
-from transfers.models import Bank, Beneficiary
+from transfers.models import AUTO_SAVE_AFTER, SAVE_PROMPT_AFTER, Bank, Beneficiary
 from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
@@ -4909,17 +4909,45 @@ class SavedPeopleTests(TestCase):
                 "bank_name": "GTBank", "bank_code": "058"}
         return Beneficiary.objects.create(**{**base, **kw})
 
-    def test_a_settled_transfer_offers_to_keep_the_recipient(self):
-        self.inbound("send", "s1")
-        self.inbound("1000", "s2")
-        self.inbound("0123456789", "s3")
-        self.inbound("gtb", "s4")
-        self.inbound("yes", "s5")
-        self.inbound("1234", "s6")
+    def _transfer(self, tag):
+        self.inbound("send", f"{tag}1")
+        self.inbound("1000", f"{tag}2")
+        self.inbound("0123456789", f"{tag}3")
+        self.inbound("gtb", f"{tag}4")
+        self.inbound("yes", f"{tag}5")
+        self.inbound("1234", f"{tag}6")
+
+    def test_a_first_transfer_asks_nothing(self):
+        # Most transfers are one-offs — a fee, a stranger, a seller — and asking
+        # about every one of them is how a useful prompt becomes noise.
+        self._transfer("a")
+        self.assertNotIn("save", self.last_reply().lower())
+        row = Beneficiary.objects.get(user=self.user, account_number="0123456789")
+        self.assertEqual(row.times_paid, 1)
+        self.assertFalse(row.saved)
+
+    def test_the_third_transfer_asks_once(self):
+        self._transfer("a")
+        self._transfer("b")
+        self.assertNotIn("save", self.last_reply().lower())
+        self._transfer("c")
         self.assertIn("save", self.last_reply().lower())
 
-    def test_declining_is_remembered_so_the_offer_stops(self):
-        row = self.make_row()
+    def test_it_never_asks_about_the_same_person_twice(self):
+        for tag in ("a", "b", "c"):
+            self._transfer(tag)
+        self.assertIn("save", self.last_reply().lower())
+        self._transfer("d")
+        self.assertNotIn("save", self.last_reply().lower())
+
+    def test_paying_someone_fifty_times_keeps_them_without_asking(self):
+        row = self.make_row(times_paid=AUTO_SAVE_AFTER - 1)
+        self._transfer("a")
+        row.refresh_from_db()
+        self.assertTrue(row.saved)
+
+    def test_declining_ends_the_asking(self):
+        row = self.make_row(times_paid=SAVE_PROMPT_AFTER, save_prompted=True)
         self.inbound(f"bene:no:{row.pk}", "d1")
         self.assertIn("won't ask", self.last_reply())
         from .router import _offer_to_save
@@ -4935,6 +4963,16 @@ class SavedPeopleTests(TestCase):
         self.inbound("Mum", "k2")
         row.refresh_from_db()
         self.assertEqual(row.nickname, "Mum")
+
+    def test_a_payment_instruction_is_not_taken_as_a_name(self):
+        """The reported bug: asked what to call somebody, the customer typed
+        "2k to. Yahaya 0998787776 polaris" — plainly a new transfer — and it was
+        saved as that person's nickname, eating the payment."""
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "b1")
+        self.inbound("2k to. Yahaya 0998787776 polaris", "b2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "")
 
     def test_an_ordinary_name_is_never_mistaken_for_a_command(self):
         # "Elizabeth" contains "bet" and "Ricardo" contains "card"; the intent
