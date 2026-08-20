@@ -21,7 +21,7 @@ from wallet.services import (
     settle_or_refund,
 )
 
-from .models import AUTO_SAVE_AFTER, SAVE_PROMPT_AFTER, Bank, Beneficiary
+from .models import Bank, Beneficiary
 
 log = logging.getLogger("zitch")
 
@@ -410,15 +410,14 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         user=user, account_number=account_number, bank_name=bank.name,
         defaults={"name": name, "bank_code": bank.bank_code, "color": bank.color or "#0FA295"},
     )
-    # Counted with F() rather than read-modify-write: two transfers settling at
-    # once would otherwise both read the same number and both write it back,
-    # losing one. The count decides when a recipient is offered and when they are
-    # kept outright, so it has to be the real number of payouts.
-    Beneficiary.objects.filter(pk=row.pk).update(times_paid=F("times_paid") + 1)
-    row.refresh_from_db(fields=["times_paid"])
-    if not row.saved and row.times_paid >= AUTO_SAVE_AFTER:
-        # Paid this often, the customer has answered the question with their
-        # behaviour and does not need to be asked it.
+    # Automatic recipient memory is separate from the explicit address book:
+    # every successful/accepted transfer increments the private frequency counter.
+    # After transfer #3 it becomes eligible for account-number search/autofill;
+    # after transfer #51 it is promoted to Beneficiary (saved=True). This is
+    # idempotent for retries because the payout itself is idempotent.
+    Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1)
+    row.refresh_from_db(fields=["transfer_count", "saved", "name", "bank_code", "color", "nickname"])
+    if row.transfer_count > 50 and not row.saved:
         row.saved = True
         row.save(update_fields=["saved"])
     txn.refresh_from_db()
@@ -427,8 +426,4 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     # account number — which would cost a second name enquiry to answer a
     # question we already know the answer to.
     txn.beneficiary_id = row.id
-    # Whether this recipient is worth offering to keep, decided here so the chat
-    # and the app cannot drift into asking on different terms. Same threshold,
-    # same answer, one place.
-    txn.beneficiary_offer_save = (not row.saved and row.times_paid >= SAVE_PROMPT_AFTER)
     return txn
