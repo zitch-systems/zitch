@@ -22,7 +22,7 @@ const LARGE_TXN = 100000;
 // before the user types, not after the button refuses to enable.
 const MIN_AMOUNT = 50;
 type Step = null | 'confirm' | 'pin';
-type Bank = { code: string; name: string; color: string; logo?: string };
+type Bank = { code: string; name: string; aliases?: string[]; color: string; logo?: string };
 type Beneficiary = {
   id: number; name: string; account_number: string; bank_name: string;
   initials: string; color: string;
@@ -492,7 +492,7 @@ const SendMoney = () => {
       .toLowerCase().includes(query.toLowerCase()))
     .slice()
     .sort((x, y) => Number(!!y.saved) - Number(!!x.saved));
-  const filteredBanks = banks.filter((b) => b.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
+  const filteredBanks = banks.filter((b) => (b.name + ' ' + (b.aliases || []).join(' ')).toLowerCase().includes(bankQuery.trim().toLowerCase()));
   // "Sent before" suggestions: as the user types 4+ digits, surface up to 3
   // prior bank beneficiaries whose account number starts with what they've
   // typed. Tap fills the field, which triggers the fast-path effect above to
@@ -847,7 +847,7 @@ const SendMoney = () => {
           filteredBanks.map((b, i) => (
             <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
               <BankLogo name={b.name} color={b.color} logo={b.logo} size={36} />
-              <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
+              <View style={{ flex: 1 }}><Text style={{ fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>{b.aliases?.length ? <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>{b.aliases.join(' · ')}</Text> : null}</View>
               {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
             </Pressable>
           ))
