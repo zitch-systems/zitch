@@ -19,7 +19,7 @@ and never learns what the device did with it.
 from decimal import Decimal
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from whatsapp import flows
 from whatsapp.flows import SUCCESS_SCREEN, _check_contract, _close_flow
@@ -53,7 +53,8 @@ class TerminationEnvelopeTests(TestCase):
         self.assertEqual(set(out["data"]), {"status", "message"})
 
 
-class SettledSuccessClosesThePanelTests(TestCase):
+@override_settings(WHATSAPP_FLOW={"RESULT_SCREEN": True})
+class SettledOutcomeTests(TestCase):
     """The end-to-end property: a successful payment ends the Flow."""
 
     def setUp(self):
@@ -75,13 +76,24 @@ class SettledSuccessClosesThePanelTests(TestCase):
             return flows.handle_flow_request(
                 {"action": "data_exchange", "flow_token": self.token, "data": {"pin": "1234"}})
 
-    def test_a_settled_success_ends_the_flow(self):
+    def test_a_settled_success_shows_its_outcome_page(self):
+        # The success no longer ends the Flow by itself. Closing the panel the
+        # instant the money moved removed the duplicate page and the confirmation
+        # with it — the customer had to go and find the receipt to learn whether
+        # their payment had worked. The Flow ends when they tap Done; see
+        # test_done_ends_the_flow_from_the_outcome_page below.
         from whatsapp.router import Outcome
 
         resp = self._exchange(Outcome("₦1,000.00 sent to ADA EZE.", status="success"))
+        self.assertEqual(resp["screen"], flows.RESULT_SCREEN)
+        self.assertEqual(resp["data"]["status"], "✅ Successful")
+        self.assertNotIn(TERMINATION, resp["data"])
+
+    def test_done_ends_the_flow_from_the_outcome_page(self):
+        resp = flows.handle_flow_request({"action": "data_exchange",
+                                          "flow_token": self.token,
+                                          "data": {"close": True}})
         self.assertEqual(resp["screen"], SUCCESS_SCREEN)
-        self.assertIn(TERMINATION, resp["data"],
-                      "a success must END the Flow, not answer the terminal screen")
         self.assertEqual(resp["data"][TERMINATION]["params"]["flow_token"], self.token)
 
     def test_a_pending_outcome_still_holds_the_panel_open(self):

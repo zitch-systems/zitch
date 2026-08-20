@@ -68,6 +68,11 @@ def _no_id_twice_in_a_row(screens):
 class MoneyPathPinAttemptsTests(TestCase):
 
     def setUp(self):
+        # The settled-outcome marker lives in the process cache, which outlives a
+        # test's database rollback — and rollback recycles primary keys, so a
+        # neighbouring test's success would be read back under an identical token.
+        from django.core.cache import cache
+        cache.clear()
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
                             color="#e30613", active=True)
         self.user = _user()
@@ -138,14 +143,14 @@ class MoneyPathPinAttemptsTests(TestCase):
 
     def test_a_correct_pin_still_goes_straight_through(self):
         pa = self._action()
-        self.assertEqual(self._submit(sign_flow_token(pa), "1234"), SUCCESS_SCREEN)
+        self.assertEqual(self._submit(sign_flow_token(pa), "1234"), RESULT_SCREEN)
 
     def test_one_wrong_pin_then_the_right_one_still_pays(self):
         """The cap must not cost a customer their legitimate retry."""
         pa = self._action()
         token = sign_flow_token(pa)
         self.assertEqual(self._submit(token, "9999"), PIN_RETRY)
-        self.assertEqual(self._submit(token, "1234"), SUCCESS_SCREEN)
+        self.assertEqual(self._submit(token, "1234"), RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertEqual(self.user.pin_failed_attempts, 0)   # cleared by the good PIN
 
@@ -158,6 +163,11 @@ class ReArmResetsTheScreenAndTheBudgetTests(TestCase):
     is not a declared route, so Meta refuses it on the device, mid-payment."""
 
     def setUp(self):
+        # The settled-outcome marker lives in the process cache, which outlives a
+        # test's database rollback — and rollback recycles primary keys, so a
+        # neighbouring test's success would be read back under an identical token.
+        from django.core.cache import cache
+        cache.clear()
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
                             color="#e30613", active=True)
         self.user = _user()
@@ -305,6 +315,11 @@ class EscalatedLockOffersTheResetTests(TestCase):
     """
 
     def setUp(self):
+        # The settled-outcome marker lives in the process cache, which outlives a
+        # test's database rollback — and rollback recycles primary keys, so a
+        # neighbouring test's success would be read back under an identical token.
+        from django.core.cache import cache
+        cache.clear()
         Bank.objects.create(code="gtb", name="GTBank", bank_code="058",
                             color="#e30613", active=True)
         self.user = _user()

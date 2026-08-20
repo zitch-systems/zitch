@@ -669,8 +669,14 @@ def approve_preview(request):
         return err
     from .router import _flow_summary
 
+    # Where to send them BACK to. They came from a chat, approved with a
+    # fingerprint, and were then left standing in the app — so the app needs the
+    # thread's address to offer the return trip. Blank when the business number is
+    # not configured, and the app falls back to opening WhatsApp itself.
+    number = re.sub(r"\D", "", (settings.WHATSAPP or {}).get("BUSINESS_NUMBER", "") or "")
     return ok(success=True, action_type=pa.action_type,
-              summary=pa.payload.get("flow_summary") or _flow_summary(pa))
+              summary=pa.payload.get("flow_summary") or _flow_summary(pa),
+              return_to=f"https://wa.me/{number}" if number else "")
 
 
 @api

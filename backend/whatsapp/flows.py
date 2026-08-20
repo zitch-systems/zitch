@@ -248,6 +248,59 @@ def resolve_identity_token(token: str):
     return pa
 
 
+#: How long a finished action is remembered, so its own confirm card can answer
+#: honestly if it is tapped afterwards. An hour covers "I scrolled up later".
+_SETTLED_TTL = 3600
+
+
+def _settled_key(token: str) -> str:
+    """Keyed on the whole SIGNED token, never on the action id alone.
+
+    Keying on the id was a disclosure: a forged token carries a real id with a
+    wrong signature, so anyone who guessed an id — they are sequential — could read
+    back "₦3,100.00 sent to ADEYEMI WILLIAM." for somebody else's payment. Hashing
+    the signed token means only the holder of the card can read its outcome, which
+    is exactly the customer whose card it is.
+    """
+    return "wa_flow_settled:" + hashlib.sha256((token or "").encode()).hexdigest()[:32]
+
+
+def remember_settled(pa, outcome: str) -> None:
+    """Record that this action finished, and how.
+
+    WhatsApp cannot retract or disable a button on a message it has already
+    delivered. So after a payment is approved by fingerprint, the Flow's own "Use
+    PIN instead" button is still sitting in the thread, still tappable — and
+    tapping it used to answer "This request expired or was already completed",
+    which reads as a failure on a payment that in fact succeeded.
+
+    Remembering the outcome for an hour lets that tap say the true thing instead.
+    """
+    if pa is None:
+        return
+    try:
+        from django.core.cache import cache
+        cache.set(_settled_key(sign_flow_token(pa)), str(outcome)[:300], _SETTLED_TTL)
+    except Exception:  # noqa: BLE001 — a cache miss must never break an execution
+        log.warning("wa_flow_settled_not_recorded pa=%s", getattr(pa, "pk", "?"), exc_info=True)
+
+
+def settled_outcome(token: str) -> str:
+    """The recorded outcome for a token whose action is gone, or "".
+
+    The token's own signature is what authorises the read — see _settled_key. A
+    forged token hashes to a key nothing was ever written under.
+    """
+    raw = (token or "").strip()
+    if "." not in raw:
+        return ""
+    try:
+        from django.core.cache import cache
+        return cache.get(_settled_key(raw)) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def resolve_flow_token(token: str):
     """Return the live PendingAction for a signed flow_token, or None if the token
     is malformed, forged, expired, or no longer in the Flow-PIN state."""
@@ -571,6 +624,18 @@ def _handle_flow_request(payload: dict) -> dict:
         return {"data": {"acknowledged": True}}
 
     token = payload.get("flow_token", "")
+
+    # "Done" on the outcome page. Answered before any session lookup because it is
+    # the one exchange that must work no matter what state the action is in — the
+    # payment is already finished by the time this page is on screen, and a
+    # customer tapping Done on a resolved payment must never meet an error.
+    #
+    # It ends the Flow with the completion envelope rather than navigating to a
+    # second screen. That second screen was the duplicate: it declared the same
+    # two fields and rendered the same sentence, so every ending was read, dismissed
+    # and then read again.
+    if data.get("close") and action == "data_exchange":
+        return _close_flow(token)
 
     # A signup setting its PIN uses the same published screen, addressed by a
     # prefixed token. Handled first so an onboarding token never falls through
@@ -1297,6 +1362,14 @@ def _submit_pin(token: str, data: dict) -> dict:
 
     pa = resolve_flow_token(token)
     if pa is None:
+        # The card that armed this payment is still in the thread with its button
+        # live — WhatsApp has no way to take that back — so tapping it after the
+        # payment already went through is normal, not an error. Answer with what
+        # actually happened rather than implying the payment was lost.
+        done = settled_outcome(token)
+        if done:
+            return _result_screen(f"{done}\n\nThe receipt is in your chat.",
+                                  status="success")
         return _success_screen("This request expired or was already completed. Start again "
                                "in the chat.", status="failed")
 
@@ -1396,28 +1469,19 @@ def _submit_pin(token: str, data: dict) -> dict:
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
     status = getattr(outcome, "status", "")
-    # A settled success CLOSES the panel — one page, no Done to tap, and the
-    # receipt already waiting in the chat.
+    # EVERY settled outcome shows its own page: ✅ Successful, ⏳ Pending or
+    # ❌ Not completed, on RESULT, with the sentence that says what happened.
     #
-    # This is the ending that used to draw "Couldn't load content. Try again
-    # later." on a payment that had gone through, and the reason is now known
-    # exactly: the endpoint answered {"screen": "SUCCESS", "data": {status,
-    # message}}, but "SUCCESS" is Meta's RESERVED completion value, not a request
-    # to render our screen of that name. WhatsApp looked for the completion
-    # envelope, found a screen payload, and had nothing to draw — which is why the
-    # error only ever appeared on the exchange that ENDS the Flow while every
-    # ordinary screen in the same session rendered fine.
+    # Closing the panel outright on success was correct about the mechanism and
+    # wrong about the ending. It removed the duplicate page, but it also removed
+    # the confirmation: the panel simply vanished the instant the money moved,
+    # leaving the customer to go and find the receipt in the chat to learn whether
+    # their payment had worked. A bank telling you nothing at the exact moment it
+    # takes your money is worse than telling you twice.
     #
-    # _close_flow sends the envelope Meta documents, so the Flow finishes instead
-    # of failing to render. Everything that is NOT a settled success still holds
-    # the panel open on RESULT: pending and failed endings have something the
-    # customer needs to read, and closing on those is what left people staring at
-    # a live-looking confirm card with no idea what happened.
-    if status == "success":
-        return _close_flow(token)
-    # Pending keeps its own heading — "⏳ Pending" is the true thing to show a
-    # customer whose money is with the rail, and calling it a failure would be
-    # as wrong as calling it done.
+    # The duplicate is gone a different way — RESULT's Done now ENDS the Flow
+    # through the completion envelope instead of navigating to a second screen
+    # that said the same thing. See _submit_close.
     return _hold_open(pa, summary, str(outcome), status=status or "pending")
 
 

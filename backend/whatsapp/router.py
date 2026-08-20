@@ -964,8 +964,15 @@ def is_awaiting_bvn(msisdn: str) -> bool:
 
 
 def parse_amount(text: str) -> Decimal | None:
-    """Nigerian shorthand → amount. '5k'→5000, '2m'→2_000_000, '1,500'→1500."""
+    """Nigerian shorthand → amount. '5k'→5000, '2m'→2_000_000, '1,500'→1500.
+
+    Trailing punctuation is stripped, because people write amounts inside
+    sentences: "12300. Moniepoint 01827364728 cravings" was refused outright over
+    the full stop, and the customer got a blank form instead of the transfer they
+    had fully described. A leading currency symbol is stripped for the same reason.
+    """
     t = text.strip().lower().replace(",", "").replace("₦", "").replace("ngn", "").strip()
+    t = t.strip(".:;!?*_-\u2019'\"")
     m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([km])?", t)
     if not m:
         return None
@@ -3666,6 +3673,51 @@ def _start_transfer(user, msisdn: str) -> None:
     reply(msisdn, "How much would you like to send? (e.g. 5000 or 5k)")
 
 
+#: Words that name a DIFFERENT thing to do. Deliberately narrower than
+#: _is_new_command: these are checked in states where free text is a legitimate
+#: answer (a bank name, a meter number), so "Zenit" mistyped must re-prompt while
+#: "500 airtime for me" must not.
+_INTENT_WORDS = (
+    "balance", "send", "transfer", "airtime", "data", "bill", "electricity",
+    "light", "cable", "dstv", "gotv", "startimes", "tv", "convert", "exam",
+    "waec", "neco", "jamb", "nabteb", "statement", "history", "transactions",
+    "loan", "savings", "card", "scan", "qr", "verify", "kyc", "menu", "help",
+    "account details", "add money", "fund", "top up", "topup", "betting", "bet",
+)
+
+
+def _names_another_intent(text: str) -> bool:
+    """Whether this message asks for something OTHER than what we are waiting for.
+
+    Used at the dead ends — the branches that could only say "that isn't a plan
+    number, try again". A customer who has moved on says so in words, and repeating
+    the prompt at them is the channel refusing to listen: in one production thread
+    "500 airtime for me" was answered twice with "Reply with a plan number from the
+    list", because the plan picker had no way to notice it was no longer wanted.
+
+    Requires an intent WORD rather than reusing _is_new_command, which treats any
+    alphabetic text as a new instruction. That rule is right while a Flow is open
+    (there is nothing to type) and wrong here, where free text is often the answer:
+    a half-typed bank name would cancel the transfer it was meant for.
+    """
+    low = (text or "").strip().lower()
+    return any(word in low for word in _INTENT_WORDS)
+
+
+def _reroute_or_reprompt(pa, msisdn: str, text: str, prompt: str) -> None:
+    """Either start what they actually asked for, or repeat the prompt.
+
+    The cancellation is explicit — "Okay, leaving that" — because silently
+    replacing one half-finished money action with another is its own way to lose
+    somebody. Nothing here has moved money: these states are all pre-PIN.
+    """
+    if _names_another_intent(text):
+        _clear_actions(msisdn)
+        reply(msisdn, "Okay — leaving that. Starting the new one.")
+        return handle_inbound(msisdn, text)
+    return reply(msisdn, prompt)
+
+
 def _is_new_command(text: str) -> bool:
     """Whether this message plainly starts something else.
 
@@ -3906,7 +3958,8 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if state == "bank":
         matches = _match_banks(text)
         if not matches:
-            return reply(msisdn, "I couldn't find that bank. Type the name again, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "I couldn't find that bank. Type the name again, or \"cancel\".")
         if len(matches) > 1:
             shown = matches[:6]
             pa.payload["bank_choices"] = [b.code for b in shown]
@@ -3927,9 +3980,11 @@ def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
         try:
             idx = int(text.strip()) - 1
         except ValueError:
-            return reply(msisdn, "Reply with the number of the bank from the list, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with the number of the bank from the list, or \"cancel\".")
         if not (0 <= idx < len(choices)):
-            return reply(msisdn, "That number isn't on the list. Try again, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "That number isn't on the list. Try again, or \"cancel\".")
         bank = Bank.objects.filter(code=choices[idx]).first()
         if bank is None:
             _clear_actions(msisdn)
@@ -4231,7 +4286,12 @@ def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:
     """Parse "0123456789 GTBank John Doe 5000" → jump straight to name-enquiry.
     Returns True if handled as a transfer paste, else False."""
     tokens = text.split()
-    acct = next((re.sub(r"\D", "", t) for t in tokens if len(re.sub(r"\D", "", t)) == 10), None)
+    # 10 digits is a NUBAN; 11 is how the app-first banks address an account —
+    # Moniepoint, OPay, PalmPay and Kuda all use the customer's phone number. Only
+    # matching 10 meant "12300. Moniepoint 01827364728 cravings" fell through to
+    # the guided form, which reads as the assistant ignoring a complete instruction.
+    acct = next((re.sub(r"\D", "", t) for t in tokens
+                 if len(re.sub(r"\D", "", t)) in (10, 11)), None)
     amount = None
     for t in reversed(tokens):
         if len(re.sub(r"\D", "", t)) >= 10:  # skip account- / phone-length tokens
@@ -4717,7 +4777,8 @@ def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if st == "plan":
         plan = _pick(text, pa.payload.get("plan_choices", []), lambda c: DataPlan.objects.filter(plan_code=c).first())
         if plan is None:
-            return reply(msisdn, "Reply with a plan number from the list, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with a plan number from the list, or \"cancel\".")
         pa.payload.update({"plan_code": plan.plan_code, "price": str(plan.price), "plan_name": plan.name})
         _touch(pa, state="phone", payload=pa.payload)
         if pa.payload.get("phone"):
@@ -4834,7 +4895,11 @@ def _electricity_next(pa: PendingAction, user, msisdn: str) -> None:
             # meter on the next message and never let the customer past it.
             p.pop("meter", None)
             _touch(pa, state="meter", payload=p)
-            return reply(msisdn, "Couldn't validate that meter. Check the number and try again, or \"cancel\".")
+            # Plain re-prompt: this branch runs from _electricity_next, which has no
+            # customer message in scope — the meter came from an earlier turn, so
+            # there is nothing here that could be a new instruction.
+            return reply(msisdn, "Couldn't validate that meter. Check the number and try "
+                                 "again, or \"cancel\".")
         cust = res.get("customer_name", "")
         address = res.get("customer_address", "")
         p.update({"customer": cust, "customer_address": address,
@@ -4995,7 +5060,8 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         plan = _pick(text, pa.payload.get("plan_choices", []),
                      lambda c: CablePlan.objects.filter(cable_plan_code=c).first())
         if plan is None:
-            return reply(msisdn, "Reply with a package number from the list, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with a package number from the list, or \"cancel\".")
         pa.payload.update({"plan_code": plan.cable_plan_code, "price": str(plan.price), "plan_name": plan.name})
         _touch(pa, state="iuc", payload=pa.payload)
         given = pa.payload.get("iuc_given")
@@ -5013,7 +5079,8 @@ def _advance_cable(pa: PendingAction, user, msisdn: str, text: str) -> None:
         prov = CABLE_NAMES[pa.payload["prov"]].lower()
         res = vtu_verify_customer(prov, iuc)
         if not res.get("success"):
-            return reply(msisdn, "Couldn't validate that smartcard. Check the number and try again, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Couldn't validate that smartcard. Check the number and try again, or \"cancel\".")
         price = Decimal(pa.payload["price"])
         if _insufficient(user, price):
             _clear_actions(msisdn)
@@ -5093,7 +5160,8 @@ def _advance_exam(pa: PendingAction, user, msisdn: str, text: str) -> None:
     if state == "product":
         product = _exam_product(text, pa.payload.get("product_choices", []))
         if product is None:
-            return reply(msisdn, "Reply with an exam product number from the list, or \"cancel\".")
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                       "Reply with an exam product number from the list, or \"cancel\".")
         pa.payload.update({
             "exam_code": product.code,
             "exam_name": product.name,
@@ -5719,4 +5787,14 @@ def run_flow_execution(pa: PendingAction, user) -> str:
         _clear_actions(pa.msisdn)
         return Outcome("Sorry, this action can't be completed here. Please try again in the chat.",
                        OUTCOME_FAILED)
-    return fn(pa, user, pa.msisdn) or "Done ✅"
+    outcome = fn(pa, user, pa.msisdn) or "Done ✅"
+    # Remember how this ended, keyed on the action id. The confirm card that armed
+    # it is still sitting in the thread with a live "Use PIN instead" button —
+    # WhatsApp cannot take that back — so tapping it afterwards has to be able to
+    # say "already paid" instead of "expired". Best-effort: a cache miss costs
+    # wording on a stale button, never the payment.
+    if getattr(outcome, "status", "") == OUTCOME_SUCCESS:
+        from .flows import remember_settled
+
+        remember_settled(pa, str(outcome))
+    return outcome
