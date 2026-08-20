@@ -472,9 +472,9 @@ def _success_screen(message: str, status: str = "") -> dict:
     to RESULT is the fix and it is a wider change than the payment ending: it
     alters how signup, VTU and identity sessions close. Kept separate on purpose.
     """
-    return {"screen": SUCCESS_SCREEN,
-            "data": {"status": _STATUS_HEADINGS.get(status or "done", _STATUS_HEADINGS["done"]),
-                     "message": message or "Done ✅"}}
+    # SUCCESS is Meta's reserved completion value, not a renderable screen.
+    # Use RESULT when it is published so signup/payment outcomes render normally.
+    return _result_screen(message or "Done ✅", status=status)
 
 
 # --------------------------------------------------------------------------- #
