@@ -29,8 +29,19 @@ class Bank(models.Model):
 
 
 class Beneficiary(models.Model):
-    """A saved transfer recipient. Auto-created on first transfer; deduped per
-    user by (account_number, bank_name)."""
+    """A transfer recipient. Auto-created on first transfer; deduped per user by
+    (account_number, bank_name).
+
+    Every row is a RECENT: an account this customer has actually paid. That is
+    what the send screen leans on when it fills in a bank and holder name from a
+    typed account number without a fresh name enquiry — the row is evidence that
+    money once went there and arrived.
+
+    `saved` is the customer's own decision layered on top: it turns True only
+    when they explicitly say "keep this one", which is what puts the recipient in
+    their address book and lets them be paid by name later. Nothing in the payout
+    path ever sets it, so a row's provenance stays readable.
+    """
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="beneficiaries")
     name = models.CharField(max_length=80)
@@ -38,6 +49,15 @@ class Beneficiary(models.Model):
     bank_name = models.CharField(max_length=60)
     bank_code = models.CharField(max_length=20, blank=True, default="")
     color = models.CharField(max_length=9, blank=True, default="#0FA295")
+    # The customer's own label for this recipient ("Mum", "landlord"). Display
+    # only: `name` stays the holder name the bank returned, because that is the
+    # value bank_transfer re-confirms against a fresh name enquiry before money
+    # moves. A nickname sitting in `name` would read as a mismatch and block a
+    # perfectly good transfer.
+    nickname = models.CharField(max_length=80, blank=True, default="")
+    # False on a row we wrote ourselves after a payout; True only once the
+    # customer has said to keep it.
+    saved = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -46,7 +66,17 @@ class Beneficiary(models.Model):
 
     @property
     def initials(self) -> str:
+        # Deliberately off `name`, not `display_name`. App builds already on
+        # customers' phones render this disc beside the holder name, so deriving
+        # it from a nickname would show "MU" next to "JOHN DOE" on every handset
+        # that has not updated — which reads as a bug rather than a nickname.
         return "".join(w[0] for w in self.name.split()[:2]).upper() or "ZT"
+
+    @property
+    def display_name(self) -> str:
+        """What to call this recipient on screen: the customer's own label when
+        they set one, otherwise the holder name the bank gave us."""
+        return self.nickname or self.name
 
     def __str__(self):
         return f"{self.name} · {self.account_number} ({self.bank_name})"

@@ -17,6 +17,7 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
@@ -24,7 +25,7 @@ from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit
                          evaluate_transaction_pin, mask_pii, send_limit_error,
                          velocity_exceeded)
 from transfers.models import Bank
-from transfers.views import _names_match
+from transfers.views import _names_match, clean_nickname
 from transfers.services import PayoutError, execute_payout
 from exams.models import ExamProduct
 from utility.models import CablePlan, DataPlan
@@ -172,7 +173,8 @@ MENU_BODY = (
     "8️⃣  ✅ Verify my identity\n"
     "9️⃣  🧾 Transaction history\n"
     "🔟  🎓 Exam PIN\n"
-    "1️⃣1️⃣  📷 Scan a QR code\n\n"
+    "1️⃣1️⃣  📷 Scan a QR code\n"
+    "1️⃣2️⃣  ⭐ My saved people\n\n"
     # "just type it" was a promise the channel could not keep: free-form routing
     # needs the customer's own AI consent, which defaults off and which nobody
     # guesses the phrase for. Name the phrase where the promise is made.
@@ -1268,6 +1270,13 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if not timed_out and _needs_reauth(convo) and _is_sensitive_read(low):
         return _send_unlock(user, msisdn, text)
 
+    # A tap on the "save this recipient" offer. Below the re-auth gate rather
+    # than above it: these buttons stay tappable in the history forever, so one
+    # arriving now says nothing about who is holding the phone, and it both
+    # names a recipient and writes to the address book.
+    if _handle_save_button(user, msisdn, low):
+        return None
+
     # A bare 4-6 digit message with nothing expecting one is very often a PIN
     # typed out of habit. It is already masked in our log, but it is still in
     # the customer's own thread and only they can remove it — WhatsApp gives a
@@ -1321,6 +1330,9 @@ def handle_inbound(msisdn: str, text: str) -> None:
         return reply(msisdn, _chat_lock_tip())
     if low in ("11", "scan", "scan qr", "qr", "qr code", "scan code", "scan a qr code"):
         return _start_qr_scan(user, msisdn)
+    if low in ("12", "beneficiaries", "beneficiary", "saved", "saved people",
+               "my people", "payees", "my saved people"):
+        return _do_beneficiaries(user, msisdn)
     if low in ("9", "history", "transactions", "my transactions", "recent"):
         return _do_history(user, msisdn)
     if low in ("10", "exam", "exam pin", "exam pins", "waec pin", "neco pin",
@@ -1341,6 +1353,10 @@ def handle_inbound(msisdn: str, text: str) -> None:
     if low in ("ai on", "enable ai", "ai off", "disable ai", "ai"):
         return _do_ai_consent(link, msisdn, low)
 
+    # "send 5k to mum" — a saved recipient by the name the customer gave them.
+    # A miss falls through on purpose; the guided form below still answers it.
+    if _start_transfer_to_saved(user, msisdn, text):
+        return
     # Try a one-line paste: "0123456789 GTBank John Doe 5000".
     if _start_transfer_from_paste(user, msisdn, text):
         return
@@ -1394,6 +1410,10 @@ _SENSITIVE_READS = {
     "7", "account", "account details", "my account", "account number",
     "details", "my details",
     "statement", "history", "transactions", "my transactions", "9", "recent",
+    # The address book names people and their account numbers, which is
+    # strictly more than the account details already behind this gate.
+    "12", "beneficiaries", "beneficiary", "saved", "saved people",
+    "my people", "payees", "my saved people",
 }
 _REAUTH_SETTING = "wa_reauth_idle_minutes"
 
@@ -1409,7 +1429,11 @@ def _reauth_window() -> timedelta:
 
 
 def _is_sensitive_read(low: str) -> bool:
-    return low.strip() in _SENSITIVE_READS
+    # The save-offer buttons carry a recipient id and are answered with that
+    # recipient's name, so they are gated like any other read of the address
+    # book. _send_unlock replays the original text afterwards, and these ids
+    # are well inside the length it can carry.
+    return low.strip() in _SENSITIVE_READS or low.startswith(("bene:save:", "bene:no:"))
 
 
 def _needs_reauth(convo: ConversationState) -> bool:
@@ -3500,6 +3524,8 @@ def _start_qr_scan(user, msisdn: str) -> None:
         "📷 *Scan a payment code*\n\n"
         "Tap below to open your camera and point it at any bank's QR code. "
         "I'll read the account and amount off it.\n\n"
+        "*Or just take a photo of the code here in the chat* and send it — "
+        "I'll read that too.\n\n"
         f"_The link works for {_SCAN_TTL} minutes._",
         scan_url(session), cta="Open camera", footer="Zitch secure scanner")
     if sent.get("success"):
@@ -3508,7 +3534,9 @@ def _start_qr_scan(user, msisdn: str) -> None:
     # identity — only a single-use session id — so unlike the face link it is safe
     # to send as text, and a tappable link beats no scanner at all.
     return reply(msisdn, "📷 *Scan a payment code*\n\nOpen this to use your camera:\n"
-                         f"{scan_url(session)}")
+                         f"{scan_url(session)}\n\n"
+                         "Or photograph the code with the camera button in this chat "
+                         "and send it — I'll read that too.")
 
 
 def _qr_summary(intent: dict) -> str:
@@ -3922,6 +3950,7 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "add_account": _advance_add_account,
         "kyc": _advance_kyc,
         "qr": _advance_qr,
+        "beneficiary": _advance_beneficiary,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)
@@ -4274,12 +4303,219 @@ def _exec_transfer(pa: PendingAction, user, msisdn: str) -> str:
         ("Reference", txn.reference),
         ("Date", timezone.now().strftime("%d %b %Y, %H:%M")),
     ]), ref=txn.reference, user=user, balance_after=wallet.balance)
+    # Offered against the exact row execute_payout just wrote, so the tap that
+    # follows needs no account number and no second name enquiry to know who it
+    # means. Silent for a recipient already saved or already declined.
+    _offer_to_save(user, msisdn, getattr(txn, "beneficiary_id", None))
     # A settled transfer is the one case that may be CALLED successful, and it is
     # now said rather than inferred: this used to return whatever reply_receipt
     # gave back, which run_flow_execution turned into a bare "Done ✅" — the same
     # words a cancelled transfer closed on.
     return Outcome(f"{_money(amount)} sent to {pa.payload['name'].upper()} — "
                    f"the receipt is in your chat.", OUTCOME_SUCCESS)
+
+
+# ---------------------------------------------------------------------------
+# Saved people — keeping a recipient, naming them, and paying them by name
+# ---------------------------------------------------------------------------
+
+BENEFICIARY_STATE = "beneficiary_menu"   # list shown, waiting for a row number
+BENEFICIARY_PICK_STATE = "beneficiary_pick"   # row chosen, waiting for an action
+BENEFICIARY_NAME_STATE = "beneficiary_name"   # waiting for the nickname itself
+
+# How long a "not now" is respected. A customer who pays their landlord every
+# month should be asked once, not after every rent payment: an offer that cannot
+# be refused permanently is a nag, and this one rides on a metered channel.
+_SAVE_DECLINE_TTL = 180 * 24 * 3600
+
+# "send 5k to mum", "pay 2000 to landlord". Deliberately narrow: an amount, the
+# word to, and a name. Anything carrying an account number is a paste and is
+# handled by _start_transfer_from_paste, which is why the digit guard below
+# refuses this path outright rather than trying to be clever about both.
+_SEND_TO_NAME = re.compile(
+    r"^(?:send|pay|transfer)\s+(?P<amount>[\d,.]+\s*[km]?)\s+to\s+(?P<who>[a-z][a-z' .\-]{0,39})$",
+    re.I)
+
+
+def _decline_key(pk: int) -> str:
+    return f"wa:bene:no:{pk}"
+
+
+def _offer_to_save(user, msisdn: str, beneficiary_id) -> None:
+    """After a settled transfer, offer to keep the recipient.
+
+    Silent when there is nothing to offer: an already-saved recipient, or one the
+    customer has declined before. The offer is a question about their address
+    book, and asking it again every month is how a helpful prompt turns into
+    something people learn to ignore.
+    """
+    if not beneficiary_id:
+        return
+    row = user.beneficiaries.filter(pk=beneficiary_id).first()
+    if row is None or row.saved or cache.get(_decline_key(row.pk)):
+        return
+    reply_buttons(
+        msisdn,
+        f"⭐ Save *{row.name.upper()}* so you can pay them by name next time?",
+        [(f"bene:save:{row.pk}", "Save"), (f"bene:no:{row.pk}", "Not now")])
+
+
+def _handle_save_button(user, msisdn: str, low: str) -> bool:
+    """A tap on the save offer. True when this message was one.
+
+    Resolved through the customer's OWN related manager, so the row id in the
+    button — which travels through WhatsApp and which anybody could simply type
+    back into the chat — can only ever name a recipient of theirs. A guessed id
+    belonging to somebody else finds nothing and says so.
+
+    Note what this does NOT do: open a pending action. _new_flow would clear the
+    customer's actions first, and these buttons stay tappable in the history
+    forever, so a tap on last month's offer would delete an in-flight payment's
+    only row while it was executing. Saving somebody needs no flow.
+    """
+    if not low.startswith(("bene:save:", "bene:no:")):
+        return False
+    decision, _, raw = low.partition(":")[2].partition(":")
+    row = user.beneficiaries.filter(pk=raw if raw.isdigit() else 0).first()
+    if row is None:
+        reply(msisdn, "That recipient is no longer in your list.")
+        return True
+    if decision == "no":
+        cache.set(_decline_key(row.pk), 1, _SAVE_DECLINE_TTL)
+        reply(msisdn, "No problem — I won't ask about them again.")
+        return True
+    row.saved = True
+    row.save(update_fields=["saved"])
+    _new_flow(user, msisdn, "beneficiary", BENEFICIARY_NAME_STATE, {"id": row.pk})
+    reply(msisdn, f"⭐ Saved. What should I call {row.name.upper()}? "
+                  "Reply with a short name like \"Mum\", or *skip* to keep the bank's name.")
+    return True
+
+
+def _beneficiary_lines(rows) -> str:
+    return "\n".join(
+        f"{i}. *{r.display_name}* — {r.bank_name} {r.account_number}"
+        for i, r in enumerate(rows, start=1))
+
+
+def _saved_rows(user):
+    return list(user.beneficiaries.filter(saved=True)[:20])
+
+
+def _do_beneficiaries(user, msisdn: str) -> None:
+    """Item 12 — the customer's address book."""
+    rows = _saved_rows(user)
+    if not rows:
+        return reply(msisdn, "⭐ *My saved people*\n\nYou haven't saved anyone yet. "
+                             "After your next transfer I'll offer to keep the recipient, "
+                             "and then you can pay them by name — \"send 5k to mum\".")
+    _new_flow(user, msisdn, "beneficiary", BENEFICIARY_STATE,
+              {"ids": [r.pk for r in rows]})
+    reply(msisdn, "⭐ *My saved people*\n\n" + _beneficiary_lines(rows) +
+                  "\n\nReply with a number to rename or remove someone, "
+                  "or just say \"send 5k to " + rows[0].display_name.lower() + "\".")
+
+
+def _advance_beneficiary(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    low = text.strip().lower()
+    if pa.state == BENEFICIARY_NAME_STATE:
+        row = user.beneficiaries.filter(pk=pa.payload.get("id") or 0).first()
+        if row is None:
+            _clear_actions(msisdn)
+            return reply(msisdn, "That recipient is no longer in your list.")
+        if low in ("skip", "no", "none"):
+            _clear_actions(msisdn)
+            return reply(msisdn, f"Kept as {row.name.upper()}.")
+        nickname, problem = clean_nickname(text)
+        # The nickname is checked BEFORE asking whether this looks like another
+        # instruction. _names_another_intent matches substrings, so "Elizabeth"
+        # contains "bet" and "Ricardo" contains "card" — running it first would
+        # make ordinary names unusable, and silently, since the reply would be
+        # the menu rather than an explanation.
+        if problem:
+            return reply(msisdn, f"{problem} Or reply *skip*.")
+        if not nickname:
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                        "What should I call them? Or reply *skip*.")
+        if user.beneficiaries.filter(nickname__iexact=nickname).exclude(pk=row.pk).exists():
+            return reply(msisdn, f"You already have someone called {nickname}. "
+                                 "Try another name, or reply *skip*.")
+        row.nickname = nickname
+        # Naming somebody is itself an act of keeping them. Without this a
+        # recipient named in the chat would stay unsaved, and paying by name only
+        # ever reads saved rows — so the customer would have named someone they
+        # then could not pay by that name.
+        row.saved = True
+        row.save(update_fields=["nickname", "saved"])
+        _clear_actions(msisdn)
+        return reply(msisdn, f"⭐ Saved as *{nickname}*. Next time just say "
+                             f"\"send 5k to {nickname.lower()}\".")
+
+    rows = list(user.beneficiaries.filter(pk__in=pa.payload.get("ids") or []))
+    order = {pk: i for i, pk in enumerate(pa.payload.get("ids") or [])}
+    rows.sort(key=lambda r: order.get(r.pk, 0))
+
+    if pa.state == BENEFICIARY_PICK_STATE:
+        row = user.beneficiaries.filter(pk=pa.payload.get("id") or 0).first()
+        if row is None:
+            _clear_actions(msisdn)
+            return reply(msisdn, "That recipient is no longer in your list.")
+        if low in ("1", "rename", "name"):
+            pa.state = BENEFICIARY_NAME_STATE
+            pa.payload = {"id": row.pk}
+            pa.save(update_fields=["state", "payload"])
+            return reply(msisdn, f"What should I call {row.name.upper()}? "
+                                 "Reply with a short name, or *skip*.")
+        if low in ("2", "remove", "delete"):
+            label = row.display_name
+            row.delete()
+            _clear_actions(msisdn)
+            return reply(msisdn, f"Removed *{label}*.")
+        return _reroute_or_reprompt(pa, msisdn, text,
+                                    "Reply *1* to rename or *2* to remove.")
+
+    if low.isdigit() and 1 <= int(low) <= len(rows):
+        row = rows[int(low) - 1]
+        pa.state = BENEFICIARY_PICK_STATE
+        pa.payload = {"id": row.pk}
+        pa.save(update_fields=["state", "payload"])
+        return reply(msisdn, f"*{row.display_name}* — {row.bank_name} {row.account_number}\n\n"
+                             "Reply *1* to rename, or *2* to remove.")
+    return _reroute_or_reprompt(pa, msisdn, text,
+                                "Reply with a number from the list above.")
+
+
+def _start_transfer_to_saved(user, msisdn: str, text: str) -> bool:
+    """"send 5k to mum" — pay a saved recipient by the name the customer gave them.
+
+    Returns True only when it actually opened a transfer. A miss returns False on
+    purpose, so the ordinary guided form underneath still runs: "send 5k to Ada"
+    has always ended in a transfer form, and answering it with "I don't know an
+    Ada" and nothing else would be a dead end where there used to be a working
+    payment.
+
+    Matching is EXACT and against the nickname only. A nickname is unique per
+    customer and is a label they chose; the bank's holder name is neither, and a
+    loose match on it could name two accounts — at which point the only safe
+    answer about where money goes is to stop and ask.
+    """
+    m = _SEND_TO_NAME.match(text.strip())
+    if not m:
+        return False
+    # Anything carrying an account number is a paste, not a name.
+    if re.search(r"\d{10,}", text):
+        return False
+    who = " ".join(m.group("who").split())
+    rows = list(user.beneficiaries.filter(saved=True).exclude(nickname="")
+                .filter(nickname__iexact=who)[:2])
+    if len(rows) != 1:
+        return False
+    amount = parse_amount(m.group("amount"))
+    if amount is None:
+        return False
+    row = rows[0]
+    reply(msisdn, f"Paying *{row.display_name}* — {row.bank_name} {row.account_number}.")
+    return _begin_bank_transfer(user, msisdn, amount, row.account_number, row.bank_name)
 
 
 def _start_transfer_from_paste(user, msisdn: str, text: str) -> bool:

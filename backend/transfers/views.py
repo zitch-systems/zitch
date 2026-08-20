@@ -51,20 +51,140 @@ def list_banks(request):
                      for b in banks])
 
 
+def _beneficiary(b) -> dict:
+    """One recipient, as the app reads it.
+
+    The first six keys are what shipped builds already consume, with the values
+    they already have — `name` stays the bank's holder name and `initials` stays
+    derived from it. Everything after is additive, so a phone that has not
+    updated keeps rendering exactly what it renders today.
+    """
+    return {
+        "id": b.id, "name": b.name, "account_number": b.account_number,
+        "bank_name": b.bank_name, "initials": b.initials, "color": b.color,
+        "bank_code": b.bank_code, "nickname": b.nickname,
+        "display_name": b.display_name, "saved": b.saved,
+    }
+
+
+def clean_nickname(raw) -> tuple:
+    """(nickname, error). Shared with the WhatsApp rail so one label is legal in
+    both places — a name a customer sets in the app has to be retypable in chat.
+
+    Whitespace is collapsed rather than merely stripped, because "Mum " and
+    "Mum" looking identical while comparing unequal is exactly how a nickname
+    becomes ambiguous later, and an ambiguous name is one we refuse to pay.
+    """
+    text = " ".join(str(raw or "").split())
+    if not text:
+        return "", ""
+    if len(text) > 80:
+        return "", "That name is too long. Try something shorter."
+    if text.isdigit():
+        # A nickname of digits is indistinguishable from an account number in a
+        # chat message, where both arrive as bare text.
+        return "", "Give them a name rather than a number."
+    return text, ""
+
+
 @api
 @require_user
 def list_beneficiaries(request):
     """POST /api/transfers/beneficiaries/ {access_token}
-    -> {beneficiaries: [{id, name, account_number, bank_name, initials, color}]}
+    -> {beneficiaries: [{id, name, account_number, bank_name, initials, color,
+                         bank_code, nickname, display_name, saved}]}
+
+    Every recipient, saved and unsaved alike. Deliberately unfiltered: a saved
+    recipient IS a recent, and the send screen's fast path — filling the bank and
+    holder name for an account the customer has paid before, with no name-enquiry
+    round trip — reads this same list.
     """
     items = request.user_obj.beneficiaries.all()
-    return ok(beneficiaries=[
-        {
-            "id": b.id, "name": b.name, "account_number": b.account_number,
-            "bank_name": b.bank_name, "initials": b.initials, "color": b.color,
-        }
-        for b in items
-    ])
+    return ok(beneficiaries=[_beneficiary(b) for b in items])
+
+
+def _own_beneficiary(request):
+    """(row, error_response). Always resolved through the caller's own related
+    manager, so a guessed id belonging to somebody else is a 404 and never a
+    read of another customer's recipient."""
+    try:
+        pk = int(request.data.get("beneficiary_id") or 0)
+    except (TypeError, ValueError):
+        pk = 0
+    row = request.user_obj.beneficiaries.filter(pk=pk).first() if pk else None
+    if row is None:
+        return None, fail("That recipient is no longer in your list.", status=404)
+    return row, None
+
+
+@api
+@require_user
+def save_beneficiary(request):
+    """POST /api/transfers/beneficiaries/save/ {access_token, beneficiary_id, nickname?}
+    -> {success, beneficiary}
+
+    Keeps a recipient the customer has already paid. There is no way to add an
+    account that was never paid: rows in this table are what the send screen
+    treats as proof that money once reached that account, and manufacturing one
+    would put an unverified account under a heading that reads "Sent before".
+    """
+    row, error = _own_beneficiary(request)
+    if error:
+        return error
+    nickname, problem = clean_nickname(request.data.get("nickname"))
+    if problem:
+        return fail(problem)
+    if nickname and request.user_obj.beneficiaries.filter(
+            nickname__iexact=nickname).exclude(pk=row.pk).exists():
+        return fail(f"You already have someone called {nickname}.", status=409)
+    row.nickname = nickname or row.nickname
+    row.saved = True
+    row.save(update_fields=["nickname", "saved"])
+    return ok(success=True, beneficiary=_beneficiary(row))
+
+
+@api
+@require_user
+def rename_beneficiary(request):
+    """POST /api/transfers/beneficiaries/rename/ {access_token, beneficiary_id, nickname}
+    -> {success, beneficiary}
+
+    An empty nickname clears the label and leaves the recipient saved under the
+    bank's holder name. Naming someone is itself an act of keeping them, so a
+    rename saves an unsaved row rather than quietly labelling a recent that the
+    customer would then not find in their address book.
+    """
+    row, error = _own_beneficiary(request)
+    if error:
+        return error
+    nickname, problem = clean_nickname(request.data.get("nickname"))
+    if problem:
+        return fail(problem)
+    if nickname and request.user_obj.beneficiaries.filter(
+            nickname__iexact=nickname).exclude(pk=row.pk).exists():
+        return fail(f"You already have someone called {nickname}.", status=409)
+    row.nickname = nickname
+    row.saved = row.saved or bool(nickname)
+    row.save(update_fields=["nickname", "saved"])
+    return ok(success=True, beneficiary=_beneficiary(row))
+
+
+@api
+@require_user
+def delete_beneficiary(request):
+    """POST /api/transfers/beneficiaries/delete/ {access_token, beneficiary_id}
+    -> {success}
+
+    Removes the row outright rather than only clearing `saved`. The customer
+    asked for the recipient to be gone, and leaving it behind as a recent would
+    keep it visible on the send screen and keep the account answering to the
+    typed-account fast path — which is not what "remove" means to anyone.
+    """
+    row, error = _own_beneficiary(request)
+    if error:
+        return error
+    row.delete()
+    return ok(success=True)
 
 
 @api
@@ -216,4 +336,8 @@ def bank_transfer(request):
                   message="Your transfer is processing and will be confirmed shortly.")
     return ok(success=True, wallet=str(wallet.balance), reference=txn.reference, name=name,
               narration=(txn.meta or {}).get("narration", ""),
+              # So the receipt can offer "save this recipient" and act on the tap
+              # with an id, rather than posting an account number back and paying
+              # for a second name enquiry to identify a row we just wrote.
+              beneficiary_id=getattr(txn, "beneficiary_id", None),
               message="Money sent")

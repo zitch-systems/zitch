@@ -29,6 +29,7 @@ const Receipt = ({
   reference,
   status = 'Successful',
   onDone,
+  footer,
 }: {
   title: string;
   message: string;
@@ -38,6 +39,10 @@ const Receipt = ({
    *  transaction — a shared document must never claim success early. */
   status?: string;
   onDone: () => void;
+  /** An optional offer under the receipt — "save this recipient" and the like.
+   *  Kept out of the exported document on purpose: a receipt is forwarded as
+   *  proof of payment, and a button the reader cannot press is noise on it. */
+  footer?: React.ReactNode;
 }) => {
   const { c } = useTheme();
   const card = useRef<View>(null);
@@ -166,6 +171,8 @@ const Receipt = ({
           reference: reference || '',
         })}
       />
+
+      {footer}
 
       <View style={{ paddingBottom: 24, paddingTop: 10 }}>
         <Btn label="Back to Dashboard" onPress={onDone} />
