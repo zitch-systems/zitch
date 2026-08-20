@@ -408,6 +408,16 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         user=user, account_number=account_number, bank_name=bank.name,
         defaults={"name": name, "bank_code": bank.bank_code, "color": bank.color or "#0FA295"},
     )
+    # Automatic recipient memory is separate from the explicit address book:
+    # every successful/accepted transfer increments the private frequency counter.
+    # After transfer #3 it becomes eligible for account-number search/autofill;
+    # after transfer #51 it is promoted to Beneficiary (saved=True). This is
+    # idempotent for retries because the payout itself is idempotent.
+    Beneficiary.objects.filter(pk=row.pk).update(transfer_count=F("transfer_count") + 1)
+    row.refresh_from_db(fields=["transfer_count", "saved", "name", "bank_code", "color", "nickname"])
+    if row.transfer_count > 50 and not row.saved:
+        row.saved = True
+        row.save(update_fields=["saved"])
     txn.refresh_from_db()
     # Carried on the transaction so the caller can offer "save this recipient"
     # against the exact row we just wrote, rather than re-deriving it from an
