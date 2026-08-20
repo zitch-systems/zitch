@@ -17,14 +17,14 @@ from decimal import Decimal, InvalidOperation
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.utils import timezone
 
 from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
                          evaluate_transaction_pin, mask_pii, send_limit_error,
                          velocity_exceeded)
-from transfers.bank_aliases import aliases_for, slug_for_alias
-from transfers.models import SAVE_PROMPT_AFTER, Bank
+from transfers.models import Bank
 from transfers.views import _names_match, clean_nickname
 from transfers.services import PayoutError, execute_payout
 from exams.models import ExamProduct
@@ -4033,23 +4033,7 @@ def _match_banks(text: str) -> list:
     exact = [b for b in banks if b.name.lower() == t]
     if exact:
         return exact
-    # What people actually call them. We store one name per bank, usually the
-    # short trading name, so "Guaranty Trust Bank" off a statement matched
-    # nothing at all against "GTBank" — which reads as the bank not existing
-    # rather than as us knowing it by another name. An alias hit is exact and
-    # names one bank, so it wins outright.
-    slug = slug_for_alias(t)
-    if slug:
-        named = [b for b in banks if b.code == slug]
-        if named:
-            return named
-    # Substring, over the aliases as well as the name: it is what catches the
-    # half-typed word inside a longer sentence ("send 2k to my gtb account"),
-    # and it returns every candidate rather than choosing between them.
-    hits = [b for b in banks
-            if t and (t in b.name.lower() or b.name.lower() in t
-                      or any(t in a or a in t for a in aliases_for(b.code)))]
-    return hits
+    return [b for b in banks if t and (t in b.name.lower() or b.name.lower() in t)]
 
 
 def _bank_items(candidates=None, query: str = "") -> list:
@@ -4074,11 +4058,7 @@ def _bank_items(candidates=None, query: str = "") -> list:
     banks = list(Bank.objects.filter(active=True).order_by("-popular", "name")[:200])
     q = " ".join(str(query or "").split()).lower()
     if q:
-        # Aliases are searched too, so somebody who types the legal name off a
-        # statement — "guaranty trust bank" — narrows to GTBank rather than
-        # falling back to the whole unfiltered list of forty.
-        hits = [b for b in banks
-                if q in b.name.lower() or any(q in a for a in aliases_for(b.code))]
+        hits = [b for b in banks if q in b.name.lower()]
         if hits:
             banks = hits
     if candidates:
@@ -4343,6 +4323,11 @@ BENEFICIARY_STATE = "beneficiary_menu"   # list shown, waiting for a row number
 BENEFICIARY_PICK_STATE = "beneficiary_pick"   # row chosen, waiting for an action
 BENEFICIARY_NAME_STATE = "beneficiary_name"   # waiting for the nickname itself
 
+# How long a "not now" is respected. A customer who pays their landlord every
+# month should be asked once, not after every rent payment: an offer that cannot
+# be refused permanently is a nag, and this one rides on a metered channel.
+_SAVE_DECLINE_TTL = 180 * 24 * 3600
+
 # "send 5k to mum", "pay 2000 to landlord". Deliberately narrow: an amount, the
 # word to, and a name. Anything carrying an account number is a paste and is
 # handled by _start_transfer_from_paste, which is why the digit guard below
@@ -4352,39 +4337,30 @@ _SEND_TO_NAME = re.compile(
     re.I)
 
 
+def _decline_key(pk: int) -> str:
+    return f"wa:bene:no:{pk}"
+
+
 def _offer_to_save(user, msisdn: str, beneficiary_id) -> None:
-    """After a settled transfer, MAYBE offer to keep the recipient.
+    """After a settled transfer, offer to keep the recipient.
 
-    Asked at most once per recipient, and only once the customer has paid them
-    more than twice. This used to fire after every settled transfer to anyone
-    unsaved, which is the wrong question asked far too often: most transfers are
-    one-offs — a fee, a stranger, a seller — and somebody paying their landlord
-    monthly got the same prompt every month on a metered channel. Paying an
-    account a third time is the first point at which it is plainly a relationship
-    rather than an errand.
-
-    Nothing is lost by staying quiet. The row is written on the very first
-    transfer either way, and it is what fills in the bank and holder name the
-    moment that account number is typed again — on this channel and in the app.
-    Saving is only about the address book and paying by name.
+    Silent when there is nothing to offer: an already-saved recipient, or one the
+    customer has declined before. The offer is a question about their address
+    book, and asking it again every month is how a helpful prompt turns into
+    something people learn to ignore.
     """
     if not beneficiary_id:
         return
     row = user.beneficiaries.filter(pk=beneficiary_id).first()
-    if row is None or row.saved or row.save_prompted:
+    # Ask only after the third transfer and only once. Automatic recipient
+    # memory remains private unless the customer accepts or reaches 51 transfers.
+    if row is None or row.saved or row.transfer_count < 3 or row.save_offer_sent or cache.get(_decline_key(row.pk)):
         return
-    if row.times_paid < SAVE_PROMPT_AFTER:
-        return
-    # Marked before the send, not after: a message that fails to go out has still
-    # used up the one time we were willing to interrupt, and the alternative — a
-    # failed send leaving the flag clear — asks again on the next transfer, which
-    # is the behaviour this exists to stop.
-    row.save_prompted = True
-    row.save(update_fields=["save_prompted"])
+    row.save_offer_sent = True
+    row.save(update_fields=["save_offer_sent"])
     reply_buttons(
         msisdn,
-        f"⭐ You've paid *{row.name.upper()}* {row.times_paid} times. "
-        "Save them so you can pay by name next time?",
+        f"⭐ Save *{row.name.upper()}* so you can pay them by name next time?",
         [(f"bene:save:{row.pk}", "Save"), (f"bene:no:{row.pk}", "Not now")])
 
 
@@ -4409,9 +4385,7 @@ def _handle_save_button(user, msisdn: str, low: str) -> bool:
         reply(msisdn, "That recipient is no longer in your list.")
         return True
     if decision == "no":
-        # save_prompted was already set when the offer went out, so the refusal
-        # needs no record of its own: the question is asked once per recipient
-        # whatever the answer.
+        cache.set(_decline_key(row.pk), 1, _SAVE_DECLINE_TTL)
         reply(msisdn, "No problem — I won't ask about them again.")
         return True
     row.saved = True
@@ -4420,29 +4394,6 @@ def _handle_save_button(user, msisdn: str, low: str) -> bool:
     reply(msisdn, f"⭐ Saved. What should I call {row.name.upper()}? "
                   "Reply with a short name like \"Mum\", or *skip* to keep the bank's name.")
     return True
-
-
-def _looks_like_a_name(text: str) -> bool:
-    """Whether this reads as what somebody is CALLED, rather than a request.
-
-    Names are short, made of letters, and carry no account number. Instructions
-    carry amounts, account numbers and bank names. The two are far enough apart
-    that shape decides it, which is what keeps "Elizabeth" a name while
-    "2k to. Yahaya 0998787776 polaris" is a payment somebody is waiting for.
-
-    Digits are not banned outright — "Flat 3B" and "Ada 2" are things people
-    genuinely call each other — but a run of four or more is an account number,
-    a phone number or an amount, and none of those is a name.
-    """
-    t = " ".join(str(text or "").split())
-    if not t or len(t) > 40 or len(t.split()) > 4:
-        return False
-    if re.search(r"\d{4,}", t):
-        return False
-    if not re.fullmatch(r"[A-Za-z0-9' .\-]+", t):
-        return False
-    # At least one real word. "3B" alone, or ". -", names nobody.
-    return bool(re.search(r"[A-Za-z]{2,}", t))
 
 
 def _beneficiary_lines(rows) -> str:
@@ -4479,22 +4430,12 @@ def _advance_beneficiary(pa: PendingAction, user, msisdn: str, text: str) -> Non
         if low in ("skip", "no", "none"):
             _clear_actions(msisdn)
             return reply(msisdn, f"Kept as {row.name.upper()}.")
-        # A person's name, or something else entirely? This prompt sits in the way
-        # of the whole chat, so whatever arrives next is at least as likely to be
-        # a new instruction as an answer — "2k to. Yahaya 0998787776 polaris" was
-        # accepted as somebody's name, which is nonsense on its face and, worse,
-        # ate the payment the customer was asking for.
-        #
-        # Decided by SHAPE rather than by keyword. _names_another_intent matches
-        # substrings, so "Elizabeth" contains "bet" and "Ricardo" contains "card":
-        # asking it first would make ordinary names unusable. Asking what a name
-        # looks like has neither failure — a name has letters and no account
-        # number, and an instruction almost always carries digits.
-        if not _looks_like_a_name(text):
-            return _reroute_or_reprompt(pa, msisdn, text,
-                                        "That doesn't look like a name. Reply with a short "
-                                        "one like \"Mum\", or *skip* to keep the bank's name.")
         nickname, problem = clean_nickname(text)
+        # The nickname is checked BEFORE asking whether this looks like another
+        # instruction. _names_another_intent matches substrings, so "Elizabeth"
+        # contains "bet" and "Ricardo" contains "card" — running it first would
+        # make ordinary names unusable, and silently, since the reply would be
+        # the menu rather than an explanation.
         if problem:
             return reply(msisdn, f"{problem} Or reply *skip*.")
         if not nickname:
