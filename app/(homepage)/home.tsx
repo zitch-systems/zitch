@@ -4,11 +4,9 @@ import * as Clipboard from 'expo-clipboard';
 import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
-import { Avatar } from '@/components/design/Brand';
-import { Screen, Card, Sheet, TxnRow, money, NText } from '@/components/design/ui';
+import { Screen, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
-import { LinkedBanksSummary } from '@/components/design/banklink';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -38,9 +36,34 @@ const MORE = [
   { label: 'Invite', icon: 'invite', go: () => router.push('/invite') },
 ];
 
+// The four things people open the app to do. Deliberately not the services grid
+// below: these are account actions, and separating them is what lets the grid be
+// scanned as a list of bills rather than as fourteen equally-weighted icons.
+const ACTIONS = [
+  { label: 'Transfer', icon: 'send', go: () => router.push('/sendmoney') },
+  { label: 'Add Money', icon: 'plus', go: () => router.push('/addmoney') },
+  { label: 'Statement', icon: 'download', go: () => router.push('/history') },
+  { label: 'History', icon: 'chart', go: () => router.push('/history') },
+];
+
+/** "Good morning" / "afternoon" / "evening", by the phone's own clock. */
+const greeting = () => {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+};
+
+/** Up to two initials from whatever name we hold. */
+const initialsOf = (full: string, fallback: string) => {
+  const words = (full || fallback || '').trim().split(/\s+/).filter(Boolean);
+  const letters = words.slice(0, 2).map((w) => w[0]).join('');
+  return letters.toUpperCase() || 'ZT';
+};
+
 const Home = () => {
   const { c } = useTheme();
-  const { balance, firstName, avatar, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, accountName, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -62,115 +85,171 @@ const Home = () => {
     notify('Copied', 'Account number copied to clipboard');
   };
 
+  // The balance is split so the kobo can be set smaller, as on the mockup. Split
+  // on the LAST dot rather than parsed as a number: money() has already done the
+  // grouping and the currency mark, and re-deriving them here would be a second
+  // opinion on how naira are written.
+  const shown = money(balance);
+  const dot = shown.lastIndexOf('.');
+  const [whole, kobo] = dot > -1 ? [shown.slice(0, dot), shown.slice(dot)] : [shown, ''];
+  const name = accountName || firstName || 'there';
+
   return (
     <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
       {/* header */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingTop: 4 }}>
-        <Pressable onPress={() => router.push('/me')}>
-          <Avatar size={38} ring={c.brand} surface={c.surface} uri={avatar} />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 4 }}>
+        <Pressable onPress={() => router.push('/me')} accessibilityRole="button" accessibilityLabel="Your profile">
+          {/* Initials rather than the illustration: a monogram reads as "this is
+              your account" at a glance, and it cannot be mistaken for a photo the
+              customer never set. */}
+          <View style={{
+            width: 44, height: 44, borderRadius: 14, borderWidth: 1.5, borderColor: c.brand,
+            backgroundColor: c.brand + '1A', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Text style={{ color: c.brand, fontFamily: font.extrabold, fontSize: 15 }}>
+              {initialsOf(accountName, firstName)}
+            </Text>
+          </View>
         </Pressable>
-        <Text style={{ flex: 1, fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>
-          Hi, {firstName || 'there'}
-        </Text>
-        <View style={{ flexDirection: 'row', gap: 16, alignItems: 'center' }}>
-          <Pressable onPress={() => router.push('/support')} hitSlop={10}><ZIcon name="help" size={24} color={c.ink1} /></Pressable>
-          <Pressable onPress={() => router.push('/scan')} hitSlop={10}><ZIcon name="scan" size={24} color={c.ink1} /></Pressable>
-          {/* No hardcoded unread count: the app has no notifications-count
-              source, so a fixed "24" badge was always shown and contradicted the
-              notifications screen. Show the plain bell until a real count exists. */}
-          <Pressable onPress={() => router.push('/notifications')} hitSlop={10}>
-            <ZIcon name="bell" size={24} color={c.ink1} />
-          </Pressable>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 13, fontFamily: font.regular, color: c.ink3 }}>{greeting()} 👋</Text>
+          <Text numberOfLines={1} style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginTop: 1 }}>
+            {name}
+          </Text>
         </View>
+        <Pressable
+          onPress={() => router.push('/scan')}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Scan a code"
+          style={{ width: 38, height: 38, borderRadius: 12, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <ZIcon name="scan" size={19} color={c.ink1} />
+        </Pressable>
+        <Pressable
+          onPress={() => router.push('/notifications')}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Notifications"
+          style={{ width: 38, height: 38, borderRadius: 12, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <ZIcon name="bell" size={19} color={c.ink1} />
+          {/* A dot, not a count. The app has no notifications-count source, so a
+              number here would be invented — and a wrong number is worse than no
+              number on a screen about money. */}
+          <View style={{
+            position: 'absolute', top: 7, right: 8, width: 8, height: 8, borderRadius: 4,
+            backgroundColor: c.red, borderWidth: 1.5, borderColor: c.bg,
+          }} />
+        </Pressable>
       </View>
 
       {/* balance hero */}
       <Hero style={{ margin: 16 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-            <View style={{ width: 17, height: 17, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.22)', alignItems: 'center', justifyContent: 'center' }}>
-              <ZIcon name="check" size={11} color="#fff" stroke={2.6} />
-            </View>
-            <Text style={{ color: 'rgba(255,255,255,.88)', fontSize: 13, fontFamily: font.medium }}>Available Balance</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+          <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.bold, letterSpacing: 1.1 }}>
+            AVAILABLE BALANCE
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Pressable
+              onPress={() => setShowBal(!showBal)}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel={showBal ? 'Hide balance' : 'Show balance'}
+              style={{ width: 28, height: 28, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color="#fff" />
+            </Pressable>
+            <Pressable
+              onPress={() => router.push('/analysis')}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Account insights"
+              style={{ width: 28, height: 28, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <ZIcon name="more" size={15} color="#fff" />
+            </Pressable>
           </View>
-          <Pressable onPress={() => router.push('/history')} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-            <Text style={{ color: '#fff', fontSize: 12.5, fontFamily: font.semibold }}>Transaction History</Text>
-            <ZIcon name="right" size={15} color="#fff" />
-          </Pressable>
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 9 }}>
-          <NText style={{ color: '#fff', fontSize: 32, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
-            {showBal ? money(balance) : '₦ ••••••'}
+
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 8 }}>
+          <NText style={{ color: '#fff', fontSize: 34, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+            {showBal ? whole : '₦ ••••••'}
           </NText>
-          <Pressable onPress={() => setShowBal(!showBal)} hitSlop={12}>
-            <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={17} color="rgba(255,255,255,.85)" />
-          </Pressable>
+          {showBal && kobo ? (
+            <NText style={{ color: 'rgba(255,255,255,.7)', fontSize: 20, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+              {kobo}
+            </NText>
+          ) : null}
         </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 10 }}>
+
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, gap: 10 }}>
           {/* The dedicated (Wema/ALAT) account number, shown only once the wallet
               is provisioned with one — never a hardcoded placeholder (it could be
               mistaken for a real account and shared). Tap to copy. */}
           {accountNumber ? (
             <Pressable
               onPress={copyAccount}
-              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, backgroundColor: 'rgba(255,255,255,.16)' }}
+              accessibilityRole="button"
+              accessibilityLabel={`Copy account number ${accountNumber}`}
+              style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7 }}
             >
-              <ZIcon name="bank" size={14} color="#fff" />
-              <NText numberOfLines={1} style={{ flex: 1, color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
+              <ZIcon name="bank" size={14} color="rgba(255,255,255,.85)" />
+              <NText numberOfLines={1} style={{ flexShrink: 1, color: '#fff', fontSize: 12.5, fontFamily: font.bold }}>
                 {accountNumber}{bankName ? ` · ${bankName}` : ''}
               </NText>
-              <ZIcon name="copy" size={14} color="rgba(255,255,255,.85)" />
+              <ZIcon name="copy" size={13} color="rgba(255,255,255,.75)" />
             </Pressable>
           ) : (
             <View style={{ flex: 1 }} />
           )}
-          <Pressable onPress={() => router.push('/addmoney')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 999, backgroundColor: '#fff' }}>
-            <ZIcon name="plus" size={15} color={c.brandDeep} stroke={2.4} />
-            <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Add Money</Text>
+          <Pressable
+            onPress={() => router.push('/wallet')}
+            accessibilityRole="button"
+            accessibilityLabel="Open your wallet"
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 9, paddingHorizontal: 15, borderRadius: 999, backgroundColor: '#fff' }}
+          >
+            <ZIcon name="wallet" size={15} color={c.brandDeep} stroke={2.2} />
+            <Text style={{ color: c.brandDeep, fontSize: 13, fontFamily: font.bold }}>Wallet</Text>
           </Pressable>
         </View>
       </Hero>
 
-      {/* total across connected banks */}
-      <LinkedBanksSummary />
-
-      {/* daily interest strip */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: -4 }}>
-        <Card pad={0} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11, paddingHorizontal: 14, borderRadius: 16 }}>
-          <View style={{ width: 26, height: 26, borderRadius: 8, backgroundColor: 'rgba(0,181,29,.14)', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="spark" size={16} color={c.lime} />
-          </View>
-          <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, fontFamily: font.regular }}>
-            Act now — start earning <Text style={{ color: c.brand, fontFamily: font.bold }}>daily interest</Text>
-          </Text>
-          <ZIcon name="right" size={16} color={c.ink3} />
-        </Card>
-      </Pressable>
-
       {/* quick actions */}
-      <Card style={{ margin: 16, marginBottom: 0, flexDirection: 'row', justifyContent: 'space-around', paddingVertical: 16 }}>
-        {[
-          { icon: 'send', label: 'Transfer', go: () => router.push('/sendmoney') },
-          { icon: 'airtime', label: 'Airtime', go: () => router.push('/buyairtime') },
-          { icon: 'withdraw', label: 'Withdraw', go: () => router.push('/sendmoney') },
-        ].map((q) => (
-          <ServiceTile key={q.label} icon={q.icon} label={q.label} onPress={q.go} round />
+      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16 }}>
+        {ACTIONS.map((a) => (
+          <Pressable
+            key={a.label}
+            onPress={a.go}
+            accessibilityRole="button"
+            accessibilityLabel={a.label}
+            style={{
+              flex: 1, alignItems: 'center', gap: 8, paddingVertical: 14,
+              borderRadius: 18, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface,
+            }}
+          >
+            <ZIcon name={a.icon} size={21} color={c.brand} stroke={2} />
+            <Text numberOfLines={1} style={{ fontSize: 11.5, fontFamily: font.semibold, color: c.ink2 }}>
+              {a.label}
+            </Text>
+          </Pressable>
         ))}
-      </Card>
+      </View>
 
       {/* services grid */}
-      <Card style={{ margin: 16, marginBottom: 0, paddingVertical: 20, paddingHorizontal: 8 }}>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
-          {GRID.map((s) => (
-            <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
-              <ServiceTile icon={s.icon} label={s.label} badge={s.badge} hot={s.hot} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
-            </View>
-          ))}
-        </View>
-      </Card>
+      <View style={{ paddingHorizontal: 18, paddingTop: 24 }}>
+        <SectionLabel action="See all" onAction={() => setMore(true)}>Pay a bill</SectionLabel>
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8 }}>
+        {GRID.map((s) => (
+          <View key={s.label} style={{ width: '25%', alignItems: 'center', marginBottom: 18 }}>
+            <ServiceTile icon={s.icon} label={s.label} badge={s.badge} hot={s.hot} onPress={() => (s.more ? setMore(true) : s.go && s.go())} />
+          </View>
+        ))}
+      </View>
 
       {/* promo */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: 14 }}>
+      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: 2 }}>
         <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
           <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="fixed" size={23} color={c.brand} />
@@ -220,4 +299,3 @@ const Home = () => {
 };
 
 export default Home;
-
