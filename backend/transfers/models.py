@@ -28,6 +28,16 @@ class Bank(models.Model):
         return self.name
 
 
+# Payouts to one account before we offer to keep the recipient. "More than
+# twice": a first transfer says nothing, a second could be a coincidence, a third
+# is a relationship. Below it the row still exists and still fills the send
+# screen in — it is simply not worth interrupting anyone about.
+SAVE_PROMPT_AFTER = 3
+# Payouts after which the recipient is kept without asking. At this many, the
+# customer has answered the question with their behaviour.
+AUTO_SAVE_AFTER = 50
+
+
 class Beneficiary(models.Model):
     """A transfer recipient. Auto-created on first transfer; deduped per user by
     (account_number, bank_name).
@@ -55,9 +65,20 @@ class Beneficiary(models.Model):
     # moves. A nickname sitting in `name` would read as a mismatch and block a
     # perfectly good transfer.
     nickname = models.CharField(max_length=80, blank=True, default="")
-    # False on a row we wrote ourselves after a payout; True only once the
-    # customer has said to keep it.
+    # False on a row we wrote ourselves after a payout; True once the customer
+    # has said to keep it, or once they have paid this account so many times that
+    # asking would be pedantic (AUTO_SAVE_AFTER).
     saved = models.BooleanField(default=False)
+    # Settled payouts to this account. It is what tells a one-off — a fee, a
+    # stranger, a marketplace seller — from somebody the customer actually deals
+    # with, and only the second kind is worth offering to keep.
+    times_paid = models.PositiveIntegerField(default=0)
+    # Whether we have already offered to save this recipient. A boolean rather
+    # than a cached "they said no", because the question is worth asking once and
+    # is a nuisance asked twice: WhatsApp used to offer after every single
+    # transfer, so paying the same landlord monthly meant the same question every
+    # month on a metered channel.
+    save_prompted = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:

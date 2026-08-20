@@ -42,11 +42,10 @@ const BANNERS: { title: string; body: string }[] = [
   { title: 'Any bank, any time', body: 'Send to any Nigerian bank account, 24/7.' },
 ];
 
-// One tab, deliberately. The list mixes saved people and recents, because a
-// saved recipient IS someone you paid recently and splitting them would empty
-// the tab a customer is standing on the moment they star their only row.
-// Saved people sort to the top and carry a filled star instead.
-const BEN_TABS: { v: string; label: string }[] = [{ v: 'recents', label: 'Recents' }];
+// One tab, deliberately: this card has one kind of row in it — people the
+// customer keeps. Accounts merely paid before are not listed here at all; they
+// surface where they are actually useful, under the account field as you type.
+const BEN_TABS: { v: string; label: string }[] = [{ v: 'saved', label: 'Saved' }];
 
 // ---- Local presentation helpers (kept in this file on purpose: they are this
 // screen's reference layout, not design-system components) ----
@@ -404,7 +403,10 @@ const SendMoney = () => {
         // The row the server just wrote for this recipient, so the receipt can
         // offer to keep them without posting an account number back and paying
         // for a second name enquiry to identify someone we already know.
-        setSentBeneficiaryId(Number(res.beneficiary_id) || null);
+        // Only when the server says this recipient is worth keeping — the
+        // same rule the chat uses, so nobody is offered in one place and
+        // left alone in the other.
+        setSentBeneficiaryId(res.offer_save ? (Number(res.beneficiary_id) || null) : null);
         setStep(null);   // close the PIN sheet FIRST…
         reload();
         // …then show the receipt once the sheet has animated out. Switching to the
@@ -478,14 +480,20 @@ const SendMoney = () => {
     );
   }
 
-  // Saved people first, then the rest in server order (newest paid first).
-  // Searching covers the nickname too: someone who saved an account as "Mum"
-  // will look for Mum, not for the holder name printed on the bank's records.
+  // The card lists SAVED people only — the ones the customer kept, plus anyone
+  // they have paid often enough that we kept the recipient for them. Every other
+  // row still arrives in `beneficiaries` and still does the useful work below:
+  // filling in the bank and holder name the moment a known account number is
+  // typed, and answering the "Sent before" suggestions. Those are a memory of
+  // where money has been, which is a different thing from an address book, and
+  // the list stayed useful only while it was the second one.
+  //
+  // Searching covers the nickname: someone who saved an account as "Mum" looks
+  // for Mum, not for the holder name printed on the bank's records.
   const filteredBens = beneficiaries
+    .filter((b) => b.saved)
     .filter((b) => (b.name + ' ' + (b.nickname || '') + ' ' + b.account_number)
-      .toLowerCase().includes(query.toLowerCase()))
-    .slice()
-    .sort((x, y) => Number(!!y.saved) - Number(!!x.saved));
+      .toLowerCase().includes(query.toLowerCase()));
   const filteredBanks = banks.filter((b) => b.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
   // "Sent before" suggestions: as the user types 4+ digits, surface up to 3
   // prior bank beneficiaries whose account number starts with what they've
@@ -605,10 +613,19 @@ const SendMoney = () => {
               <View style={{ paddingTop: 10 }}>
                 <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Sent before</Text>
                 {acctSuggestions.map((b) => (
-                  <Pressable key={b.id} onPress={() => { idemKey.current = ''; setAcct(b.account_number); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
+                  <Pressable
+                    key={b.id}
+                    onPress={() => { idemKey.current = ''; setAcct(b.account_number); }}
+                    // The saved list above holds only people the customer keeps,
+                    // so this is where an older account is kept, renamed or
+                    // dropped — the one place it is still in front of them.
+                    onLongPress={() => benActions(b)}
+                    accessibilityHint="Long press to save, rename or remove"
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}
+                  >
                     <Monogram text={b.initials} color={b.color} size={32} />
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.name}</Text>
+                      <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.display_name || b.name}</Text>
                       <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12 }}>{b.account_number} · {b.bank_name}</Text>
                     </View>
                   </Pressable>
@@ -702,9 +719,11 @@ const SendMoney = () => {
         </View>
       </Card>
 
-      {/* Saved recipients — the real /api/transfers/beneficiaries/ list (newest
-          first), so "Recents" is the accounts this user has actually paid. */}
-      {!picked && beneficiaries.length > 0 && (
+      {/* Saved people — the ones the customer kept, plus anyone they have paid
+          often enough that we kept the recipient for them. Accounts merely paid
+          before are deliberately not here; they answer the account field's
+          suggestions instead. */}
+      {!picked && beneficiaries.some((b) => b.saved) && (
         <>
           <View style={{ height: 14 }} />
           <Card pad={18}>
@@ -753,7 +772,7 @@ const SendMoney = () => {
             )}
 
             {filteredBens.length === 0 ? (
-              <Text style={{ fontSize: 13, color: c.ink3, paddingVertical: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
+              <Text style={{ fontSize: 13, color: c.ink3, paddingVertical: 14, fontFamily: font.regular }}>No saved person matches that</Text>
             ) : (
               shownBens.map((b, i) => (
                 <Pressable
@@ -769,12 +788,12 @@ const SendMoney = () => {
                       Coming back off the list is Remove, on the long-press menu,
                       because it deletes the row rather than un-ticking it. */}
                   <Pressable
-                    onPress={() => (b.saved ? benActions(b) : saveBen(b))}
+                    onPress={() => benActions(b)}
                     hitSlop={10}
                     accessibilityRole="button"
-                    accessibilityLabel={b.saved ? `${b.display_name || b.name} is saved` : `Save ${b.name}`}
+                    accessibilityLabel={`Options for ${b.display_name || b.name}`}
                   >
-                    <ZIcon name={b.saved ? 'check' : 'plus'} size={17} color={b.saved ? c.brand : c.ink3} stroke={b.saved ? 2.4 : 1.8} />
+                    <ZIcon name="check" size={17} color={c.brand} stroke={2.4} />
                   </Pressable>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{b.display_name || b.name}</Text>

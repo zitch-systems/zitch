@@ -17,6 +17,7 @@ from utility.providers import payout_charge, payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key
 
+from .bank_aliases import aliases_for, short_name
 from .models import Bank
 from .services import PayoutError, detect_account_banks, execute_payout
 
@@ -47,7 +48,13 @@ def list_banks(request):
     almost everyone sends to before the long alphabetical tail.
     """
     banks = Bank.objects.filter(active=True).order_by("-popular", "name")
-    return ok(banks=[{"code": b.code, "name": b.name, "color": b.color, "logo": b.logo}
+    return ok(banks=[{"code": b.code, "name": b.name, "color": b.color, "logo": b.logo,
+                      # What people call it. `short` is the badge the picker shows
+                      # beside the name; `aliases` is what its search box matches
+                      # on, so "guaranty trust" finds GTBank and "airtel" finds
+                      # SmartCash. Both are additive — a build that has never heard
+                      # of them renders and searches exactly as it does today.
+                      "short": short_name(b.code), "aliases": aliases_for(b.code)}
                      for b in banks])
 
 
@@ -340,4 +347,8 @@ def bank_transfer(request):
               # with an id, rather than posting an account number back and paying
               # for a second name enquiry to identify a row we just wrote.
               beneficiary_id=getattr(txn, "beneficiary_id", None),
+              # Whether to show "save this recipient" on the receipt. The server
+              # decides, on the same rule the chat uses, so a customer is not
+              # offered in one place and left alone in the other.
+              offer_save=bool(getattr(txn, "beneficiary_offer_save", False)),
               message="Money sent")
