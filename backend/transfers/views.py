@@ -64,6 +64,8 @@ def _beneficiary(b) -> dict:
         "bank_name": b.bank_name, "initials": b.initials, "color": b.color,
         "bank_code": b.bank_code, "nickname": b.nickname,
         "display_name": b.display_name, "saved": b.saved,
+        "transfer_count": b.transfer_count,
+        "frequent": b.transfer_count >= 3,
     }
 
 
@@ -99,8 +101,12 @@ def list_beneficiaries(request):
     holder name for an account the customer has paid before, with no name-enquiry
     round trip — reads this same list.
     """
-    items = request.user_obj.beneficiaries.all()
-    return ok(beneficiaries=[_beneficiary(b) for b in items])
+    items = request.user_obj.beneficiaries.filter(saved=True)
+    frequent = request.user_obj.beneficiaries.filter(transfer_count__gte=3).order_by("-created")
+    return ok(
+        beneficiaries=[_beneficiary(b) for b in items],
+        frequent_recipients=[_beneficiary(b) for b in frequent],
+    )
 
 
 def _own_beneficiary(request):
