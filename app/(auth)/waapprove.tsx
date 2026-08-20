@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { ActivityIndicator, Linking, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Btn, Header, PinPad, Screen } from '@/components/design/ui';
@@ -41,8 +41,28 @@ const WaApprove = () => {
   const [summary, setSummary] = useState('');
   const [outcome, setOutcome] = useState('');
   const [deadReason, setDeadReason] = useState('');
+  // Where the customer came FROM. They approved a chat payment with a fingerprint
+  // and should land back in that chat, not stranded on a screen in the app they
+  // never meant to open. Blank when the business number isn't configured, and the
+  // fallback below just opens WhatsApp.
+  const [returnTo, setReturnTo] = useState('');
   const [pinError, setPinError] = useState('');
   usePinScreenProtection(phase === 'confirm' || phase === 'busy');
+
+  /** Send them back to the thread they approved from.
+   *
+   * `wa.me` opens the Zitch chat itself; `whatsapp://` only opens the app, which
+   * is the fallback when the business number isn't configured. Failing to open
+   * either is not worth an error — they are already looking at "Payment approved",
+   * and the receipt is in the chat whenever they get back to it.
+   */
+  const backToWhatsApp = async () => {
+    try {
+      await Linking.openURL(returnTo || 'whatsapp://');
+    } catch {
+      router.replace('/home');
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -57,6 +77,7 @@ const WaApprove = () => {
       if (!alive) return;
       if (res?.success) {
         setSummary(res.summary || 'Confirm your payment');
+        setReturnTo(typeof res.return_to === 'string' ? res.return_to : '');
         setPhase('confirm');
       } else {
         // Expired, already completed, or not this account's action — the
@@ -129,8 +150,9 @@ const WaApprove = () => {
           </View>
           <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, textAlign: 'center' }}>Payment approved</Text>
           <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>{outcome}</Text>
-          <View style={{ marginTop: 26, alignSelf: 'stretch' }}>
-            <Btn label="Done" onPress={() => router.replace('/home')} />
+          <View style={{ marginTop: 26, alignSelf: 'stretch', gap: 10 }}>
+            <Btn label="Back to WhatsApp" icon="chat" onPress={backToWhatsApp} />
+            <Btn label="Stay in Zitch" variant="outline" onPress={() => router.replace('/home')} />
           </View>
         </View>
       )}

@@ -216,12 +216,15 @@ class FlowsHandlerTests(TestCase):
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_flow_token(pa),
                                     "data": {"pin": "1234"}})
-        # A settled success ENDS the Flow rather than rendering a last screen: the
-        # response is Meta's completion envelope, and the amount reaches the
-        # customer on the receipt already sent to the chat.
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
-        self.assertIn("extension_message_response", resp["data"])
-        self.assertNotIn("message", resp["data"])
+        # The outcome gets its own page — ✅ Successful, with the amount on it.
+        # Closing the panel the instant the money moved removed the duplicate page
+        # and the confirmation with it: the customer had to go and find the receipt
+        # in the chat to learn whether their payment had worked. The Flow ends when
+        # they tap Done (see test_flow_termination).
+        from .flows import RESULT_SCREEN
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
+        self.assertEqual(resp["data"]["status"], "✅ Successful")
+        self.assertIn("5,000", resp["data"]["message"])
         self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("5000"))
         self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())   # consumed
 
@@ -231,7 +234,7 @@ class FlowsHandlerTests(TestCase):
         already exists and is verified server-side, so a second entry would be
         pure friction; this pins the requirement so the confirm screen can never
         leak into the payment path."""
-        from .flows import (PIN_CONFIRM, PIN_RETRY, PIN_SCREEN, SUCCESS_SCREEN,
+        from .flows import (PIN_CONFIRM, PIN_RETRY, PIN_SCREEN, RESULT_SCREEN, SUCCESS_SCREEN,
                             handle_flow_request)
 
         pa = _transfer_action(self.user)
@@ -241,7 +244,7 @@ class FlowsHandlerTests(TestCase):
 
         done = handle_flow_request({"action": "data_exchange", "flow_token": token,
                                     "data": {"pin": "1234"}})
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)          # one entry, executed
+        self.assertEqual(done["screen"], RESULT_SCREEN)           # one entry, executed
         self.assertNotEqual(opened["screen"], PIN_CONFIRM)
 
         # And a WRONG pin re-asks on an empty payment screen — never the confirm
@@ -1442,7 +1445,8 @@ class TransferFormFlowTests(TestCase):
                    return_value={"success": True, "name": "Ada Eze"}):
             self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
         done = self._submit(pa, pin="1234")
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        from .flows import RESULT_SCREEN
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         self.assertEqual(get_or_create_wallet(self.user).balance, before - Decimal("2300"))
 
 

@@ -1740,14 +1740,9 @@
             "type": "Footer",
             "label": "Done",
             "on-click-action": {
-              "name": "navigate",
-              "next": {
-                "type": "screen",
-                "name": "SUCCESS"
-              },
+              "name": "data_exchange",
               "payload": {
-                "status": "Done",
-                "message": "You can close this window."
+                "close": true
               }
             }
           }
