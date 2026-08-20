@@ -27,4 +27,15 @@ urlpatterns = [
     # a WebView address bar and WhatsApp's browser), so it must not carry the secret
     # that guards the payout-authorisation callback above.
     *_both("face/<str:state>", cb.wema_face_callback, "wema_cb_face"),
+    # The same view at a FIXED path, with the state in the query string instead.
+    #
+    # ALAT whitelist cb_uri values on their side, and a whitelist that matches the
+    # exact URL cannot accept a path whose last segment is different on every
+    # verification: it would admit one customer once and reject everybody after.
+    # Registering a constant path gives them something stable to profile, and works
+    # under prefix matching too, so we do not have to know which they do.
+    #
+    # The path form above is kept because it is already deployed. It costs one route
+    # and means an in-flight session opened before this shipped still lands.
+    *_both("face", cb.wema_face_callback, "wema_cb_face_fixed"),
 ]

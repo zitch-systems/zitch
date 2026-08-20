@@ -52,6 +52,30 @@ class FaceCallbackTests(TestCase):
         self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
         self.assertEqual(self.session.correlation_id, "COR1")
 
+    def test_the_fixed_path_form_verifies_the_same_way(self):
+        """`/face?s=<state>` is the shape we hand out now, so ALAT have one URL to
+        whitelist. It must be worth exactly as much as the old path form — and no
+        more: the state is still what decides, and it is still checked the same way.
+        """
+        res = self.client.post(f"/webhooks/wema/face?s={self.session.state}",
+                               {"success": True, "c_id": "COR2", "id": "22222222222"},
+                               content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertTrue(self.user.face_verified)
+        self.assertEqual(self.session.correlation_id, "COR2")
+
+    def test_the_fixed_path_with_no_state_verifies_nobody(self):
+        # A bare POST to the registered URL names no session, so it decides nothing.
+        self.client.post("/webhooks/wema/face",
+                         {"success": True, "c_id": "C", "id": "22222222222"},
+                         content_type="application/json")
+        self.user.refresh_from_db()
+        self.other.refresh_from_db()
+        self.assertFalse(self.user.face_verified)
+        self.assertFalse(self.other.face_verified)
+
     def test_a_different_identity_never_verifies_the_session_owner(self):
         # The bank checked SOMEBODY's face — just not the person this session is for.
         res = self._post(self.session.state,
@@ -233,7 +257,21 @@ class TheCallbackUrlCarriesNoSharedSecretTests(TestCase):
                 ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"}):
             url = _face_callback_url("STATE123")
         self.assertNotIn("SUPERSECRETTOKENVALUE", url)
-        self.assertTrue(url.endswith("/webhooks/wema/face/STATE123"))
+        self.assertTrue(url.endswith("/webhooks/wema/face?s=STATE123"))
+
+    def test_the_registered_part_of_the_url_is_the_same_every_session(self):
+        """ALAT whitelist the cb_uri, so the part they register cannot move.
+
+        With the state in the last path segment, an exact-match whitelist would admit
+        one customer once and reject every one after — the state is fresh per session.
+        Everything up to the `?` is now constant.
+        """
+        from accounts.views import _face_callback_url
+        with override_settings(WEMA={"FACE_CALLBACK_IPS": ["1.2.3.4"]},
+                               ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"}):
+            first, second = _face_callback_url("AAA"), _face_callback_url("BBB")
+        self.assertEqual(first.split("?")[0], second.split("?")[0])
+        self.assertEqual(first.split("?")[0], "https://api.zitch.ng/webhooks/wema/face")
 
 
 @override_settings(

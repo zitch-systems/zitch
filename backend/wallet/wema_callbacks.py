@@ -577,6 +577,14 @@ def wema_face_callback(request, state=""):
 
     from .models import WemaFaceSession
 
+    # Two shapes reach this view. `/face?s=<state>` is what we hand out now — a fixed
+    # path is the only thing ALAT can whitelist once and have keep working, since the
+    # state differs on every verification. `/face/<state>` is the older form, still
+    # routed so a session opened before the change still lands. Neither is more
+    # trusted than the other: the state is checked the same way below either way.
+    if not state:
+        state = str(request.GET.get("s") or "")[:64]
+
     body = request.wema_body
     correlation = str(body.get("c_id") or "")[:160]
     identity = str(body.get("id") or "")
