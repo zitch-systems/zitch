@@ -4352,8 +4352,12 @@ def _offer_to_save(user, msisdn: str, beneficiary_id) -> None:
     if not beneficiary_id:
         return
     row = user.beneficiaries.filter(pk=beneficiary_id).first()
-    if row is None or row.saved or cache.get(_decline_key(row.pk)):
+    # Ask only after the third transfer and only once. Automatic recipient
+    # memory remains private unless the customer accepts or reaches 51 transfers.
+    if row is None or row.saved or row.transfer_count < 3 or row.save_offer_sent or cache.get(_decline_key(row.pk)):
         return
+    row.save_offer_sent = True
+    row.save(update_fields=["save_offer_sent"])
     reply_buttons(
         msisdn,
         f"⭐ Save *{row.name.upper()}* so you can pay them by name next time?",
