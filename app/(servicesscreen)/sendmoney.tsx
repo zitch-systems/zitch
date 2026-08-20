@@ -30,7 +30,7 @@ type Beneficiary = {
   // stays the bank's holder name — it is what the server re-confirms against a
   // fresh name enquiry before money moves — and `display_name` is what a person
   // should be called on screen.
-  nickname?: string; display_name?: string; saved?: boolean;
+  nickname?: string; display_name?: string; saved?: boolean; transfer_count?: number; frequent?: boolean;
 };
 type BankMatch = { bank: string; bank_name: string; name: string };
 
@@ -141,7 +141,12 @@ const SendMoney = () => {
       if (!t) return;
       setToken(t);
       apiPost('/api/transfers/beneficiaries/')
-        .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
+        .then((r) => r.json()).then((res) => {
+          const saved = Array.isArray(res.beneficiaries) ? res.beneficiaries : [];
+          const frequent = Array.isArray(res.frequent_recipients) ? res.frequent_recipients : [];
+          const seen = new Set<number>();
+          setBeneficiaries([...saved, ...frequent].filter((b) => !seen.has(b.id) && seen.add(b.id)));
+        }).catch(() => {});
     });
   }, []);
 
@@ -482,6 +487,7 @@ const SendMoney = () => {
   // Searching covers the nickname too: someone who saved an account as "Mum"
   // will look for Mum, not for the holder name printed on the bank's records.
   const filteredBens = beneficiaries
+    .filter((b) => b.saved)
     .filter((b) => (b.name + ' ' + (b.nickname || '') + ' ' + b.account_number)
       .toLowerCase().includes(query.toLowerCase()))
     .slice()
@@ -492,7 +498,7 @@ const SendMoney = () => {
   // typed. Tap fills the field, which triggers the fast-path effect above to
   // populate bank + holder — no scroll to the saved-beneficiaries row needed.
   const acctSuggestions = mode === 'bank' && !picked && acct.length >= 4 && acct.length < 10
-    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && b.account_number.startsWith(acct)).slice(0, 3)
+    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && (b.saved || b.frequent || (b.transfer_count || 0) >= 3) && b.account_number.startsWith(acct)).slice(0, 3)
     : [];
   // Inline list is capped at 3 rows; "View All" swaps in the rest in place.
   const shownBens = benAll ? filteredBens : filteredBens.slice(0, 3);
