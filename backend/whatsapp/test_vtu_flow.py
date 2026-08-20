@@ -128,7 +128,7 @@ class TheLadderIsOneSessionTests(TestCase):
     def test_a_network_with_no_plans_ends_the_session_rather_than_rendering_an_empty_list(self):
         pa = _vtu_action(self.user, vtu_kind="data", vtu_step="network")
         resp = _submit(pa, {"network": "1"})
-        self.assertEqual(resp["screen"], "SUCCESS")
+        self.assertEqual(resp["screen"], "RESULT")
         self.assertEqual(resp["data"]["status"], "❌ Not completed")
 
     def test_below_the_minimum_re_renders_rather_than_ending(self):
@@ -150,7 +150,7 @@ class TheLadderIsOneSessionTests(TestCase):
         self.user.save(update_fields=["transaction_pin"])
         pa = _vtu_action(self.user, vtu_kind="airtime", vtu_step="details", net="1")
         resp = _submit(pa, {"amount": "500", "phone": "08031234567"})
-        self.assertEqual(resp["screen"], "SUCCESS")
+        self.assertEqual(resp["screen"], "RESULT")
         self.assertIn("set pin", resp["data"]["message"])
 
     def test_a_new_instruction_leaves_the_form(self):

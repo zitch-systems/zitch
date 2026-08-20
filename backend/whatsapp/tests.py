@@ -2355,7 +2355,7 @@ class SignupPinPrivacyTests(TestCase):
 
         # Matching the first entry creates the account with that PIN.
         r3 = handle_flow_request({"action": "data_exchange", "flow_token": token, "data": {"pin": "246810"}})
-        self.assertEqual(r3["screen"], "SUCCESS")
+        self.assertEqual(r3["screen"], "RESULT")
         u = User.objects.get(phone=_local_phone(m))
         self.assertTrue(u.check_transaction_pin("246810"))
         self.assertIn("Welcome to Zitch", WaMessageLog.objects.filter(
@@ -2368,7 +2368,7 @@ class SignupPinPrivacyTests(TestCase):
         ob = WaOnboarding.objects.get(msisdn=m)
         forged = f"ob{ob.id}.notarealsignature"
         r = handle_flow_request({"action": "data_exchange", "flow_token": forged, "data": {"pin": "2468"}})
-        self.assertEqual(r["screen"], "SUCCESS")          # terminal, not the PIN screen
+        self.assertEqual(r["screen"], "RESULT")          # terminal, not the PIN screen
         ob.refresh_from_db()
         self.assertFalse(ob.payload.get("flow_pin_hash"))
         # A money-action token must not resolve as an onboarding one, or vice versa.

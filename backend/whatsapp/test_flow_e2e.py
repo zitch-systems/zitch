@@ -31,7 +31,7 @@ from utility.models import DataPlan
 from wallet.services import credit, get_or_create_wallet
 
 from . import flows
-from .flows import (FLOW_PIN_STATE, SUCCESS_SCREEN, handle_flow_request,
+from .flows import (FLOW_PIN_STATE, RESULT_SCREEN, SUCCESS_SCREEN, handle_flow_request,
                     sign_flow_token)
 from .models import PendingAction
 
@@ -175,7 +175,7 @@ class PaymentFlowE2ETests(FlowContractMixin, TestCase):
             self.assertScreen(resp, standing_on=standing, note=f"wrong PIN #{attempt + 1}")
             standing = resp["screen"]
             pa.refresh_from_db() if PendingAction.objects.filter(pk=pa.pk).exists() else None
-            if resp["screen"] == SUCCESS_SCREEN:
+            if resp["screen"] == RESULT_SCREEN:
                 break
 
     def test_a_correct_pin_holds_the_panel_open_while_pending(self):
@@ -298,7 +298,7 @@ class VtuFlowE2ETests(FlowContractMixin, TestCase):
         pa = self._session(flows.VTU_NETWORK_STEP)
         resp = self._exchange(pa, {"network": "1"})
         self.assertScreen(resp, standing_on=flows.VTU_NETWORK, note="no plans")
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.assertIn("no mtn data plans", resp["data"]["message"].lower())
 
     def test_the_re_render_path_also_refuses_an_empty_dropdown(self):
@@ -308,7 +308,7 @@ class VtuFlowE2ETests(FlowContractMixin, TestCase):
         pa = self._session(flows.VTU_DETAILS_STEP)
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_flow_token(pa)})
         self.assertScreen(resp, note="re-render with no plans")
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
 
 
 @override_settings(WHATSAPP={"MODE": "sandbox", "VERIFY_TOKEN": "v", "TOKEN": "",

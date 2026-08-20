@@ -64,7 +64,7 @@ class FlowEndpointRecordingTests(TestCase):
             resp = self._post()
         self.assertEqual(resp.status_code, 200)                    # not a 500
         answered = enc.call_args[0][0]                             # what we handed Meta
-        self.assertEqual(answered["screen"], "SUCCESS")
+        self.assertEqual(answered["screen"], "RESULT")
         self.assertIn("chat", answered["data"]["message"].lower())
         # The regression this screen exists for: it must declare EXACTLY what
         # SUCCESS declares. Built by hand it omitted `status`, and WhatsApp drew

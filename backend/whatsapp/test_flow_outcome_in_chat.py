@@ -134,7 +134,7 @@ class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
         pa = _armed(self.user)
         screen = self._open(pa)
         self.assertEqual(screen["screen"], flows.PIN_SCREEN)
-        self.assertNotEqual(screen["screen"], flows.SUCCESS_SCREEN)
+        self.assertNotEqual(screen["screen"], flows.RESULT_SCREEN)
 
     def test_a_completed_payment_answers_its_outcome_instead(self):
         """The reported bug. The executor clears the action on success, so by the
@@ -143,7 +143,7 @@ class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
         token = flows.sign_flow_token(pa)
         pa.delete()                                  # what _clear_actions does on success
         screen = flows.handle_flow_request({"action": "INIT", "flow_token": token})
-        self.assertEqual(screen["screen"], flows.SUCCESS_SCREEN)
+        self.assertEqual(screen["screen"], flows.RESULT_SCREEN)
         self.assertEqual(screen["data"]["status"], "❌ Not completed")
         self.assertIn("already done", screen["data"]["message"])
 
@@ -153,7 +153,7 @@ class ARetappedCardDoesNotReopenThePinPadTests(TestCase):
         pa = _armed(self.user)
         pa.state = router.EXECUTING_STATE
         pa.save(update_fields=["state"])
-        self.assertEqual(self._open(pa)["screen"], flows.SUCCESS_SCREEN)
+        self.assertEqual(self._open(pa)["screen"], flows.RESULT_SCREEN)
 
     def test_the_money_confirm_asks_the_server_which_screen_to_open(self):
         """The mechanism behind all of the above: `navigate` bakes the pad into

@@ -120,7 +120,7 @@ class MoneyPathPinAttemptsTests(TestCase):
                                         "data": {"pin": "9999"}})
             screens.append(resp["screen"])
         self.assertEqual(_no_id_twice_in_a_row(screens), [], screens)
-        self.assertEqual(screens[-1], SUCCESS_SCREEN)
+        self.assertEqual(screens[-1], RESULT_SCREEN)
 
     def test_an_account_with_no_pin_terminates_instead_of_looping(self):
         """`no_pin` returns before evaluate_transaction_pin's atomic block, so it
@@ -139,7 +139,7 @@ class MoneyPathPinAttemptsTests(TestCase):
         self.assertIn("set pin", resp["data"]["message"])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
         # The token no longer resolves, so there is nothing left to loop on.
-        self.assertEqual(self._submit(token, "9999"), SUCCESS_SCREEN)
+        self.assertEqual(self._submit(token, "9999"), RESULT_SCREEN)
 
     def test_a_correct_pin_still_goes_straight_through(self):
         pa = self._action()
@@ -222,7 +222,7 @@ class CreatePinAttemptsTests(TestCase):
     def test_a_second_weak_pin_terminates_instead_of_re_rendering(self):
         ob = self._onboarding()
         screens = [self._submit(ob, "123456"), self._submit(ob, "111111")]
-        self.assertEqual(screens, [PIN_RETRY, SUCCESS_SCREEN])
+        self.assertEqual(screens, [PIN_RETRY, RESULT_SCREEN])
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
         # The signup row SURVIVES — it is not a PendingAction and _clear_actions
         # is not its teardown; it resumes from the card or expires on its TTL.
@@ -253,7 +253,7 @@ class CreatePinAttemptsTests(TestCase):
         self.assertNotIn("flow_pin_hash", ob.payload)
         # Re-tapping starts the create-then-confirm pair over.
         self.assertEqual(self._submit(ob, "135790"), PIN_CONFIRM)
-        self.assertEqual(self._submit(ob, "135790"), SUCCESS_SCREEN)
+        self.assertEqual(self._submit(ob, "135790"), RESULT_SCREEN)
 
     def test_a_weak_pin_then_a_good_one_still_reaches_the_confirm_step(self):
         ob = self._onboarding()
@@ -265,7 +265,7 @@ class CreatePinAttemptsTests(TestCase):
         screens = [self._submit(ob, "246810"),      # held
                    self._submit(ob, "111112"),      # mismatch 1
                    self._submit(ob, "111113")]      # mismatch 2
-        self.assertEqual(screens, [PIN_CONFIRM, PIN_CONFIRM_RETRY, SUCCESS_SCREEN])
+        self.assertEqual(screens, [PIN_CONFIRM, PIN_CONFIRM_RETRY, RESULT_SCREEN])
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
 
 
@@ -287,7 +287,7 @@ class SetPinAttemptsTests(TestCase):
     def test_a_second_weak_pin_terminates_instead_of_re_rendering(self):
         pa = self._armed()
         screens = [self._submit(pa, "123456"), self._submit(pa, "111111")]
-        self.assertEqual(screens, [PIN_RETRY, SUCCESS_SCREEN])
+        self.assertEqual(screens, [PIN_RETRY, RESULT_SCREEN])
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
         self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
         self.user.refresh_from_db()
@@ -298,7 +298,7 @@ class SetPinAttemptsTests(TestCase):
         screens = [self._submit(pa, "246810"),
                    self._submit(pa, "111112"),
                    self._submit(pa, "111113")]
-        self.assertEqual(screens, [PIN_CONFIRM, PIN_CONFIRM_RETRY, SUCCESS_SCREEN])
+        self.assertEqual(screens, [PIN_CONFIRM, PIN_CONFIRM_RETRY, RESULT_SCREEN])
         self.assertEqual(_no_id_twice_in_a_row(screens), [])
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_transaction_pin("1234"))   # never set
@@ -443,7 +443,7 @@ class EscalatedLockOffersTheResetTests(TestCase):
                                               "data": {"pin": "975310"}})["screen"], PIN_CONFIRM)
         self.assertEqual(handle_flow_request({"action": "data_exchange", "flow_token": token,
                                               "data": {"pin": "975310"}})["screen"],
-                         SUCCESS_SCREEN)
+                         RESULT_SCREEN)
 
         self.user.refresh_from_db()
         self.assertIsNone(self.user.pin_locked_until)
