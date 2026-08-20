@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from accounts.models import hash_identifier
 from whatsapp.flows import (FLOW_ID_STATE, IDENTITY_CHAIN, IDENTITY_RETRY, IDENTITY_SCREEN,
-                            SUCCESS_SCREEN, handle_flow_request, sign_identity_token)
+                            RESULT_SCREEN, SUCCESS_SCREEN, handle_flow_request, sign_identity_token)
 from whatsapp.models import PendingAction, SystemSetting
 from whatsapp.test_flows import MSISDN, _make_user
 
@@ -72,7 +72,7 @@ class IdentityOtpTests(TestCase):
         self.assertNotIn("2348031234567", pa.payload["id_otp_to"])   # masked
         with patch("whatsapp.router.reply"):
             done = self._submit(pa, code)
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
 
@@ -87,7 +87,7 @@ class IdentityOtpTests(TestCase):
         for _ in range(2):
             self.assertEqual(self._submit(pa, "000000")["screen"], CODE_RETRY)
         third = self._submit(pa, "000000")
-        self.assertEqual(third["screen"], SUCCESS_SCREEN)
+        self.assertEqual(third["screen"], RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
         self.assertIn("wrong verification codes",
@@ -102,7 +102,7 @@ class IdentityOtpTests(TestCase):
              patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.reply"):
             resp = self._submit(pa, "22222222222")
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
         self.assertIn("no phone number", SystemSetting.get("wa_last_identity_review", ""))
@@ -174,8 +174,8 @@ class SimulatedIdentityFlowTests(TestCase):
             self.assertEqual(self.pa.payload["id_kind"], "nin")
             second = self._submit(nin)
 
-        self.assertEqual(first["screen"], SUCCESS_SCREEN)
-        self.assertEqual(second["screen"], SUCCESS_SCREEN)
+        self.assertEqual(first["screen"], RESULT_SCREEN)
+        self.assertEqual(second["screen"], RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertTrue(self.user.bvn_verified)
         self.assertTrue(self.user.nin_verified)
@@ -255,7 +255,7 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
         with self._reject(), patch("whatsapp.router.reply"):
             self.assertEqual(self._submit(pa)["screen"], IDENTITY_RETRY)
             second = self._submit(pa)
-        self.assertEqual(second["screen"], SUCCESS_SCREEN)     # terminal, not another guess
+        self.assertEqual(second["screen"], RESULT_SCREEN)     # terminal, not another guess
         self.assertIn("Too many", second["data"]["message"])
 
     def test_an_unreachable_provider_still_queues_because_that_one_is_ours(self):
@@ -266,7 +266,7 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
                                          "message": "Identity provider unreachable: boom"}), \
              patch("whatsapp.router.reply"):
             resp = self._submit(pa)
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         pa.refresh_from_db()
         self.assertEqual(pa.payload.get("pending_review"), "bvn")
         self.assertIn("unreachable", SystemSetting.get("wa_last_identity_review", ""))
@@ -369,7 +369,7 @@ class PinResetOtpTests(TestCase):
         first = self._submit(pa, pin="246810")
         self.assertEqual(first["screen"], PIN_CONFIRM)
         done = self._submit(pa, pin="246810")
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_transaction_pin("246810"))
 
@@ -381,7 +381,7 @@ class PinResetOtpTests(TestCase):
             self.assertEqual(self._submit(pa, number="000000")["screen"], CODE_RETRY)
             pa.refresh_from_db()
         third = self._submit(pa, number="000000")
-        self.assertEqual(third["screen"], SUCCESS_SCREEN)
+        self.assertEqual(third["screen"], RESULT_SCREEN)
         self.assertIn("cancelled", third["data"]["message"])
         self.user.refresh_from_db()
         self.assertTrue(self.user.check_transaction_pin("1234"))   # unchanged

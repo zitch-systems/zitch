@@ -21,7 +21,7 @@ from django.utils import timezone
 from transfers.models import Bank
 from wallet.services import credit, get_or_create_wallet
 
-from .flows import (FLOW_ID_STATE, FLOW_PIN_STATE, resolve_flow_token,
+from .flows import (FLOW_ID_STATE, FLOW_PIN_STATE, RESULT_SCREEN, resolve_flow_token,
                     sign_flow_token)
 from .models import PendingAction, WaMessageLog, WhatsAppLink
 
@@ -136,11 +136,11 @@ class FlowsHandlerTests(TestCase):
         self.assertEqual(handle_flow_request({"action": "ping"}), {"data": {"status": "active"}})
 
     def test_malformed_decrypted_shapes_return_a_safe_screen(self):
-        from .flows import SUCCESS_SCREEN, handle_flow_request
+        from .flows import RESULT_SCREEN, handle_flow_request
 
-        self.assertEqual(handle_flow_request([])["screen"], SUCCESS_SCREEN)
+        self.assertEqual(handle_flow_request([])["screen"], RESULT_SCREEN)
         response = handle_flow_request({"action": "data_exchange", "data": ["bad"]})
-        self.assertEqual(response["screen"], SUCCESS_SCREEN)
+        self.assertEqual(response["screen"], RESULT_SCREEN)
 
     def test_init_returns_pin_screen_with_amount_recipient_and_bank(self):
         from .flows import PIN_SCREEN, handle_flow_request
@@ -209,7 +209,7 @@ class FlowsHandlerTests(TestCase):
         self.assertTrue(PendingAction.objects.filter(id=pa.id).exists())    # still pending
 
     def test_correct_pin_executes_and_completes(self):
-        from .flows import SUCCESS_SCREEN, handle_flow_request
+        from .flows import RESULT_SCREEN, handle_flow_request
 
         pa = _transfer_action(self.user)
         before = get_or_create_wallet(self.user).balance
@@ -257,14 +257,14 @@ class FlowsHandlerTests(TestCase):
         self.assertNotEqual(wrong["screen"], PIN_CONFIRM)
 
     def test_forged_token_is_rejected(self):
-        from .flows import SUCCESS_SCREEN, handle_flow_request
+        from .flows import RESULT_SCREEN, handle_flow_request
 
         pa = _transfer_action(self.user)
         before = get_or_create_wallet(self.user).balance
         forged = f"{pa.id}.deadbeefdeadbeefdeadbe"        # right id, wrong signature
         resp = handle_flow_request({"action": "data_exchange", "flow_token": forged,
                                     "data": {"pin": "1234"}})
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)   # terminal "expired" screen
+        self.assertEqual(resp["screen"], RESULT_SCREEN)   # terminal "expired" screen
         self.assertEqual(get_or_create_wallet(self.user).balance, before)   # no debit
         self.assertTrue(PendingAction.objects.filter(id=pa.id).exists())
 
@@ -822,7 +822,7 @@ class EmailFlowTests(TestCase):
             self.assertTrue(resp["data"]["error"])
         pa.refresh_from_db()
         resp = self._submit(pa, "000000")
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.user.refresh_from_db()
         self.assertFalse(self.user.email_verified)
 
@@ -1284,7 +1284,7 @@ class SignupFormFlowTests(TestCase):
         first = self._submit(ob, pin="246810")
         self.assertEqual(first["screen"], PIN_CONFIRM)
         done = self._submit(ob, pin="246810")
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         u = User.objects.get(phone="08099990001")
         self.assertEqual(u.email, "ngozi1@example.com")
         self.assertFalse(u.email_verified)                    # no email rail here
@@ -1315,7 +1315,7 @@ class SignupFormFlowTests(TestCase):
         # PIN_CHAIN -> PIN_RETRY -> PIN_CONFIRM are all legal routes in the
         # published flow, so recovering from the rejection still finishes signup.
         self.assertEqual(self._submit(ob, pin="246810")["screen"], PIN_CONFIRM)
-        self.assertEqual(self._submit(ob, pin="246810")["screen"], SUCCESS_SCREEN)
+        self.assertEqual(self._submit(ob, pin="246810")["screen"], RESULT_SCREEN)
         self.assertTrue(User.objects.get(phone="08099990001").check_transaction_pin("246810"))
 
     def test_a_different_account_phone_is_stored_unverified(self):
@@ -1326,7 +1326,7 @@ class SignupFormFlowTests(TestCase):
         self._submit(ob, phone="08077770002")                  # banks on a different line
         self._submit(ob, pin="246810")
         done = self._submit(ob, pin="246810")
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         u = User.objects.get(phone="08077770002")              # the TYPED number
         self.assertFalse(u.phone_verified)                     # possession not proven
 
@@ -1432,7 +1432,7 @@ class TransferFormFlowTests(TestCase):
         with patch("utility.providers.payout_resolve_account",
                    return_value={"success": True, "name": "Ada Eze"}):
             resp = self._submit(pa, amount="2300", account_number="0123456789", bank="gtb")
-        self.assertEqual(resp["screen"], SUCCESS_SCREEN)
+        self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.assertIn("set pin", resp["data"]["message"].lower())
         self.assertFalse(PendingAction.objects.filter(id=pa.id).exists())
 
@@ -1563,7 +1563,7 @@ class SignupPhoneCodeTests(TestCase):
         self._submit(ob, phone_code=code)
         self._submit(ob, pin="246810")
         done = self._submit(ob, pin="246810")
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         u = User.objects.get(phone="08077770011")
         self.assertTrue(u.phone_verified)                  # proven by the code, not the chat
 

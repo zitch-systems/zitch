@@ -5,40 +5,49 @@
     "SIGNUP_SCREEN": [
       "SIGNUP_EMAIL_CODE",
       "SIGNUP_PHONE",
+      "RESULT",
       "SUCCESS"
     ],
     "EMAIL_SCREEN": [
       "IDENTITY_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "TRANSFER_FORM": [
       "PIN_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "VTU_SCREEN": [
       "VTU_NETWORK",
+      "RESULT",
       "SUCCESS"
     ],
     "VTU_NETWORK": [
       "VTU_AIRTIME",
       "VTU_DATA",
+      "RESULT",
       "SUCCESS"
     ],
     "VTU_AIRTIME": [
       "PIN_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "VTU_DATA": [
       "PIN_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "IDENTITY_SCREEN": [
       "IDENTITY_RETRY",
       "IDENTITY_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "IDENTITY_CHAIN": [
       "CODE_RETRY",
+      "RESULT",
       "SUCCESS"
     ],
     "PIN_SCREEN": [
@@ -60,6 +69,7 @@
     ],
     "IDENTITY_RETRY": [
       "IDENTITY_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "PIN_RETRY": [
@@ -73,26 +83,31 @@
     ],
     "SIGNUP_EMAIL_CODE": [
       "SIGNUP_PHONE",
+      "RESULT",
       "SUCCESS"
     ],
     "SIGNUP_PHONE": [
       "SIGNUP_PHONE_CODE",
       "PIN_CHAIN",
       "SIGNUP_PASSWORD",
+      "RESULT",
       "SUCCESS"
     ],
     "SIGNUP_PHONE_CODE": [
       "PIN_CHAIN",
       "SIGNUP_PASSWORD",
+      "RESULT",
       "SUCCESS"
     ],
     "CODE_SCREEN": [
       "CODE_RETRY",
       "PIN_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "CODE_RETRY": [
       "PIN_CHAIN",
+      "RESULT",
       "SUCCESS"
     ],
     "RESULT": [
@@ -100,6 +115,7 @@
     ],
     "SIGNUP_PASSWORD": [
       "PIN_CHAIN",
+      "RESULT",
       "SUCCESS"
     ]
   },

@@ -239,7 +239,7 @@ class SimulatedIdentityLadderTests(TestCase):
                                         "data": {"number": value}})
 
     def test_bvn_runs_the_otp_on_the_next_page_and_speaks_plainly(self):
-        from .flows import IDENTITY_CHAIN, SUCCESS_SCREEN
+        from .flows import IDENTITY_CHAIN, RESULT_SCREEN
 
         pa = self._pa("bvn")
         with patch("whatsapp.router.send_sms", return_value={"success": True}) as sms:
@@ -252,7 +252,7 @@ class SimulatedIdentityLadderTests(TestCase):
 
         pa.refresh_from_db()
         done = self._submit(pa, code)
-        self.assertEqual(done["screen"], SUCCESS_SCREEN)
+        self.assertEqual(done["screen"], RESULT_SCREEN)
         self.assertIn("Your BVN has been verified", done["data"]["message"])
         self.assertNotIn("simulation", done["data"]["message"])
         self.user.refresh_from_db()
