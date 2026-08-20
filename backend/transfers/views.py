@@ -17,6 +17,7 @@ from utility.providers import payout_charge, payout_resolve_account
 from wallet.models import Transaction
 from wallet.services import existing_for_key
 
+from .bank_aliases import aliases_for, short_name
 from .models import Bank
 from .services import PayoutError, detect_account_banks, execute_payout
 
@@ -47,13 +48,15 @@ def list_banks(request):
     almost everyone sends to before the long alphabetical tail.
     """
     banks = Bank.objects.filter(active=True).order_by("-popular", "name")
-    aliases = {
-        "gtb": ["GT", "GTBank"], "uba": ["UBA"], "fcmb": ["FCMB"],
-        "access": ["Access"], "zenith": ["Zenith"], "first": ["FirstBank", "First"],
-        "fidelity": ["Fidelity"], "sterling": ["Sterling"], "kuda": ["Kuda"],
-        "opay": ["OPay"], "palmpay": ["PalmPay"], "moniepoint": ["Moniepoint"],
-    }
-    return ok(banks=[{"code": b.code, "name": b.name, "aliases": aliases.get(b.code, []),
+    return ok(banks=[{"code": b.code, "name": b.name,
+                      # What people call it, from the shared table rather than a
+                      # short list inline here. The inline one carried only short
+                      # forms for a dozen banks, so the names customers actually
+                      # copy off a statement — "Guaranty Trust Bank", "United Bank
+                      # for Africa" — still matched nothing, which reads as the
+                      # bank not existing. It also keyed "first" to First Bank,
+                      # which FCMB and FairMoney have an equal claim to.
+                      "aliases": aliases_for(b.code), "short": short_name(b.code),
                       "color": b.color, "logo": b.logo} for b in banks])
 
 
@@ -107,7 +110,19 @@ def list_beneficiaries(request):
     holder name for an account the customer has paid before, with no name-enquiry
     round trip — reads this same list.
     """
-    items = request.user_obj.beneficiaries.filter(saved=True)
+    # EVERY recipient, saved and unsaved alike, and deliberately so. This list is
+    # what the send screen's fast path reads to fill in a bank and holder name
+    # the moment a known account number is typed, with no name-enquiry round
+    # trip, and what its "Sent before" suggestions are drawn from. Filtering it
+    # to saved rows took that away from every app build already on a customer's
+    # phone — those builds read this key and know no other — and took it away
+    # even where the account was paid only once or twice, which is exactly the
+    # case the fast path exists for.
+    #
+    # Which of these rows belongs in the ADDRESS BOOK is a different question,
+    # answered by `saved` on each row and applied by the client. `frequent_recipients`
+    # stays for callers that want the pre-filtered view.
+    items = request.user_obj.beneficiaries.all()
     frequent = request.user_obj.beneficiaries.filter(transfer_count__gte=3).order_by("-created")
     return ok(
         beneficiaries=[_beneficiary(b) for b in items],
@@ -352,4 +367,8 @@ def bank_transfer(request):
               # with an id, rather than posting an account number back and paying
               # for a second name enquiry to identify a row we just wrote.
               beneficiary_id=getattr(txn, "beneficiary_id", None),
+              # Enough for the receipt to decide whether keeping this recipient is
+              # worth offering, on the same terms the chat uses.
+              beneficiary_transfers=getattr(txn, "beneficiary_transfers", 0),
+              beneficiary_saved=bool(getattr(txn, "beneficiary_saved", False)),
               message="Money sent")

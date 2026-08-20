@@ -17,7 +17,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken
-from transfers.models import AUTO_SAVE_AFTER, SAVE_PROMPT_AFTER, Bank, Beneficiary
+from transfers.models import Bank, Beneficiary
 from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
@@ -4923,7 +4923,7 @@ class SavedPeopleTests(TestCase):
         self._transfer("a")
         self.assertNotIn("save", self.last_reply().lower())
         row = Beneficiary.objects.get(user=self.user, account_number="0123456789")
-        self.assertEqual(row.times_paid, 1)
+        self.assertEqual(row.transfer_count, 1)
         self.assertFalse(row.saved)
 
     def test_the_third_transfer_asks_once(self):
@@ -4941,13 +4941,13 @@ class SavedPeopleTests(TestCase):
         self.assertNotIn("save", self.last_reply().lower())
 
     def test_paying_someone_fifty_times_keeps_them_without_asking(self):
-        row = self.make_row(times_paid=AUTO_SAVE_AFTER - 1)
+        row = self.make_row(transfer_count=50)
         self._transfer("a")
         row.refresh_from_db()
         self.assertTrue(row.saved)
 
     def test_declining_ends_the_asking(self):
-        row = self.make_row(times_paid=SAVE_PROMPT_AFTER, save_prompted=True)
+        row = self.make_row(transfer_count=3, save_offer_sent=True)
         self.inbound(f"bene:no:{row.pk}", "d1")
         self.assertIn("won't ask", self.last_reply())
         from .router import _offer_to_save

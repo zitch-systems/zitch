@@ -409,7 +409,13 @@ const SendMoney = () => {
         // The row the server just wrote for this recipient, so the receipt can
         // offer to keep them without posting an account number back and paying
         // for a second name enquiry to identify someone we already know.
-        setSentBeneficiaryId(Number(res.beneficiary_id) || null);
+        //
+        // Offered on the same terms as the chat — a recipient paid often enough
+        // to be worth keeping — so the two surfaces do not ask on different
+        // rules. Below that the row is still written and still fills the send
+        // screen in; it is simply not worth a button.
+        const worthKeeping = !res.beneficiary_saved && Number(res.beneficiary_transfers || 0) >= 3;
+        setSentBeneficiaryId(worthKeeping ? (Number(res.beneficiary_id) || null) : null);
         setStep(null);   // close the PIN sheet FIRST…
         reload();
         // …then show the receipt once the sheet has animated out. Switching to the
@@ -497,8 +503,15 @@ const SendMoney = () => {
   // prior bank beneficiaries whose account number starts with what they've
   // typed. Tap fills the field, which triggers the fast-path effect above to
   // populate bank + holder — no scroll to the saved-beneficiaries row needed.
+  //
+  // Every prior recipient qualifies, not only the saved or frequent ones. This
+  // is the memory of where money has actually been, and it is most useful for
+  // the account paid ONCE a fortnight ago that nobody can recite — the one the
+  // customer is least able to type from memory and most likely to mistype. A
+  // recipient becoming eligible only on their third payment would have withheld
+  // it for exactly the two transfers where it helps most.
   const acctSuggestions = mode === 'bank' && !picked && acct.length >= 4 && acct.length < 10
-    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && (b.saved || b.frequent || (b.transfer_count || 0) >= 3) && b.account_number.startsWith(acct)).slice(0, 3)
+    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && b.account_number.startsWith(acct)).slice(0, 3)
     : [];
   // Inline list is capped at 3 rows; "View All" swaps in the rest in place.
   const shownBens = benAll ? filteredBens : filteredBens.slice(0, 3);

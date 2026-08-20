@@ -426,4 +426,8 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     # account number — which would cost a second name enquiry to answer a
     # question we already know the answer to.
     txn.beneficiary_id = row.id
+    # Carried so the receipt can ask the same question the chat asks, on the
+    # same terms, rather than each surface inventing its own threshold.
+    txn.beneficiary_transfers = row.transfer_count
+    txn.beneficiary_saved = row.saved
     return txn

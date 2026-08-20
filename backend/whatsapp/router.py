@@ -24,6 +24,7 @@ from django.utils import timezone
 from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
                          evaluate_transaction_pin, mask_pii, send_limit_error,
                          velocity_exceeded)
+from transfers.bank_aliases import aliases_for, slug_for_alias
 from transfers.models import Bank
 from transfers.views import _names_match, clean_nickname
 from transfers.services import PayoutError, execute_payout
@@ -4033,7 +4034,22 @@ def _match_banks(text: str) -> list:
     exact = [b for b in banks if b.name.lower() == t]
     if exact:
         return exact
-    return [b for b in banks if t and (t in b.name.lower() or b.name.lower() in t)]
+    # What people actually call them. We store one name per bank, usually the
+    # short trading name, so "Guaranty Trust Bank" off a statement matched
+    # nothing at all against "GTBank" — which reads as the bank not existing
+    # rather than as us knowing it by another name. An alias hit is exact and
+    # names one bank, so it wins outright.
+    slug = slug_for_alias(t)
+    if slug:
+        named = [b for b in banks if b.code == slug]
+        if named:
+            return named
+    # Substring, over the aliases as well as the name: it is what catches the
+    # half-typed word inside a longer sentence ("send 2k to my gtb account"),
+    # and it returns every candidate rather than choosing between them.
+    return [b for b in banks
+            if t and (t in b.name.lower() or b.name.lower() in t
+                      or any(t in a or a in t for a in aliases_for(b.code)))]
 
 
 def _bank_items(candidates=None, query: str = "") -> list:
@@ -4396,6 +4412,29 @@ def _handle_save_button(user, msisdn: str, low: str) -> bool:
     return True
 
 
+def _looks_like_a_name(text: str) -> bool:
+    """Whether this reads as what somebody is CALLED, rather than a request.
+
+    Names are short, made of letters, and carry no account number. Instructions
+    carry amounts, account numbers and bank names. The two are far enough apart
+    that shape decides it, which is what keeps "Elizabeth" a name while
+    "2k to. Yahaya 0998787776 polaris" is a payment somebody is waiting for.
+
+    Digits are not banned outright — "Flat 3B" and "Ada 2" are things people
+    genuinely call each other — but a run of four or more is an account number,
+    a phone number or an amount, and none of those is a name.
+    """
+    t = " ".join(str(text or "").split())
+    if not t or len(t) > 40 or len(t.split()) > 4:
+        return False
+    if re.search(r"\d{4,}", t):
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9' .\-]+", t):
+        return False
+    # At least one real word. "3B" alone, or ". -", names nobody.
+    return bool(re.search(r"[A-Za-z]{2,}", t))
+
+
 def _beneficiary_lines(rows) -> str:
     return "\n".join(
         f"{i}. *{r.display_name}* — {r.bank_name} {r.account_number}"
@@ -4430,12 +4469,22 @@ def _advance_beneficiary(pa: PendingAction, user, msisdn: str, text: str) -> Non
         if low in ("skip", "no", "none"):
             _clear_actions(msisdn)
             return reply(msisdn, f"Kept as {row.name.upper()}.")
+        # A person's name, or something else entirely? This prompt sits in the way
+        # of the whole chat, so whatever arrives next is at least as likely to be
+        # a new instruction as an answer — "2k to. Yahaya 0998787776 polaris" was
+        # accepted as somebody's name, which is nonsense on its face and, worse,
+        # ate the payment the customer was asking for.
+        #
+        # Decided by SHAPE rather than by keyword. _names_another_intent matches
+        # substrings, so "Elizabeth" contains "bet" and "Ricardo" contains "card":
+        # asking it first would make ordinary names unusable. Asking what a name
+        # looks like has neither failure — a name has letters and no account
+        # number, and an instruction almost always carries digits.
+        if not _looks_like_a_name(text):
+            return _reroute_or_reprompt(pa, msisdn, text,
+                                        "That doesn't look like a name. Reply with a short "
+                                        "one like \"Mum\", or *skip* to keep the bank's name.")
         nickname, problem = clean_nickname(text)
-        # The nickname is checked BEFORE asking whether this looks like another
-        # instruction. _names_another_intent matches substrings, so "Elizabeth"
-        # contains "bet" and "Ricardo" contains "card" — running it first would
-        # make ordinary names unusable, and silently, since the reply would be
-        # the menu rather than an explanation.
         if problem:
             return reply(msisdn, f"{problem} Or reply *skip*.")
         if not nickname:

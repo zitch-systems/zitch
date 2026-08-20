@@ -11,7 +11,7 @@ from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
 from wallet.tests import make_user
 
-from .models import AUTO_SAVE_AFTER, Bank, Beneficiary
+from .models import Bank, Beneficiary
 
 
 class BankTransferTests(TestCase):
@@ -703,25 +703,36 @@ class PayoutFrequencyTests(TestCase):
     def test_every_payout_is_counted(self):
         for _ in range(3):
             self.pay()
-        self.assertEqual(self.row().times_paid, 3)
+        self.assertEqual(self.row().transfer_count, 3)
 
-    def test_nobody_is_offered_before_the_third_payout(self):
-        self.assertFalse(self.pay().beneficiary_offer_save)
-        self.assertFalse(self.pay().beneficiary_offer_save)
+    def test_the_first_two_payouts_leave_the_recipient_unsaved(self):
+        # Below the threshold nothing is offered and nothing is kept — the row
+        # exists only to fill the send screen in when that account is typed again.
+        self.pay()
+        self.assertEqual(self.row().transfer_count, 1)
+        self.pay()
+        self.assertEqual(self.row().transfer_count, 2)
+        self.assertFalse(self.row().saved)
+        self.assertFalse(self.row().save_offer_sent)
 
-    def test_the_third_payout_is_worth_offering(self):
-        self.pay(); self.pay()
-        self.assertTrue(self.pay().beneficiary_offer_save)
-
-    def test_a_saved_recipient_is_never_offered_again(self):
+    def test_the_third_payout_reaches_the_offer_threshold(self):
         self.pay(); self.pay(); self.pay()
-        r = self.row(); r.saved = True; r.save()
-        self.assertFalse(self.pay().beneficiary_offer_save)
+        self.assertEqual(self.row().transfer_count, 3)
+        # Reaching it is not itself the offer: the chat sends that, once, and
+        # records it on the row (covered in whatsapp.tests.SavedPeopleTests).
+        self.assertFalse(self.row().saved)
+
+    def test_a_payout_never_unsaves_a_kept_recipient(self):
+        self.pay()
+        r = self.row(); r.saved = True; r.nickname = "Mum"; r.save()
+        self.pay()
+        self.assertTrue(self.row().saved)
+        self.assertEqual(self.row().nickname, "Mum")
 
     def test_fifty_payouts_keep_the_recipient_without_asking(self):
         Beneficiary.objects.create(
             user=self.user, name="JOHN DOE", account_number="0123456789",
-            bank_name="GTBank", times_paid=AUTO_SAVE_AFTER - 1)
+            bank_name="GTBank", transfer_count=50)
         self.pay()
         self.assertTrue(self.row().saved)
 
@@ -729,9 +740,9 @@ class PayoutFrequencyTests(TestCase):
         # Read-modify-write would lose one, and the count is what decides whether
         # somebody is offered and when they are kept outright.
         self.pay()
-        Beneficiary.objects.filter(pk=self.row().pk).update(times_paid=7)
+        Beneficiary.objects.filter(pk=self.row().pk).update(transfer_count=7)
         self.pay()
-        self.assertEqual(self.row().times_paid, 8)
+        self.assertEqual(self.row().transfer_count, 8)
 
 
 class BankShortFormTests(TestCase):
