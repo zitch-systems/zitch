@@ -22,7 +22,7 @@ const LARGE_TXN = 100000;
 // before the user types, not after the button refuses to enable.
 const MIN_AMOUNT = 50;
 type Step = null | 'confirm' | 'pin';
-type Bank = { code: string; name: string; color: string; logo?: string };
+type Bank = { code: string; name: string; aliases?: string[]; color: string; logo?: string };
 type Beneficiary = {
   id: number; name: string; account_number: string; bank_name: string;
   initials: string; color: string;
@@ -30,7 +30,7 @@ type Beneficiary = {
   // stays the bank's holder name — it is what the server re-confirms against a
   // fresh name enquiry before money moves — and `display_name` is what a person
   // should be called on screen.
-  nickname?: string; display_name?: string; saved?: boolean;
+  nickname?: string; display_name?: string; saved?: boolean; transfer_count?: number; frequent?: boolean;
 };
 type BankMatch = { bank: string; bank_name: string; name: string };
 
@@ -42,10 +42,11 @@ const BANNERS: { title: string; body: string }[] = [
   { title: 'Any bank, any time', body: 'Send to any Nigerian bank account, 24/7.' },
 ];
 
-// One tab, deliberately: this card has one kind of row in it — people the
-// customer keeps. Accounts merely paid before are not listed here at all; they
-// surface where they are actually useful, under the account field as you type.
-const BEN_TABS: { v: string; label: string }[] = [{ v: 'saved', label: 'Saved' }];
+// One tab, deliberately. The list mixes saved people and recents, because a
+// saved recipient IS someone you paid recently and splitting them would empty
+// the tab a customer is standing on the moment they star their only row.
+// Saved people sort to the top and carry a filled star instead.
+const BEN_TABS: { v: string; label: string }[] = [{ v: 'recents', label: 'Recents' }];
 
 // ---- Local presentation helpers (kept in this file on purpose: they are this
 // screen's reference layout, not design-system components) ----
@@ -140,7 +141,12 @@ const SendMoney = () => {
       if (!t) return;
       setToken(t);
       apiPost('/api/transfers/beneficiaries/')
-        .then((r) => r.json()).then((res) => res.beneficiaries && setBeneficiaries(res.beneficiaries)).catch(() => {});
+        .then((r) => r.json()).then((res) => {
+          const saved = Array.isArray(res.beneficiaries) ? res.beneficiaries : [];
+          const frequent = Array.isArray(res.frequent_recipients) ? res.frequent_recipients : [];
+          const seen = new Set<number>();
+          setBeneficiaries([...saved, ...frequent].filter((b) => !seen.has(b.id) && seen.add(b.id)));
+        }).catch(() => {});
     });
   }, []);
 
@@ -403,10 +409,7 @@ const SendMoney = () => {
         // The row the server just wrote for this recipient, so the receipt can
         // offer to keep them without posting an account number back and paying
         // for a second name enquiry to identify someone we already know.
-        // Only when the server says this recipient is worth keeping — the
-        // same rule the chat uses, so nobody is offered in one place and
-        // left alone in the other.
-        setSentBeneficiaryId(res.offer_save ? (Number(res.beneficiary_id) || null) : null);
+        setSentBeneficiaryId(Number(res.beneficiary_id) || null);
         setStep(null);   // close the PIN sheet FIRST…
         reload();
         // …then show the receipt once the sheet has animated out. Switching to the
@@ -480,27 +483,22 @@ const SendMoney = () => {
     );
   }
 
-  // The card lists SAVED people only — the ones the customer kept, plus anyone
-  // they have paid often enough that we kept the recipient for them. Every other
-  // row still arrives in `beneficiaries` and still does the useful work below:
-  // filling in the bank and holder name the moment a known account number is
-  // typed, and answering the "Sent before" suggestions. Those are a memory of
-  // where money has been, which is a different thing from an address book, and
-  // the list stayed useful only while it was the second one.
-  //
-  // Searching covers the nickname: someone who saved an account as "Mum" looks
-  // for Mum, not for the holder name printed on the bank's records.
+  // Saved people first, then the rest in server order (newest paid first).
+  // Searching covers the nickname too: someone who saved an account as "Mum"
+  // will look for Mum, not for the holder name printed on the bank's records.
   const filteredBens = beneficiaries
     .filter((b) => b.saved)
     .filter((b) => (b.name + ' ' + (b.nickname || '') + ' ' + b.account_number)
-      .toLowerCase().includes(query.toLowerCase()));
-  const filteredBanks = banks.filter((b) => b.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
+      .toLowerCase().includes(query.toLowerCase()))
+    .slice()
+    .sort((x, y) => Number(!!y.saved) - Number(!!x.saved));
+  const filteredBanks = banks.filter((b) => (b.name + ' ' + (b.aliases || []).join(' ')).toLowerCase().includes(bankQuery.trim().toLowerCase()));
   // "Sent before" suggestions: as the user types 4+ digits, surface up to 3
   // prior bank beneficiaries whose account number starts with what they've
   // typed. Tap fills the field, which triggers the fast-path effect above to
   // populate bank + holder — no scroll to the saved-beneficiaries row needed.
   const acctSuggestions = mode === 'bank' && !picked && acct.length >= 4 && acct.length < 10
-    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && b.account_number.startsWith(acct)).slice(0, 3)
+    ? beneficiaries.filter((b) => b.bank_name !== 'Zitch' && (b.saved || b.frequent || (b.transfer_count || 0) >= 3) && b.account_number.startsWith(acct)).slice(0, 3)
     : [];
   // Inline list is capped at 3 rows; "View All" swaps in the rest in place.
   const shownBens = benAll ? filteredBens : filteredBens.slice(0, 3);
@@ -613,19 +611,10 @@ const SendMoney = () => {
               <View style={{ paddingTop: 10 }}>
                 <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12, marginBottom: 4 }}>Sent before</Text>
                 {acctSuggestions.map((b) => (
-                  <Pressable
-                    key={b.id}
-                    onPress={() => { idemKey.current = ''; setAcct(b.account_number); }}
-                    // The saved list above holds only people the customer keeps,
-                    // so this is where an older account is kept, renamed or
-                    // dropped — the one place it is still in front of them.
-                    onLongPress={() => benActions(b)}
-                    accessibilityHint="Long press to save, rename or remove"
-                    style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}
-                  >
+                  <Pressable key={b.id} onPress={() => { idemKey.current = ''; setAcct(b.account_number); }} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }}>
                     <Monogram text={b.initials} color={b.color} size={32} />
                     <View style={{ flex: 1 }}>
-                      <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.display_name || b.name}</Text>
+                      <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 13.5 }}>{b.name}</Text>
                       <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12 }}>{b.account_number} · {b.bank_name}</Text>
                     </View>
                   </Pressable>
@@ -719,11 +708,9 @@ const SendMoney = () => {
         </View>
       </Card>
 
-      {/* Saved people — the ones the customer kept, plus anyone they have paid
-          often enough that we kept the recipient for them. Accounts merely paid
-          before are deliberately not here; they answer the account field's
-          suggestions instead. */}
-      {!picked && beneficiaries.some((b) => b.saved) && (
+      {/* Saved recipients — the real /api/transfers/beneficiaries/ list (newest
+          first), so "Recents" is the accounts this user has actually paid. */}
+      {!picked && beneficiaries.length > 0 && (
         <>
           <View style={{ height: 14 }} />
           <Card pad={18}>
@@ -772,7 +759,7 @@ const SendMoney = () => {
             )}
 
             {filteredBens.length === 0 ? (
-              <Text style={{ fontSize: 13, color: c.ink3, paddingVertical: 14, fontFamily: font.regular }}>No saved person matches that</Text>
+              <Text style={{ fontSize: 13, color: c.ink3, paddingVertical: 14, fontFamily: font.regular }}>No matching beneficiary</Text>
             ) : (
               shownBens.map((b, i) => (
                 <Pressable
@@ -788,12 +775,12 @@ const SendMoney = () => {
                       Coming back off the list is Remove, on the long-press menu,
                       because it deletes the row rather than un-ticking it. */}
                   <Pressable
-                    onPress={() => benActions(b)}
+                    onPress={() => (b.saved ? benActions(b) : saveBen(b))}
                     hitSlop={10}
                     accessibilityRole="button"
-                    accessibilityLabel={`Options for ${b.display_name || b.name}`}
+                    accessibilityLabel={b.saved ? `${b.display_name || b.name} is saved` : `Save ${b.name}`}
                   >
-                    <ZIcon name="check" size={17} color={c.brand} stroke={2.4} />
+                    <ZIcon name={b.saved ? 'check' : 'plus'} size={17} color={b.saved ? c.brand : c.ink3} stroke={b.saved ? 2.4 : 1.8} />
                   </Pressable>
                   <View style={{ flex: 1, minWidth: 0 }}>
                     <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{b.display_name || b.name}</Text>
@@ -860,7 +847,7 @@ const SendMoney = () => {
           filteredBanks.map((b, i) => (
             <Pressable key={b.code} onPress={() => chooseBank(b)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}>
               <BankLogo name={b.name} color={b.color} logo={b.logo} size={36} />
-              <Text style={{ flex: 1, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
+              <View style={{ flex: 1 }}><Text style={{ fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>{b.aliases?.length ? <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>{b.aliases.join(' · ')}</Text> : null}</View>
               {bank?.code === b.code && <ZIcon name="check" size={18} color={c.brand} />}
             </Pressable>
           ))
