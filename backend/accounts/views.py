@@ -6,6 +6,7 @@ import re
 import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.cache import cache
@@ -1310,9 +1311,16 @@ def _face_callback_url(state: str) -> str:
 
     The state is 32 bytes of CSPRNG, single-use and bound to one user, which is the
     right shape for a value that must appear in a URL somebody can read.
+
+    The state rides in the QUERY STRING, not the path, so the part ALAT registers is
+    constant. They whitelist cb_uri values at their end, and an exact-match whitelist
+    cannot accept a URL whose last path segment changes every session — it would admit
+    one customer once and reject every one after. `/webhooks/wema/face` is the same
+    string forever; only `?s=` moves. The old path form is still routed for sessions
+    opened before this shipped.
     """
     base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
-    return f"{base}/webhooks/wema/face/{state}"
+    return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
 
 
 @api
