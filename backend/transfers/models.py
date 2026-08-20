@@ -62,6 +62,8 @@ class Beneficiary(models.Model):
     # Automatic recipient memory is private until the third transfer; at 51 it
     # is promoted to the user's explicit Beneficiary address book.
     transfer_count = models.PositiveIntegerField(default=0)
+    # WhatsApp asks about automatic saving at most once per recipient.
+    save_offer_sent = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
