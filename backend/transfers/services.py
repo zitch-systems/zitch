@@ -8,6 +8,8 @@ hand a resolved account name to `execute_payout`.
 import logging
 from decimal import Decimal
 
+from django.db.models import F
+
 from utility.providers import payout_send
 from utility.wema import classify_transfer_status
 from wallet.models import Transaction
