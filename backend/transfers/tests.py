@@ -528,3 +528,149 @@ class NoSourceAccountTests(TestCase):
                    return_value={"success": True, "status": "success"}):
             _, body = self.send()
         self.assertTrue(body.get("success"))
+
+
+class SavedBeneficiaryTests(TestCase):
+    """Keeping a recipient, naming them, and removing them.
+
+    The distinction under test throughout: every payout records a RECENT, and
+    only the customer turns a recent into a saved beneficiary. The two are kept
+    apart because the send screen treats a row as proof that money once reached
+    that account, and paying by name is only offered against names a customer
+    chose for themselves.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000001", "ada@zitch.test", balance="50000")
+        self.other, self.other_token = make_user("08010000002", "bola@zitch.test")
+        self.row = Beneficiary.objects.create(
+            user=self.user, name="JOHN DOE", account_number="0123456789",
+            bank_name="GTBank", bank_code="058")
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_a_payout_records_a_recent_not_a_saved_beneficiary(self):
+        bank = Bank.objects.create(code="gtb2", name="Zenith", bank_code="057")
+        from .services import execute_payout
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            execute_payout(self.user, Decimal("1000"), "0999999999", bank,
+                           "MUSA ADAMU", channel="app")
+        row = Beneficiary.objects.get(user=self.user, account_number="0999999999")
+        self.assertFalse(row.saved)
+        self.assertEqual(row.nickname, "")
+
+    def test_saving_keeps_the_recipient(self):
+        res, body = self.post("/api/transfers/beneficiaries/save/", {
+            "access_token": self.token, "beneficiary_id": self.row.id})
+        self.assertEqual(res.status_code, 200)
+        self.row.refresh_from_db()
+        self.assertTrue(self.row.saved)
+        self.assertTrue(body["beneficiary"]["saved"])
+
+    def test_saving_with_a_nickname_sets_the_display_name(self):
+        _, body = self.post("/api/transfers/beneficiaries/save/", {
+            "access_token": self.token, "beneficiary_id": self.row.id, "nickname": "Mum"})
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.nickname, "Mum")
+        self.assertEqual(body["beneficiary"]["display_name"], "Mum")
+        # The holder name is untouched: bank_transfer re-confirms against it.
+        self.assertEqual(self.row.name, "JOHN DOE")
+
+    def test_naming_a_recent_also_keeps_it(self):
+        # Otherwise a customer names someone "Mum" in the app and then cannot pay
+        # "Mum" in the chat, because paying by name only reads saved rows.
+        self.post("/api/transfers/beneficiaries/rename/", {
+            "access_token": self.token, "beneficiary_id": self.row.id, "nickname": "Mum"})
+        self.row.refresh_from_db()
+        self.assertTrue(self.row.saved)
+
+    def test_a_duplicate_nickname_is_refused(self):
+        second = Beneficiary.objects.create(
+            user=self.user, name="MUSA ADAMU", account_number="0999999999",
+            bank_name="Zenith", saved=True, nickname="Mum")
+        res, body = self.post("/api/transfers/beneficiaries/rename/", {
+            "access_token": self.token, "beneficiary_id": self.row.id, "nickname": "mum"})
+        self.assertEqual(res.status_code, 409)
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.nickname, "")
+        self.assertEqual(second.nickname, "Mum")
+
+    def test_a_nickname_of_digits_is_refused(self):
+        # In a chat message a numeric nickname is indistinguishable from an
+        # account number, and both arrive as bare text.
+        res, _ = self.post("/api/transfers/beneficiaries/rename/", {
+            "access_token": self.token, "beneficiary_id": self.row.id, "nickname": "0123456789"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_clearing_the_nickname_leaves_the_recipient_saved(self):
+        self.row.saved, self.row.nickname = True, "Mum"
+        self.row.save()
+        _, body = self.post("/api/transfers/beneficiaries/rename/", {
+            "access_token": self.token, "beneficiary_id": self.row.id, "nickname": ""})
+        self.row.refresh_from_db()
+        self.assertEqual(self.row.nickname, "")
+        self.assertTrue(self.row.saved)
+        self.assertEqual(body["beneficiary"]["display_name"], "JOHN DOE")
+
+    def test_deleting_removes_the_row_entirely(self):
+        # Not merely unsaved: a row left behind still answers the send screen's
+        # typed-account fast path, which is not what "remove" means.
+        res, _ = self.post("/api/transfers/beneficiaries/delete/", {
+            "access_token": self.token, "beneficiary_id": self.row.id})
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(Beneficiary.objects.filter(pk=self.row.pk).exists())
+
+    def test_another_customers_recipient_is_untouchable(self):
+        for path in ("save", "rename", "delete"):
+            res, _ = self.post(f"/api/transfers/beneficiaries/{path}/", {
+                "access_token": self.other_token, "beneficiary_id": self.row.id,
+                "nickname": "Mine"})
+            self.assertEqual(res.status_code, 404, path)
+        self.row.refresh_from_db()
+        self.assertFalse(self.row.saved)
+        self.assertEqual(self.row.nickname, "")
+
+    def test_the_list_still_carries_what_shipped_apps_read(self):
+        # A phone that has not updated must keep rendering exactly what it does
+        # today, so `name` and `initials` stay off the holder name.
+        self.row.nickname, self.row.saved = "Mum", True
+        self.row.save()
+        _, body = self.post("/api/transfers/beneficiaries/", {"access_token": self.token})
+        item = body["beneficiaries"][0]
+        self.assertEqual(item["name"], "JOHN DOE")
+        self.assertEqual(item["initials"], "JD")
+        self.assertEqual(item["display_name"], "Mum")
+        self.assertTrue(item["saved"])
+
+    def test_the_list_is_not_filtered_to_saved(self):
+        # The send screen's fast path reads this list; filtering would empty it.
+        _, body = self.post("/api/transfers/beneficiaries/", {"access_token": self.token})
+        self.assertEqual(len(body["beneficiaries"]), 1)
+
+    def test_a_repeat_payout_never_unsaves_or_unnames(self):
+        self.row.saved, self.row.nickname = True, "Mum"
+        self.row.save()
+        bank = Bank.objects.create(code="gtb2", name="GTBank", bank_code="058")
+        from .services import execute_payout
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            execute_payout(self.user, Decimal("1000"), "0123456789", bank,
+                           "JOHN DOE", channel="app")
+        self.row.refresh_from_db()
+        self.assertTrue(self.row.saved)
+        self.assertEqual(self.row.nickname, "Mum")
+
+    def test_a_send_names_the_row_it_just_wrote(self):
+        bank = Bank.objects.create(code="gtb3", name="Access", bank_code="044")
+        with patch("transfers.services.payout_send",
+                   return_value={"success": True, "status": "success"}):
+            _, body = self.post("/api/transfers/send/", {
+                "access_token": self.token, "account_number": "0777777777", "bank": "gtb3",
+                "name": "MUSA ADAMU", "amount": "1000", "transaction_pin": "1234"})
+        self.assertTrue(body.get("success"), body)
+        row = Beneficiary.objects.get(user=self.user, account_number="0777777777")
+        self.assertEqual(body["beneficiary_id"], row.id)

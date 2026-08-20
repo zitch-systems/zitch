@@ -23,7 +23,15 @@ const LARGE_TXN = 100000;
 const MIN_AMOUNT = 50;
 type Step = null | 'confirm' | 'pin';
 type Bank = { code: string; name: string; color: string; logo?: string };
-type Beneficiary = { id: number; name: string; account_number: string; bank_name: string; initials: string; color: string };
+type Beneficiary = {
+  id: number; name: string; account_number: string; bank_name: string;
+  initials: string; color: string;
+  // Added alongside the six above, which shipped builds already read. `name`
+  // stays the bank's holder name — it is what the server re-confirms against a
+  // fresh name enquiry before money moves — and `display_name` is what a person
+  // should be called on screen.
+  nickname?: string; display_name?: string; saved?: boolean;
+};
 type BankMatch = { bank: string; bank_name: string; name: string };
 
 // Banner strip content. This app has NO offers/promotions endpoint or constant,
@@ -34,9 +42,10 @@ const BANNERS: { title: string; body: string }[] = [
   { title: 'Any bank, any time', body: 'Send to any Nigerian bank account, 24/7.' },
 ];
 
-// The beneficiaries endpoint (/api/transfers/beneficiaries/) carries no
-// favourite flag, so there is no second tab to fill — a "Favourites" tab would
-// be empty chrome. Add it here the day the API returns one.
+// One tab, deliberately. The list mixes saved people and recents, because a
+// saved recipient IS someone you paid recently and splitting them would empty
+// the tab a customer is standing on the moment they star their only row.
+// Saved people sort to the top and carry a filled star instead.
 const BEN_TABS: { v: string; label: string }[] = [{ v: 'recents', label: 'Recents' }];
 
 // ---- Local presentation helpers (kept in this file on purpose: they are this
@@ -110,6 +119,10 @@ const SendMoney = () => {
   const [benTab, setBenTab] = useState(BEN_TABS[0].v);
   const [benSearch, setBenSearch] = useState(false);  // search field revealed by the tab-row icon
   const [benAll, setBenAll] = useState(false);        // "View All" expands past the inline cap
+  const [renaming, setRenaming] = useState<Beneficiary | null>(null);
+  const [nickDraft, setNickDraft] = useState('');
+  const [savedOnReceipt, setSavedOnReceipt] = useState(false);
+  const [sentBeneficiaryId, setSentBeneficiaryId] = useState<number | null>(null);
 
   const loadBanks = () => {
     // Banks are a PUBLIC endpoint — load them regardless of session so the picker
@@ -227,6 +240,63 @@ const SendMoney = () => {
     else setPicked(b);
   };
 
+  // --- Keeping a recipient ---------------------------------------------------
+  // Every row here is already a RECENT: the server wrote it when a payout to that
+  // account settled. Saving is the customer's own decision on top, and it is what
+  // makes the recipient payable by name in the WhatsApp channel. There is no
+  // "unsave": the only way down is Remove, which is destructive and says so.
+
+  const applyBen = (row: Beneficiary) =>
+    setBeneficiaries((prev) => prev.map((b) => (b.id === row.id ? row : b)));
+
+  const saveBen = async (b: Beneficiary, nickname?: string) => {
+    const res = await apiJson('/api/transfers/beneficiaries/save/',
+                              { beneficiary_id: b.id, nickname: nickname || '' });
+    if (res.success && res.beneficiary) { applyBen(res.beneficiary); return true; }
+    notify('Error', res.message || "Couldn't save that recipient.");
+    return false;
+  };
+
+  const renameBen = async (b: Beneficiary, nickname: string) => {
+    const res = await apiJson('/api/transfers/beneficiaries/rename/',
+                              { beneficiary_id: b.id, nickname });
+    if (res.success && res.beneficiary) applyBen(res.beneficiary);
+    else notify('Error', res.message || "Couldn't rename that recipient.");
+  };
+
+  const removeBen = (b: Beneficiary) => {
+    const label = b.display_name || b.name;
+    Alert.alert(
+      `Remove ${label}?`,
+      'They come off this list and stop filling in automatically when you type their account number.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            const res = await apiJson('/api/transfers/beneficiaries/delete/', { beneficiary_id: b.id });
+            if (res.success) setBeneficiaries((prev) => prev.filter((x) => x.id !== b.id));
+            else notify('Error', res.message || "Couldn't remove that recipient.");
+          },
+        },
+      ],
+    );
+  };
+
+  // Long-press on a row. Kept as the platform's own action sheet rather than a
+  // bespoke menu: it is the gesture people already try on a list like this, and
+  // the destructive option gets the system's own styling for one.
+  const benActions = (b: Beneficiary) => {
+    const label = b.display_name || b.name;
+    Alert.alert(label, `${b.account_number} ${b.bank_name}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: b.nickname ? 'Change name' : 'Give them a name', onPress: () => { setNickDraft(b.nickname || ''); setRenaming(b); } },
+      ...(b.saved ? [] : [{ text: 'Save', onPress: () => { saveBen(b); } }]),
+      { text: 'Remove', style: 'destructive' as const, onPress: () => removeBen(b) },
+    ]);
+  };
+
   const resolveZitch = async () => {
     if (identifier.trim().length < 4) { notify('Error', 'Enter the recipient phone number.'); return; }
     setResolving(true);
@@ -331,6 +401,10 @@ const SendMoney = () => {
         if (res.name) setSentName(String(res.name));  // show who the bank actually resolved to
         if (res.narration) setSentNarration(String(res.narration));
         setTxnRef(String(res.reference || ''));
+        // The row the server just wrote for this recipient, so the receipt can
+        // offer to keep them without posting an account number back and paying
+        // for a second name enquiry to identify someone we already know.
+        setSentBeneficiaryId(Number(res.beneficiary_id) || null);
         setStep(null);   // close the PIN sheet FIRST…
         reload();
         // …then show the receipt once the sheet has animated out. Switching to the
@@ -376,12 +450,42 @@ const SendMoney = () => {
           reference={txnRef}
           status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
+          footer={sentBeneficiaryId && !savedOnReceipt ? (
+            <Pressable
+              onPress={async () => {
+                const row = { id: sentBeneficiaryId, name: finalName || '', account_number: acctShown,
+                              bank_name: bankShown, initials: '', color: c.brand } as Beneficiary;
+                if (await saveBen(row)) setSavedOnReceipt(true);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel={`Save ${finalName || 'this recipient'}`}
+              style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+                       paddingVertical: 14, borderRadius: radius.md, borderWidth: 1, borderColor: c.line }}
+            >
+              <ZIcon name="plus" size={16} color={c.brand} stroke={2.2} />
+              <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.brand }}>
+                Save {finalName || 'this recipient'}
+              </Text>
+            </Pressable>
+          ) : savedOnReceipt ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 14 }}>
+              <ZIcon name="check" size={16} color={c.brand} stroke={2.4} />
+              <Text style={{ fontSize: 14, fontFamily: font.medium, color: c.ink3 }}>Saved to your recipients</Text>
+            </View>
+          ) : null}
         />
       </Screen>
     );
   }
 
-  const filteredBens = beneficiaries.filter((b) => (b.name + ' ' + b.account_number).toLowerCase().includes(query.toLowerCase()));
+  // Saved people first, then the rest in server order (newest paid first).
+  // Searching covers the nickname too: someone who saved an account as "Mum"
+  // will look for Mum, not for the holder name printed on the bank's records.
+  const filteredBens = beneficiaries
+    .filter((b) => (b.name + ' ' + (b.nickname || '') + ' ' + b.account_number)
+      .toLowerCase().includes(query.toLowerCase()))
+    .slice()
+    .sort((x, y) => Number(!!y.saved) - Number(!!x.saved));
   const filteredBanks = banks.filter((b) => b.name.toLowerCase().includes(bankQuery.trim().toLowerCase()));
   // "Sent before" suggestions: as the user types 4+ digits, surface up to 3
   // prior bank beneficiaries whose account number starts with what they've
@@ -655,12 +759,25 @@ const SendMoney = () => {
                 <Pressable
                   key={b.id}
                   onPress={() => tapBeneficiary(b)}
+                  onLongPress={() => benActions(b)}
                   accessibilityRole="button"
-                  accessibilityLabel={`${b.name}, ${b.account_number} ${b.bank_name}`}
+                  accessibilityLabel={`${b.display_name || b.name}, ${b.account_number} ${b.bank_name}${b.saved ? ', saved' : ''}`}
+                  accessibilityHint="Long press to rename or remove"
                   style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: c.line }}
                 >
+                  {/* Saving is one tap, and it is the only state this star sets.
+                      Coming back off the list is Remove, on the long-press menu,
+                      because it deletes the row rather than un-ticking it. */}
+                  <Pressable
+                    onPress={() => (b.saved ? benActions(b) : saveBen(b))}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={b.saved ? `${b.display_name || b.name} is saved` : `Save ${b.name}`}
+                  >
+                    <ZIcon name={b.saved ? 'check' : 'plus'} size={17} color={b.saved ? c.brand : c.ink3} stroke={b.saved ? 2.4 : 1.8} />
+                  </Pressable>
                   <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{b.name}</Text>
+                    <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{b.display_name || b.name}</Text>
                     <Text numberOfLines={1} style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3, marginTop: 2 }}>{b.account_number} {b.bank_name}</Text>
                   </View>
                   <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: iconTint(b.color, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
@@ -684,6 +801,37 @@ const SendMoney = () => {
       )}
 
       {/* Bank picker */}
+      {/* Naming somebody. A nickname is display-only — the holder name the bank
+          returned is what the server re-confirms against before money moves —
+          but it is also what the WhatsApp channel matches on, which is why an
+          empty name simply clears the label rather than being refused. */}
+      <Sheet open={!!renaming} onClose={() => setRenaming(null)} title={renaming?.nickname ? 'Change their name' : 'Give them a name'}>
+        <Text style={{ fontSize: 13, fontFamily: font.regular, color: c.ink3, lineHeight: 19, marginBottom: 14 }}>
+          {renaming ? `${renaming.name} · ${renaming.account_number} ${renaming.bank_name}` : ''}
+        </Text>
+        <TextInput
+          value={nickDraft}
+          onChangeText={setNickDraft}
+          placeholder="Mum, landlord, Ada…"
+          placeholderTextColor={c.ink3}
+          accessibilityLabel="Name for this recipient"
+          autoCapitalize="words"
+          autoCorrect={false}
+          maxLength={80}
+          style={{ fontSize: 16, color: c.ink1, fontFamily: font.medium, borderWidth: 1,
+                   borderColor: c.line, borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 12 }}
+        />
+        <View style={{ height: 16 }} />
+        <Btn
+          label="Save name"
+          onPress={async () => {
+            const target = renaming;
+            setRenaming(null);
+            if (target) await renameBen(target, nickDraft.trim());
+          }}
+        />
+      </Sheet>
+
       <Sheet open={bankSheet} onClose={() => { setBankSheet(false); setBankQuery(''); }} title="Select bank">
         <Field value={bankQuery} onChangeText={setBankQuery} placeholder="Search bank" prefix={<ZIcon name="search" size={18} color={c.ink3} />} />
         <View style={{ height: 6 }} />

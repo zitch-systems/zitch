@@ -399,10 +399,19 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
         if settled != "success":
             raise PayoutError("provider", result.get("message", "Transfer failed"))
 
-    # Auto-save / dedupe the beneficiary for next time.
-    Beneficiary.objects.get_or_create(
+    # Record the recipient for next time. This is a RECENT, never a saved
+    # beneficiary: `saved` and `nickname` are absent from `defaults` on purpose,
+    # so a repeat payout to somebody the customer has already saved and named
+    # cannot quietly undo either. Nothing in the payout path decides what belongs
+    # in a customer's address book; only the customer does.
+    row, _ = Beneficiary.objects.get_or_create(
         user=user, account_number=account_number, bank_name=bank.name,
         defaults={"name": name, "bank_code": bank.bank_code, "color": bank.color or "#0FA295"},
     )
     txn.refresh_from_db()
+    # Carried on the transaction so the caller can offer "save this recipient"
+    # against the exact row we just wrote, rather than re-deriving it from an
+    # account number — which would cost a second name enquiry to answer a
+    # question we already know the answer to.
+    txn.beneficiary_id = row.id
     return txn

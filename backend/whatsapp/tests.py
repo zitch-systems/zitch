@@ -17,7 +17,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import AccessToken
-from transfers.models import Bank
+from transfers.models import Bank, Beneficiary
 from utility.models import CablePlan, DataPlan
 from wallet.models import Transaction
 from wallet.services import credit, get_or_create_wallet
@@ -2560,7 +2560,10 @@ class ReceiptPrivacyTests(TestCase):
         self.assertTrue(receipt, f"no receipt in {out[-3:]}")
         self.assertIn("From: ADA EZE", receipt)
         self.assertNotIn("New balance", receipt)
-        self.assertIn("balance", out[-1].lower())      # balance is the message after
+        # The balance is its own message, immediately after the receipt. Read
+        # positionally rather than as "the last thing said", because a first-time
+        # recipient is also offered as a saved payee and that offer comes after.
+        self.assertIn("balance", out[out.index(receipt) + 1].lower())
 
 
 class FlowTimeoutTests(TestCase):
@@ -4867,3 +4870,146 @@ class MenuParityTests(TestCase):
         for label, tool in menu_backed.items():
             with self.subTest(option=label):
                 self.assertIn(tool, _TOOL_NAMES)
+
+
+class SavedPeopleTests(TestCase):
+    """Keeping a recipient in the chat, naming them, and paying them by name.
+
+    The rule the whole feature rests on: a name only ever moves money when it
+    resolves to exactly one account the customer themselves labelled. Everything
+    else — no match, two matches, a name we invented from the bank's records —
+    goes back to the ordinary transfer form, where an account number is checked
+    before anything is sent.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user()
+        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#e30613", active=True)
+        WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
+        from django.core.cache import cache
+        cache.clear()
+
+    def inbound(self, text, mid):
+        event = {"entry": [{"changes": [{"value": {"messages": [
+            {"from": MSISDN, "id": mid, "type": "text", "text": {"body": text}}]}}]}]}
+        return self.client.post("/webhooks/whatsapp", data=json.dumps(event),
+                                content_type="application/json")
+
+    def replies(self):
+        return [r.text for r in WaMessageLog.objects.filter(
+            msisdn=MSISDN, direction=WaMessageLog.OUT).order_by("created")]
+
+    def last_reply(self):
+        rows = self.replies()
+        return rows[-1] if rows else ""
+
+    def make_row(self, **kw):
+        base = {"user": self.user, "name": "JOHN DOE", "account_number": "0123456789",
+                "bank_name": "GTBank", "bank_code": "058"}
+        return Beneficiary.objects.create(**{**base, **kw})
+
+    def test_a_settled_transfer_offers_to_keep_the_recipient(self):
+        self.inbound("send", "s1")
+        self.inbound("1000", "s2")
+        self.inbound("0123456789", "s3")
+        self.inbound("gtb", "s4")
+        self.inbound("yes", "s5")
+        self.inbound("1234", "s6")
+        self.assertIn("save", self.last_reply().lower())
+
+    def test_declining_is_remembered_so_the_offer_stops(self):
+        row = self.make_row()
+        self.inbound(f"bene:no:{row.pk}", "d1")
+        self.assertIn("won't ask", self.last_reply())
+        from .router import _offer_to_save
+        before = len(self.replies())
+        _offer_to_save(self.user, MSISDN, row.pk)
+        self.assertEqual(len(self.replies()), before)
+
+    def test_saving_asks_for_a_name_and_keeps_it(self):
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "k1")
+        row.refresh_from_db()
+        self.assertTrue(row.saved)
+        self.inbound("Mum", "k2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "Mum")
+
+    def test_an_ordinary_name_is_never_mistaken_for_a_command(self):
+        # "Elizabeth" contains "bet" and "Ricardo" contains "card"; the intent
+        # check matches substrings, so running it on a valid nickname would make
+        # common names unusable — and silently, by answering with the menu.
+        row = self.make_row()
+        self.inbound(f"bene:save:{row.pk}", "e1")
+        self.inbound("Elizabeth", "e2")
+        row.refresh_from_db()
+        self.assertEqual(row.nickname, "Elizabeth")
+
+    def test_a_recipient_belonging_to_someone_else_cannot_be_saved(self):
+        other, _ = make_user("08099999999", "zed@zitch.test")
+        theirs = Beneficiary.objects.create(
+            user=other, name="THEIR PAYEE", account_number="0555555555", bank_name="GTBank")
+        self.inbound(f"bene:save:{theirs.pk}", "x1")
+        theirs.refresh_from_db()
+        self.assertFalse(theirs.saved)
+        self.assertIn("no longer in your list", self.last_reply())
+
+    def test_paying_a_saved_name_opens_the_transfer(self):
+        self.make_row(saved=True, nickname="Mum")
+        self.inbound("send 1000 to mum", "p1")
+        joined = " ".join(self.replies()).lower()
+        self.assertIn("mum", joined)
+        self.assertIn("0123456789", joined)
+
+    def test_an_unknown_name_falls_through_untouched(self):
+        # A miss must not answer and stop. "send 1000 to ada" has always been
+        # handled by whatever sits below — the paste parser, then the assistant,
+        # then the menu — and swallowing it here would put a dead end where a
+        # working payment used to be.
+        self.inbound("send 1000 to ada", "u1")
+        answer = self.last_reply()
+        self.assertIn("what would you like to do", answer.lower())
+        self.assertNotIn("anyone saved as", answer.lower())
+
+    def test_two_people_with_the_same_name_move_no_money(self):
+        # The DB does not stop this — a rename race, or rows created either side
+        # of a deploy. An ambiguous instruction about where money goes is one we
+        # decline to act on, so it falls through to the form.
+        self.make_row(saved=True, nickname="Mum")
+        self.make_row(account_number="0999999999", bank_name="Zenith",
+                      saved=True, nickname="Mum", name="MUSA ADAMU")
+        self.inbound("send 1000 to mum", "a1")
+        joined = " ".join(self.replies())
+        self.assertNotIn("0999999999", joined)
+
+    def test_an_unsaved_recent_is_not_payable_by_name(self):
+        # `name` is the bank's holder name, which the customer never chose and
+        # which nothing keeps unique.
+        self.make_row(name="MUM SOMEBODY")
+        self.inbound("send 1000 to mum somebody", "r1")
+        self.assertNotIn("0123456789", " ".join(self.replies()))
+
+    def test_the_address_book_lists_saved_people_only(self):
+        self.make_row(saved=True, nickname="Mum")
+        self.make_row(account_number="0999999999", bank_name="Zenith", name="A RECENT")
+        self.inbound("12", "l1")
+        shown = self.last_reply()
+        self.assertIn("Mum", shown)
+        self.assertNotIn("0999999999", shown)
+
+    def test_removing_someone_takes_the_row_with_it(self):
+        row = self.make_row(saved=True, nickname="Mum")
+        self.inbound("12", "m1")
+        self.inbound("1", "m2")
+        self.inbound("2", "m3")
+        self.assertFalse(Beneficiary.objects.filter(pk=row.pk).exists())
+
+    def test_the_scanner_says_a_photo_works_too(self):
+        # Any image sent to the chat is already decoded as a QR, at any point in
+        # the conversation — but nothing said so, so customers had no reason to
+        # try the camera button that was in front of them the whole time.
+        from . import router
+        with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
+            router._start_qr_scan(self.user, MSISDN)
+        self.assertIn("photo", cta.call_args.args[1].lower())
