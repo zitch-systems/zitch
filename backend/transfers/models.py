@@ -58,6 +58,10 @@ class Beneficiary(models.Model):
     # False on a row we wrote ourselves after a payout; True only once the
     # customer has said to keep it.
     saved = models.BooleanField(default=False)
+    # Number of completed or accepted transfers to this exact account/bank.
+    # Automatic recipient memory is private until the third transfer; at 51 it
+    # is promoted to the user's explicit Beneficiary address book.
+    transfer_count = models.PositiveIntegerField(default=0)
     created = models.DateTimeField(auto_now_add=True)
 
     class Meta:
