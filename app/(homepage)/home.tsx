@@ -94,8 +94,13 @@ const Home = () => {
   const [whole, kobo] = dot > -1 ? [shown.slice(0, dot), shown.slice(dot)] : [shown, ''];
   const name = accountName || firstName || 'there';
 
-  return (
-    <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing}>
+  // Everything down to the quick actions is pinned — never part of the scroll —
+  // so the identity, the balance and the four account actions stay on screen
+  // while "Pay a bill" and everything after it scrolls underneath. Built as its
+  // own block and handed to Screen's `header` prop rather than left inline, so
+  // it renders once as the ScrollView's sibling instead of its first child.
+  const fixed = (
+    <>
       {/* header */}
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 4 }}>
         <Pressable onPress={() => router.push('/me')} accessibilityRole="button" accessibilityLabel="Your profile">
@@ -216,7 +221,7 @@ const Home = () => {
       </Hero>
 
       {/* quick actions */}
-      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16 }}>
+      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingBottom: 14 }}>
         {ACTIONS.map((a) => (
           <Pressable
             key={a.label}
@@ -235,7 +240,11 @@ const Home = () => {
           </Pressable>
         ))}
       </View>
+    </>
+  );
 
+  return (
+    <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing} header={fixed}>
       {/* services grid */}
       <View style={{ paddingHorizontal: 18, paddingTop: 24 }}>
         <SectionLabel action="See all" onAction={() => setMore(true)}>Pay a bill</SectionLabel>

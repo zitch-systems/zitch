@@ -863,9 +863,12 @@ class EscalatingPinLockoutTests(TestCase):
         self.assertEqual((ok, code), (False, "pin_locked"))
         self.assertAlmostEqual(self._held_minutes(), User.PIN_LOCKOUT_MINUTES, delta=1)
         self.assertEqual(User.objects.get(pk=self.user.pk).pin_lockout_strikes, 1)
-        # An hour is short enough to wait out, so it is not sold as a reset.
+        # A reset clears any lock outright and is reachable regardless of tier
+        # (see set_transaction_pin), so it is offered from the FIRST lock —
+        # withholding it here only made an honest slip cost an hour of waiting
+        # before the customer learned they never had to.
         self.assertIn("about an hour", message)
-        self.assertNotIn("reset", message.lower())
+        self.assertIn("reset your PIN", message)
 
     def test_a_second_round_after_the_first_lock_expires_costs_a_day(self):
         self._lock()
@@ -946,9 +949,9 @@ class EscalatingPinLockoutTests(TestCase):
         self.assertTrue(evaluate_transaction_pin(u, "975310")[0])
 
     def test_the_escalated_flag_is_about_the_lock_standing_now(self):
-        """Surfaces offer the reset off this flag, so it must go quiet the moment
-        the lock lapses — otherwise an unlocked customer is told to reset a PIN
-        they can simply use."""
+        """Admin surfaces read this flag to show which tier is active, so it must
+        go quiet the moment the lock lapses — otherwise an unlocked customer's
+        record still reads as sitting out a 24-hour lock."""
         self._lock()
         self._expire_lock()
         self._lock()
@@ -958,10 +961,11 @@ class EscalatingPinLockoutTests(TestCase):
 
     def test_the_gate_reports_the_new_lock_state_on_the_instance_it_was_given(self):
         """The counting happens on a `select_for_update()` copy, so the caller's
-        own object is a different one. Callers decide what to show off it — the
-        WhatsApp surfaces read `pin_lock_is_escalated` to offer the PIN reset —
-        and stale values there are invisible: nothing errors, the offer just
-        never appears."""
+        own object is a different one. Anything a caller reads off `user` after
+        the call — `pin_locked`, `pin_lockout_strikes`, `pin_lock_is_escalated` —
+        must reflect what the row-locked copy just wrote, or a caller acts on
+        state a moment out of date. A stale value here is invisible: nothing
+        errors, it just quietly disagrees with the database."""
         from common.http import evaluate_transaction_pin
 
         self._lock()

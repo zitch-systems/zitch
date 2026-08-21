@@ -1102,16 +1102,6 @@ def _submit_identity(pa, data: dict) -> dict:
                                 screen=IDENTITY_RETRY)
 
     try:
-        # Same screen, third purpose: the number is being forwarded to the bank's
-        # face verifier rather than verified here, so it must not run back through
-        # the identity checks (which would re-queue an already-verified BVN for
-        # review). Checked before the action_type split because the purpose, not
-        # the action, is what decides.
-        if pa.payload.get("id_purpose") == "face":
-            from .router import _kyc_send_face_link
-
-            _kyc_send_face_link(pa, pa.user, pa.msisdn, kind, number)
-            return _success_screen("Check the chat for your face-check link.")
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
@@ -1391,12 +1381,12 @@ def _submit_pin(token: str, data: dict) -> dict:
         # with the app/chat), so the PIN can't be brute-forced through the Flow.
         if code == "pin_locked":
             _clear_actions(pa.msisdn)
-            # On the repeat (24-hour) lock the shared message offers a reset;
-            # here it also has to say what to TYPE. The Flow is closing, so the
-            # instruction has to point back at the thread that outlives it —
-            # and asterisks are chat markdown, not Flow markup.
-            if user.pin_lock_is_escalated:
-                message += " Reply \"reset pin\" in the chat to choose a new one."
+            # The shared message already offers a reset; here it also has to say
+            # what to TYPE, on every lock rather than only the 24-hour one. The
+            # Flow is closing, so the instruction points back at the thread that
+            # outlives it — and quotes rather than asterisks, since this reaches
+            # the chat as plain text, not chat markdown.
+            message += " Reply \"reset pin\" in the chat to choose a new one."
             _close_in_chat(pa.msisdn, f"🔒 {message}")
             return _result_screen(message, status="failed")
         if code == "no_pin":
