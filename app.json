@@ -89,14 +89,6 @@
         }
       ],
       [
-        "react-native-vision-camera",
-        {
-          "cameraPermissionText": "Allow Zitch to use the camera to verify your identity (face check).",
-          "enableMicrophonePermission": false,
-          "enableCodeScanner": false
-        }
-      ],
-      [
         "expo-build-properties",
         {
           "android": {
