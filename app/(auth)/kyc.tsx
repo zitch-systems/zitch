@@ -14,6 +14,7 @@ import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
 import FaceVerifyModal from '@/components/design/FaceVerifyModal';
+import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 
 type Status = {
   tier: number; tier_name?: string; transaction_limit: string;
@@ -344,23 +345,19 @@ const Kyc = () => {
   };
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
-  // Face ID — KYC must match a face, which the device unlock can't prove). ---
-  const verifySelfie = async () => {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
-    beginExternalActivity(); // keep the app-lock from firing while the camera is up
-    let shot;
-    try {
-      shot = await ImagePicker.launchCameraAsync({
-        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.25, allowsEditing: false,
-      });
-    } finally { endExternalActivity(); }
-    if (shot.canceled || !shot.assets?.[0]?.base64) return;
-    if (shot.assets[0].base64.length > MAX_IMAGE_BASE64) {
+  // Face ID — KYC must match a face, which the device unlock can't prove).
+  // Captured through FaceLivenessModal's live camera + face guide, not a
+  // gallery-style picker — the on-device face check there is UX only, the
+  // actual liveness verdict is still Prembly's, decided on this same photo. ---
+  const [faceCaptureOpen, setFaceCaptureOpen] = useState(false);
+  const verifySelfie = () => setFaceCaptureOpen(true);
+  const onSelfieCaptured = (base64: string) => {
+    setFaceCaptureOpen(false);
+    if (base64.length > MAX_IMAGE_BASE64) {
       notify('Image too large', 'Retake the photo at a lower device resolution.');
       return;
     }
-    submit('/api/kyc/face/', { selfie: shot.assets[0].base64 }, 'Selfie');
+    submit('/api/kyc/face/', { selfie: base64 }, 'Selfie');
   };
 
   return (
@@ -527,6 +524,11 @@ const Kyc = () => {
       ) : (
         <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>
           <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
+          <FaceLivenessModal
+            visible={faceCaptureOpen}
+            onClose={() => setFaceCaptureOpen(false)}
+            onCapture={onSelfieCaptured}
+          />
         </KycRow>
       )}
 
