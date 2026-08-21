@@ -44,7 +44,7 @@ const Loans = () => {
 
   const load = useCallback(async () => {
     const t = await getToken();
-    if (!t) return;
+    if (!t) { setLoaded(true); return; }
     setToken(t);
     try {
       const res = await apiJson('/api/loans/status/');
