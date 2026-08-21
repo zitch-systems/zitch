@@ -6,6 +6,7 @@ import { apiJson, newIdempotencyKey } from '@/lib/api';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
+import { LoadingMark } from '@/components/design/Loading';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -30,6 +31,7 @@ const Loans = () => {
   const [limit, setLimit] = useState(0);
   const [available, setAvailable] = useState(0);
   const [active, setActive] = useState<ActiveLoan | null>(null);
+  const [loaded, setLoaded] = useState(false); // has the first loans/status fetch resolved yet
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
@@ -51,6 +53,8 @@ const Loans = () => {
       setActive(res.active_loan ?? null);
     } catch {
       // keep last-known state
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -116,7 +120,11 @@ const Loans = () => {
 
       <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel>Active loans</SectionLabel>
-        {active ? (
+        {!loaded ? (
+          <View style={{ alignItems: 'center', paddingTop: 60 }}>
+            <LoadingMark size={28} />
+          </View>
+        ) : active ? (
           <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <View>
