@@ -2969,29 +2969,6 @@ class ChatKycTests(TestCase):
 
     @patch("whatsapp.router.email_live", return_value=True)
     @patch("whatsapp.router.sms_live", return_value=True)
-    @patch("whatsapp.router.verify_nin", return_value={"success": True})
-    @patch("whatsapp.router.verify_bvn", return_value={"success": True})
-    @patch("whatsapp.router.send_email")
-    @patch("whatsapp.router.send_sms", return_value={"success": True})
-    @patch("utility.wema.face_verify_live", return_value=True)
-    def test_face_verification_is_never_offered_even_when_the_rail_is_live(
-            self, _face, sms, email, bvn, nin, _sl, _el):
-        """The face step runs in the app only — a channel decision, not a fallback
-        for a rail that happens to be off. Patching the rail live and still seeing
-        no mention of it anywhere in the ladder is what proves the two are no
-        longer connected."""
-        self.inbound("8", "z1")
-        self.inbound(re.search(r"\b(\d{6})\b", sms.call_args[0][1]).group(1), "z2")
-        self.inbound(re.search(r"\b(\d{6})\b", email.call_args[0][2]).group(1), "z3")
-        self.inbound("12345678901", "z4")
-        self.inbound("10987654321", "z5")
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified and self.user.nin_verified)
-        self.assertIn("Tier 1", self.last_reply())
-        self.assertFalse(any("face" in r.lower() for r in self.replies()))
-
-    @patch("whatsapp.router.email_live", return_value=True)
-    @patch("whatsapp.router.sms_live", return_value=True)
     @patch("whatsapp.router.verify_nin",
            return_value={"success": False, "otp_required": True, "message": "not standalone"})
     @patch("whatsapp.router.verify_bvn", return_value={"success": True})

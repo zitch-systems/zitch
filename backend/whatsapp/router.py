@@ -2514,15 +2514,26 @@ def _do_support(msisdn: str) -> None:
 # kyc — prove both contact channels and both identity numbers without leaving
 # the chat. Each step drives the same server-side checks the app uses, and the
 # tier is DERIVED at the end (recompute_tier), never granted by this flow.
-#
-# Face verification is NOT in this ladder. It runs in the Zitch app only — a
-# deliberate channel decision, not an infrastructure gap: the app can present the
-# bank's page as its own branded step, WhatsApp can only hand the customer off to
-# a page it did not write. A customer who still owes a face check simply finishes
-# KYC here at whatever tier phone/email/BVN/NIN gives them; the app's own
-# verification screen offers the face step when they open it there.
 # --------------------------------------------------------------------------- #
-_KYC_STEPS = ("phone", "email", "bvn", "nin")
+_KYC_STEPS = ("phone", "email", "bvn", "nin", "face")
+
+
+#: PendingAction.state while the face step is waiting for an identity number that
+#: arrived in the CHAT rather than the Flow. It needs its own state because the
+#: answer is forwarded to the bank, not verified here — routing it through the
+#: ordinary "bvn"/"nin" states would re-run verification on an identity the
+#: customer has already proven, and never send the face link.
+FACE_ID_STATE = "face_id"
+
+
+def _face_step_available() -> bool:
+    """Whether the chat can offer the bank's face check.
+
+    Gated on the rail rather than always shown: with no Account Creation key the
+    step would list an item the customer can never complete, and a ladder with a
+    permanently unchecked rung reads as a broken account, not an optional extra.
+    """
+    return wema_provider.face_verify_live()
 
 
 def _kyc_test_code(user) -> str:
@@ -2554,8 +2565,15 @@ def _kyc_outstanding(user) -> list:
         "email": user.email_verified,
         "bvn": user.bvn_verified,
         "nin": user.nin_verified,
+        "face": user.face_verified,
     }
-    return [step for step in _KYC_STEPS if not done[step]]
+    steps = _KYC_STEPS if _face_step_available() else _KYC_STEPS[:-1]
+    # The face check runs against a BVN/NIN the customer has already proven, so it
+    # is never offered before one of them is verified — otherwise the chat would
+    # send them to the bank with a number we have no reason to trust.
+    if not (user.bvn_verified or user.nin_verified):
+        steps = tuple(s for s in steps if s != "face")
+    return [step for step in steps if not done[step]]
 
 
 def _kyc_status_lines(user) -> str:
@@ -2565,7 +2583,7 @@ def _kyc_status_lines(user) -> str:
         f"{mark(user.email_verified)} Email address",
         f"{mark(user.bvn_verified)} BVN",
         f"{mark(user.nin_verified)} NIN",
-    ])
+    ] + ([f"{mark(user.face_verified)} Face check"] if _face_step_available() else []))
 
 
 def _start_kyc(user, msisdn: str) -> None:
@@ -2600,6 +2618,8 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_phone_code(pa, user, msisdn)
     if step == "email":
         return _kyc_send_email_code(pa, user, msisdn)
+    if step == "face":
+        return _kyc_start_face_step(pa, user, msisdn)
     if _send_identity_flow(pa, step):
         return None
     if flows_live():
@@ -2899,6 +2919,24 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
                                  'or reply "cancel".')
         return _kyc_submit_identity(pa, user, msisdn, state, digits)
 
+    if state == FACE_ID_STATE:
+        # The face step asks for the identity in the Flow, but a customer can always
+        # type it into the thread instead — and this state had no branch, so they
+        # were told "Got it" and then dumped at the main menu with their BVN sitting
+        # in the chat and no face check ever started.
+        #
+        # The number is already in their history by the time we get here, so refusing
+        # it now would cost them the step and save nothing. Take it, name the one
+        # thing that still removes it, and carry on.
+        digits = "".join(ch for ch in val if ch.isdigit())
+        if len(digits) != 11:
+            kind = str(pa.payload.get("id_kind", "bvn")).upper()
+            return reply(msisdn, f"That should be exactly 11 digits. Enter your {kind} again, "
+                                 'or reply "cancel".')
+        reply(msisdn, "🔐 Got it." + _DELETE_TIP)
+        return _kyc_send_face_link(pa, user, msisdn,
+                                   str(pa.payload.get("id_kind", "bvn")).lower(), digits)
+
     _clear_actions(msisdn)
     return send_menu(msisdn)
 
@@ -3037,6 +3075,87 @@ def _record_identity_review(kind: str, reason: str) -> None:
                                     kind, str(reason)[:150]))[:255])
     except Exception:  # noqa: BLE001 — diagnostics never break the ladder
         log.debug("could not record identity review reason", exc_info=True)
+
+
+def _kyc_start_face_step(pa: PendingAction, user, msisdn: str) -> None:
+    """Collect the identity for the bank's face check — in the Flow, never the chat.
+
+    The bank verifies a live face against a BVN or NIN, so the number has to reach
+    the URL we build. We hold only a keyed hash of the one the customer already
+    verified, so it must be entered again — and it goes through the same encrypted
+    screen every other identity uses. Typing an eleven-digit BVN into the thread
+    would leave it in the customer's own history forever, which is exactly what the
+    Flow exists to prevent.
+    """
+    kind = "bvn" if user.bvn_verified else "nin"
+    pa.payload["id_purpose"] = "face"
+    if _send_identity_flow(pa, kind, fallback_state=FACE_ID_STATE):
+        return None
+    # No Flow on this deploy (dev/preview). Unlike the identity ladder there is no
+    # chat fallback worth having: the number is not being verified here, only
+    # forwarded to the bank, so a clear-text BVN in the thread would buy nothing.
+    pa.payload.pop("id_purpose", None)
+    pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
+    _touch(pa, state="idle", payload=pa.payload)
+    reply(msisdn, "📱 The face check opens a secure page from the bank. Finish it in the "
+                  "Zitch app under *Verify identity* — your other steps are saved.")
+    return _kyc_next(pa, user, msisdn)
+
+
+def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits: str) -> None:
+    """Mint a one-time face session and send the customer the bank's link.
+
+    The result never comes back through this chat: the bank posts it to our own
+    callback, which is the only version a customer cannot fake by opening the page
+    and claiming success. So nothing here marks anything verified — it hands over a
+    link and moves on, and the tier lifts if and when the bank says so.
+    """
+    from accounts.models import hash_identifier
+    from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
+                                _identity_owned_by_another_user, face_identity_error)
+    from wallet.models import WemaFaceSession
+
+    # The SAME binding the app enforces. This rail had neither check, so a number
+    # the API answered with a 409 was accepted here — and a session could be opened
+    # against an identity this account has never proven, which is the substitution
+    # the face step exists to catch.
+    if _identity_owned_by_another_user(user, kind, digits):
+        _clear_actions(msisdn)
+        return reply(msisdn, "⚠️ That number is already linked to another Zitch account. "
+                             "Please contact support if this is unexpected.")
+    refusal = face_identity_error(user, kind, digits)
+    if refusal:
+        _clear_actions(msisdn)
+        return reply(msisdn, f"⚠️ {refusal}")
+
+    pa.payload.pop("id_purpose", None)
+    pa.payload["attempted"] = sorted(set(pa.payload.get("attempted") or []) | {"face"})
+    session = WemaFaceSession.objects.create(
+        user=user, state=secrets.token_urlsafe(32)[:64], identity_type=kind,
+        identity_hash=hash_identifier(digits),
+        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+    )
+    url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
+    log.info("wa_face_link_sent user=%s kind=%s session=%s", user.pk, kind, session.state[:8])
+    # A BUTTON, not a pasted link. The URL carries the customer's own BVN in its
+    # query string, and WhatsApp would render that as visible tappable text sitting
+    # in their history forever — while also looking exactly like the phishing
+    # messages we tell people to ignore. The CTA opens in WhatsApp's own browser
+    # with only the label showing.
+    send_cta_url(
+        msisdn,
+        "🤳 *One last step — the face check*\n\n"
+        "Your bank runs this check on their own secure page. Your photo never "
+        "passes through Zitch or this chat.\n\n"
+        f"_Expires in {FACE_SESSION_TTL_MINUTES} minutes. I'll message you as soon "
+        "as the bank confirms._",
+        url, cta="Start face check", footer="Secured by your bank",
+        # NEVER paste this one as text. The URL carries the customer's raw BVN in a
+        # query string; send_cta_url's ordinary fallback would put it in the thread
+        # in clear, permanently, which is the exact thing the button exists to stop.
+        allow_text_fallback=False)
+    _touch(pa, state="idle", payload=pa.payload)
+    return _kyc_next(pa, user, msisdn)
 
 
 def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
