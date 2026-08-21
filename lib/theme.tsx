@@ -111,7 +111,7 @@ export const dark: ThemeTokens = {
   line: '#1B463C',
   ink1: '#EAFBF7',
   ink2: '#A6C9C1',
-  ink3: '#6F9189',
+  ink3: '#86ABA2',
   inkOnBrand: '#04221F',
   brand: palette.teal400,
   brandDeep: palette.teal500,
