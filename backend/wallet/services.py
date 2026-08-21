@@ -633,6 +633,21 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
                     norm["reference"], matched, bool(reversed_txn), wallet.account_number)
         return None
     if refs and _looks_like_unmatched_reversal(tx):
+        # A payout the ledger cannot see settling: this row never becomes SUCCESS
+        # (no reference to match), and the funding sweep never credits it either —
+        # so unlike every other skip in this function, the customer's money simply
+        # stays stuck until a human reads it off a row in a log file. That is worse
+        # than any of the outcomes this quarantine was built to prevent, so it pages
+        # the same way the ledger>bank divergence in reconcile_balances does — every
+        # run the row is still unresolved, not once at first sight, because Sentry's
+        # own issue grouping is what turns repeats into "still open" rather than noise.
+        from utility.alerts import alert
+
+        alert("wema_credit_unmatched_reversal_quarantined: a payout-shaped credit could "
+              "not be matched to any of this customer's own payout references — money is "
+              "stuck until reconciled by hand", level="error",
+              reference=norm["reference"], account=wallet.account_number,
+              amount=str(norm["amount_naira"]))
         log.error(
             "wema_credit_unmatched_reversal_quarantined ref=%s account=%s amount=%s",
             norm["reference"], wallet.account_number, norm["amount_naira"],

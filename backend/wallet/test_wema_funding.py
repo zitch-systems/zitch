@@ -407,6 +407,18 @@ class WemaReversalGuardTests(TestCase):
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("4000.00"))
         self.assertFalse(Transaction.objects.filter(
             reference="WEMA-CR-ALAT-REV-UNKNOWN").exists())
+
+    def test_a_quarantined_reversal_pages_rather_than_waiting_for_a_grep(self):
+        # A quarantined row credits nothing and self-heals on no later sweep — the
+        # only way anyone learns the customer's money is stuck is by reading it off
+        # this alert. Silence here is silence on a real customer's money.
+        row = _tx("ALAT-REV-UNKNOWN", 1000,
+                  narration="TRANSFER REVERSAL - ORIGINAL REFERENCE UNAVAILABLE")
+        with patch("utility.alerts.alert") as alerted:
+            apply_wema_credit(self.wallet, row, [self.PAYOUT_REF])
+        alerted.assert_called_once()
+        self.assertIn("unmatched_reversal", alerted.call_args[0][0])
+        self.assertEqual(alerted.call_args[1]["reference"], "ALAT-REV-UNKNOWN")
     def test_third_party_deposit_still_credits_alongside_payouts(self):
         # A genuine deposit (no payout reference anywhere) credits normally even
         # while the user has an outstanding payout.
