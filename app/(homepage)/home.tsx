@@ -178,11 +178,11 @@ const Home = () => {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 8 }}>
-          <NText style={{ color: '#fff', fontSize: 34, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+          <NText style={{ color: '#fff', fontSize: 28, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
             {showBal ? whole : '₦ ••••••'}
           </NText>
           {showBal && kobo ? (
-            <NText style={{ color: 'rgba(255,255,255,.7)', fontSize: 20, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+            <NText style={{ color: 'rgba(255,255,255,.7)', fontSize: 16, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
               {kobo}
             </NText>
           ) : null}

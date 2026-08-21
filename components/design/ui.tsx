@@ -169,7 +169,7 @@ export const Card = ({
   children,
   style,
   onPress,
-  pad = 18,
+  pad = 15,
 }: {
   children: React.ReactNode;
   style?: ViewStyle;
@@ -344,20 +344,20 @@ export const ZItem = ({
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 14,
-        paddingVertical: 13,
+        gap: 12,
+        paddingVertical: 11,
         borderBottomWidth: last ? 0 : 1,
         borderBottomColor: c.line,
       }}
     >
       {(icon || leading) && (
-        <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
-          {leading ?? <ZIcon name={icon as string} size={21} color={accent} stroke={2} />}
+        <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
+          {leading ?? <ZIcon name={icon as string} size={18} color={accent} stroke={2.2} />}
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>
-        <NText numberOfLines={1} style={{ fontSize: 15, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
-        {sub && <NText style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
+        <NText numberOfLines={1} style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
+        {sub && <NText style={{ fontSize: 12, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
       </View>
       {right}
     </Wrap>
