@@ -9,6 +9,7 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money, NText, SelectRow, PickerSheet } from '@/components/design/ui';
+import { LoadingMark } from '@/components/design/Loading';
 import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
@@ -57,6 +58,7 @@ const Kyc = () => {
   const { c } = useTheme();
   const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
+  const [loaded, setLoaded] = useState(false); // has the first kyc/status fetch resolved yet
   const [bvn, setBvn] = useState('');
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
@@ -93,12 +95,13 @@ const Kyc = () => {
 
   const load = useCallback(async () => {
     const t = await getToken();
-    if (!t) return;
+    if (!t) { setLoaded(true); return; }
     setToken(t);
     try {
       const res = await apiJson('/api/kyc/status/');
       if (res.success) setStatus(res);
     } catch { /* keep */ }
+    finally { setLoaded(true); }
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
   // Leaving the screen stops the loop. Without this it keeps polling — and calling
@@ -364,6 +367,20 @@ const Kyc = () => {
     <Screen>
       <Header title="Verify identity" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
 
+      {!status && !loaded ? (
+        // Every card and row below reads `status?.…`, so before the first fetch
+        // resolves this screen would otherwise render as a near-empty page (the
+        // two summary cards are gated on `status` entirely, and every KycRow
+        // would flash "not verified" for steps that are actually done) and then
+        // visibly pop in a beat later. Show a spinner instead of that flash.
+        // Gated on `!loaded` too (not just `!status`): if the fetch settles
+        // without a token/session, `status` stays null forever and this must
+        // fall through to the real content below rather than spin forever.
+        <View style={{ alignItems: 'center', paddingTop: 60 }}>
+          <LoadingMark size={28} />
+        </View>
+      ) : (
+      <>
       {status && (
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginBottom: 4 }}>
           <View>
@@ -593,6 +610,8 @@ const Kyc = () => {
       <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
         Zitch app limits: Unverified ₦20,000 · Verified (BVN + NIN) ₦50,000 · Enhanced (+ selfie + address) ₦200,000 · Premium (+ government ID) ₦5,000,000 per transaction. These are additional to the partner bank limits above. Raw BVN, NIN, proof-of-address and ID images are not retained by Zitch.
       </NText>
+      </>
+      )}
     </Screen>
   );
 };

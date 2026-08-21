@@ -8,6 +8,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { QuickAmounts, AmountField } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
+import { LoadingMark } from '@/components/design/Loading';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -20,6 +21,7 @@ const Cards = () => {
   const { reload: reloadWallet } = useWallet();
   const [, setToken] = useState('');
   const [card, setCard] = useState<VCard | null>(null);
+  const [loaded, setLoaded] = useState(false); // has the first cards/list fetch resolved yet
   const [busy, setBusy] = useState(false);
 
   // sheets
@@ -32,12 +34,13 @@ const Cards = () => {
 
   const load = useCallback(async () => {
     const t = await getToken();
-    if (!t) return;
+    if (!t) { setLoaded(true); return; }
     setToken(t);
     try {
       const res = await apiJson('/api/cards/list/');
       setCard(res.cards?.[0] ?? null);
     } catch { /* keep last state */ }
+    finally { setLoaded(true); }
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -113,7 +116,11 @@ const Cards = () => {
     <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Cards</Text>
 
-      {card ? (
+      {!loaded ? (
+        <View style={{ alignItems: 'center', paddingTop: 60 }}>
+          <LoadingMark size={28} />
+        </View>
+      ) : card ? (
         <>
           {/* card visual */}
           <LinearGradient
