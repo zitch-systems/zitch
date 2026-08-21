@@ -275,7 +275,7 @@ def email_live() -> bool:
     return bool(settings.RESEND["API_KEY"])
 
 
-def _send_sms_termii(phone: str, message: str) -> dict:
+def _send_sms_termii(phone: str, message: str, timeout: float = REQUEST_TIMEOUT) -> dict:
     """Termii `POST /api/sms/send`.
 
     Two details of this request shape are easy to get wrong and fail silently: the
@@ -297,7 +297,7 @@ def _send_sms_termii(phone: str, message: str) -> dict:
                 "api_key": cfg["API_KEY"],
             },
             headers={"Content-Type": "application/json", "Accept": "application/json"},
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout,
         )
         data = resp.json() if resp.content else {}
         if not isinstance(data, dict):
@@ -321,17 +321,17 @@ def _send_sms_termii(phone: str, message: str) -> dict:
         return {"success": False, "message": f"SMS provider returned non-JSON: {exc}"}
 
 
-def send_sms(phone: str, message: str) -> dict:
+def send_sms(phone: str, message: str, timeout: float = REQUEST_TIMEOUT) -> dict:
     """Send one SMS. Blank key => mock success, unchanged: the OTP flow deliberately
     ignores the result (anti-enumeration), so branching on configuration here would
     change nothing for the caller."""
     if not sms_live():
         return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
-    return _send_sms_termii(phone, message)
+    return _send_sms_termii(phone, message, timeout=timeout)
 
 
 def send_email(to: str, subject: str, message: str, html: str | None = None,
-               attachments: list | None = None) -> dict:
+               attachments: list | None = None, timeout: float = REQUEST_TIMEOUT) -> dict:
     """Send a transactional email via Resend. Mirrors send_sms's mock-mode
     contract: blank API_KEY or empty `to` returns a silent-success dict so
     callers can fire-and-forget without branching on configuration. Used as a
@@ -368,7 +368,7 @@ def send_email(to: str, subject: str, message: str, html: str | None = None,
                 "Authorization": f"Bearer {cfg['API_KEY']}",
                 "Content-Type": "application/json",
             },
-            timeout=REQUEST_TIMEOUT,
+            timeout=timeout,
         )
         data = resp.json() if resp.content else {}
         ok = bool(resp.ok and "id" in data)

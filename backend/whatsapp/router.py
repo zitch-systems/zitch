@@ -199,6 +199,15 @@ UNLINKED_APP_ONLY = (
 )
 ONBOARD_TTL = timedelta(minutes=15)  # window to finish a WhatsApp signup
 
+# Meta drops a Flow data_exchange that takes longer than ~10s and shows the
+# customer an endless spinner ("Couldn't load content") rather than any error
+# we control — it never even reaches our response. The signup form's submit
+# handler sends an OTP synchronously before answering, so that send must
+# leave enough of the ~10s budget for everything else in the request (DB
+# lookups, encryption) to still finish in time. The default REQUEST_TIMEOUT
+# (30s) alone can burn the entire budget on a single slow provider call.
+FLOW_SEND_TIMEOUT = 6
+
 
 def _chat_signup_allowed() -> bool:
     """Whether a brand-new number may open its account here. On unless a deploy
@@ -1842,7 +1851,8 @@ def send_onboarding_email_code(ob: WaOnboarding) -> bool:
                               code=code,
                               note="This code expires in 15 minutes. If you didn't request "
                                    "it, you can ignore this email — no account is created "
-                                   "without it."))
+                                   "without it."),
+                          timeout=FLOW_SEND_TIMEOUT)
         if not sent.get("success"):
             return False
     ob.payload.update({"email_code_hash": make_password(code),
@@ -1864,7 +1874,8 @@ def send_onboarding_phone_code(ob: WaOnboarding) -> bool:
     code = test_code or f"{secrets.randbelow(10**6):06d}"
     if not test_code:
         sent = send_sms(typed, f"Zitch: {code} is your phone confirmation code. "
-                               "It expires in 15 minutes. Never share it.")
+                               "It expires in 15 minutes. Never share it.",
+                        timeout=FLOW_SEND_TIMEOUT)
         if not sent.get("success"):
             return False
     ob.payload.update({"phone_code_hash": make_password(code),
