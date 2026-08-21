@@ -64,6 +64,16 @@ class Command(BaseCommand):
         scanned = 0
         credited = 0
         fetch_failures = 0
+        # date_from/date_to are sent in the format the spec EXAMPLES show, never
+        # confirmed against a live response: apply_wema_credit matches rows by
+        # referenceId, not by date, so nothing here has ever needed to read a date
+        # back off a row. A wrong format guess would not error either â€” it would
+        # silently ask for the wrong window and quietly credit nothing (or too
+        # much). Logging the field NAMES of one real row, once per run, turns that
+        # from a question for Wema into something confirmed by our own log the
+        # first time this runs for real, rather than a guess that could misparse a
+        # genuine value.
+        shape_logged = False
         for wallet in wema_provisioned_wallets():
             scanned += 1
             res = wema.get_transactions(wallet.account_number, date_from, date_to)
@@ -74,7 +84,12 @@ class Command(BaseCommand):
             # row matching one is a payout REVERSAL (routed through
             # reverse_transfer inside apply_wema_credit), never a funding credit.
             self_refs = self_payout_references(wallet.user)
-            for tx in res.get("transactions", []) or []:
+            rows = res.get("transactions", []) or []
+            if rows and not shape_logged:
+                self.stdout.write(f"transhistoryV2 row shape (field names only, "
+                                  f"once per run): {sorted(rows[0].keys())}")
+                shape_logged = True
+            for tx in rows:
                 if apply_wema_credit(wallet, tx, self_refs=self_refs) is not None:
                     credited += 1
 

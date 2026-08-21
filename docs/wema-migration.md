@@ -359,11 +359,31 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
    on the undocumented reversal shape) against the wallet owner's own outbound payout
    references and routes a hit through `reverse_transfer` — which refunds at most once, ever,
    across both phases — instead of crediting it as funding. Third-party deposits (including
-   another user's payout arriving) still credit normally. **Remaining before go-live:** confirm
-   the `transhistoryV2` date format and that a genuine deposit is distinguishable from any
-   credit we push ourselves via `FundWallet` (`credit_wallet` has no production caller today),
-   and add a ledger-vs-polled-NUBAN reconciliation invariant that alarms on divergence — that
-   part still needs Wema's live reversal history shape.
+   another user's payout arriving) still credit normally.
+
+   **The reconciliation invariant already exists** — `manage.py reconcile_balances`
+   (`wallet/management/commands/reconcile_balances.py`), on the `zitch-reconcile-balances`
+   cron every 6 hours with `--fail-over`. It compares each wallet's ledger balance against the
+   real Wema NUBAN balance and pages via Sentry the moment the ledger exceeds the bank — the
+   dangerous direction. This item was stale; the code predates the note.
+
+   **A real gap was found and fixed:** a row `apply_wema_credit` quarantines as an unmatched
+   reversal (an explicit "REVERSAL"/"BOUNCED" marker with no reference we can tie to a specific
+   payout) was logged at `log.error` and then silently skipped, forever, every 10-minute sweep
+   — the one skip path in this function that never self-heals, and the one that had nothing
+   paging anyone. It now calls `alert()` alongside the log, so stuck money surfaces the same
+   way the ledger/bank divergence above does, rather than waiting for someone to grep.
+
+   **Still genuinely open, and still needs live data:** the `date_from`/`date_to` request
+   format is the spec's example shape, never confirmed against a real response — nothing
+   here has ever needed to read a date back off a row, since matching is by `referenceId`, so
+   a wrong guess would not error, it would silently ask for the wrong window. `reconcile_wema`
+   now logs the field names of one real row once per sweep (values never logged — only which
+   keys the row has), so the first live run answers this from our own log instead of a
+   question for Wema. `credit_wallet` (the `FundWallet` push) still has zero production
+   callers, so "distinguishable from a credit we push ourselves" is not a live risk today; if
+   that ever gets a caller, it needs to tag its own credits the same way payout reversals are
+   matched here, or the sweep would double-credit it the day it first runs.
 
 ## Callbacks and reconciliation
 
