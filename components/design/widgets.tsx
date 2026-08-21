@@ -105,7 +105,7 @@ export const ServiceTile = ({
             backgroundColor: iconTint(accent, theme === 'dark'),
           }}
         >
-          <ZIcon name={icon} size={21} color={accent} stroke={2} />
+          <ZIcon name={icon} size={21} color={accent} stroke={2.2} />
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>

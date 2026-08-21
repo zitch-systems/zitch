@@ -352,7 +352,7 @@ export const ZItem = ({
     >
       {(icon || leading) && (
         <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
-          {leading ?? <ZIcon name={icon as string} size={18} color={accent} stroke={2} />}
+          {leading ?? <ZIcon name={icon as string} size={18} color={accent} stroke={2.2} />}
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>
