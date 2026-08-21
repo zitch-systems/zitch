@@ -101,5 +101,14 @@
     "image-size": "1.2.1",
     "uuid": "11.1.1"
   },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-nitro-image"
+        ]
+      }
+    }
+  },
   "private": true
 }
