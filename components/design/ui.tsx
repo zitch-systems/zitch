@@ -42,6 +42,7 @@ const cardShadow = {
 // (the tab screens render their own nav bar over the scene).
 export const Screen = ({
   children,
+  header,
   pad = true,
   scroll = true,
   tab = false,
@@ -49,6 +50,12 @@ export const Screen = ({
   refreshing = false,
 }: {
   children: React.ReactNode;
+  // Rendered ABOVE the scroll view, as its sibling rather than its first child —
+  // so it never scrolls. Not `stickyHeaderIndices`: that pins a header only once
+  // the ScrollView has scrolled PAST it, section-list style, which still lets it
+  // travel with the content up to that point. This is simpler and matches what
+  // was actually asked for — the header never moves at all.
+  header?: React.ReactNode;
   pad?: boolean;
   scroll?: boolean;
   tab?: boolean;
@@ -65,6 +72,14 @@ export const Screen = ({
   // (maxW undefined → the inner view is simply full width, as before).
   const maxW = width >= 600 ? 720 : undefined;
   const px = pad ? 20 : 0;
+  // `header`, if given, needs the same width cap and horizontal padding as the
+  // scrolling content below it, or the two drift out of alignment on tablet/fold
+  // widths where maxW actually applies.
+  const headerBlock = header ? (
+    <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px, alignSelf: 'center' }}>
+      {header}
+    </View>
+  ) : null;
   return (
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
       <AmbientBackground />
@@ -73,6 +88,7 @@ export const Screen = ({
             button is never hidden behind it (Android handles this via the OS
             softInputMode). */}
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {headerBlock}
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}

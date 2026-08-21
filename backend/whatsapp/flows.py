@@ -1391,12 +1391,12 @@ def _submit_pin(token: str, data: dict) -> dict:
         # with the app/chat), so the PIN can't be brute-forced through the Flow.
         if code == "pin_locked":
             _clear_actions(pa.msisdn)
-            # On the repeat (24-hour) lock the shared message offers a reset;
-            # here it also has to say what to TYPE. The Flow is closing, so the
-            # instruction has to point back at the thread that outlives it —
-            # and asterisks are chat markdown, not Flow markup.
-            if user.pin_lock_is_escalated:
-                message += " Reply \"reset pin\" in the chat to choose a new one."
+            # The shared message already offers a reset; here it also has to say
+            # what to TYPE, on every lock rather than only the 24-hour one. The
+            # Flow is closing, so the instruction points back at the thread that
+            # outlives it — and quotes rather than asterisks, since this reaches
+            # the chat as plain text, not chat markdown.
+            message += " Reply \"reset pin\" in the chat to choose a new one."
             _close_in_chat(pa.msisdn, f"🔒 {message}")
             return _result_screen(message, status="failed")
         if code == "no_pin":

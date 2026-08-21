@@ -423,10 +423,9 @@ def _sync_lock_state(user, u) -> None:
 
     Every write above lands on `u`, which `select_for_update()` fetched fresh —
     a SEPARATE object from the `user` the caller handed in. Without this the
-    caller still holds pre-call values, so a surface asking
-    `user.pin_lock_is_escalated` to decide whether to offer the PIN reset reads
-    False on the very response that announces the 24-hour lock: the one message
-    where the offer matters most.
+    caller still holds pre-call values, so any code running after this call that
+    reads `user.pin_locked`, `.pin_locked_until` or `.pin_lockout_strikes` would
+    see stale state on the very request that just changed it.
 
     In-memory only. It deliberately does not save — `user` may be carrying the
     caller's own unsaved edits, and this function's business is the three fields
@@ -446,9 +445,14 @@ def _pin_lock_message(u) -> str:
 
     Always states the remaining time rather than the tier's nominal length: a
     customer coming back mid-lock needs to know when they can act, not what the
-    policy is. On the escalated tier it names the way out — waiting out a day is
-    not a real instruction, and by the second lock the likeliest truth is that
-    they cannot remember the PIN at all.
+    policy is. And always names the way out — a reset clears ANY lock outright
+    (see User.set_transaction_pin) and is reachable regardless of tier, so
+    withholding the offer on the first lock only made a customer who forgot
+    their PIN sit out an hour before learning they never had to. The wording used
+    to reserve this for the 24-hour escalated tier, on the theory that a first
+    lock is more likely an honest slip than a forgotten PIN — but "you can reset
+    it" costs nothing to say even then, and the customer is the one who knows
+    which is true.
     """
     remaining = (u.pin_locked_until or timezone.now()) - timezone.now()
     minutes = max(1, int(remaining.total_seconds() // 60) + 1)
@@ -458,11 +462,9 @@ def _pin_lock_message(u) -> str:
         when = "about an hour"
     else:
         when = f"{minutes} minute(s)"
-    line = f"Transaction PIN locked after too many wrong attempts. Try again in {when}."
-    if u.pin_lockout_strikes >= 2:
-        line += (" You can reset your PIN instead — we'll confirm it's you first, "
-                 "and a new PIN unlocks payments straight away.")
-    return line
+    return (f"Transaction PIN locked after too many wrong attempts. Try again in {when}. "
+            "You can reset your PIN instead — we'll confirm it's you first, and a new "
+            "PIN unlocks payments straight away.")
 
 
 def verify_transaction_pin(user, raw_pin):

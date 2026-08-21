@@ -306,9 +306,11 @@ class SetPinAttemptsTests(TestCase):
 
 class EscalatedLockOffersTheResetTests(TestCase):
     """Five wrong PINs lock the account for an hour; five more without a correct
-    PIN in between lock it for a day. A day is not something you tell a customer
-    to wait out, so on that tier every surface names the way out — and the way
-    out has to be reachable WHILE locked, or naming it is a cruelty.
+    PIN in between lock it for a day. A reset clears either lock outright and is
+    reachable WHILE locked, so every surface names the way out from the FIRST
+    lock — an hour is short enough to wait out, but "you can also just reset it"
+    costs nothing to say, and the customer is the one who knows whether they
+    forgot the PIN or just mistyped it.
 
     The counting happens in evaluate_transaction_pin (shared with the app), so
     these tests drive the WhatsApp wrapping around it, not the ladder itself.
@@ -364,18 +366,20 @@ class EscalatedLockOffersTheResetTests(TestCase):
         self.assertEqual(resp["screen"], RESULT_SCREEN)
         return resp["data"]["message"]
 
-    def test_the_flow_names_the_reset_only_once_the_lock_is_a_day(self):
+    def test_the_flow_names_the_reset_on_every_lock(self):
         self._lock(1)
         first = self._flow_message()
         self.assertIn("about an hour", first)
-        self.assertNotIn("reset", first.lower())
+        self.assertIn("reset pin", first)
+        # The Flow is closing, so the instruction points at the chat that
+        # outlives it — and asterisks are chat markdown, not Flow markup.
+        self.assertIn("in the chat", first)
+        self.assertNotIn("*", first)
 
         self._lock(2)
         second = self._flow_message()
         self.assertIn("about 24 hours", second)
         self.assertIn("reset pin", second)
-        # The Flow is closing, so the instruction points at the chat that
-        # outlives it — and asterisks are chat markdown, not Flow markup.
         self.assertIn("in the chat", second)
         self.assertNotIn("*", second)
 
@@ -404,6 +408,19 @@ class EscalatedLockOffersTheResetTests(TestCase):
         self.assertEqual(resp["screen"], RESULT_SCREEN)
         self.assertIn("about 24 hours", resp["data"]["message"])
         self.assertIn("reset pin", resp["data"]["message"])
+
+    def test_the_chat_names_the_reset_command_on_the_first_lock(self):
+        from .router import _flow_pin_ok
+
+        self._lock(1)
+        pa = self._action()
+        with patch("whatsapp.router.reply") as sent:
+            self.assertFalse(_flow_pin_ok(pa, self.user, MSISDN, "1234"))
+        body = sent.call_args[0][1]
+        self.assertIn("about an hour", body)
+        self.assertIn("*reset pin*", body)
+        # And the payment is torn down rather than left armed against a lock.
+        self.assertFalse(PendingAction.objects.filter(pk=pa.pk).exists())
 
     def test_the_chat_names_the_reset_command_on_the_escalated_lock(self):
         from .router import _flow_pin_ok

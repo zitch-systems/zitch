@@ -4173,8 +4173,10 @@ def _flow_pin_ok(pa: PendingAction, user, msisdn: str, text: str) -> bool:
         return True
     if code == "pin_locked":
         _clear_actions(msisdn)
-        if user.pin_lock_is_escalated:
-            message += " Reply *reset pin* to choose a new one."
+        # The shared message already says a reset is possible; here it also has
+        # to say what to TYPE — said on every lock, not only the 24-hour one, so
+        # the way out is offered from the first lock rather than an hour later.
+        message += " Reply *reset pin* to choose a new one."
         reply(msisdn, message)
         return False
     attempts = int(pa.payload.get("pin_attempts", 0)) + 1
