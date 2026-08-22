@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Modal, Pressable } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 
@@ -45,6 +46,7 @@ export function flash(title: string, message?: string, kind?: Kind): void {
 
 export const NotifyHost = () => {
   const { c } = useTheme();
+  const insets = useSafeAreaInsets();
   const [item, setItem] = useState<Item | null>(null);
 
   useEffect(() => {
@@ -75,32 +77,55 @@ export const NotifyHost = () => {
   const close = () => setItem(null);
 
   return (
-    <Modal transparent animationType="fade" visible onRequestClose={close}>
+    <Modal transparent animationType="slide" visible onRequestClose={close}>
+      {/* Bottom sheet, not a centered card: rounded top corners only, a drag
+          handle, and content anchored to the bottom edge — the same shape as
+          every other sheet in the app (see `Sheet` in ui.tsx). A dead-center
+          floating card is what used to make this one popup feel like a
+          different, older-looking component from the rest of the app. */}
       <Pressable
         onPress={close}
         accessible={false}
-        style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 }}
+        style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)', justifyContent: 'flex-end' }}
       >
-        {/* absorbs taps so pressing the card doesn't dismiss; backdrop tap does */}
+        {/* absorbs taps so pressing the sheet doesn't dismiss; backdrop tap does */}
         <Pressable
           onPress={() => {}}
           accessible={false}
-          style={{ width: '100%', maxWidth: 360, backgroundColor: c.surface, borderRadius: 22, padding: 24, alignItems: 'center' }}
+          style={{
+            backgroundColor: c.surface,
+            borderTopLeftRadius: 28,
+            borderTopRightRadius: 28,
+            paddingHorizontal: 28,
+            paddingTop: 10,
+            paddingBottom: 28 + insets.bottom,
+            alignItems: 'center',
+          }}
         >
-          <View style={{ width: 58, height: 58, borderRadius: 29, backgroundColor: s.tint, alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
-            <ZIcon name={s.icon} size={28} color={s.color} stroke={2.4} />
+          <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 22 }} />
+          {/* A two-tone "halo" — a soft outer ring behind a solid inner circle —
+              instead of one flat tint. The extra layer is what reads as polished
+              rather than a plain colored dot around the glyph. */}
+          <View style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: s.tint, alignItems: 'center', justifyContent: 'center', marginBottom: 18 }}>
+            <View style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: s.color, alignItems: 'center', justifyContent: 'center' }}>
+              {/* Always white, not c.inkOnBrand: that token is calibrated against
+                  the brand teal, and would go dark-on-bright-green in dark mode —
+                  inconsistent with the white-on-green light mode reads. Every
+                  s.color (lime/red/brand) is vivid enough for white to stay legible. */}
+              <ZIcon name={s.icon} size={26} color="#fff" stroke={2.8} />
+            </View>
           </View>
-          <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, textAlign: 'center' }}>{item.title}</Text>
+          <Text style={{ fontSize: 19, fontFamily: font.extrabold, color: c.ink1, textAlign: 'center' }}>{item.title}</Text>
           {item.message ? (
-            <Text style={{ fontSize: 14, color: c.ink3, textAlign: 'center', marginTop: 6, lineHeight: 20, fontFamily: font.regular }}>
+            <Text style={{ fontSize: 14, color: c.ink3, textAlign: 'center', marginTop: 7, lineHeight: 20, fontFamily: font.regular }}>
               {item.message}
             </Text>
           ) : null}
           {/* No button on a self-clearing popup — there is nothing to acknowledge,
               and an OK that outlives the message it confirms is just a dead tap. */}
           {item.dismissMs ? null : (
-            <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close notification" style={{ marginTop: 22, alignSelf: 'stretch', height: 50, borderRadius: 14, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ color: c.inkOnBrand, fontSize: 15, fontFamily: font.bold }}>OK</Text>
+            <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close notification" style={{ marginTop: 26, alignSelf: 'stretch', height: 54, borderRadius: 18, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: c.inkOnBrand, fontSize: 15.5, fontFamily: font.bold }}>OK</Text>
             </Pressable>
           )}
         </Pressable>
