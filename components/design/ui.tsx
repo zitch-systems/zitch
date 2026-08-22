@@ -420,7 +420,7 @@ export const Field = ({
   const correct = autoCorrect ?? (secureTextEntry || isEmail ? false : undefined);
   return (
     <View>
-      {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text>}
+      {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, letterSpacing: 0.2, marginBottom: 8 }}>{label}</Text>}
       <View
         pointerEvents={pointerEvents}
         style={{
