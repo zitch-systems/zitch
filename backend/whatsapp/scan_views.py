@@ -159,6 +159,12 @@ _SHELL = """<!doctype html>
           margin:16px 20px 0; padding:15px 22px; border-radius:14px; border:0;
           background:#0FA295; color:#fff; font-size:16px; font-weight:700;
           text-decoration:none; width:min(92vw,420px); }}
+  /* The browser's own [hidden]{{display:none}} rule and this class rule have
+     equal specificity, and an author stylesheet loads after the UA one — so
+     without this, `hidden` on a .btn is silently ignored and it shows
+     anyway. #pickWrap starts hidden and needs this to actually stay hidden
+     until offerCapture() reveals it. */
+  .btn[hidden] {{ display:none; }}
   .btn.ghost {{ background:transparent; border:1.5px solid rgba(255,255,255,.35); }}
   #status {{ margin:16px 20px 32px; font-size:14.5px; text-align:center; min-height:22px;
              line-height:1.5; }}
@@ -177,7 +183,6 @@ _SCANNER = """
 <header>Scan a payment code</header>
 <p class="sub">Point your camera at the QR code. It can be from any bank.</p>
 <div id="stage"><video id="v" playsinline muted autoplay></video><div id="reticle"></div></div>
-<button class="btn" id="shoot" hidden>Take a photo of the code</button>
 <label class="btn ghost" id="pickWrap" hidden>Use my camera
   <input type="file" id="pick" accept="image/*" capture="environment">
 </label>
