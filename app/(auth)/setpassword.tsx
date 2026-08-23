@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, Link, useLocalSearchParams } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
+import { getToken, saveRefreshToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
 import { notify } from '@/components/design/Notify';
 import { PRIVACY_URL } from '@/components/configFiles/links';
@@ -59,6 +59,12 @@ const SetPassword = () => {
       const response = await apiPost('/api/set-password/', body);
       const result = await response.json();
       if (response.ok) {
+        // Changing the password revokes every refresh chain on the account —
+        // including this device's, because the server cannot tell the victim's
+        // chain from an attacker's on the strength of a client-supplied device id.
+        // It hands back a replacement; store it, or this session keeps working
+        // until the access token expires and then silently signs the user out.
+        if (result?.refresh_token) await saveRefreshToken(result.refresh_token);
         if (isChange) {
           notify('Password changed', 'Your account password has been updated.');
           router.back();

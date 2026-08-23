@@ -399,3 +399,36 @@ class PinResetOtpTests(TestCase):
         self.assertIn("can't be reset here", "\n".join(replies))
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN,
                                                       action_type="setpin").exists())
+
+
+class CodeChallengeDeadlineTests(TestCase):
+    """A flow waiting on a 10-minute SMS code must not expire in two minutes.
+
+    The PIN reset inherited PIN_TTL from the armed-payment path, so the SMS said
+    "expires in 10 minutes" while the action it unlocked died after 2 — making the
+    only chat route out of a 24h PIN lockout unusable on a slow network, and then
+    reporting it as an expired *payment*.
+    """
+
+    def setUp(self):
+        pass
+
+    def test_a_pin_reset_outlives_its_own_sms_code(self):
+        from django.utils import timezone
+
+        from whatsapp.router import PIN_TTL, _flow_deadline
+
+        code_exp = timezone.now() + timedelta(minutes=10)
+        deadline = _flow_deadline("flow_pin", {"pin_reset_otp_exp": code_exp.isoformat()})
+        self.assertGreater(deadline, code_exp,
+                           "the action must still exist when the code is entered")
+        self.assertGreater(deadline, timezone.now() + PIN_TTL)
+
+    def test_once_the_code_is_consumed_the_short_clock_resumes(self):
+        from django.utils import timezone
+
+        from whatsapp.router import PIN_TTL, _flow_deadline
+
+        # No code in the payload -> the ordinary armed-PIN window applies again.
+        deadline = _flow_deadline("flow_pin", {})
+        self.assertLessEqual(deadline, timezone.now() + PIN_TTL + timedelta(seconds=5))

@@ -126,6 +126,16 @@ export const ConnectedAccounts = () => {
 
   const openFund = (b: LinkedAccount, m: 'in' | 'out') => { setTarget(b); setMode(m); setAmount(''); idem.current = newIdempotencyKey(); };
 
+  // A NEW amount is a new payment, so it needs a new key. The key used to be
+  // minted once when the sheet opened and reused across edits: an offline retry
+  // after changing the amount replayed the PREVIOUS one server-side and returned
+  // its result, so the confirmation named an amount that never moved. Every other
+  // money screen resets on amount change; this one was missed.
+  //
+  // Only on an actual edit — an unchanged amount fires no keystroke, so the
+  // accidental-double-tap protection the key exists for is untouched.
+  const changeAmount = (v: string) => { setAmount(v); idem.current = newIdempotencyKey(); };
+
   // Fund Zitch FROM the bank (Mono DirectPay) — wallet credited via webhook.
   const fundIn = async () => {
     if (!target) return;
@@ -243,7 +253,7 @@ export const ConnectedAccounts = () => {
             ? `Move money from your Zitch wallet to ${target?.bank_name || 'your bank'}. You’ll confirm with your PIN.`
             : `We’ll open ${target?.bank_name || 'your bank'} to authorize the debit. Your wallet is credited once it’s confirmed.`}
         </Text>
-        <AmountField value={amount} onChangeText={setAmount} />
+        <AmountField value={amount} onChangeText={changeAmount} />
         <View style={{ height: 16 }} />
         {mode === 'out' ? (
           <Pressable onPress={() => { if (Number(amount) >= 100) { setPinErr(''); setPinOpen(true); } else notify('Error', 'Minimum amount is ₦100'); }}

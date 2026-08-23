@@ -326,6 +326,65 @@ class CredentialSecurityTests(TestCase):
         self.assertIsNone(u.pin_locked_until)
         self.assertTrue(u.check_transaction_pin("567891"))
 
+    def test_verify_pin_endpoint_accepts_the_right_pin_and_refuses_a_wrong_one(self):
+        """Biometric payment approval caches the PIN and replays it forever, so it
+        must be checked before it is stored — one typo otherwise auto-submits a
+        wrong PIN on every payment until the account locks."""
+        user, token = make_user("08030000007", "pin@zitch.test", pin="1234")
+        res, _ = self.post("/api/verify-transaction-pin/",
+                           {"access_token": token, "pin": "1234"})
+        self.assertEqual(res.status_code, 200)
+
+        res, body = self.post("/api/verify-transaction-pin/",
+                              {"access_token": token, "pin": "9999"})
+        self.assertNotEqual(res.status_code, 200)
+        self.assertNotIn("1234", json.dumps(body), "never echo the real PIN back")
+
+    def test_changing_email_requires_reauth(self):
+        """A stolen session token alone must not redirect account recovery.
+
+        password_forgot mails the reset code to whatever user.email holds, so
+        without this an attacker with only a bearer token could swap the email,
+        request a reset, and take the account permanently — password_reset then
+        deletes the real owner's tokens, so they cannot even get back in.
+        """
+        user, token = make_user("08030000003", "owner@zitch.test")
+        res, body = self.post("/api/update_info/", {
+            "access_token": token, "email": "attacker@evil.test"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(body.get("code"), "reauth_required")
+        self.assertEqual(User.objects.get(pk=user.pk).email, "owner@zitch.test")
+
+    def test_changing_phone_requires_reauth(self):
+        user, token = make_user("08030000004", "owner2@zitch.test")
+        res, body = self.post("/api/update_info/", {
+            "access_token": token, "phone": "08099999999"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(User.objects.get(pk=user.pk).phone, "08030000004")
+
+    def test_changing_email_with_the_password_clears_verification(self):
+        user, token = make_user("08030000005", "owner3@zitch.test")
+        user.set_password("Passw0rd123!")
+        user.save(update_fields=["password"])
+        res, _ = self.post("/api/update_info/", {
+            "access_token": token, "email": "new@zitch.test",
+            "password": "Passw0rd123!"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(pk=user.pk)
+        self.assertEqual(u.email, "new@zitch.test")
+        # An address the account has never proven must not stay marked verified —
+        # the KYC ladder reads this flag.
+        self.assertFalse(u.email_verified)
+
+    def test_a_name_only_update_still_needs_no_reauth(self):
+        user, token = make_user("08030000006", "owner4@zitch.test")
+        res, _ = self.post("/api/update_info/", {
+            "access_token": token, "first_name": "Renamed"})
+        self.assertEqual(res.status_code, 200)
+        u = User.objects.get(pk=user.pk)
+        self.assertEqual(u.first_name, "Renamed")
+        self.assertTrue(u.email_verified, "a name change moves no trust")
+
     def test_update_info_rejects_phone_collision_cleanly(self):
         make_user("08010000001", "a@zitch.test")
         _, token = make_user("08020000002", "b@zitch.test")

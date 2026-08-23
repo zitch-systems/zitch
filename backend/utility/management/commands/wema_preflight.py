@@ -298,6 +298,27 @@ class Command(BaseCommand):
                      "until an operator resolves it (no auto settle/refund)"))
 
         self.stdout.write("")
+        # Operator-portal insider controls. SOFT, deliberately: OPS_REQUIRE_MFA is
+        # off by default because switching it on before operators have enrolled locks
+        # every one of them out at once, including whoever would fix it (see
+        # admin_api.views._mfa_required_for). Hard-gating that would make go-live
+        # depend on an action that can only safely follow enrolment. They are still
+        # reported, because at go-live the portal can move real customer money and
+        # neither control is on by default — and --strict turns these into failures.
+        require_mfa = bool(getattr(settings, "OPS_REQUIRE_MFA", False))
+        checks.append((
+            False, "Operator MFA", PASS if require_mfa else WARN,
+            "required for money-capable roles" if require_mfa
+            else ("OPS_REQUIRE_MFA is off — a stolen operator password alone reaches "
+                  "manual credits and settings; enrol operators, then turn it on")))
+        dual = bool(getattr(settings, "OPS_REQUIRE_DUAL_APPROVAL", False))
+        checks.append((
+            False, "Operator dual approval", PASS if dual else WARN,
+            "maker/checker enforced on registered actions" if dual
+            else ("OPS_REQUIRE_DUAL_APPROVAL is off — no money action has a second "
+                  "approver, and a large manual credit is refused outright rather "
+                  "than routed for approval")))
+
         self.stdout.write("Zitch go-live preflight")
         self.stdout.write("=======================")
         self.stdout.write(f"rails: funding={payment_provider()} payout={payout_provider()} "

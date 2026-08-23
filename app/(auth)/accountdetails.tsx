@@ -10,7 +10,7 @@ import { apiPost } from '@/lib/api';
 import { useWallet } from '@/lib/wallet';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Header, Field, Btn } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Sheet } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
 
@@ -23,6 +23,12 @@ const AccountDetails = () => {
   const [token, setToken] = useState<string | null>(null);
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', phone: '' });
+  // Changing the email or phone re-authenticates: those two fields decide where a
+  // password reset is delivered, so the server refuses the change on a session
+  // token alone (code "reauth_required"). Held here so the customer can supply it
+  // and have the save go through, instead of meeting a bare "failed to update".
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const [reauthPassword, setReauthPassword] = useState('');
 
   useEffect(() => {
     getToken().then(setToken);
@@ -92,6 +98,10 @@ const AccountDetails = () => {
       notify('Invalid phone', 'Enter a valid 11-digit phone number.');
       return;
     }
+    await submitUpdate();
+  };
+
+  const submitUpdate = async (password?: string) => {
     setIsUpdating(true);
     try {
       const response = await apiPost('/api/update_info/', {
@@ -99,13 +109,25 @@ const AccountDetails = () => {
         phone: form.phone || current.phone,
         first_name: form.firstName || current.firstName,
         last_name: form.lastName || current.lastName,
+        ...(password ? { password } : {}),
       });
       const result = await response.json();
       if (response.ok) {
         if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
         if (form.phone) await AsyncStorage.setItem('UserPhone', form.phone);
-        notify('Success', 'Account updated');
+        setReauthOpen(false);
+        setReauthPassword('');
+        // Say so plainly: the new address has to be confirmed again before it
+        // counts towards the KYC tier, and the customer would otherwise only
+        // discover that at the next limit check.
+        const dropped = result?.email_verified === false || result?.phone_verified === false;
+        notify('Success', dropped
+          ? 'Account updated. Confirm your new email or phone to restore your verification.'
+          : 'Account updated');
+      } else if (result.code === 'reauth_required') {
+        setReauthOpen(true);
       } else {
+        setReauthPassword('');
         notify('Error', result.message || 'Failed to update account');
       }
     } catch {
@@ -140,6 +162,21 @@ const AccountDetails = () => {
       <View style={{ marginTop: 26 }}>
         <Btn label="Update Profile" onPress={handleUpdate} disabled={isUpdating} />
       </View>
+
+      <Sheet open={reauthOpen} onClose={() => { setReauthOpen(false); setReauthPassword(''); }}
+             title="Confirm it's you">
+        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginBottom: 14 }}>
+          Your email and phone number are how we send account-recovery codes, so
+          changing either one needs your password.
+        </Text>
+        <Field label="Password" value={reauthPassword} onChangeText={setReauthPassword}
+               secureTextEntry placeholder="Your account password"
+               prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+        <View style={{ height: 16 }} />
+        <Btn label={isUpdating ? 'Saving…' : 'Confirm and save'}
+             disabled={isUpdating || reauthPassword.length < 1}
+             onPress={() => submitUpdate(reauthPassword)} />
+      </Sheet>
     </Screen>
   );
 };

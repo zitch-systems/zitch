@@ -1050,7 +1050,7 @@ def _clear_actions(msisdn: str) -> None:
 _AWAITING_PIN_STATES = {"pin", FLOW_PIN_STATE}
 
 
-def _flow_deadline(state: str):
+def _flow_deadline(state: str, payload: dict | None = None):
     """When a flow in `state` goes stale.
 
     An armed payment and a half-typed one are not the same risk. Before the PIN
@@ -1064,7 +1064,25 @@ def _flow_deadline(state: str):
     path is the secure Flow's PIN pad — tap the card, wait for the native form,
     type six digits — and a window that expires mid-typing does not protect
     anyone, it just makes customers start over and type their PIN twice.
+    A flow waiting on an SMS/email CODE is the exception, and it is not an armed
+    payment: nothing executes on six digits there, the code itself is the gate, and
+    it was sent to the account's own phone with a stated ten-minute life. Cutting the
+    action off at two minutes made the SMS's promise false and the only chat route
+    out of a 24h PIN lockout unusable on any network where a text takes a minute to
+    land — the customer then met a "that payment expired" sweep for a payment that
+    never existed. So while a code is armed the deadline tracks the CODE, plus a
+    grace to actually type it; once it is consumed and popped from the payload, the
+    ordinary clocks resume for the PIN pair that follows.
     """
+    for key in ("pin_reset_otp_exp", "id_otp_exp"):
+        raw = (payload or {}).get(key)
+        if not raw:
+            continue
+        try:
+            code_exp = timezone.datetime.fromisoformat(raw)
+        except (TypeError, ValueError):
+            continue
+        return max(code_exp + PIN_TTL, timezone.now() + FLOW_TTL)
     return timezone.now() + (PIN_TTL if state in _AWAITING_PIN_STATES else FLOW_TTL)
 
 
@@ -1072,8 +1090,10 @@ def _touch(pa: PendingAction, **fields) -> None:
     for k, v in fields.items():
         setattr(pa, k, v)
     # Computed from the state the flow is moving TO, so arming the confirm starts
-    # the shorter clock in the same save that arms it.
-    pa.expires_at = _flow_deadline(pa.state)
+    # the shorter clock in the same save that arms it. The payload goes too, so a
+    # live code challenge keeps its own (longer) deadline rather than being reset
+    # to the armed-payment clock by an unrelated save.
+    pa.expires_at = _flow_deadline(pa.state, pa.payload)
     pa.save()
 
 
@@ -4784,7 +4804,7 @@ def _new_flow(user, msisdn: str, action_type: str, state: str, payload: dict | N
         payload = {**payload, "narration": note}
     return PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type=action_type, state=state,
-        payload=payload, expires_at=_flow_deadline(state),
+        payload=payload, expires_at=_flow_deadline(state, payload),
     )
 
 

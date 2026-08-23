@@ -136,6 +136,23 @@ const Me = () => {
   };
 
   const enablePay = async (pin: string) => {
+    // Verify BEFORE caching. This PIN gets stored behind the OS biometric ACL and
+    // replayed for every later payment, so caching an unverified one meant a single
+    // typo auto-submitted a wrong PIN on every payment sheet from then on — locking
+    // the account for 60 minutes, then 24 hours, across the app and WhatsApp, with
+    // nothing pointing at the cached PIN as the cause.
+    try {
+      const res = await apiPost('/api/verify-transaction-pin/', { pin });
+      const body = await res.json();
+      if (!res.ok) {
+        notify('PIN not saved', body?.message
+          || "That PIN isn't right. Biometric payments were not turned on.");
+        return;
+      }
+    } catch {
+      notify('Error', 'Could not confirm your PIN just now. Please try again.');
+      return;
+    }
     setPinOpen(false);
     await saveTransactionPin(pin);
     await setBiometricTxnEnabled(true);

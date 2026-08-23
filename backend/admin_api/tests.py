@@ -759,6 +759,46 @@ class ManualCreditCapTests(TestCase):
             self.assertEqual(res.status_code, 403)
             self.assertEqual(res.json().get("code"), "credit_limit")
 
+    def test_the_maker_daily_cap_is_charged_on_the_approved_path(self):
+        """A credit routed through dual approval must consume the REQUESTER's cap.
+
+        It previously consumed only the approver's: `_perform_manual_credit` is
+        called with actor=approver there, and the cap reads audit rows by actor. So
+        a maker could stay permanently under their own cap no matter how much they
+        minted, as long as they could find approvers — exactly the unbounded
+        approved path the cap's own docstring says must not exist.
+        """
+        from django.test import override_settings
+
+        from common import approvals
+
+        checker = make_staff("cap_chk", role="finance")
+        checker_token = AccessToken.issue(checker, scope=AccessToken.ADMIN).key
+
+        with override_settings(ADMIN_MAX_MANUAL_CREDIT=100000,
+                               ADMIN_MANUAL_CREDIT_DAILY_CAP=450000,
+                               OPS_REQUIRE_DUAL_APPROVAL=True):
+            if not approvals.required_for("wallet.credit"):
+                self.skipTest("dual approval not enabled in this configuration")
+            # Maker requests 400k (over the 100k single ceiling -> held for approval).
+            res = self.credit("400000", key="mk1")
+            self.assertEqual(res.status_code, 200)
+            approval_id = res.json()["approval_id"]
+            decided = self.client.post(
+                "/api/admin/approvals/decide",
+                data=json.dumps({"id": approval_id, "approve": True}),
+                content_type="application/json",
+                HTTP_AUTHORIZATION=f"Bearer {checker_token}")
+            self.assertEqual(decided.status_code, 200)
+
+            # The maker has now moved 400k of their 450k cap, so a further 100k (under
+            # the single ceiling, so it goes direct) must be refused. Before the fix
+            # this succeeded: the 400k was charged to the checker and the maker's own
+            # tally still read zero.
+            res2 = self.credit("100000", key="mk2")
+            self.assertEqual(res2.status_code, 403)
+            self.assertEqual(res2.json().get("code"), "credit_daily_cap")
+
     def test_daily_cap_across_credits(self):
         from django.test import override_settings
         with override_settings(ADMIN_MAX_MANUAL_CREDIT=500000,
