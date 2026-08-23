@@ -96,6 +96,7 @@ export const NotifyHost = () => {
             backgroundColor: c.surface,
             borderTopLeftRadius: 28,
             borderTopRightRadius: 28,
+            overflow: 'hidden',
             paddingHorizontal: 28,
             paddingTop: 10,
             paddingBottom: 28 + insets.bottom,
