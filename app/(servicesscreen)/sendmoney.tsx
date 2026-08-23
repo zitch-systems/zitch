@@ -80,20 +80,39 @@ const URow = ({ children, onPress, label }: { children: React.ReactNode; onPress
 const SendMoney = () => {
   const { c, theme } = useTheme();
   const { balance, reload } = useWallet();
-  const params = useLocalSearchParams<{ identifier?: string }>();
+  const params = useLocalSearchParams<{ identifier?: string; kind?: string }>();
+
+  // An inbound `identifier` (Scan to Pay, SmartPaste) is EITHER a 10-digit bank
+  // account or an 11-digit phone, and which one decides both the mode and the
+  // field it lands in. Getting this wrong is not a cosmetic bug: an 11-digit
+  // phone truncated to 10 digits is a perfectly valid NUBAN belonging to a
+  // stranger, and the auto-resolve then shows their real name with a green tick,
+  // which reads to the customer as confirmation rather than as an error.
+  //
+  // Routed by LENGTH rather than trusting the caller, so a caller that forgets
+  // `kind` (or disagrees about the convention, as two of them did) still cannot
+  // put a phone number in the account field. `kind` is honoured when supplied.
+  const seededDigits = (params.identifier ?? '').replace(/\D/g, '');
+  const seededIsPhone = params.kind === 'phone'
+    || (params.kind !== 'account' && seededDigits.length === 11);
 
   const [, setToken] = useState('');
-  const [mode, setMode] = useState<'bank' | 'zitch'>('bank');
+  const [mode, setMode] = useState<'bank' | 'zitch'>(seededIsPhone ? 'zitch' : 'bank');
   const [banks, setBanks] = useState<Bank[]>([]);
   const [beneficiaries, setBeneficiaries] = useState<Beneficiary[]>([]);
   const [query, setQuery] = useState('');
   const [picked, setPicked] = useState<Beneficiary | null>(null);
 
-  // bank mode
-  const [acct, setAcct] = useState(params.identifier?.replace(/\D/g, '').slice(0, 10) ?? '');
+  // bank mode — seeded only by a value that is actually account-shaped. A longer
+  // value is NOT truncated to fit: that is what silently produced a stranger's
+  // NUBAN out of a phone number.
+  const [acct, setAcct] = useState(
+    !seededIsPhone && seededDigits.length === 10 ? seededDigits : '');
   const [bank, setBank] = useState<Bank | null>(null);
-  // zitch mode
-  const [identifier, setIdentifier] = useState('');
+  // zitch mode — the full local 11-digit form, leading zero included, because
+  // that is exactly how accounts.User.phone is stored and _find_recipient
+  // matches it with an equality test.
+  const [identifier, setIdentifier] = useState(seededIsPhone ? seededDigits : '');
   const [resolvedName, setResolvedName] = useState('');
   const [resolving, setResolving] = useState(false);
 

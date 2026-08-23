@@ -1092,7 +1092,7 @@ def wallet_credit(request):
 
 
 def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
-                           single_cap=None):
+                           single_cap=None, maker=None):
     """The money core of a manual credit, shared by the direct path and the
     dual-approval executor.
 
@@ -1104,9 +1104,17 @@ def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
     `single_cap=None` waives the per-credit ceiling, which is correct only on the
     approved path: that ceiling's documented remedy IS a second approver, so enforcing
     it after one has approved would make the approval route useless. The per-operator
-    rolling-24h cap is NOT waived — it bounds the maker either way, because two
+    rolling-24h cap is NOT waived — it bounds the maker AND the approver, because two
     colluding operators is a different threat from one, and an unbounded approved path
     would become the weakest link.
+
+    `maker` is the operator who REQUESTED an approved credit; `actor` on that path is
+    the approver. Both are charged. Previously only `actor` was, so the maker's own cap
+    was never consumed by anything they routed through approval — they could mint
+    without limit for as long as they could find approvers, which is precisely the
+    "weakest link" the paragraph above claims to prevent. The maker is also stamped on
+    the audit row, because a cap that reads its own history cannot charge an operator
+    whose involvement was never written down.
     """
     from datetime import timedelta as _td
     from decimal import Decimal as _D
@@ -1143,16 +1151,35 @@ def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
         # operator's own staff row is a cheap per-operator mutex; credit() then
         # locks the target wallet row, in a consistent order (no deadlock).
         _User.objects.select_for_update().get(pk=actor.id)
-        spent_today = _D("0")
-        for row in _AL.objects.filter(actor_id=op, action="wallet.manual_credit", created__gte=since):
-            try:
-                spent_today += _D(str((row.after or {}).get("amount", "0")))
-            except (TypeError, ValueError):
-                pass
-        if spent_today + amount > day_cap:
-            return fail(f"This exceeds your ₦{day_cap:,.0f} daily manual-credit cap "
-                        f"(₦{spent_today:,.0f} already in the last 24h).",
-                        status=403, code="credit_daily_cap")
+        # Scanned in Python over the 24h window rather than per-operator in SQL: a
+        # credit is charged to whoever MADE it and whoever APPROVED it, and the maker
+        # lives in the row's JSON. The window holds a handful of rows, and this loop
+        # already existed.
+        window = list(_AL.objects.filter(action="wallet.manual_credit", created__gte=since))
+
+        def _spent_by(operator: str):
+            total = _D("0")
+            for row in window:
+                after = row.after or {}
+                if row.actor_id != operator and after.get("maker") != operator:
+                    continue
+                try:
+                    total += _D(str(after.get("amount", "0")))
+                except (TypeError, ValueError):
+                    pass
+            return total
+
+        maker_op = ((maker.email or maker.username or str(maker.id)) if maker else op)
+        # On the direct path the maker IS the actor, so there is one cap to check.
+        to_charge = [(op, "your")]
+        if maker_op != op:
+            to_charge.append((maker_op, "the requesting operator's"))
+        for who, label in to_charge:
+            spent_today = _spent_by(who)
+            if spent_today + amount > day_cap:
+                return fail(f"This exceeds {label} ₦{day_cap:,.0f} daily manual-credit cap "
+                            f"(₦{spent_today:,.0f} already in the last 24h).",
+                            status=403, code="credit_daily_cap")
         before = get_or_create_wallet(u).balance
         try:
             txn = credit(
@@ -1170,7 +1197,7 @@ def _perform_manual_credit(*, user, amount, reason, actor, idempotency_key=None,
             actor_type="admin", actor_id=op, action="wallet.manual_credit",
             target=f"u_{u.id}", before={"balance": str(before)},
             after={"balance": str(before + amount), "amount": str(amount),
-                   "reason": reason})
+                   "reason": reason, "maker": maker_op})
     return ok(success=True, uid=u.id, reference=txn.reference,
               amount=str(amount), balance=_num(before + amount))
 
@@ -1200,7 +1227,11 @@ def _execute_approved_credit(payload, approver, approval_request=None):
     res = _perform_manual_credit(
         user=user, amount=Decimal(str(payload["amount"])), reason=payload.get("reason", ""),
         actor=approver, idempotency_key=payload.get("idempotency_key") or None,
-        single_cap=None)
+        single_cap=None,
+        # Charge the requester's cap too. `actor` here is the APPROVER, so without
+        # this the maker's own 24h cap is never consumed by anything they route
+        # through approval.
+        maker=getattr(approval_request, "requested_by", None))
     # _perform_manual_credit returns an HttpResponse either way; surface the body so a
     # refusal (e.g. the daily cap) is recorded on the request rather than looking like
     # a success.

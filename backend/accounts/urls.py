@@ -15,6 +15,7 @@ urlpatterns = [
     path("password/reset/", views.password_reset),
     path("set-password/", views.set_password),
     path("set-transaction-pin/", views.set_transaction_pin),
+    path("verify-transaction-pin/", views.verify_pin),
     path("update_info/", views.update_info),
     path("profile/avatar/", views.avatar_upload),
     path("email/verify/start/", views.email_verify_start),

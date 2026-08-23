@@ -14,7 +14,8 @@ from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from common.http import api, fail, mask_pii, ok, require_user, resolve_token
+from common.http import (api, fail, mask_pii, ok, require_user, resolve_token,
+                         verify_transaction_pin)
 from common.ratelimit import (
     clear_login_failures,
     client_ip,
@@ -463,7 +464,19 @@ def set_password(request):
     # change is now invalid. Keep the caller's current token so the onboarding
     # flow (set-password -> set-pin) and a change-password screen don't 401.
     user.tokens.exclude(key=AccessToken._hash(resolve_token(request))).delete()
-    return ok(message="Password set")
+    # ...and the REFRESH chains behind them, exactly as password_reset does above
+    # and for the same reason. Deleting only access tokens left a stolen refresh
+    # family alive for up to REFRESH_ABSOLUTE_DAYS, so the victim performed the one
+    # remediation everybody knows — change your password — was told "Password set",
+    # and the attacker kept minting fresh access tokens the whole time. Device
+    # binding is no obstacle: the device id is a client-supplied header.
+    #
+    # Every chain goes, the caller's included, and the caller is handed a new one in
+    # the response: keeping theirs alive would mean deciding which chain is the
+    # victim's on the strength of that same spoofable header.
+    user.refresh_tokens.all().update(revoked_at=timezone.now())
+    fresh = RefreshToken.issue(user, device_id=_session_device_id(request))
+    return ok(message="Password set", refresh_token=fresh.key)
 
 
 @api
@@ -513,9 +526,56 @@ def set_transaction_pin(request):
 
 
 @api
+@ratelimit("verify_pin", limit=5, window=300)
+@require_user
+def verify_pin(request):
+    """POST /api/verify-transaction-pin/ {access_token, pin} -> {success}
+
+    Confirms the caller knows their own PIN without moving money. It exists for one
+    caller: turning on biometric payment approval, which caches the PIN on-device
+    behind the OS biometric ACL and replays it for every later payment. Caching an
+    UNVERIFIED PIN meant a single typo auto-submitted a wrong PIN on every payment
+    sheet from then on, escalating the lockout — 60 minutes, then 24 hours, across
+    the app AND WhatsApp — while nothing told the customer which credential was
+    wrong or that they had ever mistyped it.
+
+    Routed through verify_transaction_pin, the same brute-force-protected checker
+    every money endpoint already uses, so this is not a softer oracle than the
+    payment path: a wrong guess costs an attempt and locks out identically. The
+    extra ratelimit bounds it further, since unlike a payment there is no amount,
+    recipient or balance to make guessing expensive.
+    """
+    pin_err = verify_transaction_pin(request.user_obj, request.data.get("pin"))
+    if pin_err:
+        return pin_err
+    return ok(success=True)
+
+
+@api
+@ratelimit("update_info", limit=10, window=300)
 @require_user
 def update_info(request):
-    """POST /api/update_info/ {first_name, last_name, email, phone, access_token}"""
+    """POST /api/update_info/ {first_name, last_name, email, phone, access_token}
+
+    Changing the EMAIL or PHONE additionally requires the current password (or the
+    transaction PIN), and drops that channel's verified flag.
+
+    Both halves are load-bearing. password_forgot mails the reset code to whatever
+    `user.email` currently holds, so without re-authentication a stolen session token
+    alone bought a full takeover: swap the email, request a reset, set a new password
+    — and password_reset then deletes the real owner's tokens, locking them out of
+    the account they can no longer recover. That defeats the control set_password two
+    functions above exists to provide.
+
+    And an address the account has never proven must not stay marked verified: the
+    KYC ladder and the phone_verified first-spend gate both read those flags, so
+    keeping them would silently rest a tier on an unproven contact. Clearing them
+    re-runs the ordinary OTP round-trip, which is the only thing that can restore it.
+
+    A name-only update needs neither: it moves no trust and gates nothing.
+    """
+    from common.http import evaluate_transaction_pin
+
     user = request.user_obj
     data = request.data
     new_email = (data.get("email") or "").strip()
@@ -531,16 +591,42 @@ def update_info(request):
         return fail("That phone number is already in use")
     if changing_email and User.objects.filter(email__iexact=new_email).exclude(pk=user.pk).exists():
         return fail("That email is already in use")
+    if changing_email or changing_phone:
+        password = data.get("password") or data.get("current_password") or ""
+        pin = (data.get("transaction_pin") or data.get("pin") or "").strip()
+        ok_pwd = bool(password) and user.check_password(password)
+        ok_pin = False
+        if not ok_pwd and pin:
+            # Through the brute-force-protected checker, never a raw compare — the
+            # same reasoning as set_transaction_pin: a stolen token must not get
+            # unlimited guesses at a short PIN.
+            ok_pin, code, message = evaluate_transaction_pin(user, pin)
+            if code == "pin_locked":
+                return fail(message, status=403, code="pin_locked")
+        if not (ok_pwd or ok_pin):
+            return fail("Enter your password to change your email or phone number",
+                        status=403, code="reauth_required")
+
     if data.get("first_name"):
         user.first_name = data["first_name"]
     if data.get("last_name"):
         user.last_name = data["last_name"]
     if new_email:
         user.email = new_email
+        if changing_email:
+            user.email_verified = False
     if new_phone:
         user.phone = new_phone
+        if changing_phone:
+            user.phone_verified = False
     user.save()
-    return ok(message="Account updated")
+    if changing_email or changing_phone:
+        # The tier is derived from the verified flags, so it has to be re-derived
+        # after one is dropped — otherwise a Tier 1+ account keeps limits it no
+        # longer qualifies for.
+        user.recompute_tier()
+    return ok(message="Account updated",
+              email_verified=user.email_verified, phone_verified=user.phone_verified)
 
 
 def avatar_url(request, user) -> str:

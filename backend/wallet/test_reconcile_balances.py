@@ -26,6 +26,28 @@ def _bank(naira):
     return {"success": True, "balance_naira": Decimal(naira)}
 
 
+class LedgerCurrencyScopeTests(TestCase):
+    """wallet_expected_balance feeds two NAIRA comparisons — Wallet.balance
+    (integrity_check) and the Wema NUBAN balance (reconcile_balances). An FX row
+    summed into it compares two currencies as one number, and a permanently-red
+    alarm hides the double-credit it exists to catch."""
+
+    def test_a_foreign_currency_row_does_not_move_the_naira_ledger(self):
+        from wallet.models import Transaction
+        from wallet.services import wallet_expected_balance
+
+        user, _ = make_user("08010000077", "fx@zitch.test")
+        before = wallet_expected_balance(user.id)
+
+        Transaction.objects.create(
+            user=user, amount=Decimal("500.00"), direction=Transaction.IN,
+            transaction_status=Transaction.SUCCESS, currency="USD",
+            service="FX", reference="FX-TEST-1")
+
+        self.assertEqual(wallet_expected_balance(user.id), before,
+                         "a USD row must not count toward the naira ledger")
+
+
 class ReconcileBalancesTests(TestCase):
     def setUp(self):
         # Seed credit => ledger == 5000; provision a NUBAN so the wallet is swept.
