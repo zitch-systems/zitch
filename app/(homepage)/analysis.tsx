@@ -56,18 +56,18 @@ const Analysis = () => {
   }, [txns, key]);
 
   return (
-    <Screen>
+    <Screen tab>
       <Header title="Analysis" sub={key === 'undated' ? undefined : monthLabel(key)} onBack={() => router.back()} />
 
       <Card style={{ marginBottom: 14, flexDirection: 'row' }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>Money out</Text>
-          <NText style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 4, letterSpacing: -0.3 }}>{money(spent)}</NText>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 21, fontFamily: font.extrabold, color: c.ink1, marginTop: 4, letterSpacing: -0.3 }}>{money(spent)}</NText>
         </View>
         <View style={{ width: 1, backgroundColor: c.line, marginHorizontal: 16 }} />
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>Money in</Text>
-          <NText style={{ fontSize: 21, fontFamily: font.extrabold, color: c.lime, marginTop: 4, letterSpacing: -0.3 }}>{money(received)}</NText>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ fontSize: 21, fontFamily: font.extrabold, color: c.lime, marginTop: 4, letterSpacing: -0.3 }}>{money(received)}</NText>
         </View>
       </Card>
 

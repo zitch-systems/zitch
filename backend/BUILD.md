@@ -218,10 +218,10 @@ following `../docs/whatsapp-production-operations.md`.
   keeps that plan on VTU.ng, so the cutover is safe and incremental.
 - Wema / ALAT request/response shapes are VERIFY-BEFORE-LIVE: set `WEMA_CHANNEL_ID`,
   `WEMA_WALLET_KEY` (+ `WEMA_CARD_KEY` / `WEMA_AIRTIME_KEY` / `WEMA_BILLS_KEY` /
-  `WEMA_KYC_KEY`), `WEMA_SOURCE_ACCOUNT`, the live `WEMA_BASE_URL`, and the
-  `WEMA_SECURITY_INFO` scheme. Confirm the account-creation (OTP), disburse,
-  name-enquiry and identity (BVN·NIN·vNIN) field names, the `securityInfo`
-  construction and the tx-status legend against Wema's integration guide. Verify auth
+  `WEMA_KYC_KEY`), `WEMA_SOURCE_ACCOUNT`, the live `WEMA_BASE_URL`, and a random
+  32+ character `WEMA_SECURITY_INFO` value for Wema to echo on callbacks. Confirm
+  the account-creation (OTP), disburse, name-enquiry and identity
+  (BVN·NIN·vNIN) field names and the tx-status legend against Wema's integration guide. Verify auth
   + connectivity by POSTing JSON to `/wema-diagnose` with a diagnostic bearer token.
 - Set `TERMII_API_KEY` (the key alone doesn't make OTPs arrive — `TERMII_SENDER_ID`
   must be approved AND DND-whitelisted), `PREMBLY_API_KEY` / `PREMBLY_APP_ID`

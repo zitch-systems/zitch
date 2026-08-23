@@ -20,6 +20,8 @@ Wema clarified on 2026-07-27 that securityInfo is a private value Zitch chooses 
 the bank echoes to the authentication callback. It is therefore a hard, inexpensive
 defence-in-depth gate. See utility.wema._security_info.
 """
+import os
+
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
@@ -195,6 +197,23 @@ class Command(BaseCommand):
                            PASS if settings.CARD_ISSUER["API_KEY"] else WARN,
                            "keyed" if settings.CARD_ISSUER["API_KEY"]
                            else "no issuer key — virtual cards disabled"))
+
+        # SOFT — an avatar upload can return 200 locally while producing a URL
+        # that is never served in production and a file that disappears on the
+        # next Render deploy. Surface that false-success configuration explicitly.
+        storage_backend = ((getattr(settings, "STORAGES", {}) or {}).get("default", {})
+                           .get("BACKEND", ""))
+        durable_media = (
+            "FileSystemStorage" not in storage_backend
+            and bool(getattr(settings, "AWS_STORAGE_BUCKET_NAME", ""))
+            and bool(os.environ.get("AWS_ACCESS_KEY_ID", "").strip())
+            and bool(os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip())
+        )
+        checks.append((False, "Profile-photo storage",
+                       PASS if durable_media else WARN,
+                       "durable object storage configured" if durable_media
+                       else "local filesystem only — production avatars return broken URLs and "
+                            "disappear on deploy; configure AWS_STORAGE_BUCKET_NAME and S3 credentials"))
 
         # SOFT — Prembly. Wema verifies BVN/NIN through account creation, but it has
         # no image checks, so selfie/liveness, address and ID-document all stay on

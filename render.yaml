@@ -32,7 +32,9 @@ services:
     # REDIS_URL, and raise this — in that order. REQUIRE_SHARED_CACHE exists to
     # enforce exactly that ordering.
     startCommand: "gunicorn zitch_api.wsgi:application --bind 0.0.0.0:${PORT:-10000} --workers 1 --threads 8 --timeout 60"
-    healthCheckPath: /healthz
+    # Readiness includes PostgreSQL and the required shared Redis cache. Liveness
+    # remains available at /healthz for diagnostics without making provider calls.
+    healthCheckPath: /readyz
     envVars:
       - key: DJANGO_SECRET_KEY
         generateValue: true

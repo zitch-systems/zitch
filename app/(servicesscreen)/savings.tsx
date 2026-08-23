@@ -123,6 +123,9 @@ const MySavings = () => {
       right={
         <Pressable
           onPress={() => router.push('/fixedsave')}
+          accessibilityRole="button"
+          accessibilityLabel="Create a fixed save"
+          hitSlop={2}
           style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}
         >
           <ZIcon name="plus" size={20} color="#fff" stroke={2.4} />
@@ -152,7 +155,7 @@ const MySavings = () => {
       >
         <Hero style={{ marginBottom: 18 }}>
           <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Total locked</Text>
-          <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(totalLocked)}</Text>
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(totalLocked)}</Text>
           <Text style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>
             {activeCount > 0
               ? `${activeCount} active plan${activeCount === 1 ? '' : 's'}${topRate > 0 ? ` · up to ${(topRate * 100).toFixed(0)}% p.a` : ''}`

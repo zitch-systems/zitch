@@ -38,8 +38,8 @@ const cardShadow = {
 };
 
 // ---- Layout shell ----
-// `tab` adds extra bottom padding so content clears the custom bottom nav
-// (the tab screens render their own nav bar over the scene).
+// `tab` prevents a second safe-area inset being added beneath tab scenes. Expo
+// Router already lays those scenes out above the custom tab bar.
 export const Screen = ({
   children,
   header,
@@ -66,7 +66,10 @@ export const Screen = ({
   const { c } = useTheme();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const bottomPad = tab ? 96 : 28;
+  const bottomPad = 28;
+  // Phone tab scenes already sit above BottomNav, including its safe area. On
+  // fold/tablet the tab bar becomes a side rail, so keep the device bottom inset.
+  const bottomInset = tab && width < 600 ? 0 : insets.bottom;
   // Fold/tablet: cap the content to a comfortable reading width and centre it so
   // screens never stretch edge-to-edge on wide displays. No-op on phones
   // (maxW undefined → the inner view is simply full width, as before).
@@ -106,12 +109,12 @@ export const Screen = ({
             // Add the device's bottom safe-area inset so the last content (buttons,
             // PIN pad, list rows) clears the home indicator / gesture bar instead of
             // being cut off — fixes the "cut at the bottom" on installed builds.
-            contentContainerStyle={{ paddingBottom: bottomPad + insets.bottom, alignItems: 'center' }}
+            contentContainerStyle={{ paddingBottom: bottomPad + bottomInset, alignItems: 'center' }}
           >
             <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </ScrollView>
         ) : (
-          <View style={{ flex: 1, alignItems: 'center', paddingBottom: insets.bottom }}>
+          <View style={{ flex: 1, alignItems: 'center', paddingBottom: bottomInset }}>
             <View style={{ flex: 1, width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </View>
         )}
@@ -138,6 +141,7 @@ export const Header = ({
       {onBack && (
         <Pressable
           onPress={onBack}
+          hitSlop={2}
           accessibilityRole="button"
           accessibilityLabel="Go back"
           style={{
@@ -233,6 +237,7 @@ export const Btn = ({
   return (
     <Pressable
       onPress={disabled ? undefined : onPress}
+      hitSlop={size === 'sm' ? 2 : undefined}
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled: !!disabled }}
@@ -267,6 +272,7 @@ export const Toggle = ({ on, onChange, disabled }: { on: boolean; onChange: (v: 
   return (
     <Pressable
       onPress={disabled ? undefined : () => onChange(!on)}
+      hitSlop={{ top: 8, bottom: 8, left: 2, right: 2 }}
       accessibilityRole="switch"
       accessibilityState={{ checked: on, disabled: !!disabled }}
       style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}
@@ -291,6 +297,9 @@ export const Money = ({
   const { c } = useTheme();
   return (
     <NText
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={0.7}
       style={{
         fontSize: size,
         fontFamily: font.extrabold,

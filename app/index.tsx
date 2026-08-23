@@ -54,7 +54,7 @@ const Index = () => {
       <SafeAreaView style={{ flex: 1 }}>
         {/* skip */}
         <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 20, paddingTop: 8 }}>
-          <Pressable onPress={() => router.replace('/signin')} accessibilityRole="button" accessibilityLabel="Skip onboarding">
+          <Pressable onPress={() => router.replace('/signin')} hitSlop={12} accessibilityRole="button" accessibilityLabel="Skip onboarding">
             <Text style={{ fontSize: 14, fontFamily: font.semibold, color: '#6E8B86' }}>Skip</Text>
           </Pressable>
         </View>
@@ -81,7 +81,7 @@ const Index = () => {
         </View>
 
         {/* cta */}
-        <View style={{ paddingHorizontal: 22 }}>
+        <View style={{ paddingHorizontal: 20 }}>
           <Pressable
             onPress={() => (last ? router.replace('/register') : setI(i + 1))}
             accessibilityRole="button"

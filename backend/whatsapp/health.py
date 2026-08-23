@@ -45,7 +45,7 @@ def _age_seconds(when) -> int | None:
 
 def whatsapp_diagnostics() -> dict:
     """A snapshot of the channel: config, queue, and anything deliberately muted."""
-    from .providers import flows_live, wa_live, wa_mode
+    from .providers import flows_live, published_flow_report, wa_live, wa_mode
 
     inbound = WaMessageLog.objects.filter(direction=WaMessageLog.IN)
     unprocessed = inbound.filter(processed_at__isnull=True)
@@ -115,6 +115,10 @@ def whatsapp_diagnostics() -> dict:
             "send_failures_last_hour": send_failures,
             "last_send_error": last_send_error or "",
         },
+        # Deliberately lives on this authenticated, operator-triggered diagnostic
+        # rather than /healthz: the comparison makes three Graph API requests and
+        # must never turn Meta latency into a banking-API liveness failure.
+        "flow_publication": published_flow_report(),
         "handed_to_human": muted,
         "verdict": _verdict(wa_mode(), backlog, stalled, dead, muted,
                             accepted_ever=accepted_ever, rejected=rejected,

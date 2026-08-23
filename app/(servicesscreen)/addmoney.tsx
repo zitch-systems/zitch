@@ -377,6 +377,8 @@ const AddMoney = () => {
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.medium }}>Zitch Account Number</Text>
             <NText
               numberOfLines={1}
+              adjustsFontSizeToFit
+              minimumFontScale={0.72}
               style={{ fontSize: 31, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 0.6, marginTop: 5, fontVariant: ['tabular-nums'] }}
             >
               {groupAccount(acctNo)}

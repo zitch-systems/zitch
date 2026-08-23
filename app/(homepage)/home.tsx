@@ -102,7 +102,7 @@ const Home = () => {
   const fixed = (
     <>
       {/* header */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 4 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 4 }}>
         <Pressable onPress={() => router.push('/me')} accessibilityRole="button" accessibilityLabel="Your profile">
           {/* Initials rather than the illustration: a monogram reads as "this is
               your account" at a glance, and it cannot be mistaken for a photo the
@@ -150,7 +150,7 @@ const Home = () => {
       </View>
 
       {/* balance hero */}
-      <Hero style={{ margin: 16 }}>
+      <Hero style={{ marginHorizontal: 20, marginVertical: 16 }}>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }}>
           <Text style={{ color: 'rgba(255,255,255,.82)', fontSize: 11.5, fontFamily: font.bold, letterSpacing: 1.1 }}>
             AVAILABLE BALANCE
@@ -178,7 +178,7 @@ const Home = () => {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 8 }}>
-          <NText style={{ color: '#fff', fontSize: 28, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ color: '#fff', fontSize: 28, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
             {showBal ? whole : '₦ ••••••'}
           </NText>
           {showBal && kobo ? (
@@ -221,7 +221,7 @@ const Home = () => {
       </Hero>
 
       {/* quick actions */}
-      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16, paddingBottom: 14 }}>
+      <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 20, paddingBottom: 14 }}>
         {ACTIONS.map((a) => (
           <Pressable
             key={a.label}
@@ -246,7 +246,7 @@ const Home = () => {
   return (
     <Screen pad={false} tab onRefresh={onRefresh} refreshing={refreshing} header={fixed}>
       {/* services grid */}
-      <View style={{ paddingHorizontal: 18, paddingTop: 24 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 24 }}>
         <SectionLabel action="See all" onAction={() => setMore(true)}>Pay a bill</SectionLabel>
       </View>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 8 }}>
@@ -258,7 +258,7 @@ const Home = () => {
       </View>
 
       {/* promo */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 16, marginTop: 2 }}>
+      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 20, marginTop: 2 }}>
         <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
           <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="fixed" size={23} color={c.brand} />
@@ -274,7 +274,7 @@ const Home = () => {
       </Pressable>
 
       {/* recent */}
-      <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
         {txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>

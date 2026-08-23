@@ -158,11 +158,42 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-# User-uploaded media (profile photos). Served by Django in DEBUG; in production
-# the local disk is ephemeral on most PaaS, so point DEFAULT_FILE_STORAGE at S3
-# (or similar) before relying on avatars persisting across deploys.
+# User-uploaded media (profile photos). Render's local disk is ephemeral and is
+# not served by this production URLconf, so a live deploy must use durable object
+# storage. The S3 backend also works with compatible providers via ENDPOINT_URL.
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+AWS_STORAGE_BUCKET_NAME = os.environ.get("AWS_STORAGE_BUCKET_NAME", "").strip()
+AWS_S3_ENDPOINT_URL = os.environ.get("AWS_S3_ENDPOINT_URL", "").strip() or None
+AWS_S3_REGION_NAME = os.environ.get("AWS_S3_REGION_NAME", "").strip() or None
+AWS_S3_CUSTOM_DOMAIN = os.environ.get("AWS_S3_CUSTOM_DOMAIN", "").strip() or None
+AWS_QUERYSTRING_AUTH = env_bool("AWS_QUERYSTRING_AUTH", True)
+
+_default_storage = {
+    "BACKEND": "django.core.files.storage.FileSystemStorage",
+}
+if AWS_STORAGE_BUCKET_NAME:
+    _default_storage = {
+        "BACKEND": "storages.backends.s3.S3Storage",
+        "OPTIONS": {
+            "bucket_name": AWS_STORAGE_BUCKET_NAME,
+            "access_key": os.environ.get("AWS_ACCESS_KEY_ID", "").strip() or None,
+            "secret_key": os.environ.get("AWS_SECRET_ACCESS_KEY", "").strip() or None,
+            "endpoint_url": AWS_S3_ENDPOINT_URL,
+            "region_name": AWS_S3_REGION_NAME,
+            "custom_domain": AWS_S3_CUSTOM_DOMAIN,
+            "default_acl": None,
+            "file_overwrite": False,
+            "querystring_auth": AWS_QUERYSTRING_AUTH,
+        },
+    }
+
+STORAGES = {
+    "default": _default_storage,
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -213,6 +244,12 @@ if TESTING:
     # must never turn fixture data into a live SMS/email/WhatsApp/bank request;
     # provider-specific tests mock the HTTP call they mean to exercise.
     TEST_RUNNER = "common.test_runner.NoNetworkDiscoverRunner"
+    # Manifest storage requires collectstatic output and breaks Django's admin
+    # test client in a clean checkout. Production keeps the hashed manifest;
+    # tests only need deterministic URL generation.
+    STORAGES["staticfiles"] = {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    }
 # Bound JSON/KYC uploads before parsing. The KYC UI caps decoded images at about
 # 2 MiB; 4 MiB leaves base64 + JSON overhead without allowing unbounded bodies.
 API_MAX_BODY_BYTES = int(os.environ.get("API_MAX_BODY_BYTES", str(4 * 1024 * 1024)))

@@ -130,6 +130,9 @@ const FixedSave = () => {
         right={
           <Pressable
             onPress={() => router.push('/savings')}
+            accessibilityRole="button"
+            accessibilityLabel="View my fixed saves"
+            hitSlop={2}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 6, height: 42, paddingHorizontal: 14, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}
           >
             <ZIcon name="fixed" size={16} color={c.brand} />
@@ -140,7 +143,7 @@ const FixedSave = () => {
 
       <Hero style={{ marginBottom: 18 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You could earn</Text>
-        <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(interest)}</NText>
+        <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(interest)}</NText>
         <NText style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>
           on {amount > 0 ? money(amount) : '₦0'} in {days} days · {(rate * 100).toFixed(0)}% p.a
         </NText>

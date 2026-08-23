@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { View, Text } from 'react-native';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Screen, Header, Card, Field, Btn, PinSheet, money } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
@@ -75,7 +75,7 @@ const Limits = () => {
   return (
     <AuthGuard>
       <Screen>
-        <Header title="Transaction limit" sub="How much you can send in one go" />
+        <Header title="Transaction limit" sub="How much you can send in one go" onBack={() => router.back()} />
 
         <Card>
           <Row label="Your limit per transaction" value={limits ? money(Number(limits.transaction_limit)) : '—'} strong />

@@ -32,12 +32,12 @@ const Wallet = () => {
   return (
     <Screen pad={false} tab>
       {/* header */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 18, paddingTop: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20, paddingTop: 6 }}>
         <Text style={{ flex: 1, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Wallet</Text>
-        <Pressable onPress={() => { reload(); reloadLinked(); }} style={hdrBtn}>
+        <Pressable onPress={() => { reload(); reloadLinked(); }} hitSlop={4} accessibilityRole="button" accessibilityLabel="Refresh wallet" style={hdrBtn}>
           <ZIcon name="refresh" size={19} color={c.ink1} />
         </Pressable>
-        <Pressable onPress={() => router.push('/me')} style={hdrBtn}>
+        <Pressable onPress={() => router.push('/me')} hitSlop={4} accessibilityRole="button" accessibilityLabel="Open settings" style={hdrBtn}>
           <ZIcon name="settings" size={19} color={c.ink1} />
         </Pressable>
       </View>
@@ -47,7 +47,7 @@ const Wallet = () => {
         colors={['#23B1A8', '#00847B', '#004D47']}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={{ margin: 16, borderRadius: 22, padding: 16, overflow: 'hidden', shadowColor: '#00847B', shadowOpacity: 0.45, shadowRadius: 20, shadowOffset: { width: 0, height: 14 }, elevation: 6 }}
+        style={{ marginHorizontal: 20, marginVertical: 16, borderRadius: 22, padding: 16, overflow: 'hidden', shadowColor: '#00847B', shadowOpacity: 0.45, shadowRadius: 20, shadowOffset: { width: 0, height: 14 }, elevation: 6 }}
       >
         <Image source={require('@/assets/images/zitch-mark.png')} style={{ position: 'absolute', right: -18, bottom: -22, width: 132, height: 132, opacity: 0.16 }} resizeMode="contain" />
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -58,7 +58,7 @@ const Wallet = () => {
           </View>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 }}>
-          <NText style={{ fontSize: 28, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ flexShrink: 1, fontSize: 28, fontFamily: font.extrabold, color: '#fff', fontVariant: ['tabular-nums'] }}>
             {showBal ? money(balance) : '₦ ••••••'}
           </NText>
           <Pressable onPress={() => setShowBal(!showBal)} hitSlop={12}>
@@ -90,7 +90,7 @@ const Wallet = () => {
       <ConnectedAccounts />
 
       {/* recent activity */}
-      <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
         {txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>

@@ -36,11 +36,12 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
 
   const Tab = ({ it }: { it: { name: string; icon: string; label: string } }) => {
     const on = activeName === it.name;
+    const route = state.routes.find((candidate) => candidate.name === it.name);
     return (
       <Pressable
         key={it.name}
         onPress={() => {
-          const event = navigation.emit({ type: 'tabPress', target: it.name, canPreventDefault: true });
+          const event = navigation.emit({ type: 'tabPress', target: route?.key, canPreventDefault: true });
           if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
         }}
         accessibilityRole="tab"
@@ -76,7 +77,7 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
 
   return (
     <View style={{ backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.line }}>
-      <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 10, paddingBottom: 6, paddingHorizontal: 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 10, paddingBottom: Math.max(8, insets.bottom), paddingHorizontal: 8 }}>
         {LEFT.map((it) => <Tab key={it.name} it={it} />)}
 
         {/* Raised WhatsApp button — the channel's hero action, dead centre. */}
@@ -122,13 +123,8 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
 
         {RIGHT.map((it) => <Tab key={it.name} it={it} />)}
       </View>
-      {/* iOS-style home indicator */}
-      <View style={{ height: 22 + (insets.bottom ? insets.bottom - 6 : 0), alignItems: 'center', justifyContent: 'center' }}>
-        <View style={{ width: 134, height: 5, borderRadius: 3, backgroundColor: c.ink1, opacity: 0.85 }} />
-      </View>
     </View>
   );
 };
 
 export default BottomNav;
-

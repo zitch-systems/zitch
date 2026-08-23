@@ -114,6 +114,7 @@ const WaApprove = () => {
     if (/locked|expired|completed|unavailable/i.test(message)) {
       setDeadReason(message);
       setPhase('dead');
+      clearPendingWhatsAppApproval().catch(() => {});
     } else {
       setPinError(message);
       setPhase('confirm');
@@ -121,7 +122,7 @@ const WaApprove = () => {
   };
 
   return (
-    <Screen>
+    <Screen scroll={phase === 'confirm' || phase === 'busy'}>
       <Header title="Approve payment" sub="Started in WhatsApp" onBack={() => router.back()} />
 
       {phase === 'loading' && (
@@ -131,7 +132,7 @@ const WaApprove = () => {
       )}
 
       {(phase === 'confirm' || phase === 'busy') && (
-        <View style={{ paddingHorizontal: 22, flex: 1 }}>
+        <View>
           <View style={{ borderRadius: 18, borderWidth: 1.5, borderColor: c.line, backgroundColor: c.surface, padding: 18, marginBottom: 20, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
             <ZIcon name="chat" size={22} color={c.brand} />
             <Text style={{ flex: 1, fontSize: 15, color: c.ink1, fontFamily: font.semibold, lineHeight: 22 }}>{summary}</Text>

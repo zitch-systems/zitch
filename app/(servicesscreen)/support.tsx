@@ -34,7 +34,7 @@ const Support = () => {
         <Header title="Customer Service" sub="We're here to help" onBack={() => router.back()} />
       </View>
 
-      <View style={{ paddingHorizontal: 16 }}>
+      <View style={{ paddingHorizontal: 20 }}>
         <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
           <View style={{ width: 48, height: 48, borderRadius: 15, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="insurance" size={24} color={c.brand} />

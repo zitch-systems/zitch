@@ -3634,9 +3634,16 @@ class HistoryAndCreditAlertTests(TestCase):
         self.assertIn("Transaction history", menu_text())
 
     def test_an_empty_history_says_so_rather_than_showing_an_empty_list(self):
-        from wallet.models import Transaction
-
-        Transaction.objects.filter(user=self.user).delete()
+        # Ledger rows are immutable in PostgreSQL, including deletion. Point the
+        # chat at a genuinely empty account rather than hollowing out an existing
+        # ledger as a fixture shortcut.
+        WhatsAppLink.objects.filter(wa_msisdn=MSISDN).delete()
+        empty, _ = make_user(
+            phone="08010000009", email="empty-history@zitch.test", balance="0",
+        )
+        WhatsAppLink.objects.create(
+            user=empty, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE,
+        )
         self.assertIn("No transactions yet", self._say("history"))
 
     def test_history_sits_behind_the_same_idle_gate_as_a_balance(self):
@@ -4354,22 +4361,20 @@ class AiHistoryLookupTests(TestCase):
     def _aged_txn(self, days, amount, service, status=None):
         """An outgoing row dated `days` back.
 
-        Written with debit() rather than credit()-then-mutate: wallet.models
-        refuses to let amount/direction/currency change once a row exists, which
-        is the right guard and means a test cannot fake a debit by editing a
-        credit. Only `created` is moved afterwards, since the ledger stamps it on
-        insert and there is no other way to age a row.
+        Inserted at its final timestamp and state: wallet.models refuses to let
+        amount/direction/currency/created change once a row exists, so the
+        fixture follows the same append-only rule on SQLite and PostgreSQL.
         """
         from wallet.models import Transaction
-        from wallet.services import debit
+        from wallet.tests import make_transaction_at
 
-        debit(self.user, Decimal(amount), service)
-        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
-        txn.created = timezone.now() - timedelta(days=days)
-        if status:
-            txn.transaction_status = status
-        txn.save(update_fields=["created", "transaction_status"])
-        return txn
+        return make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(days=days),
+            amount=amount,
+            service=service,
+            status=status or Transaction.PENDING,
+        )
 
     def test_a_specific_payment_is_answered_not_dumped(self):
         """"I sent 5k to someone 2 days ago, help me check" — the answer is that
@@ -4473,15 +4478,16 @@ class AiEscalationTests(TestCase):
         return patch("whatsapp.ai.extract_intent", return_value=intent)
 
     def _aged_txn(self, days, amount, service):
-        """See AiHistoryLookupTests._aged_txn — debit(), then age `created`."""
+        """See AiHistoryLookupTests._aged_txn — insert at the final timestamp."""
         from wallet.models import Transaction
-        from wallet.services import debit
+        from wallet.tests import make_transaction_at
 
-        debit(self.user, Decimal(amount), service)
-        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
-        txn.created = timezone.now() - timedelta(days=days)
-        txn.save(update_fields=["created"])
-        return txn
+        return make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(days=days),
+            amount=amount,
+            service=service,
+        )
 
     def test_escalation_opens_a_real_case(self):
         from compliance.models import Dispute
@@ -4626,14 +4632,15 @@ class ConversationReferentTests(TestCase):
         self.latest = self._spend(0, "1000", "Electricity — Ikeja")
 
     def _spend(self, days, amount, service):
-        from wallet.services import debit
+        from wallet.tests import make_transaction_at
 
-        debit(self.user, Decimal(amount), service)
-        txn = Transaction.objects.filter(user=self.user).order_by("-created").first()
-        txn.created = timezone.now() - timedelta(days=days, minutes=1 if days else 0)
-        txn.transaction_status = Transaction.SUCCESS
-        txn.save(update_fields=["created", "transaction_status"])
-        return txn
+        return make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(days=days, minutes=1 if days else 0),
+            amount=amount,
+            service=service,
+            status=Transaction.SUCCESS,
+        )
 
     def say(self, text, intent=None, mid=None):
         with patch("whatsapp.ai.extract_intent", return_value=intent):

@@ -124,12 +124,12 @@ const GetLoan = () => {
 
       <Hero style={{ marginBottom: 18 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You’re eligible for up to</Text>
-        <Text style={{ fontSize: 34, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 34, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <Text style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>Based on your Zitch activity & repayment history</Text>
       </Hero>
 
       <Label>How much do you need?</Label>
-      <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: c.brand, textAlign: 'center', marginBottom: 12, fontVariant: ['tabular-nums'] }}>{money(amount)}</Text>
+      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: c.brand, textAlign: 'center', marginBottom: 12, fontVariant: ['tabular-nums'] }}>{money(amount)}</Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginBottom: 12 }}>
         {PRESETS.map((p) => {
           const on = amount === p;

@@ -1,3 +1,4 @@
+import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
@@ -5,13 +6,18 @@ import {
   rememberWhatsAppApprovalUrl,
 } from '../pendingApproval';
 
+jest.mock('expo-secure-store', () => ({
+  WHEN_UNLOCKED_THIS_DEVICE_ONLY: 1,
+  getItemAsync: jest.fn(),
+  setItemAsync: jest.fn(),
+  deleteItemAsync: jest.fn(),
+}));
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  getItem: jest.fn(),
-  setItem: jest.fn(),
-  removeItem: jest.fn(),
+  removeItem: jest.fn().mockResolvedValue(undefined),
 }));
 
-const storage = AsyncStorage as jest.Mocked<typeof AsyncStorage>;
+const storage = SecureStore as jest.Mocked<typeof SecureStore>;
+const legacy = AsyncStorage as jest.Mocked<typeof AsyncStorage>;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -23,24 +29,26 @@ describe('pending WhatsApp approval hand-off', () => {
     ['https://api.zitch.ng/wa/approve/ap8.signed-token', 'ap8.signed-token'],
   ])('captures a supported link: %s', async (url, token) => {
     await rememberWhatsAppApprovalUrl(url);
-    expect(storage.setItem).toHaveBeenCalledWith(
+    expect(storage.setItemAsync).toHaveBeenCalledWith(
       'z-pending-wa-approval',
       expect.stringContaining(`"token":"${token}"`),
+      expect.objectContaining({ keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
     );
+    expect(legacy.removeItem).toHaveBeenCalledWith('z-pending-wa-approval');
   });
 
   it('ignores token parameters on unrelated links', async () => {
     await rememberWhatsAppApprovalUrl('https://attacker.test/wa/approve/ap9.forged');
     await rememberWhatsAppApprovalUrl('zitch://home?token=ap9.forged');
-    expect(storage.setItem).not.toHaveBeenCalled();
+    expect(storage.setItemAsync).not.toHaveBeenCalled();
   });
 
   it('burns a stored hand-off after ten minutes', async () => {
-    storage.getItem.mockResolvedValue(JSON.stringify({
+    storage.getItemAsync.mockResolvedValue(JSON.stringify({
       token: 'ap10.signed',
       savedAt: Date.now() - (10 * 60 * 1000) - 1,
     }));
     await expect(pendingWhatsAppApproval()).resolves.toBe('');
-    expect(storage.removeItem).toHaveBeenCalledWith('z-pending-wa-approval');
+    expect(storage.deleteItemAsync).toHaveBeenCalledWith('z-pending-wa-approval');
   });
 });

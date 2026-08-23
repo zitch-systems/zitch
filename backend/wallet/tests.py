@@ -5,6 +5,7 @@ All run in MOCK provider mode (no keys), so funding settles automatically.
 """
 import io
 import json
+import uuid
 import zipfile
 from datetime import timedelta
 from decimal import Decimal
@@ -48,6 +49,33 @@ def make_user(phone, email, pin="1234", balance="0", tier=1, identity_verified=T
     if Decimal(balance) > 0:
         credit(u, Decimal(balance), "Seed")
     return u, AccessToken.issue(u).key
+
+
+def make_transaction_at(user, *, created, amount, service, direction=Transaction.OUT,
+                        status=Transaction.PENDING, meta=None, reference=None):
+    """Insert a dated ledger fixture without mutating an existing ledger row.
+
+    ``auto_now_add`` deliberately ignores a supplied timestamp. Tests for stale
+    transactions still need historical rows, so disable it only around the
+    insert and restore it immediately. This keeps the fixture valid on the
+    PostgreSQL suite, where the append-only trigger rejects backdating updates.
+    """
+    field = Transaction._meta.get_field("created")
+    auto_now_add = field.auto_now_add
+    field.auto_now_add = False
+    try:
+        return Transaction.objects.create(
+            user=user,
+            service=service,
+            amount=Decimal(str(amount)),
+            direction=direction,
+            transaction_status=status,
+            reference=reference or f"TEST-{uuid.uuid4().hex.upper()}",
+            meta=meta or {},
+            created=created,
+        )
+    finally:
+        field.auto_now_add = auto_now_add
 
 
 class FxLimitTests(TestCase):
@@ -180,6 +208,14 @@ class WalletTests(TestCase):
         txn.transaction_status = Transaction.FAILED
         txn.save()  # should not raise
         self.assertEqual(Transaction.objects.get(pk=txn.pk).amount, Decimal("100"))
+
+    def test_settled_ledger_row_cannot_be_reassigned(self):
+        """Ownership is part of the audit record, not editable metadata."""
+        other = User.objects.create_user(username="other-ledger-user")
+        txn = credit(self.user, Decimal("100"), "Immutable owner test")
+        txn.user = other
+        with self.assertRaisesRegex(ValueError, "immutable"):
+            txn.save()
 
     def test_transfer_rejects_insufficient_funds(self):
         make_user("08020000002", "bob@zitch.test")

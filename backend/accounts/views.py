@@ -637,9 +637,11 @@ def update_info(request):
 
 def avatar_url(request, user) -> str:
     """Absolute URL for a user's profile photo, or '' if none set."""
-    from django.conf import settings
+    from django.core.files.storage import default_storage
 
-    return request.build_absolute_uri(settings.MEDIA_URL + user.avatar) if user.avatar else ""
+    if not user.avatar:
+        return ""
+    return request.build_absolute_uri(default_storage.url(user.avatar))
 
 
 @api
@@ -653,23 +655,19 @@ def avatar_upload(request):
     import base64
     import binascii
     import secrets
+    from io import BytesIO
 
-    from django.conf import settings
     from django.core.files.base import ContentFile
     from django.core.files.storage import default_storage
+    from PIL import Image, ImageOps, UnidentifiedImageError
 
     user = request.user_obj
     raw = (request.data.get("image") or request.data.get("avatar") or "").strip()
     if not raw:
         return fail("No image provided")
 
-    ext = "png"
     if raw.startswith("data:"):
-        header, _, b64 = raw.partition(",")
-        if "jpeg" in header or "jpg" in header:
-            ext = "jpg"
-        elif "webp" in header:
-            ext = "webp"
+        _, _, b64 = raw.partition(",")
     else:
         b64 = raw
 
@@ -682,15 +680,51 @@ def avatar_upload(request):
     if len(blob) > 3 * 1024 * 1024:
         return fail("Image too large (max 3MB)")
 
-    # Drop the previous photo so we don't orphan files on re-upload.
-    if user.avatar and default_storage.exists(user.avatar):
-        default_storage.delete(user.avatar)
+    # Decode the image rather than trusting a caller-controlled data-URL MIME or
+    # filename. Re-encoding removes EXIF/GPS metadata, bounds decompression cost
+    # and ensures object storage never serves arbitrary bytes as an image.
+    try:
+        with Image.open(BytesIO(blob)) as source:
+            if source.width * source.height > 16_000_000:
+                return fail("Image dimensions are too large")
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((1024, 1024))
+            if image.mode in ("RGBA", "LA"):
+                rgba = image.convert("RGBA")
+                flattened = Image.new("RGB", rgba.size, "white")
+                flattened.paste(rgba, mask=rgba.getchannel("A"))
+                image = flattened
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+            blob = output.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError):
+        return fail("Invalid image data")
 
-    path = default_storage.save(f"avatars/{user.id}-{secrets.token_hex(4)}.{ext}", ContentFile(blob))
-    user.avatar = path
-    user.save(update_fields=["avatar"])
+    # Store and persist the replacement before deleting the previous object. A
+    # transient object-storage failure must not erase the user's working photo.
+    previous = user.avatar
+    path = default_storage.save(
+        f"avatars/{user.id}-{secrets.token_hex(4)}.jpg", ContentFile(blob),
+    )
+    try:
+        user.avatar = path
+        user.save(update_fields=["avatar"])
+    except Exception:
+        # The database still points at the previous photo; avoid orphaning the
+        # newly uploaded object if that update fails.
+        default_storage.delete(path)
+        raise
+    if previous and previous != path:
+        try:
+            default_storage.delete(previous)
+        except Exception:
+            # The account now points at the valid replacement. Cleanup can be
+            # retried later; do not turn a successful upload into a client error.
+            pass
     return ok(success=True, message="Photo updated",
-              avatar=request.build_absolute_uri(settings.MEDIA_URL + path))
+              avatar=avatar_url(request, user))
 
 
 # --------------------------------- KYC ---------------------------------
