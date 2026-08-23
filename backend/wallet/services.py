@@ -7,8 +7,10 @@ import json
 import logging
 import re
 import secrets
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.db import IntegrityError, transaction as db_transaction
 from django.db.models import Q, Sum
 from django.utils import timezone
@@ -544,10 +546,23 @@ def wema_provisioned_wallets():
 def self_payout_references(user) -> list[str]:
     """References of this user's outbound bank-transfer payouts (rows carrying a
     ``bank`` in meta) — the set an inbound polled credit row is matched against
-    to spot a payout that BOUNCED BACK into the sender's own NUBAN."""
+    to spot a payout that BOUNCED BACK into the sender's own NUBAN.
+
+    Bounded to the last ``WEMA_REVERSAL_LOOKBACK_DAYS`` (default 30). Unbounded,
+    this grows without limit for the customer, and the caller substring-scans the
+    whole list against every polled credit row — so the cost of one reconcile
+    sweep is payouts-ever x credit-rows, which is fine today and quietly becomes
+    the slowest thing in the cron as accounts age. A returned NIP transfer comes
+    back in hours or days; a reference older than the window is not a reversal
+    this sweep should be matching on. Nothing is lost by narrowing it: a genuine
+    old reversal still carries a reversal marker, so it lands in the quarantine
+    branch of ``apply_wema_credit`` and pages, rather than being credited as
+    fresh funding."""
+    days = int(getattr(settings, "WEMA_REVERSAL_LOOKBACK_DAYS", 30) or 30)
+    since = timezone.now() - timedelta(days=days)
     return [r for r in
             Transaction.objects.filter(user=user, direction=Transaction.OUT,
-                                       meta__has_key="bank")
+                                       meta__has_key="bank", created__gte=since)
             .values_list("reference", flat=True) if r]
 
 
@@ -636,6 +651,31 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
     refs = self_payout_references(wallet.user) if self_refs is None else self_refs
     matched = _reversal_reference(tx, refs)
     if matched:
+        # Matching on the reference alone says "this row RELATES to that payout".
+        # It does not say the payout came back whole, and reverse_transfer refunds
+        # the payout's amount, not the amount that actually landed — so a related
+        # row of a DIFFERENT size is refunded at the wrong value and its real money
+        # is dropped at the same time. A beneficiary sending part of a transfer back
+        # by hand, quoting the original reference in the narration, is enough to
+        # trigger it: a partial return of a N1,000 payout credits the customer the
+        # full N1,000 AND loses the deposit, leaving the bank and the ledger apart
+        # by the difference with nothing to reconcile from. Anything but an exact
+        # match is quarantined the same way an unmatched reversal is, below.
+        payout = (Transaction.objects.filter(reference=matched, direction=Transaction.OUT)
+                  .only("amount").first())
+        if payout is not None and norm["amount_naira"] != payout.amount:
+            from utility.alerts import alert
+
+            alert("wema_credit_partial_reversal_quarantined: an inbound credit quotes this "
+                  "customer's own payout reference but is not the payout's amount, so it is "
+                  "neither a clean reversal nor safe to credit as funding - reconcile by hand",
+                  level="error", reference=norm["reference"], payout=matched,
+                  account=wallet.account_number,
+                  received=str(norm["amount_naira"]), payout_amount=str(payout.amount))
+            log.error("wema_credit_partial_reversal ref=%s payout=%s received=%s expected=%s "
+                      "account=%s", norm["reference"], matched, norm["amount_naira"],
+                      payout.amount, wallet.account_number)
+            return None
         reversed_txn = reverse_transfer(matched)
         log.warning("wema_credit_payout_reversal ref=%s payout=%s reversed=%s account=%s",
                     norm["reference"], matched, bool(reversed_txn), wallet.account_number)
