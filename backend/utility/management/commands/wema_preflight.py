@@ -330,6 +330,21 @@ class Command(BaseCommand):
             "required for money-capable roles" if require_mfa
             else ("OPS_REQUIRE_MFA is off — a stolen operator password alone reaches "
                   "manual credits and settings; enrol operators, then turn it on")))
+        # The same fallback the securityInfo check refuses at go-live, applied to
+        # operator TOTP seeds — and with a worse failure. Unset, every enrolled
+        # operator's MFA secret is encrypted under DJANGO_SECRET_KEY, so that key
+        # can never be rotated and a service rebuilt from the blueprint (which
+        # mints a fresh generateValue key) locks every operator out of the portal
+        # with no way back in. SOFT because the fix is to set a key BEFORE anyone
+        # enrols; hard-failing an existing deployment would not undo the binding.
+        totp_keys = [k for k in (getattr(settings, "TOTP_ENCRYPTION_KEYS", None) or []) if k]
+        checks.append((
+            False, "Operator TOTP key material",
+            PASS if totp_keys else WARN,
+            "dedicated key set; independent of DJANGO_SECRET_KEY" if totp_keys
+            else ("TOTP_ENCRYPTION_KEYS is unset — operator MFA secrets fall back to "
+                  "DJANGO_SECRET_KEY, so rotating or regenerating it locks out every "
+                  "enrolled operator; set a dedicated key before enrolment")))
         dual = bool(getattr(settings, "OPS_REQUIRE_DUAL_APPROVAL", False))
         checks.append((
             False, "Operator dual approval", PASS if dual else WARN,

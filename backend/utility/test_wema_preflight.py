@@ -219,3 +219,36 @@ class PreflightOverHttpTests(TestCase):
         body = res.json()["preflight"]
         self.assertFalse(body["ready"])
         self.assertIn("RuntimeError", body["error"])
+
+
+@override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
+class PreflightTotpKeyTests(TestCase):
+    """Operator MFA secrets fall back to DJANGO_SECRET_KEY when no dedicated key
+    is set — the same fallback the securityInfo check refuses, with a worse
+    failure (every enrolled operator locked out of the portal, unrecoverably).
+    Reported as a WARN, not a gate: the fix is to set a key before enrolment, and
+    failing an existing deployment would not undo the binding."""
+
+    @override_settings(TOTP_ENCRYPTION_KEYS=[])
+    def test_unset_totp_key_is_reported(self):
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            out, _ = _run()
+        self.assertIn("TOTP_ENCRYPTION_KEYS is unset", out)
+
+    @override_settings(TOTP_ENCRYPTION_KEYS=["a-dedicated-operator-totp-key-value"])
+    def test_a_dedicated_key_passes(self):
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            out, _ = _run()
+        self.assertNotIn("TOTP_ENCRYPTION_KEYS is unset", out)
+        self.assertIn("independent of DJANGO_SECRET_KEY", out)
+
+    @override_settings(TOTP_ENCRYPTION_KEYS=[])
+    def test_it_does_not_block_go_live_on_its_own(self):
+        with mock.patch(_DIAG, return_value=dict(_LIVE_DIAG)), \
+             mock.patch(_PROBE, return_value=_VTU_OK):
+            _, code = _run()
+        self.assertEqual(code, 0)
