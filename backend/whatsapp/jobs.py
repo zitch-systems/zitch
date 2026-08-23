@@ -123,6 +123,32 @@ def discard_inbound(*, message_id: str, msisdn: str, logged_text: str,
     return row
 
 
+def _page_dead_letter(row, reason: str) -> None:
+    """Page when an inbound message is abandoned for good.
+
+    A dead letter is a customer command on a BANKING channel that will now never
+    run and will never be answered — the customer is left staring at a chat that
+    simply did not reply. Nothing reported that: `whatsapp_diagnostics` carries a
+    cumulative `dead_lettered` count, but only for somebody who thinks to open the
+    page, and a running total is not a signal that a NEW one just happened.
+
+    Never raises: giving up on a message must not also crash the worker that is
+    giving up on it. The number is masked — an alert trail should not become a
+    list of customer phone numbers.
+    """
+    try:
+        from common.http import mask_pii
+        from utility.alerts import alert
+
+        alert("whatsapp dead letter: an inbound customer message was abandoned after "
+              "repeated failures - the command never ran and the chat was never "
+              "answered", level="error", message_id=row.pk,
+              msisdn=mask_pii(getattr(row, "msisdn", "")), reason=reason[:64],
+              attempts=getattr(row, "processing_attempts", None))
+    except Exception:  # noqa: BLE001 — alerting must never break the worker
+        log.exception("wa_dead_letter_alert_failed id=%s", getattr(row, "pk", "?"))
+
+
 def _claim_inbound(pk: int):
     now = timezone.now()
     with db_transaction.atomic():
@@ -160,6 +186,7 @@ def _claim_inbound(pk: int):
                 "processed_at", "processing_started_at", "processing_error",
                 "processing_payload",
             ])
+            _page_dead_letter(row, "max_attempts")
             return None, "dead_letter"
         row.processing_started_at = now
         row.processing_attempts += 1
@@ -247,6 +274,8 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
             )
         WaMessageLog.objects.filter(pk=row.pk).update(**updates)
         log.exception("wa_inbound_job_failed id=%s attempt=%s", row.pk, row.processing_attempts)
+        if terminal:
+            _page_dead_letter(row, error)
         if raise_errors:
             raise
         return "dead_letter" if terminal else "retry"

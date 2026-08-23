@@ -219,6 +219,38 @@ class ChannelTests(TestCase):
         self.assertEqual(bytes(queued.processing_payload), b"")
         self.assertEqual(queued.processing_error, "dead_letter:RuntimeError")
 
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_dead_letter_pages(self):
+        """A dead letter is a banking command that will never run and a chat that
+        will never be answered. The cumulative count on the diagnostics page is
+        not a signal that a NEW one just happened, so it has to alert."""
+        self.link()
+        self.inbound("balance", "dead-page-1")
+        queued = WaMessageLog.objects.get(wa_message_id="dead-page-1")
+        queued.processing_attempts = 4
+        queued.save(update_fields=["processing_attempts"])
+
+        from .jobs import process_inbound_message
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")), \
+             patch("utility.alerts.alert") as alerted:
+            self.assertEqual(process_inbound_message(queued.pk), "dead_letter")
+        paged = [c for c in alerted.call_args_list if "dead letter" in str(c)]
+        self.assertTrue(paged, "abandoning a customer message must page")
+        # The alert trail must not become a list of customer phone numbers.
+        self.assertNotIn(MSISDN, str(paged[0]))
+
+    @override_settings(WHATSAPP_PROCESS_INLINE=False)
+    def test_a_retry_that_is_not_terminal_does_not_page(self):
+        self.link()
+        self.inbound("balance", "dead-page-2")
+        queued = WaMessageLog.objects.get(wa_message_id="dead-page-2")
+
+        from .jobs import process_inbound_message
+        with patch("whatsapp.jobs.handle_inbound", side_effect=RuntimeError("crash")), \
+             patch("utility.alerts.alert") as alerted:
+            self.assertEqual(process_inbound_message(queued.pk), "retry")
+        self.assertFalse([c for c in alerted.call_args_list if "dead letter" in str(c)])
+
     @override_settings(
         WHATSAPP_PROCESS_INLINE=False,
         WHATSAPP_QUEUE_KEY="old-queue-key-0123456789-0123456789",
