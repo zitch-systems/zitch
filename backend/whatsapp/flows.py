@@ -1714,8 +1714,8 @@ def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
 #: deploy. Rewording anything inside the published document costs a manual
 #: re-publish, and a screen nobody dares edit is a screen that stays wrong.
 _DEFAULT_TRANSFER_HINT = (
-    "Leave the bank blank — we'll work it out from the account number, and "
-    "confirm the account name before you pay. Only pick one if we ask."
+    "Bank is optional — we'll try to identify it from the account number. "
+    "If needed, type the bank name in the Bank field."
 )
 
 
@@ -1790,19 +1790,51 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
         balance = get_or_create_wallet(user).balance
         return _transfer_form_screen(error=f"Insufficient balance — you have NGN {balance:,.2f}.")
 
-    code = str(data.get("bank", "")).strip()
-    bank = Bank.objects.filter(code=code, active=True).first() if code else None
+    # One bank field serves both search and selection. New Flow clients submit
+    # a human bank name ("Wema", "Kuda", "GTBank"); an already-open legacy Flow
+    # can still submit the stored bank code, so resolve a code first for a
+    # zero-downtime migration. The Flow platform has no searchable Dropdown,
+    # therefore asking for a separate finder and picker only duplicated the same
+    # question on screen.
+    bank_value = " ".join(str(data.get("bank", "") or "").split())[:80]
+    bank = (Bank.objects.filter(code=bank_value, active=True).first()
+            if bank_value else None)
+    if bank is None and bank_value:
+        from .router import _match_banks
+
+        matches = _match_banks(bank_value)
+        if len(matches) == 1:
+            bank = matches[0]
+        elif matches:
+            shown = ", ".join(b.name for b in matches[:4])
+            more = " and others" if len(matches) > 4 else ""
+            return _transfer_form_screen(
+                error=f'Several banks match "{bank_value}": {shown}{more}. '
+                      "Type a more specific bank name.")
+        else:
+            return _transfer_form_screen(
+                error=f'We could not find "{bank_value}". Type the bank name, '
+                      "e.g. Wema, Kuda or GTBank.")
+
     if bank is None:
         candidates = nuban_bank_candidates(account)
+        legacy_picker = "bank_search" in data
         if len(candidates) == 1:
             bank = candidates[0]
         elif candidates:
-            return _transfer_form_screen(
-                error=f"This account number matches {len(candidates)} banks — "
-                      "pick yours from the top of the list.",
-                candidates=candidates)
+            if legacy_picker:
+                message = (f"This account number matches {len(candidates)} banks — "
+                           "pick yours from the top of the list.")
+            else:
+                names = ", ".join(b.name for b in candidates[:4])
+                more = " and others" if len(candidates) > 4 else ""
+                message = (f"This account number matches {len(candidates)} banks "
+                           f"({names}{more}) — type your bank name.")
+            return _transfer_form_screen(error=message, candidates=candidates)
         else:
-            return _transfer_form_screen(error="Pick the bank from the list.")
+            message = ("Pick the bank from the list." if legacy_picker
+                       else "Enter the bank name, e.g. Wema, Kuda or GTBank.")
+            return _transfer_form_screen(error=message)
 
     res = payout_resolve_account(account, bank.bank_code)
     if not res.get("success"):
