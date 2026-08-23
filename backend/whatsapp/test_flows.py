@@ -1408,7 +1408,7 @@ class TransferFormFlowTests(TestCase):
         bad = acct[:9] + str((int(acct[9]) + 1) % 10)
         resp = self._submit(pa, amount="2300", account_number=bad, bank="")
         self.assertEqual(resp["screen"], TRANSFER_FORM)
-        self.assertIn("Pick the bank", resp["data"]["error"])
+        self.assertIn("Enter the bank name", resp["data"]["error"])
 
     def test_every_chat_guard_still_holds_on_the_form(self):
         from .flows import TRANSFER_FORM
