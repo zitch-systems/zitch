@@ -16,7 +16,7 @@ const GRID = [
   { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
-  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
+  { label: 'Electricity', icon: 'bills', hot: false, go: () => router.push('/buyelectricity') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
 ];
