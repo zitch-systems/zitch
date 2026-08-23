@@ -36,6 +36,9 @@ services:
     # remains available at /healthz for diagnostics without making provider calls.
     healthCheckPath: /readyz
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -380,6 +383,9 @@ services:
     startCommand: "python manage.py whatsapp_worker --batch-size 50 --poll-seconds 0.5"
     maxShutdownDelaySeconds: 60
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_DEBUG
         value: "false"
       - key: DATABASE_URL
@@ -576,6 +582,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py run_maturities"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -627,6 +636,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py purge_expired_sessions"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -662,6 +674,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_vtu"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -745,6 +760,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_wema"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -812,6 +830,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py integrity_check --fail-nonzero"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -847,6 +868,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py reconcile_balances --fail-over"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -896,6 +920,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py settlement_report --fail-on-breach"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
@@ -952,6 +979,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python manage.py aml_scan --fail-on-overdue"
     envVars:
+      # Match GitHub CI exactly; never let Render's moving default change prod.
+      - key: PYTHON_VERSION
+        value: "3.11.16"
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: DJANGO_DEBUG
