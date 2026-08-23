@@ -1,18 +1,9 @@
-"""Searching the bank list on WhatsApp, given a Dropdown that cannot be searched.
+"""Bank matching for the WhatsApp transfer Flow.
 
-Flow JSON has no filter on a Dropdown and no way for a TextInput to narrow one on
-the device, so a list of every Nigerian bank is something you scroll and nothing
-else. The only place it can be searched at all is the server, on a submit: type a
-name, tap Continue, and the list comes back short.
-
-Two properties this must hold, both learned the hard way in this repo:
-
-* A Dropdown bound to an EMPTY array does not render — the customer gets a blank
-  sheet with no way forward but the X (#357). So a search that matches nothing
-  must degrade to the full list, never to an empty one.
-* Re-rendering the same screen id keeps the form's typed values, so the amount and
-  account survive a narrowing. That retention is the reason PIN_RETRY is a
-  separate screen; here it is the feature.
+New Flow sessions use one free-text Bank field and resolve a unique catalogue
+match on submit. Legacy sessions that were already open when the Flow changed
+still submit bank_search plus a Dropdown bank code, so their filtering contract
+remains covered until those sessions expire.
 """
 from datetime import timedelta
 
@@ -28,6 +19,7 @@ BANKS = [
     ("kuda", "Kuda", "090267"), ("opay", "OPay", "999992"),
     ("gtb", "GTBank", "058"), ("first", "First Bank", "011"),
     ("uba", "UBA", "033"), ("access", "Access Bank", "044"),
+    ("wema", "Wema Bank", "035"),
 ]
 
 
@@ -70,6 +62,51 @@ class BankSearchTests(TestCase):
     def test_a_blank_query_changes_nothing(self):
         for blank in ("", "   ", None):
             self.assertEqual(len(router._bank_items(query=blank)), len(router._bank_items()))
+
+    # ---- the unified bank field ----
+
+    def test_flow_has_one_bank_control_and_no_separate_search_box(self):
+        import json
+        import pathlib
+
+        doc = json.loads((pathlib.Path(flows.__file__).parent / "flow_assets"
+                          / "pin_flow.json").read_text(encoding="utf-8"))
+        screen = next(s for s in doc["screens"] if s["id"] == flows.TRANSFER_FORM)
+        form = next(c for c in screen["layout"]["children"] if c["type"] == "Form")
+        controls = [c for c in form["children"] if c.get("name") in {"bank", "bank_search"}]
+        self.assertEqual(len(controls), 1)
+        self.assertEqual(controls[0]["name"], "bank")
+        self.assertEqual(controls[0]["type"], "TextInput")
+
+    def test_bank_name_in_the_single_field_resolves_without_a_second_picker(self):
+        from unittest.mock import patch
+
+        with patch("utility.providers.payout_resolve_account",
+                   return_value={"success": True, "name": "JOHN DOE"}):
+            response = self._submit(
+                amount="3500", account_number="0228565772",
+                bank="Wema", narration="")
+
+        self.assertEqual(response["screen"], flows.PIN_CHAIN)
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.payload["bank_name"], "Wema Bank")
+        self.assertEqual(self.pa.payload["bank_code"], "035")
+
+    def test_ambiguous_bank_text_asks_for_a_more_specific_name(self):
+        response = self._submit(
+            amount="3500", account_number="0228565772",
+            bank="Bank", narration="")
+        self.assertEqual(response["screen"], flows.TRANSFER_FORM)
+        self.assertIn("Several banks match", response["data"]["error"])
+        self.assertIn("more specific", response["data"]["error"])
+
+    def test_unknown_bank_text_stays_on_the_same_field(self):
+        response = self._submit(
+            amount="3500", account_number="0228565772",
+            bank="not a real bank", narration="")
+        self.assertEqual(response["screen"], flows.TRANSFER_FORM)
+        self.assertIn("could not find", response["data"]["error"])
+        self.assertIn("Type the bank name", response["data"]["error"])
 
     # ---- the submit branch ----
 

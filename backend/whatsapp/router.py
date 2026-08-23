@@ -3697,12 +3697,11 @@ def _start_transfer(user, msisdn: str) -> None:
     hint = ""
     if named:
         if len(banks) < len(_bank_items()):
-            hint = (f'Showing the {len(banks)} bank{"" if len(banks) == 1 else "s"} '
-                    f'matching "{named}" from your message. '
-                    "Clear the search box to see them all.")
+            hint = (f'We matched "{named}" from your message. '
+                    "Leave Bank blank to use the account number, or type the bank name.")
         else:
-            hint = (f'I could not match "{named}" to a bank — here is the full list. '
-                    "You can type in the search box to shorten it.")
+            hint = (f'I could not match "{named}" to a bank. '
+                    "Type the bank name in the Bank field if the account number cannot identify it.")
     if not banks:
         log.warning("wa_transfer_form_skipped reason=no_active_banks")
     if flows_live() and banks:

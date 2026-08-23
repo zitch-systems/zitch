@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
+  StyleSheet,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -525,7 +526,15 @@ export const Sheet = ({
         style={{ flex: 1, justifyContent: 'flex-end' }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)' }} />
+        {/* Keep the scrim behind the sheet as well as above it. When the backdrop
+            was a flex sibling it stopped at the panel's rectangular bounds, so
+            the transparent pixels outside the rounded corners exposed the bright
+            screen underneath and left a jagged halo at both edges. */}
+        <Pressable
+          onPress={onClose}
+          accessible={false}
+          style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(2,16,14,.5)' }]}
+        />
         <View
           style={{
             width: '100%',
@@ -534,6 +543,7 @@ export const Sheet = ({
             backgroundColor: c.surface,
             borderTopLeftRadius: 28,
             borderTopRightRadius: 28,
+            overflow: 'hidden',
             padding: 20,
             paddingTop: 10,
             // Clear the home indicator / gesture bar so the sheet's bottom content
