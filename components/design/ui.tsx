@@ -533,7 +533,7 @@ export const Sheet = ({
         <Pressable
           onPress={onClose}
           accessible={false}
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(2,16,14,.5)' }]}
+          style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(2,16,14,.5)' }]}
         />
         <View
           style={{
