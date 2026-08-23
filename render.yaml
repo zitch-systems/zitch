@@ -61,6 +61,11 @@ services:
         value: "24"
       - key: ADMIN_TOKEN_TTL_HOURS
         value: "2"
+      # Declared explicitly (it matches the code default) so the session-purge
+      # cron can read it with fromService and derive the same cutoff this
+      # service issues refresh families under.
+      - key: REFRESH_ABSOLUTE_DAYS
+        value: "90"
       - key: ALLOW_BODY_ACCESS_TOKEN
         value: "false"
       - key: API_MAX_BODY_BYTES
@@ -595,6 +600,46 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+
+  # Session hygiene — delete access/refresh tokens that can no longer
+  # authenticate anything. Nothing removed these before: an AccessToken is
+  # dropped only if someone PRESENTS it after expiry, which almost none are, and
+  # a spent RefreshToken is kept on purpose for reuse detection but stops proving
+  # anything once its family is past REFRESH_ABSOLUTE_DAYS. Both tables therefore
+  # grew forever at roughly a row per token per user per day, which is index and
+  # backup weight on the lookup that fronts every authenticated request — and
+  # months-dead auth artefacts kept for no reason that survives the retention
+  # question. Daily is ample; the rows are already refused by the time it runs.
+  # No notification credentials here: this command touches no ledger row, so the
+  # post_save alert signal never fires.
+  - type: cron
+    name: zitch-purge-sessions
+    runtime: python
+    rootDir: backend
+    plan: starter
+    schedule: "45 3 * * *"   # 03:45 UTC daily, off the hour the other jobs use
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python manage.py purge_expired_sessions"
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_REQUIRE_SHARED_CACHE
+        value: "false"   # single-process management command; no rate-limit state
+      - key: DATABASE_URL
+        fromDatabase:
+          name: zitch-db
+          property: connectionString
+      # The cutoffs are derived from these, so the cron must read the SAME values
+      # the web service issues tokens under — otherwise it deletes live sessions
+      # or keeps dead ones.
+      - key: TOKEN_TTL_HOURS
+        fromService: {type: web, name: zitch-api, envVarKey: TOKEN_TTL_HOURS}
+      - key: ADMIN_TOKEN_TTL_HOURS
+        fromService: {type: web, name: zitch-api, envVarKey: ADMIN_TOKEN_TTL_HOURS}
+      - key: REFRESH_ABSOLUTE_DAYS
+        fromService: {type: web, name: zitch-api, envVarKey: REFRESH_ABSOLUTE_DAYS}
 
   # VTU reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
