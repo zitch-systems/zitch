@@ -27,7 +27,11 @@ const Scan = () => {
   const handleResult = (raw: string) => {
     const id = extractIdentifier(raw);
     if (id) {
-      router.replace({ pathname: '/sendmoney', params: { identifier: id } });
+      // Say WHICH it is. Send money cannot infer it safely from the value alone
+      // in every case, and a phone landing in the bank-account field is a
+      // payment to a stranger, not a failed scan.
+      const kind = id.length === 11 ? 'phone' : 'account';
+      router.replace({ pathname: '/sendmoney', params: { identifier: id, kind } });
     } else {
       handled.current = false; // let them try again
       notify('Unrecognised code', "That QR doesn't contain a Zitch account or phone number.");

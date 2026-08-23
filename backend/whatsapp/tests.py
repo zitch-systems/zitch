@@ -3358,6 +3358,32 @@ class IdleReauthTests(TestCase):
         self.assertIn("₦", out)             # the original request ran
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
 
+    def test_typing_the_pin_in_chat_also_unlocks(self):
+        """The CHAT rung, driven end-to-end through handle_inbound.
+
+        The test above calls run_flow_execution directly, which is why this stayed
+        broken: `unlock` was missing from the chat handler map, so the fall-through
+        cleared the action and printed the menu. A correct PIN appeared to do
+        nothing, last_verified was never set, and the next "balance" re-challenged —
+        a loop the customer could not escape, costing an SMS per attempt. This rung
+        is reached precisely when the secure Flow send FAILED.
+        """
+        self._say("balance")
+        self.assertTrue(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+
+        self._say("1234")                    # the PIN, typed into the thread
+        convo = ConversationState.objects.get(msisdn=MSISDN)
+        self.assertIsNotNone(convo.last_verified, "a correct PIN must start the window")
+        self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="unlock").exists())
+        # ...and the follow-up is answered instead of challenged again.
+        self.assertIn("₦", self._say("balance"))
+
+    def test_a_wrong_pin_in_chat_does_not_unlock(self):
+        self._say("balance")
+        self._say("9999")
+        convo = ConversationState.objects.filter(msisdn=MSISDN).first()
+        self.assertIsNone(getattr(convo, "last_verified", None))
+
     def test_a_warm_conversation_is_not_challenged_again(self):
         ConversationState.objects.update_or_create(
             msisdn=MSISDN, defaults={"last_verified": timezone.now()})

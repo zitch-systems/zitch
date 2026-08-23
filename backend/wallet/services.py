@@ -61,13 +61,21 @@ def wallet_expected_balance(user_id) -> Decimal:
     credits are only ever written Successful. This is the single source of truth
     for both integrity checks: the internal one (ledger vs stored balance) and the
     external one (ledger vs the bank's NUBAN balance).
+
+    Filtered to NGN, matching settlement_report._owed. Both callers compare this
+    against a NAIRA figure — Wallet.balance and the Wema NUBAN balance — so summing
+    an FX row into it is comparing two different currencies as though they were one
+    number. The first customer to convert any currency would make integrity_check
+    and reconcile_balances go red permanently, and a permanently-red alarm hides the
+    real double-credit it exists to catch. Non-NGN holdings live in their own
+    per-currency wallets (see CurrencyWallet).
     """
     credits = (Transaction.objects
                .filter(user_id=user_id, direction=Transaction.IN,
-                       transaction_status=Transaction.SUCCESS)
+                       transaction_status=Transaction.SUCCESS, currency="NGN")
                .aggregate(s=Sum("amount"))["s"] or Decimal("0"))
     debits = (Transaction.objects
-              .filter(user_id=user_id, direction=Transaction.OUT)
+              .filter(user_id=user_id, direction=Transaction.OUT, currency="NGN")
               .filter(Q(transaction_status=Transaction.PENDING)
                       | Q(transaction_status=Transaction.SUCCESS))
               .aggregate(s=Sum("amount"))["s"] or Decimal("0"))

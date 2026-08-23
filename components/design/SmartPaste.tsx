@@ -41,8 +41,15 @@ const SmartPaste = () => {
 
   const sendMoney = () => {
     close();
-    const identifier = isPhone ? num.replace(/^0/, '') : num;
-    setTimeout(() => router.push({ pathname: '/sendmoney', params: { identifier } }), 240);
+    // The number is passed through UNCHANGED. Stripping the leading zero used to
+    // happen here, which could never match: accounts.User.phone stores the local
+    // 11-digit form and _find_recipient compares it with an equality test, so
+    // "8012345678" resolved to nobody — and because Send money defaulted to bank
+    // mode, that mangled value landed in the account-number field instead.
+    setTimeout(() => router.push({
+      pathname: '/sendmoney',
+      params: { identifier: num, kind: isPhone ? 'phone' : 'account' },
+    }), 240);
   };
 
   const buyAirtime = () => {

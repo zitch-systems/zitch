@@ -3963,11 +3963,36 @@ def _advance(pa: PendingAction, user, msisdn: str, text: str) -> None:
         "kyc": _advance_kyc,
         "qr": _advance_qr,
         "beneficiary": _advance_beneficiary,
+        "unlock": _advance_unlock,
     }.get(pa.action_type)
     if handler is None:
         _clear_actions(msisdn)
         return send_menu(msisdn)
     return handler(pa, user, msisdn, text)
+
+
+def _advance_unlock(pa: PendingAction, user, msisdn: str, text: str) -> None:
+    """The CHAT rung of re-auth: a PIN typed into the thread, rather than entered on
+    the secure Flow screen.
+
+    This was missing from the handler map, and the fall-through there clears the
+    action and prints the menu — so a CORRECT PIN silently did nothing. `_mark_verified`
+    was never reached, `last_verified` stayed null, and the very next "balance"
+    re-challenged: the customer could never read their own balance, statement or
+    account details on WhatsApp again, burning an SMS on every attempt. The Flow rung
+    has always had an `unlock` executor (see run_flow_execution); only this one was
+    forgotten, and it is reached precisely when the Flow send FAILED — i.e. when the
+    customer already has the worse experience.
+
+    _flow_pin_ok owns the wrong-PIN, lockout and attempt-cap replies; _exec_unlock
+    owns marking the session verified and resuming whatever triggered the challenge.
+    """
+    if pa.state != "pin":
+        _clear_actions(msisdn)
+        return send_menu(msisdn)
+    if not _flow_pin_ok(pa, user, msisdn, text):
+        return
+    return reply(msisdn, _exec_unlock(pa, user, msisdn))
 
 
 def _advance_transfer(pa: PendingAction, user, msisdn: str, text: str) -> None:
