@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import Client, TestCase, override_settings
+from django.utils import timezone
 
 from accounts.models import hash_identifier
 from wallet.models import Transaction, Wallet, WemaProvisioningAttempt
@@ -650,3 +651,88 @@ class ReconnectBankAccountAdminTests(TestCase):
             wallet = self._run()
         self.assertEqual(wallet.account_number, "")
         self.assertIn("no record", " ".join(self.messages))
+
+
+class WemaPartialReversalTests(TestCase):
+    """A credit quoting a payout reference but NOT its amount is not a reversal.
+
+    reverse_transfer refunds the payout's amount, not the amount that landed, so
+    treating a partial return as a clean reversal credits the wrong number and
+    drops the real money at the same time.
+    """
+
+    PAYOUT_REF = "ZTCHDEADBEEF0002"
+
+    def setUp(self):
+        # Wallet already debited N1,000 by the payout: N5,000 - N1,000.
+        self.user, _ = make_user("08030000556", "partial@zitch.app", balance="4000")
+        self.wallet = Wallet.objects.get(user=self.user)
+        self.wallet.account_number = "0155500056"
+        self.wallet.account_reference = wema_account_reference(self.user)
+        self.wallet.save(update_fields=["account_number", "account_reference"])
+        self.payout = Transaction.objects.create(
+            user=self.user, service="Transfer to ADA", amount=Decimal("1000"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference=self.PAYOUT_REF, meta={"reconcile": True, "bank": "GTBank"})
+
+    def _row(self, amount):
+        return _tx("ALAT-REV-PART", amount, narration=f"REFUND {self.PAYOUT_REF}")
+
+    def test_a_partial_return_is_quarantined_not_refunded_in_full(self):
+        with patch("utility.alerts.alert") as alerted:
+            self.assertIsNone(apply_wema_credit(self.wallet, self._row(500),
+                                                [self.PAYOUT_REF]))
+        # Neither refunded at the payout's value nor credited as funding.
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("4000.00"))
+        self.payout.refresh_from_db()
+        self.assertEqual(self.payout.transaction_status, Transaction.PENDING)
+        self.assertFalse(Transaction.objects.filter(
+            reference="WEMA-CR-ALAT-REV-PART").exists())
+        # And it pages, because the money is now stuck pending a human.
+        self.assertTrue([c for c in alerted.call_args_list
+                         if "partial_reversal" in str(c)], "a partial return must page")
+
+    def test_an_exact_return_still_reverses(self):
+        self.assertIsNone(apply_wema_credit(self.wallet, self._row(1000),
+                                            [self.PAYOUT_REF]))
+        self.payout.refresh_from_db()
+        self.assertEqual(self.payout.transaction_status, Transaction.FAILED)
+        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000.00"))
+
+
+class ReversalLookbackTests(TestCase):
+    """The reference set the reversal matcher scans is bounded by age.
+
+    Unbounded it grows for the life of the account and is substring-scanned
+    against every polled credit row, so a reconcile sweep costs
+    payouts-ever x credit-rows — fine today, the slowest thing in the cron later.
+    """
+
+    def setUp(self):
+        self.user, _ = make_user("08030000557", "lookback@zitch.app", balance="1000")
+
+    def _payout(self, ref, age_days):
+        txn = Transaction.objects.create(
+            user=self.user, service="Transfer to ADA", amount=Decimal("100"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference=ref, meta={"bank": "GTBank"})
+        # created is auto_now_add, so it has to be back-dated after the fact.
+        Transaction.objects.filter(pk=txn.pk).update(
+            created=timezone.now() - timedelta(days=age_days))
+        return txn
+
+    def test_recent_payouts_are_matched_and_ancient_ones_are_not(self):
+        from wallet.services import self_payout_references
+
+        self._payout("ZTCHRECENT01", 3)
+        self._payout("ZTCHANCIENT1", 400)
+        refs = self_payout_references(self.user)
+        self.assertIn("ZTCHRECENT01", refs)
+        self.assertNotIn("ZTCHANCIENT1", refs)
+
+    @override_settings(WEMA_REVERSAL_LOOKBACK_DAYS=500)
+    def test_the_window_is_configurable(self):
+        from wallet.services import self_payout_references
+
+        self._payout("ZTCHANCIENT2", 400)
+        self.assertIn("ZTCHANCIENT2", self_payout_references(self.user))
