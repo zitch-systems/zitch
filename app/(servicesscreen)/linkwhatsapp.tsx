@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking, ActivityIndicator } from 'react-native';
+import { View, Text, Pressable, Linking, ActivityIndicator, AppState } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
@@ -33,6 +33,12 @@ const Step = ({ n, text }: { n: number; text: string }) => {
   );
 };
 
+//: Auto-detect cadence. /api/whatsapp/link/status/ allows 30 requests per 300s;
+//: fast-then-slow keeps the worst 5-minute window at 10 + 12 = 22.
+const POLL_FAST_MS = 6000;
+const POLL_SLOW_MS = 20000;
+const POLL_FAST_FOR_MS = 60000;
+
 const LinkWhatsApp = () => {
   const { c } = useTheme();
   const [stage, setStage] = useState<Stage>('loading');
@@ -42,11 +48,14 @@ const LinkWhatsApp = () => {
   const [busy, setBusy] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [polling, setPolling] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // A self-rescheduling timeout, not setInterval: the cadence changes as the wait
+  // goes on (see POLL_FAST_MS / POLL_SLOW_MS) and a fixed interval cannot do that.
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollDeadlineRef = useRef(0);
+  const pollStartedRef = useRef(0);
 
   const stopPoll = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
     setPolling(false);
   }, []);
 
@@ -71,6 +80,62 @@ const LinkWhatsApp = () => {
     }
   }, [stopPoll]);
 
+  /* Auto-detect cadence, sized to the SERVER'S budget.
+   *
+   * /api/whatsapp/link/status/ is rate-limited to 30 requests per 300s. The old
+   * loop polled every 4 seconds — 75 requests per 5 minutes, two and a half times
+   * over — so after roughly two minutes every poll came back 429. refreshStatus
+   * swallows errors when silent, so nothing surfaced: auto-detect simply stopped
+   * working, and a customer who took longer than two minutes to send the code sat
+   * there until the 30-minute deadline told them it had expired, even when the
+   * link had actually succeeded.
+   *
+   * Fast for the first minute (the window where someone is actually switching to
+   * WhatsApp and sending), then slow. Worst case in any 5-minute window is
+   * 10 + 12 = 22 requests, comfortably inside the budget with room for the
+   * mount-time check and a manual refresh.
+   */
+  // Self-reference for the recursive scheduler: a useCallback cannot call itself
+  // (it is not in scope inside its own initialiser), and a ref keeps the loop
+  // pointing at the CURRENT closure rather than the one captured on first render.
+  const scheduleRef = useRef<() => void>(() => {});
+
+  const schedulePoll = useCallback(() => {
+    if (pollRef.current) clearTimeout(pollRef.current);
+    const elapsed = Date.now() - pollStartedRef.current;
+    const delay = elapsed < POLL_FAST_FOR_MS ? POLL_FAST_MS : POLL_SLOW_MS;
+    pollRef.current = setTimeout(async () => {
+      if (Date.now() >= pollDeadlineRef.current) {
+        stopPoll();
+        notify('Code expired', 'Generate a new WhatsApp link code to continue.');
+        setStage('unlinked');
+        setCode('');
+        setWaLink('');
+        return;
+      }
+      // Nothing to detect while the app is in the background — the customer is
+      // in WhatsApp. Polling on anyway spent battery and the request budget on
+      // exactly the minutes we cannot use them.
+      if (AppState.currentState === 'active') {
+        const linked = await refreshStatus(true);
+        if (linked) return;            // refreshStatus already stopped the poll
+      }
+      if (pollRef.current) scheduleRef.current();
+    }, delay);
+  }, [refreshStatus, stopPoll]);
+
+  useEffect(() => { scheduleRef.current = schedulePoll; }, [schedulePoll]);
+
+  // Coming back from WhatsApp is the single most likely moment for the link to
+  // have completed, so check immediately on foreground rather than waiting out
+  // the next tick.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && pollRef.current) void refreshStatus(true);
+    });
+    return () => sub.remove();
+  }, [refreshStatus]);
+
   useEffect(() => {
     const timer = setTimeout(() => void refreshStatus(), 0);
     return () => { clearTimeout(timer); stopPoll(); };
@@ -91,18 +156,9 @@ const LinkWhatsApp = () => {
       // Auto-detect the moment the user sends the code from WhatsApp.
       stopPoll();
       setPolling(true);
-      pollDeadlineRef.current = Date.now() + (30 * 60 * 1000);  // matches LINK_CODE_TTL
-      pollRef.current = setInterval(() => {
-        if (Date.now() >= pollDeadlineRef.current) {
-          stopPoll();
-          notify('Code expired', 'Generate a new WhatsApp link code to continue.');
-          setStage('unlinked');
-          setCode('');
-          setWaLink('');
-          return;
-        }
-        void refreshStatus(true);
-      }, 4000);
+      pollStartedRef.current = Date.now();
+      pollDeadlineRef.current = pollStartedRef.current + (30 * 60 * 1000);  // matches LINK_CODE_TTL
+      schedulePoll();
     } else {
       notify('Error', res?.message || 'Could not generate a code. Please try again.');
     }
