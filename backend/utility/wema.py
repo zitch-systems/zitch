@@ -301,14 +301,35 @@ def _naira(v) -> Decimal | None:
         return None
 
 
+#: HTTP statuses where the gateway itself failed or shed load, so the body says
+#: NOTHING about what the transfer processor behind it did. 429 and 5xx bodies are
+#: APIM's own (`{"statusCode":429,"message":"Rate limit is exceeded..."}`), not
+#: ALAT's envelope, so `_ok()` reads them as a negative envelope and every caller
+#: would otherwise treat "the gateway is having a bad minute" as "the bank refused"
+#: — which on a transfer means refunding a sender whose recipient was already paid.
+#:
+#: Raised as HTTPError (a RequestException) so they land in the same handler as a
+#: timeout, which every call site in this module already has and which the money
+#: paths already resolve to PENDING. 4xx codes NOT listed here are deliberate
+#: exclusions: 400/401/403/404/422 mean the gateway understood the request and
+#: refused it, so nothing was executed and a definitive failure is correct.
+def _raise_if_ambiguous(resp: requests.Response) -> requests.Response:
+    if resp.status_code in (408, 429) or resp.status_code >= 500:
+        raise requests.HTTPError(
+            f"bank gateway returned HTTP {resp.status_code}", response=resp)
+    return resp
+
+
 def _get(product: str, path: str, params: dict | None = None) -> requests.Response:
-    return requests.get(_url(product, path), params=params or {},
-                        headers=_headers(product), timeout=REQUEST_TIMEOUT)
+    return _raise_if_ambiguous(
+        requests.get(_url(product, path), params=params or {},
+                     headers=_headers(product), timeout=REQUEST_TIMEOUT))
 
 
 def _post(product: str, path: str, body: dict, params: dict | None = None) -> requests.Response:
-    return requests.post(_url(product, path), json=body, params=params or {},
-                         headers=_headers(product), timeout=REQUEST_TIMEOUT)
+    return _raise_if_ambiguous(
+        requests.post(_url(product, path), json=body, params=params or {},
+                      headers=_headers(product), timeout=REQUEST_TIMEOUT))
 
 
 def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
@@ -847,9 +868,29 @@ def classify_transfer_status(status: str, *, envelope_ok: bool = True) -> str:
     return "pending"
 
 
-def _transfer_result(data: dict, reference: str, result: dict) -> dict:
+def _transfer_result(data: dict, reference: str, result: dict, *,
+                     lookup: bool = False) -> dict:
+    """Normalise a transfer envelope into success / pending / failed.
+
+    ``lookup=True`` for confirm_transfer_status. A negative envelope on the transfer
+    POST is a verdict on the transfer — the bank read the instruction and refused it,
+    so a refund is right. A negative envelope on a STATUS QUERY is not a verdict on
+    anything: it means we failed to ask the question. The commonest cause is benign
+    (ALAT answers `hasError: true` for a reference its status store has not indexed
+    yet, which is normal seconds after send, exactly when the callback fires), and
+    treating it as "the transfer failed" refunds a sender whose recipient was already
+    paid — unrecoverably, because the row then goes terminal and is never re-swept.
+
+    So a lookup only ever yields a definitive failure when the bank actually named a
+    terminal status. Anything else stays PENDING for the poller, which is what this
+    function's caller has always claimed to do on the transport-error path.
+    """
     status = str(result.get("status") or "").strip().upper()
-    outcome = classify_transfer_status(status, envelope_ok=_ok(data))
+    envelope_ok = _ok(data)
+    if lookup and not envelope_ok:
+        outcome = "pending"
+    else:
+        outcome = classify_transfer_status(status, envelope_ok=envelope_ok)
     return {
         "success": outcome == "success",
         "pending": outcome == "pending",
@@ -912,7 +953,8 @@ def confirm_transfer_status(reference: str) -> dict:
         data = _get("debit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}").json()
         outer = data.get("result", {}) or {}
         r = outer.get("data", {}) or {} if isinstance(outer, dict) else {}
-        return _transfer_result(data, reference, r if isinstance(r, dict) else {})
+        return _transfer_result(data, reference, r if isinstance(r, dict) else {},
+                                lookup=True)
     except (requests.RequestException, ValueError) as exc:
         # A failed status lookup says nothing about the original transfer.  Keep
         # the debit held for the next callback/reconciliation attempt.
@@ -956,7 +998,8 @@ def confirm_credit_status(reference: str) -> dict:
         data = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}").json()
         outer = data.get("result", {}) or {}
         result = outer.get("data", {}) or {} if isinstance(outer, dict) else {}
-        return _transfer_result(data, reference, result if isinstance(result, dict) else {})
+        return _transfer_result(data, reference, result if isinstance(result, dict) else {},
+                                lookup=True)
     except (requests.RequestException, ValueError) as exc:
         # A failed status lookup cannot disprove the credit; retain PENDING and
         # reconcile again rather than issuing a duplicate FundWallet request.

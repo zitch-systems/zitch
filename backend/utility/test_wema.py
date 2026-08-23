@@ -24,9 +24,14 @@ WEMA_VAS = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "airtime": "airkey", "bill
             "SOURCE_ACCOUNT": "0100000001"}
 
 
-def _resp(body):
+def _resp(body, status=200):
+    # A REAL int status_code, not a MagicMock attribute: _raise_if_ambiguous
+    # compares it numerically, and money paths turn on the answer. A mock that
+    # silently isn't a number would make every one of these tests exercise a
+    # code path the gateway never takes.
     m = MagicMock()
     m.json.return_value = body
+    m.status_code = status
     return m
 
 
@@ -220,6 +225,10 @@ class WemaLiveTests(SimpleTestCase):
 
     @patch("utility.wema.requests.post")
     def test_credit_non_json_response_stays_pending(self, mock_post):
+        # HTTP 200 carrying an HTML error page: the status code is fine, the BODY
+        # is unparseable, so this must exercise the ValueError path (not the
+        # ambiguous-status one) and still hold the credit as pending.
+        mock_post.return_value.status_code = 200
         mock_post.return_value.json.side_effect = ValueError("gateway returned HTML")
         result = wema.credit_wallet(
             1000, "REF-CREDIT-HTML", "test", destination_account="01",
@@ -286,6 +295,82 @@ class WemaLiveTests(SimpleTestCase):
         result = wema.confirm_transfer_status("REF-WAIT")
         self.assertFalse(result["success"])
         self.assertTrue(result["pending"])
+
+
+@override_settings(WEMA=WEMA_LIVE)
+class TransferAmbiguityTests(SimpleTestCase):
+    """A refund is irreversible in practice — the recipient has already been paid over
+    NIP and the row goes terminal, so nothing re-sweeps it. These lock in the rule that
+    only POSITIVE evidence of failure may refund a sender."""
+
+    @patch("utility.wema.requests.get")
+    def test_apim_rate_limit_on_status_query_stays_pending(self, mock_get):
+        # APIM's own error body, not ALAT's envelope: `_ok()` reads it as negative.
+        # Before the fix this classified as a definitive failure and refunded a
+        # transfer the bank may already have paid out.
+        mock_get.return_value = _resp(
+            {"statusCode": 429, "message": "Rate limit is exceeded. Try again in 12 seconds."},
+            status=429)
+        result = wema.confirm_transfer_status("REF-429")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"], "a throttled status query is not a failed transfer")
+
+    @patch("utility.wema.requests.get")
+    def test_gateway_500_on_status_query_stays_pending(self, mock_get):
+        mock_get.return_value = _resp({"statusCode": 504, "message": "Gateway timeout"}, status=504)
+        result = wema.confirm_transfer_status("REF-504")
+        self.assertTrue(result["pending"])
+
+    @patch("utility.wema.requests.get")
+    def test_reference_not_yet_indexed_stays_pending(self, mock_get):
+        # ALAT answers hasError for a reference its status store hasn't picked up
+        # yet — routine in the seconds after send, which is exactly when the
+        # bank's own requestType-3 callback arrives and triggers this query.
+        mock_get.return_value = _resp(
+            {"result": None, "hasError": True, "errorMessage": "Transaction not found"})
+        result = wema.confirm_transfer_status("REF-UNKNOWN")
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"], "an unindexed reference is not a failed transfer")
+
+    @patch("utility.wema.requests.get")
+    def test_an_explicit_terminal_failure_is_still_refundable(self, mock_get):
+        # The other half of the contract: when the bank DOES name a terminal
+        # failure, this must remain a definitive failure so the sender is refunded.
+        mock_get.return_value = _resp(
+            {"result": {"data": {"status": "FAILED", "transactionReference": "REF-BAD"}},
+             "hasError": False})
+        result = wema.confirm_transfer_status("REF-BAD")
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"], "a named terminal failure must still refund")
+        self.assertEqual(result["status"], "FAILED")
+
+    @patch("utility.wema.requests.post")
+    def test_gateway_503_on_the_transfer_post_stays_pending(self, mock_post):
+        # The POST is non-idempotent: a 503 from the gateway does not prove the
+        # bank never executed it, so this must hold the debit rather than refund.
+        mock_post.return_value = _resp({"statusCode": 503, "message": "Service unavailable"},
+                                       status=503)
+        result = wema.transfer(
+            1000, "REF-503", "test", source_account="01",
+            destination_account="02", destination_bank_code="035",
+            destination_bank_name="Wema", destination_name="ADA",
+        )
+        self.assertFalse(result["success"])
+        self.assertTrue(result["pending"])
+
+    @patch("utility.wema.requests.post")
+    def test_a_business_rejection_on_the_transfer_post_is_definitive(self, mock_post):
+        # A readable ALAT rejection (HTTP 200, hasError) IS a verdict on the
+        # transfer — nothing was executed, so refunding is correct.
+        mock_post.return_value = _resp(
+            {"result": {}, "hasError": True, "errorMessage": "Insufficient funds"})
+        result = wema.transfer(
+            1000, "REF-NSF", "test", source_account="01",
+            destination_account="02", destination_bank_code="035",
+            destination_bank_name="Wema", destination_name="ADA",
+        )
+        self.assertFalse(result["success"])
+        self.assertFalse(result["pending"], "a read-and-refused instruction must refund")
 
 
 class WemaKycTests(SimpleTestCase):
