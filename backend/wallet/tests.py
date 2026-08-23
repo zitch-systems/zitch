@@ -740,3 +740,49 @@ class StatementRequestTests(TestCase):
             res, body = self.post({"file_type": "pdf"})
         self.assertEqual(res.status_code, 502)
         self.assertFalse(body.get("success"))
+
+
+class FxSettlementGateTests(TestCase):
+    """The caps have to hold at SETTLEMENT, not only when a quote is priced.
+
+    Pricing a quote debits nothing, so N quotes taken before any is settled all
+    read the same "spent today" and all pass. Without a re-check at settlement,
+    settling them all moves N times the daily cap — the same reasoning debit()
+    gives for re-checking under the wallet lock.
+    """
+
+    def setUp(self):
+        self.user, _ = make_user("08044440001", "fxsettle@zitch.test", tier=1)
+        credit(self.user, Decimal("500000"), "Seed")
+
+    def _quote(self, amount):
+        return create_fx_quote(self.user, "NGN", "USD", Decimal(amount))
+
+    def test_two_stacked_quotes_cannot_both_settle_past_the_daily_cap(self):
+        from wallet.forex import execute_fx
+
+        # Both priced before either settles, so both saw "spent today" = 0.
+        first, second = self._quote("30000"), self._quote("30000")
+        execute_fx(self.user, first.quote_ref)
+        # The first is now on the ledger. The second must be refused at
+        # settlement — a tier-1 daily transfer cap cannot absorb both.
+        with self.assertRaises(FxError):
+            execute_fx(self.user, second.quote_ref)
+
+    def test_a_single_quote_within_the_cap_still_settles(self):
+        from wallet.forex import execute_fx
+
+        quote = self._quote("10000")
+        settled = execute_fx(self.user, quote.quote_ref)
+        self.assertTrue(settled.used)
+
+    def test_verification_lost_after_pricing_blocks_settlement(self):
+        from wallet.forex import execute_fx
+
+        quote = self._quote("10000")
+        # The quote was priced while verified; the account then lost it (an
+        # email/phone change clears the flag and re-derives the tier).
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
+        with self.assertRaises(FxError):
+            execute_fx(self.user, quote.quote_ref)

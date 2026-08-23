@@ -57,6 +57,58 @@ def _fx_margin() -> Decimal:
         return Decimal("0")
 
 
+def _assert_conversion_allowed(user, frm: str, sell: Decimal, ngn_equiv=None) -> None:
+    """Every money-out gate a conversion has to clear. Raises FxError on the first
+    that refuses.
+
+    Conversion reaches the ledger through `_move` rather than `debit()`, so it
+    inherits none of `spend_limit_error`'s gates and has to state each one. Shared
+    by quote creation and settlement because checking only at quote time makes
+    these advisory in exactly the way `debit()`'s docstring warns about: nothing
+    is debited when a quote is priced, so N quotes taken before any is settled all
+    read the same "spent today" and all pass. Re-running the gates at settlement
+    is what makes the cap a cap. Pass `ngn_equiv` when the caller already knows the
+    naira value, to avoid re-pricing over the network.
+    """
+    # Identity first: without this an unverified account could still move value
+    # by converting it.
+    unverified = unverified_error(user)
+    if unverified:
+        raise FxError(unverified)
+
+    # The compromised-account brake applies to EVERY conversion, including
+    # foreign->foreign. It is about the rate of money-out attempts, not the
+    # currency: without it, someone holding a stolen PIN could drain a foreign
+    # balance through back-to-back USD->GBP->CAD hops, the one money-out path
+    # that never tripped the brake every other flow enforces.
+    if velocity_exceeded(user):
+        raise FxError("Too many transactions in a short time. Please wait a few minutes and try again.")
+
+    # Tier / large-transfer (AML face) ceiling — converting NGN out of the
+    # regulated ledger must respect the same limit as a transfer or bill spend.
+    # Every other money-out flow calls this; FX must too.
+    if frm == "NGN":
+        # An NGN→foreign conversion counts against the same daily "transfer"
+        # ceiling as a bank transfer (both move value out of the NGN ledger), so
+        # FX can't be used to move more per day than that cap.
+        capped = sell
+    else:
+        # Foreign->foreign still moves value and still deserves a ceiling. The
+        # tier limit is denominated in NGN, so compare the NGN equivalent of the
+        # sale rather than the raw foreign figure — otherwise "1000" of a strong
+        # currency slips under a cap written for naira. A rate we cannot price
+        # fails CLOSED: an uncapped conversion is exactly what this guards.
+        capped = _ngn_equivalent(frm, sell) if ngn_equiv is None else ngn_equiv
+        if capped is None:
+            raise FxError("Couldn't price that conversion right now. Try again shortly.")
+    reason = send_limit_error(user, capped)
+    if reason:
+        raise FxError(reason)
+    daily = daily_limit_error(user, capped, "transfer")
+    if daily:
+        raise FxError(daily)
+
+
 def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     """Validate the pair + funds, get a provider rate, apply the margin, and
     persist a time-boxed quote. Raises FxError on anything the user must fix."""
@@ -77,52 +129,7 @@ def create_fx_quote(user, frm: str, to: str, sell_amount) -> FxQuote:
     if currency_balance(user, frm) < sell:
         raise FxError(f"Insufficient {frm} balance.")
 
-    # Conversion is money-out, and it reaches the ledger through _move rather
-    # than debit() — so it inherits none of spend_limit_error's gates and has to
-    # state each one. Identity first: without this an unverified account could
-    # still move value by converting it.
-    unverified = unverified_error(user)
-    if unverified:
-        raise FxError(unverified)
-
-    # The compromised-account brake applies to EVERY conversion, including
-    # foreign->foreign. It is about the rate of money-out attempts, not the
-    # currency: without it, someone holding a stolen PIN could drain a foreign
-    # balance through back-to-back USD->GBP->CAD hops, the one money-out path
-    # that never tripped the brake every other flow enforces.
-    if velocity_exceeded(user):
-        raise FxError("Too many transactions in a short time. Please wait a few minutes and try again.")
-
-    # Tier / large-transfer (AML face) ceiling — converting NGN out of the
-    # regulated ledger must respect the same limit as a transfer or bill spend.
-    # Every other money-out flow calls this; FX must too. Scoped to NGN-source:
-    # the tier limit is denominated in NGN and the control concern is value
-    # leaving naira (NGN -> foreign currency).
-    if frm == "NGN":
-        reason = send_limit_error(user, sell)
-        if reason:
-            raise FxError(reason)
-        # Daily aggregate too: an NGN→foreign conversion counts against the same
-        # daily "transfer" ceiling as a bank transfer (both move value out of the
-        # NGN ledger), so FX can't be used to move more per day than that cap.
-        daily = daily_limit_error(user, sell, "transfer")
-        if daily:
-            raise FxError(daily)
-    else:
-        # Foreign->foreign still moves value and still deserves a ceiling. The
-        # tier limit is denominated in NGN, so compare the NGN equivalent of the
-        # sale rather than the raw foreign figure — otherwise "1000" of a strong
-        # currency slips under a cap written for naira. A rate we cannot price
-        # fails CLOSED: an uncapped conversion is exactly what this guards.
-        ngn_equiv = _ngn_equivalent(frm, sell)
-        if ngn_equiv is None:
-            raise FxError("Couldn't price that conversion right now. Try again shortly.")
-        reason = send_limit_error(user, ngn_equiv)
-        if reason:
-            raise FxError(reason)
-        daily = daily_limit_error(user, ngn_equiv, "transfer")
-        if daily:
-            raise FxError(daily)
+    _assert_conversion_allowed(user, frm, sell)
 
     q = fx_quote(frm, to, sell)
     if not q.get("success"):
@@ -190,6 +197,20 @@ def execute_fx(user, quote_ref: str, idempotency_key: str = "", channel: str = "
         raise FxError("This conversion was already completed.")
     if quote.expired:
         raise FxError("This rate has expired — send the request again for a fresh quote.")
+
+    # Re-assert every money-out gate HERE, holding the quote row lock, and before
+    # the provider call so nothing is executed upstream that we then refuse.
+    # Checking only at quote time leaves the caps advisory: pricing a quote debits
+    # nothing, so two quotes taken before either settles both read the same "spent
+    # today" and both pass, and settling both moves twice the daily cap. Same
+    # reasoning debit() gives for re-checking under the wallet lock — FX was the
+    # one money-out path still doing it once, up front.
+    #
+    # A foreign-source quote already carries its naira value when the target is
+    # NGN, so pass it rather than re-pricing over the network under the lock.
+    _assert_conversion_allowed(
+        user, quote.from_currency, quote.sell_amount,
+        ngn_equiv=quote.receive_amount if quote.to_currency == "NGN" else None)
 
     result = fx_execute(quote_ref)
     if not result.get("success"):
