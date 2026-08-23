@@ -594,7 +594,7 @@
               {
                 "type": "TextInput",
                 "name": "bank",
-                "label": "Bank (optional)",
+                "label": "Bank",
                 "input-type": "text",
                 "required": false,
                 "helper-text": "Type the bank name, e.g. Wema, Kuda or GTBank. Leave blank and we'll try the account number.",
