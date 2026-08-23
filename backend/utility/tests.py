@@ -1,11 +1,13 @@
 """Tests for VTU purchases: the debit -> provider -> settle/refund invariant
 that protects users from losing money when an aggregator call fails."""
 import json
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import Client, TestCase
+from django.utils import timezone
 
 from wallet.models import Transaction
 from wallet.services import get_or_create_wallet
@@ -246,6 +248,30 @@ class VtuReconciliationTests(TestCase):
             call_command("reconcile_vtu", older_than_minutes=0)
             call_command("reconcile_vtu", older_than_minutes=0)  # second run must not double-refund
         self.assertEqual(self.balance(), Decimal("20000"))
+
+    def test_a_freshly_pending_purchase_does_not_page(self):
+        """Minutes after a timeout, holding PENDING is the correct behaviour."""
+        _, body = self._buy_airtime_timed_out()
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "pending": True}), \
+             patch("utility.alerts.alert") as alerted:
+            call_command("reconcile_vtu", older_than_minutes=0)
+        self.assertFalse([c for c in alerted.call_args_list if "still PENDING" in str(c)])
+
+    def test_a_purchase_stuck_for_hours_pages(self):
+        """After hours the sweep will not resolve it on its own, and nothing else
+        reports that the customer paid for a service never delivered."""
+        _, body = self._buy_airtime_timed_out()
+        old = timezone.now() - timedelta(hours=6)
+        # created is auto_now_add, so it has to be back-dated after the fact.
+        Transaction.objects.filter(reference=body["reference"]).update(created=old)
+        with patch("utility.management.commands.reconcile_vtu.vtu_requery",
+                   return_value={"success": False, "pending": True}), \
+             patch("utility.alerts.alert") as alerted:
+            call_command("reconcile_vtu", older_than_minutes=0)
+        stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
+        self.assertTrue(stuck, "a purchase stuck for hours must page")
+        self.assertIn(body["reference"], str(stuck[0]))
 
     def test_crash_after_debit_leaves_a_reconcilable_row(self):
         """Worker dies mid-provider-call: the debit has committed but settle never

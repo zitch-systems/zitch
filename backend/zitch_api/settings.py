@@ -393,6 +393,23 @@ WEMA = {
     "FACE_CALLBACK_IPS": [ip.strip() for ip in
                           os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
 }
+
+# How long a debited-but-unresolved movement may sit before the reconcile crons
+# page. Below these the sweeps are doing their job (a bank or an aggregator
+# taking minutes to confirm is ordinary); above them the customer has been
+# debited for something that neither arrived nor reversed, and no other control
+# reports that state. Tunable per environment because the right threshold is a
+# function of how slow the rails actually are in production.
+WEMA_PAYOUT_STUCK_HOURS = int(os.environ.get("WEMA_PAYOUT_STUCK_HOURS", "2") or 2)
+VTU_PURCHASE_STUCK_HOURS = int(os.environ.get("VTU_PURCHASE_STUCK_HOURS", "2") or 2)
+
+# How far back the Wema reversal matcher looks for a customer's own payout
+# references. A returned NIP transfer comes back in hours or days; the window
+# also bounds the cost of the sweep, which substring-scans this set against
+# every polled credit row.
+WEMA_REVERSAL_LOOKBACK_DAYS = int(
+    os.environ.get("WEMA_REVERSAL_LOOKBACK_DAYS", "30") or 30)
+
 # Fraud: a spend at or above this from a device the account has NEVER authenticated
 # from requires face verification first (see common.risk.new_device_step_up_error).
 # The shape of the fraud it addresses is a stolen password arriving on a new handset
