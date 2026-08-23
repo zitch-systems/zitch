@@ -7,6 +7,8 @@ testable without a Meta app. Real Graph API calls kick in once keys are set.
 import hashlib
 import hmac
 import logging
+import threading
+import time
 
 import requests
 from django.conf import settings
@@ -487,7 +489,59 @@ def send_template(msisdn: str, template_name: str, params: list | None = None, l
                 "message": "WhatsApp delivery status unknown"}
 
 
-def published_flow_report() -> dict:
+#: How long a Flow report stays good for. The thing it watches — a hand-publish
+#: in WhatsApp Manager — changes on human timescales, so minutes of staleness
+#: costs nothing and re-asking Meta on every probe costs a great deal (below).
+FLOW_REPORT_TTL = 300
+
+#: (monotonic_deadline, report). Process-local on purpose: the value is small,
+#: cheap to recompute once per process, and must stay readable when Redis is the
+#: thing that is broken.
+_flow_report_cache: tuple[float, dict] | None = None
+_flow_report_lock = threading.Lock()
+
+
+def published_flow_report(*, force: bool = False) -> dict:
+    """Cached wrapper over :func:`_published_flow_report`.
+
+    /healthz is unauthenticated — it has to be, the platform probes it without
+    credentials — and this is the only reading on it that leaves the process.
+    Uncached it made up to three Graph calls at a 15s timeout each, on a dyno
+    running `--workers 1 --threads 8`: eight concurrent GETs of a public URL
+    could hold every worker thread for the better part of a minute and take the
+    API down without a single authenticated request. That is a denial of service
+    with no attacker sophistication at all, and it can also happen by accident
+    when Meta is slow and the platform's own health check retries.
+
+    So: one refresh per TTL, and only ever one refresh in flight. A caller that
+    arrives while another thread is asking Meta gets the previous answer (or
+    `{"status": "refreshing"}` if there isn't one) rather than queueing behind
+    the network. Tests and explicit callers pass force=True.
+    """
+    global _flow_report_cache
+
+    if force or getattr(settings, "TESTING", False):
+        return _published_flow_report()
+
+    now = time.monotonic()
+    cached = _flow_report_cache
+    if cached and now < cached[0]:
+        return cached[1]
+
+    # Non-blocking: whoever loses the race reports the stale value immediately
+    # instead of holding a thread. This is what bounds the endpoint's cost to one
+    # outbound round-trip per TTL no matter how hard it is hit.
+    if not _flow_report_lock.acquire(blocking=False):
+        return cached[1] if cached else {"status": "refreshing"}
+    try:
+        report = _published_flow_report()
+        _flow_report_cache = (time.monotonic() + FLOW_REPORT_TTL, report)
+        return report
+    finally:
+        _flow_report_lock.release()
+
+
+def _published_flow_report() -> dict:
     """What Meta's PUBLISHED Flow actually contains, versus what this code sends.
 
     This is the one reading nothing else provides. `whatsapp_flow_ready` says a
@@ -529,7 +583,7 @@ def published_flow_report() -> dict:
     try:
         meta = requests.get(f"{base}/{flow_id}",
                             params={"fields": "id,name,status,validation_errors"},
-                            headers=headers, timeout=15)
+                            headers=headers, timeout=6)
         info = meta.json() if meta.content else {}
         if meta.status_code >= 400:
             err = (info.get("error") or {})
@@ -537,12 +591,12 @@ def published_flow_report() -> dict:
                     "detail": str(err.get("message") or meta.status_code)[:300]}
 
         # The published screens live in the FLOW_JSON asset, not on the node.
-        assets = requests.get(f"{base}/{flow_id}/assets", headers=headers, timeout=15)
+        assets = requests.get(f"{base}/{flow_id}/assets", headers=headers, timeout=6)
         published, published_props = [], {}
         for item in (assets.json().get("data") or []) if assets.content else []:
             if item.get("asset_type") != "FLOW_JSON" or not item.get("download_url"):
                 continue
-            body = requests.get(item["download_url"], timeout=15)
+            body = requests.get(item["download_url"], timeout=6)
             screens = body.json().get("screens") or []
             published = [s["id"] for s in screens]
             published_props = {s["id"]: set((s.get("data") or {}).keys()) for s in screens}

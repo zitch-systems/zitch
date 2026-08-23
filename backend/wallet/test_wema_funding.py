@@ -7,6 +7,7 @@ credit-reconciliation poller (ALAT has no inbound-credit webhook).
   once, is idempotent across re-polls, and ignores debits / zero rows.
 """
 import json
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -481,6 +482,35 @@ class WemaPayoutSettlementTests(TestCase):
         self._run("IN_PROGRESS")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
+
+    def test_a_freshly_stuck_payout_does_not_page(self):
+        # Leaving an unrecognised status PENDING is correct in the minutes after a
+        # send — the poller will try again. Paging on that would be pure noise.
+        self._pending_payout("ZTRF-PAY-NEW")
+        with patch("utility.alerts.alert") as alerted:
+            self._run("IN_PROGRESS")
+        stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
+        self.assertFalse(stuck, "a payout minutes old is not stuck yet")
+
+    def test_a_payout_stuck_for_hours_pages(self):
+        """The safety net under every settlement path.
+
+        A payout left PENDING is invisible to all three other controls: it is a
+        pending DEBIT, so integrity_check counts it as owed, reconcile_balances
+        sees the benign direction, and settlement_report reads a surplus. Without
+        this the first signal is the customer.
+        """
+        from django.utils import timezone
+
+        txn = self._pending_payout("ZTRF-PAY-STUCK")
+        old = timezone.now() - timedelta(hours=6)
+        Transaction.objects.filter(pk=txn.pk).update(created=old)   # auto_now_add
+
+        with patch("utility.alerts.alert") as alerted:
+            self._run("IN_PROGRESS")
+        stuck = [c for c in alerted.call_args_list if "still PENDING" in str(c)]
+        self.assertTrue(stuck, "a payout stuck for hours must page")
+        self.assertIn("ZTRF-PAY-STUCK", str(stuck[0]))
 
 
 @override_settings(PAYMENT_PROVIDER="wema")
