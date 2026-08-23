@@ -148,17 +148,33 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
 
     user = txn.user
     subject, body = _describe(txn, reversal=reversal)
+    mocked = []
     if _alerts_on("email") and getattr(user, "email", ""):
         try:
-            send_email(user.email, subject, body,
-                       html=_email_alert_html(txn, reversal=reversal))
+            res = send_email(user.email, subject, body,
+                             html=_email_alert_html(txn, reversal=reversal))
+            if (res or {}).get("mock"):
+                mocked.append("email")
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_email_failed ref=%s", txn.reference)
     if _alerts_on("sms") and getattr(user, "phone", ""):
         try:
-            send_sms(user.phone, _sms_alert(txn, reversal=reversal))
+            res = send_sms(user.phone, _sms_alert(txn, reversal=reversal))
+            if (res or {}).get("mock"):
+                mocked.append("sms")
         except Exception:  # noqa: BLE001
             log.exception("txn_alert_sms_failed ref=%s", txn.reference)
+    # send_email/send_sms return a silent MOCK SUCCESS when their provider is
+    # unkeyed, and the dedupe flag is claimed before this runs — so an unkeyed
+    # process announces nothing, records the row as announced, and never retries.
+    # That is exactly how every deposit alert went missing: the crons that credit
+    # deposits are separate processes from the web service and had no RESEND_* or
+    # TERMII_* keys of their own, so the failure was invisible on both sides.
+    # Never silent again: the process that is dropping alerts says so.
+    if mocked and not (settings.DEBUG or getattr(settings, "TESTING", False)):
+        log.warning("txn_alert_unkeyed_channels ref=%s channels=%s — this process has no "
+                    "credentials for them, so the customer was NOT notified",
+                    txn.reference, ",".join(mocked))
     _push_alert(txn, subject)
     _whatsapp_alert(txn, subject, body, reversal=reversal)
 

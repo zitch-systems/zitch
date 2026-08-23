@@ -577,6 +577,24 @@ services:
         fromDatabase:
           name: zitch-db
           property: connectionString
+      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so any
+      # process that writes a ledger row tries to alert — and send_email /
+      # send_sms return a silent MOCK SUCCESS when unkeyed. Without these the
+      # deposit that only this cron can credit is never announced by email or
+      # SMS: app users still get the push (Expo needs no key), so the customers
+      # who lose the notice entirely are the WhatsApp-only ones.
+      - key: RESEND_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+      - key: RESEND_FROM_EMAIL
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+      - key: TERMII_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+      - key: TERMII_SENDER_ID
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+      - key: TERMII_CHANNEL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+      - key: TERMII_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
 
   # VTU reconciliation — settle purchases left PENDING by a provider timeout:
   # requery the aggregator by reference, then mark Successful (delivered) or
@@ -639,10 +657,22 @@ services:
       # points at the production host Wema gives you.
       - key: WEMA_FACE_VERIFY_URL
         sync: false
-      # The face callback carries no shared token (its URL is shown to the customer),
-      # so this allowlist IS its authentication. Unset, the face rail refuses to run.
-      - key: WEMA_FACE_CALLBACK_IPS
-        sync: false
+      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so this cron
+      # alerts whenever it settles or REFUNDS a stuck purchase — and send_email /
+      # send_sms return a silent MOCK SUCCESS when unkeyed, so the refund notice
+      # never reached the customer by email or SMS.
+      - key: RESEND_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+      - key: RESEND_FROM_EMAIL
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+      - key: TERMII_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+      - key: TERMII_SENDER_ID
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+      - key: TERMII_CHANNEL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+      - key: TERMII_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
 
   # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:
   # (1) FUNDING: sweep each Wema NUBAN's transaction history and credit inbound
@@ -693,6 +723,24 @@ services:
       # in THIS cron's env (crons are separate processes from the web service).
       - key: SENTRY_DSN
         sync: false
+      # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so any
+      # process that writes a ledger row tries to alert — and send_email /
+      # send_sms return a silent MOCK SUCCESS when unkeyed. Without these the
+      # deposit that only this cron can credit is never announced by email or
+      # SMS: app users still get the push (Expo needs no key), so the customers
+      # who lose the notice entirely are the WhatsApp-only ones.
+      - key: RESEND_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_API_KEY}
+      - key: RESEND_FROM_EMAIL
+        fromService: {type: web, name: zitch-api, envVarKey: RESEND_FROM_EMAIL}
+      - key: TERMII_API_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_API_KEY}
+      - key: TERMII_SENDER_ID
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_SENDER_ID}
+      - key: TERMII_CHANNEL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
+      - key: TERMII_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
 
   # Ledger <-> balance integrity check — recomputes every wallet from the
   # append-only ledger and fails (alerting via cron failure + AuditLog snapshot)

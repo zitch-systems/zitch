@@ -20,6 +20,7 @@ is the relevant rail, so it's harmless otherwise.
 """
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
@@ -131,6 +132,26 @@ class Command(BaseCommand):
             alert(f"reconcile_wema: all {scanned} wallet history fetches failed â€” Wema "
                   f"unreachable or auth rejected; no deposits can be detected",
                   level="error", wallets=scanned)
+        # A payout stuck PENDING is invisible to every other control. It is a
+        # pending DEBIT, so integrity_check counts it as owed, reconcile_balances
+        # sees only the benign bank-over-ledger direction, and settlement_report
+        # reads it as a surplus. Nothing anywhere says "this customer's money left
+        # and never arrived", and the first signal is the customer complaining.
+        #
+        # Leaving an unrecognised status PENDING for the next run is right in the
+        # minutes after a send and wrong after hours: by then the poller has had
+        # dozens of attempts and is not going to resolve it on its own. This is
+        # also the safety net under the settlement paths themselves, which is why
+        # it is worth more than its frequency suggests.
+        stuck_after = timedelta(hours=int(getattr(settings, "WEMA_PAYOUT_STUCK_HOURS", 2) or 2))
+        stuck = list(pending_bank_payouts(timezone.now() - stuck_after)[:50])
+        if stuck:
+            alert(f"reconcile_wema: {len(stuck)} bank payout(s) still PENDING after "
+                  f"{stuck_after} - the customer is debited and the money has not "
+                  f"settled or reversed; no other control reports this",
+                  level="error", payouts=len(stuck),
+                  references=[t.reference for t in stuck[:10]])
+
         if payouts_seen and status_failures == payouts_seen:
             alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed â€” "
                   f"settlement stalled", level="error", payouts=payouts_seen)
