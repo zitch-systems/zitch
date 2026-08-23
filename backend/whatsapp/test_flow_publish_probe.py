@@ -131,3 +131,49 @@ class PublishedFlowProbeTests(SimpleTestCase):
         with patch("whatsapp.providers.requests.get") as get:
             self.assertEqual(published_flow_report()["status"], "unconfigured")
         get.assert_not_called()
+
+
+class ProbeCachingTests(SimpleTestCase):
+    """/healthz is unauthenticated and this is its only outbound reading.
+
+    Uncached, three Graph calls per probe on a `--workers 1 --threads 8` dyno
+    turned a public URL into a denial-of-service lever. The cache is the control
+    that bounds it, so it is worth a test of its own.
+    """
+
+    def setUp(self):
+        import whatsapp.providers as p
+        p._flow_report_cache = None
+        self.addCleanup(setattr, p, "_flow_report_cache", None)
+
+    @override_settings(TESTING=False, **LIVE)
+    def test_repeated_probes_ask_meta_once(self):
+        screens = list(_local_screens())
+        with patch("whatsapp.providers.requests.get", side_effect=_meta(screens)) as got:
+            first = published_flow_report()
+        calls = got.call_count
+        self.assertGreater(calls, 0)
+        with patch("whatsapp.providers.requests.get",
+                   side_effect=AssertionError("probe went to the network again")):
+            for _ in range(20):
+                self.assertEqual(published_flow_report(), first)
+
+    @override_settings(TESTING=False, **LIVE)
+    def test_force_bypasses_the_cache(self):
+        screens = list(_local_screens())
+        with patch("whatsapp.providers.requests.get", side_effect=_meta(screens)):
+            published_flow_report()
+        with patch("whatsapp.providers.requests.get", side_effect=_meta(screens)) as got:
+            published_flow_report(force=True)
+        self.assertGreater(got.call_count, 0)
+
+    @override_settings(TESTING=False, **LIVE)
+    def test_a_probe_never_queues_behind_an_in_flight_refresh(self):
+        """The point of the non-blocking lock: a burst holds no threads."""
+        import whatsapp.providers as p
+
+        p._flow_report_lock.acquire()
+        self.addCleanup(lambda: p._flow_report_lock.locked() and p._flow_report_lock.release())
+        with patch("whatsapp.providers.requests.get",
+                   side_effect=AssertionError("waited on the refresh instead of returning")):
+            self.assertEqual(published_flow_report(), {"status": "refreshing"})
