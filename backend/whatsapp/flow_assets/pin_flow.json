@@ -593,19 +593,12 @@
               },
               {
                 "type": "TextInput",
-                "name": "bank_search",
-                "label": "Find your bank",
+                "name": "bank",
+                "label": "Bank (optional)",
                 "input-type": "text",
                 "required": false,
-                "helper-text": "Type a few letters, tap Continue, and the list below shortens",
-                "max-chars": 40
-              },
-              {
-                "type": "Dropdown",
-                "name": "bank",
-                "label": "Bank",
-                "required": false,
-                "data-source": "${data.banks}"
+                "helper-text": "Type the bank name, e.g. Wema, Kuda or GTBank. Leave blank and we'll try the account number.",
+                "max-chars": 80
               },
               {
                 "type": "TextInput",
@@ -625,8 +618,7 @@
                     "amount": "${form.amount}",
                     "account_number": "${form.account_number}",
                     "bank": "${form.bank}",
-                    "narration": "${form.narration}",
-                    "bank_search": "${form.bank_search}"
+                    "narration": "${form.narration}"
                   }
                 }
               }
