@@ -16,15 +16,19 @@ SECURITY MODEL. ALAT signs nothing, so these endpoints stack what is available:
 a secret in the URL path and a source-IP allowlist against the bank's published
 egress addresses, both applied BEFORE the body is parsed.
 
-There is deliberately NO per-IP rate limit. It would be worse than nothing here:
-client_ip() resolves through RATELIMIT_TRUSTED_PROXY_HOPS, and on this deployment
-every bank callback currently arrives bearing the SAME platform-internal address
-(observed 10.30.1.250). A per-IP bucket would therefore be shared by all of the
-bank's traffic rather than isolating an attacker — throttling real callbacks while
-bounding nobody. Add one once the hop count is correct and the bank's true source
-address is visible; until then the cost of abuse is bounded per-reference instead
-(see the requery cooldown below). On top of that, neither money-moving handler
-trusts its payload:
+The allowlist compares `_callback_source_ip()`, NOT the shared `client_ip()`: a fixed
+trusted-proxy hop count resolves to this platform's own internal address (every bank
+callback has been observed arriving as 10.30.1.250), which can never match a bank
+egress IP — so enforcement would refuse every genuine callback while looking correctly
+configured. See `_callback_source_ip` for why right-most-public is both correct here
+and unspoofable.
+
+There is deliberately NO per-IP rate limit. The shared rate limiter still buckets on
+`client_ip()`, which on this deployment is that same platform-internal address for all
+bank traffic — so a per-IP bucket would be shared by every callback rather than
+isolating an attacker, throttling real callbacks while bounding nobody. The cost of
+abuse is bounded per-reference instead (see the requery cooldown below). On top of
+that, neither money-moving handler trusts its payload:
 
   * `authorize` answers true only when OUR OWN ledger already holds a fresh PENDING
     bank payout under that exact reference. Possessing the URL is not sufficient.
@@ -39,6 +43,7 @@ Failure is always closed: any error answers "not authorized" / changes no state.
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -51,7 +56,6 @@ from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 
 from common.http import mask_pii
-from common.ratelimit import client_ip
 from utility import wema as wema_provider
 from utility.alerts import alert
 
@@ -114,13 +118,48 @@ def _token_ok(supplied: str) -> bool:
     return any(hmac.compare_digest(supplied, known) for known in (current, previous) if known)
 
 
+def _callback_source_ip(request) -> str:
+    """The caller's own address, for CALLBACK AUTHENTICATION only: the right-most
+    PUBLIC entry in X-Forwarded-For, falling back to REMOTE_ADDR.
+
+    Deliberately NOT client_ip(). That helper takes a fixed number of hops from the
+    right, and on this platform the entries to the right of the caller are the host's
+    own internal addresses — every bank callback has been observed arriving as
+    10.30.1.250 under RATELIMIT_TRUSTED_PROXY_HOPS=1. Compared against a list of bank
+    egress IPs that private address can never match, so enforcement refuses every
+    genuine callback while the configuration looks perfectly correct. A hop count also
+    has to be re-tuned by hand whenever the platform changes its topology, and when it
+    is wrong it fails silently and closed — which on the account-creation route means
+    customers simply never get a NUBAN.
+
+    Right-most PUBLIC is not spoofable the way left-most is. A caller can only PREPEND
+    to this header; every trusted hop APPENDS. So a forged
+    ``X-Forwarded-For: 135.236.18.76`` arrives as
+    ``135.236.18.76, <caller's real address>, 10.30.1.250`` and the caller's real
+    address still wins the scan. Reading left-most, by contrast, would hand the
+    allowlist to anyone who can set a header.
+    """
+    xff = request.META.get("HTTP_X_FORWARDED_FOR", "") or ""
+    for part in reversed([p.strip() for p in xff.split(",") if p.strip()]):
+        try:
+            addr = ipaddress.ip_address(part)
+        except ValueError:
+            continue
+        if addr.is_global:
+            return str(addr)
+    remote = (request.META.get("REMOTE_ADDR", "") or "").strip()
+    try:
+        return str(ipaddress.ip_address(remote))
+    except ValueError:
+        return "unknown"
+
+
 def _ip_ok(request, kind: str = "") -> tuple:
-    """(allowed, ip). Uses the shared client_ip helper, which selects the entry at the
-    configured trusted-proxy hop from the RIGHT of X-Forwarded-For — reading the
-    left-most value would let any client forge the allowlist by prepending a header.
+    """(allowed, ip). The address is resolved by _callback_source_ip — see there for
+    why a fixed trusted-proxy hop count cannot work for this comparison.
     """
     from django.conf import settings
-    ip = client_ip(request)
+    ip = _callback_source_ip(request)
     if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
         return True, ip
     if kind == "face":
@@ -159,12 +198,13 @@ def wema_callback(kind: str, token_required: bool = True):
             # outcome are what an investigation needs, and they are not attacker-chosen.
             if request.method != "POST":
                 record_webhook(source, outcome=WebhookEvent.REJECTED_METHOD,
-                               http_status=405, remote_ip=client_ip(request))
+                               http_status=405, remote_ip=_callback_source_ip(request))
                 return JsonResponse({"message": "Method not allowed"}, status=405)
             if token_required and not _token_ok(token):
-                log.warning("wema_cb_bad_token kind=%s ip=%s", kind, client_ip(request))
+                refused_from = _callback_source_ip(request)
+                log.warning("wema_cb_bad_token kind=%s ip=%s", kind, refused_from)
                 record_webhook(source, outcome=WebhookEvent.REJECTED_TOKEN,
-                               http_status=403, remote_ip=client_ip(request))
+                               http_status=403, remote_ip=refused_from)
                 return JsonResponse({"message": "Forbidden"}, status=403)
             allowed, ip = _ip_ok(request, kind)
             if not allowed:

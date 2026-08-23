@@ -41,6 +41,55 @@ def _run(*args):
 @override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
                    TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
                    WEMA=_SAFE_CALLBACKS)
+class PreflightObservedCallbackTests(TestCase):
+    """The allowlist config check only proves the list is non-empty — and it has a
+    non-empty DEFAULT. These cover the case it cannot see: enforcement on, and every
+    real callback refused because the resolved source can never match."""
+
+    def _record(self, ip, outcome):
+        from whatsapp.models import WebhookEvent
+        WebhookEvent.objects.create(source="wema.account", outcome=outcome,
+                                    remote_ip=ip, http_status=200)
+
+    def test_never_having_received_a_callback_warns_rather_than_verifying(self):
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("Callback source IPs observed", out)
+        self.assertIn("UNVERIFIED", out)
+
+    def test_every_callback_refused_by_the_allowlist_blocks_go_live(self):
+        from whatsapp.models import WebhookEvent
+        for _ in range(3):
+            self._record("10.30.1.250", WebhookEvent.REJECTED_IP)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("the rail is dead", out)
+        self.assertIn("NOT READY", out)
+        self.assertEqual(code, 1)
+
+    def test_a_real_accepted_public_callback_satisfies_the_gate(self):
+        from whatsapp.models import WebhookEvent
+        self._record("135.236.18.76", WebhookEvent.ACCEPTED)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("accepted from 1 public source(s)", out)
+        self.assertNotIn("NOT READY", out)
+
+    def test_accepted_only_from_a_private_hop_still_blocks(self):
+        # The exact production shape: callbacks "accepted" while enforcement was off,
+        # all recorded against the platform's internal address. Turning enforcement on
+        # would refuse every one of them, so this must not read as verified.
+        from whatsapp.models import WebhookEvent
+        self._record("10.30.1.250", WebhookEvent.ACCEPTED)
+        with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):
+            out, code = _run()
+        self.assertIn("cannot match these", out)
+        self.assertEqual(code, 1)
+
+
+@override_settings(RESEND={"API_KEY": "re_x", "FROM_EMAIL": "x"},
+                   TERMII={"API_KEY": "tk_x"}, CARD_ISSUER={"API_KEY": "ci_x"},
+                   WEMA=_SAFE_CALLBACKS)
 class PreflightGoTests(TestCase):
     def test_all_pass_is_go(self):
         with mock.patch(_DIAG, return_value=_LIVE_DIAG), mock.patch(_PROBE, return_value=_VTU_OK):

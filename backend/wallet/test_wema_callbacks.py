@@ -37,6 +37,33 @@ class WemaCallbackAuthTests(TestCase):
         return self.client.post(path, data=json.dumps(payload or {}),
                                 content_type="application/json", **extra)
 
+    # TESTING=False as well as DEBUG: _ip_ok short-circuits to "allowed" under either,
+    # so without this the assertions below would pass without exercising the allowlist.
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_bank_callback_is_accepted_through_the_platform_proxy_chain(self):
+        # THE regression that matters: with enforcement on, a real callback from a
+        # listed bank egress IP must be ACCEPTED even though the platform appends its
+        # own private hops after it. This previously 403'd every single callback —
+        # account creation, authorization, settlement — while preflight said GO.
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="135.236.18.76, 10.30.28.8",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertNotEqual(r.status_code, 403, "a listed bank IP must not be refused")
+
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_a_prepended_forgery_cannot_beat_the_allowlist(self):
+        # The other half of the contract. An attacker can only PREPEND to XFF; the
+        # trusted hops append after them. So a forged bank IP at the head is followed
+        # by the attacker's own real address, which is what the scan must land on.
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="135.236.18.76, 41.58.1.9, 10.30.28.8",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertEqual(r.status_code, 403, "right-most public must win, not left-most")
+
     def test_wrong_token_is_forbidden(self):
         r = self._post("/webhooks/wema/account/wrong-token", {"data": {"nuban": "0123456789"}})
         self.assertEqual(r.status_code, 403)
@@ -412,24 +439,29 @@ class WemaCallbacksDiagnoseTests(TestCase):
 
     @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
                        RATELIMIT_TRUSTED_PROXY_HOPS=1)
-    def test_enforcing_ips_on_a_private_hop_is_a_blocker(self):
-        # hops=1 selects the right-most entry — a private platform address. Turning the
-        # allowlist on here would 403 the bank on every call, so it must not read ready.
-        r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
-        body = json.loads(r.content)["callbacks"]
-        self.assertFalse(body["ready_to_send_to_the_bank"])
-        self.assertFalse(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
-        self.assertTrue(any("not a public address" in b for b in body["blockers"]))
-        self.assertTrue(any("RATELIMIT_TRUSTED_PROXY_HOPS=2" in b for b in body["blockers"]))
-
-    @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
-                       RATELIMIT_TRUSTED_PROXY_HOPS=2)
-    def test_correct_hop_count_clears_the_blocker(self):
+    def test_readiness_no_longer_depends_on_the_hop_count(self):
+        # The hop count used to decide this, and at hops=1 it selected the platform's
+        # own private address — so the diagnose said "not ready" even though the bank's
+        # address was right there in the chain. Callback auth now reads right-most
+        # PUBLIC, so a wrong hop count cannot make a working deploy look broken.
         r = self._get(HTTP_X_FORWARDED_FOR="41.58.1.9, 10.30.28.8")
         body = json.loads(r.content)["callbacks"]
         self.assertEqual(body["this_request_came_from"], "41.58.1.9")
         self.assertTrue(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
         self.assertTrue(body["ready_to_send_to_the_bank"])
+        # ...but the hop count still governs rate-limit bucketing, so it stays visible.
+        self.assertEqual(body["source_ip_detection"]["rate_limit_bucket_ip"], "10.30.28.8")
+
+    @override_settings(WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True},
+                       RATELIMIT_TRUSTED_PROXY_HOPS=1)
+    def test_a_chain_with_no_public_address_at_all_is_still_a_blocker(self):
+        # If the platform genuinely hides the caller, enforcement would refuse every
+        # callback and there is nothing to fall back on — that must still block.
+        r = self._get(HTTP_X_FORWARDED_FOR="10.30.1.250, 10.30.28.8")
+        body = json.loads(r.content)["callbacks"]
+        self.assertFalse(body["ready_to_send_to_the_bank"])
+        self.assertFalse(body["source_ip_detection"]["safe_to_enable_ip_enforcement"])
+        self.assertTrue(any("not a public address" in b for b in body["blockers"]))
 
     def test_head_is_refused_on_the_sms_probe(self):
         # A prefetch must not spend provider credit or text a real person.

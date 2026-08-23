@@ -92,6 +92,13 @@ class Command(BaseCommand):
             PASS if enforce_ips and callback_ips else FAIL,
             f"enforced for {len(callback_ips)} bank IP(s)" if enforce_ips and callback_ips
             else "set WEMA_CALLBACK_ENFORCE_IPS=true and configure WEMA_CALLBACK_IPS"))
+        # The check above only proves the list is non-empty — and WEMA_CALLBACK_IPS
+        # DEFAULTS to two hardcoded addresses, so it passes even when nobody has
+        # configured anything. That is precisely the shape of the failure it is meant
+        # to catch: a deploy where enforcement refuses every genuine callback (no
+        # NUBANs issued, no payouts authorised) while go-live prints GO. So ask the
+        # only source that can actually answer it — what has really arrived.
+        checks.append(self._observed_callback_sources(enforce_ips, set(callback_ips)))
         require_security = bool(callback.get("AUTH_REQUIRE_SECURITY_INFO"))
         checks.append((
             True, "Payout callback securityInfo match",
@@ -316,3 +323,67 @@ class Command(BaseCommand):
 
         if hard_fail or (soft_warn and options["strict"]):
             raise SystemExit(1)
+
+    def _observed_callback_sources(self, enforce_ips: bool, allowed: set) -> tuple:
+        """Did real bank callbacks actually get through the allowlist?
+
+        Config alone cannot answer this: the address the allowlist compares is
+        produced by the platform's proxy chain at request time, so the only honest
+        evidence is what has already arrived. Every inbound callback records its
+        resolved source and outcome on WebhookEvent, including the ones we refused.
+
+        Returns a HARD gate, because the failure it guards is total and silent: with
+        enforcement on and a source that cannot match, every callback 403s — no NUBAN
+        is ever issued and no payout is ever authorised — and nothing else in this
+        preflight notices.
+        """
+        import ipaddress
+
+        from whatsapp.models import WebhookEvent
+
+        if not enforce_ips:
+            return (True, "Callback source IPs observed", PASS,
+                    "enforcement off — nothing to verify")
+
+        try:
+            rows = list(WebhookEvent.objects.filter(source__startswith="wema.")
+                        .values_list("remote_ip", "outcome")[:2000])
+        except Exception as exc:  # noqa: BLE001 — a diagnostic must not die on its own query
+            # Soft: every other check here is config-only and still worth printing.
+            # Never PASS on this path — "we could not look" is not "we verified".
+            return (False, "Callback source IPs observed", WARN,
+                    f"could not read callback history ({type(exc).__name__}) — "
+                    f"enforcement is ON and UNVERIFIED")
+        if not rows:
+            # Cannot be proven either way before the bank has ever called. Soft, so it
+            # does not block a first deploy — but it must not read as verified.
+            return (False, "Callback source IPs observed", WARN,
+                    "no bank callback has ever reached this deploy — enforcement is ON "
+                    "and UNVERIFIED; confirm one real callback is accepted before "
+                    "trusting the rail")
+
+        refused = sum(1 for _, outcome in rows if outcome == WebhookEvent.REJECTED_IP)
+        accepted_ips = {ip for ip, outcome in rows
+                        if outcome == WebhookEvent.ACCEPTED and ip}
+
+        def _public(value):
+            try:
+                return ipaddress.ip_address(value).is_global
+            except ValueError:
+                return False
+
+        if accepted_ips and any(_public(ip) for ip in accepted_ips):
+            detail = f"{len(rows)} recorded; accepted from {len(accepted_ips)} public source(s)"
+            if refused:
+                detail += f" ({refused} refused — check those are not the bank)"
+            return (True, "Callback source IPs observed", PASS, detail)
+
+        seen = sorted({ip for ip, _ in rows if ip})[:4]
+        if refused and not accepted_ips:
+            return (True, "Callback source IPs observed", FAIL,
+                    f"every recorded bank callback was REFUSED by the allowlist "
+                    f"({refused} of {len(rows)}); observed source(s) {seen} vs allowed "
+                    f"{sorted(allowed)} — the rail is dead, do not go live")
+        return (True, "Callback source IPs observed", FAIL,
+                f"no bank callback has ever been accepted from a public address; "
+                f"observed source(s) {seen} — the allowlist cannot match these")

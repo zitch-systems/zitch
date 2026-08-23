@@ -641,14 +641,15 @@ def wema_callbacks_diagnose(request):
     if not secret_required:
         blockers.append("The callbacks accept ANY secret right now — do not profile these URLs.")
 
-    # Source-IP detection, shown in full so the trusted-proxy hop count can be read
-    # off a real request instead of guessed. If client_ip() resolves to a private
-    # address, it is reporting a hop INSIDE the platform rather than the true caller,
-    # and an allowlist compared against it would refuse every bank callback while
-    # looking correctly configured. Surfacing the raw chain is what makes that
-    # diagnosable — the alternative is a silent 403 storm the bank sees and we don't.
+    # Source-IP detection, shown in full so the chain can be read off a real request
+    # instead of guessed. `resolved` is what callback AUTHENTICATION will actually
+    # compare — the same helper the decorator uses — so this readiness answer cannot
+    # drift from enforcement. The hop-count figures below are reported separately
+    # because they still govern RATE LIMITING, which does use client_ip().
+    from wallet.wema_callbacks import _callback_source_ip
+
     enforce_ips = bool(conf.get("CALLBACK_ENFORCE_IPS", False))
-    resolved = client_ip(request)
+    resolved = _callback_source_ip(request)
     xff = [p.strip() for p in request.META.get("HTTP_X_FORWARDED_FOR", "").split(",") if p.strip()]
     hops = int(getattr(settings, "RATELIMIT_TRUSTED_PROXY_HOPS", 0) or 0)
 
@@ -663,11 +664,15 @@ def wema_callbacks_diagnose(request):
     resolved_public = _public(resolved)
     if enforce_ips and not resolved_public:
         blockers.append(
-            f"CALLBACK_ENFORCE_IPS is on but the source IP resolves to {resolved}, "
-            f"which is not a public address — every bank callback would be refused. "
-            + (f"Set RATELIMIT_TRUSTED_PROXY_HOPS={suggested} (currently {hops})."
-               if suggested else "Fix RATELIMIT_TRUSTED_PROXY_HOPS before enabling it.")
+            f"CALLBACK_ENFORCE_IPS is on but the caller resolves to {resolved}, which is "
+            f"not a public address — every bank callback would be refused. No public "
+            f"address was found anywhere in X-Forwarded-For, so the platform is hiding "
+            f"the true caller; do not enable enforcement until it appears."
         )
+    # Advisory only: callback auth no longer depends on the hop count, but the shared
+    # rate limiter still buckets on client_ip(), so a wrong count there lumps every
+    # caller into one bucket.
+    rate_limit_ip = client_ip(request)
 
     response = JsonResponse({"callbacks": {
         "ready_to_send_to_the_bank": not blockers,
@@ -685,6 +690,7 @@ def wema_callbacks_diagnose(request):
             # false, the allowlist cannot work yet and rate limits are bucketing on a
             # platform hop rather than per-caller.
             "resolved_is_public": resolved_public,
+            "rate_limit_bucket_ip": rate_limit_ip,
             "trusted_proxy_hops": hops,
             "suggested_trusted_proxy_hops": suggested,
             "x_forwarded_for": xff,
