@@ -1,18 +1,9 @@
-"""Searching the bank list on WhatsApp, given a Dropdown that cannot be searched.
+"""Bank matching for the WhatsApp transfer Flow.
 
-Flow JSON has no filter on a Dropdown and no way for a TextInput to narrow one on
-the device, so a list of every Nigerian bank is something you scroll and nothing
-else. The only place it can be searched at all is the server, on a submit: type a
-name, tap Continue, and the list comes back short.
-
-Two properties this must hold, both learned the hard way in this repo:
-
-* A Dropdown bound to an EMPTY array does not render — the customer gets a blank
-  sheet with no way forward but the X (#357). So a search that matches nothing
-  must degrade to the full list, never to an empty one.
-* Re-rendering the same screen id keeps the form's typed values, so the amount and
-  account survive a narrowing. That retention is the reason PIN_RETRY is a
-  separate screen; here it is the feature.
+New Flow sessions use one free-text Bank field and resolve a unique catalogue
+match on submit. Legacy sessions that were already open when the Flow changed
+still submit bank_search plus a Dropdown bank code, so their filtering contract
+remains covered until those sessions expire.
 """
 from datetime import timedelta
 
@@ -90,8 +81,8 @@ class BankSearchTests(TestCase):
     def test_bank_name_in_the_single_field_resolves_without_a_second_picker(self):
         from unittest.mock import patch
 
-        with patch.object(flows, "payout_resolve_account",
-                          return_value={"success": True, "name": "JOHN DOE"}):
+        with patch("utility.providers.payout_resolve_account",
+                   return_value={"success": True, "name": "JOHN DOE"}):
             response = self._submit(
                 amount="3500", account_number="0228565772",
                 bank="Wema", narration="")
