@@ -16,6 +16,7 @@ const OTPVerification = () => {
   const { c } = useTheme();
   const [otp, setOtp] = useState('');
   const [isCheckingOtp, setIsCheckingOtp] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const [userPhone, setUserPhone] = useState('');
   const [seconds, setSeconds] = useState(24);
   const inputRef = useRef<TextInput>(null);
@@ -73,18 +74,31 @@ const OTPVerification = () => {
   }, [otp, handleCheckOtp]);
 
   const handleResendOtp = async () => {
-    if (seconds > 0) return;
+    if (seconds > 0 || isResending) return;
+    if (!userPhone) {
+      notify('Error', 'Your phone number is still loading. Please try again.');
+      return;
+    }
+    setIsResending(true);
     try {
       const response = await publicPost('/api/resend_verify_otp/', { phone: userPhone });
       const result = await response.json();
       if (response.ok) {
+        // A resent code is a fresh attempt. Clear any partial/previous digits,
+        // release the one-submit guard, and return focus to the native input so
+        // typing and Android/iOS SMS autofill work immediately.
+        setOtp('');
+        submittedRef.current = '';
         setSeconds(24);
+        requestAnimationFrame(() => inputRef.current?.focus());
         notify('Success', 'OTP has been resent');
       } else {
         notify('Error', result.message || 'Failed to resend OTP');
       }
     } catch {
       notify('Error', 'Something went wrong. Please try again later.');
+    } finally {
+      setIsResending(false);
     }
   };
 
@@ -144,16 +158,29 @@ const OTPVerification = () => {
           autoComplete="sms-otp"
           importantForAutofill="yes"
           // Cover the boxes so taps focus it; invisible so only the boxes show.
-          style={{ position: 'absolute', top: 28, left: 0, right: 0, height: 58, opacity: 0 }}
+          // Keep the native field visually hidden without opacity:0. Some Android
+          // autofill services ignore a fully transparent OTP target after resend.
+          style={{ position: 'absolute', top: 28, left: 0, right: 0, height: 58, color: 'transparent', backgroundColor: 'transparent' }}
         />
       </Pressable>
 
-      <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
-        Didn’t get it?{' '}
-        <Text onPress={handleResendOtp} style={{ color: c.brand, fontFamily: font.bold }}>
-          {seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular }}>
+          Didn’t get it?{' '}
         </Text>
-      </Text>
+        <Pressable
+          onPress={handleResendOtp}
+          disabled={seconds > 0 || isResending || !userPhone}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Resend verification code"
+          accessibilityState={{ disabled: seconds > 0 || isResending || !userPhone }}
+        >
+          <Text style={{ color: seconds > 0 || isResending || !userPhone ? c.ink3 : c.brand, fontFamily: font.bold, fontSize: 13.5 }}>
+            {isResending ? 'Sending…' : seconds > 0 ? `Resend in 0:${String(seconds).padStart(2, '0')}` : 'Resend code'}
+          </Text>
+        </Pressable>
+      </View>
       <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 12 }}>
         Already have an account?{' '}
         <Text
