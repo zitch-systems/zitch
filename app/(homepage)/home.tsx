@@ -16,13 +16,12 @@ const GRID = [
   { label: 'Betting', icon: 'dice', go: () => router.push('/betting') },
   { label: 'Cable TV', icon: 'tv', go: () => router.push('/buycable') },
   { label: 'Save', icon: 'fixed', go: () => router.push('/savings') },
-  { label: 'Loan', icon: 'loan', badge: 'Hot', hot: true, go: () => router.push('/getloan') },
+  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'Exams', icon: 'jamb', go: () => router.push('/exams') },
   { label: 'More', icon: 'more', more: true },
 ];
 
 const MORE = [
-  { label: 'Electricity', icon: 'bills', go: () => router.push('/buyelectricity') },
   { label: 'Send money', icon: 'send', go: () => router.push('/sendmoney') },
   { label: 'Airtime', icon: 'airtime', go: () => router.push('/buyairtime') },
   { label: 'Data', icon: 'data', go: () => router.push('/buydata') },
