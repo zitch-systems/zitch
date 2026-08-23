@@ -11,6 +11,8 @@ const SetupRow = ({ icon, title, sub, to }: { icon: string; title: string; sub: 
   return (
     <Pressable
       onPress={() => router.push(to as any)}
+      accessibilityRole="button"
+      accessibilityLabel={`${title}, ${sub}`}
       style={{ flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 16, marginTop: 12 }}
     >
       <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>

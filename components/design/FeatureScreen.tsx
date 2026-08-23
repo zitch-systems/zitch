@@ -40,7 +40,7 @@ const FeatureScreen = ({
         <Header title={title} onBack={() => router.back()} />
       </View>
 
-      <View style={{ paddingHorizontal: 16 }}>
+      <View style={{ paddingHorizontal: 20 }}>
         <Hero style={{ padding: 18 }}>
           <View style={{ width: 54, height: 54, borderRadius: 17, backgroundColor: 'rgba(255,255,255,.18)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name={icon} size={28} color="#fff" />

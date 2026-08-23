@@ -99,7 +99,7 @@ const OTPVerification = () => {
   }
 
   return (
-    <Screen scroll={false}>
+    <Screen>
       <Header onBack={() => { AsyncStorage.removeItem('otpPending'); router.replace('/register'); }} />
       <Stepper step={2} total={4} label="Step 2 of 4 · Verify phone" />
       <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 6 }}>Verify your number</Text>

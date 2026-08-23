@@ -61,6 +61,19 @@ def _meta(published_screens, status="published", props=None):
 class PublishedFlowProbeTests(SimpleTestCase):
 
     @override_settings(**LIVE)
+    def test_public_liveness_never_waits_on_meta(self):
+        """Meta latency cannot make Render recycle a healthy banking API."""
+        with patch("whatsapp.providers.requests.get",
+                   side_effect=AssertionError("healthz must not call Meta")) as get:
+            response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["integrations"]["whatsapp_flow_published"]["status"],
+            "diagnostic_only",
+        )
+        get.assert_not_called()
+
+    @override_settings(**LIVE)
     def test_a_flow_one_publish_behind_names_the_missing_screens(self):
         """The failure this exists for: PIN works, the newer screens don't."""
         with patch("whatsapp.providers.requests.get",

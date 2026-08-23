@@ -58,7 +58,7 @@ const Scan = () => {
         <Header title="Scan to Pay" sub="Point at a Zitch QR code" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
       </View>
 
-      <View style={{ flex: 1, paddingHorizontal: 16 }}>
+      <View style={{ flex: 1, paddingHorizontal: 20 }}>
         {cameraSupported && permission?.granted ? (
           <View style={{ flex: 1, borderRadius: 22, overflow: 'hidden', backgroundColor: '#000' }}>
             <CameraView
@@ -111,4 +111,3 @@ const Scan = () => {
 };
 
 export default Scan;
-

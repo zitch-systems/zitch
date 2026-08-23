@@ -1,9 +1,44 @@
+import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
 const KEY = 'z-pending-wa-approval';
 const MAX_AGE_MS = 10 * 60 * 1000;
 
 type StoredApproval = { token: string; savedAt: number };
+let webValue = '';
+
+const KEYCHAIN_OPTS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+};
+
+async function purgeLegacyCopy(): Promise<void> {
+  // Remove any plaintext value written by an older app build. It is deliberately
+  // not migrated: approval tokens live for only ten minutes, so retaining an old
+  // credential is all downside and no useful continuity.
+  await AsyncStorage.removeItem(KEY).catch(() => {});
+}
+
+async function write(value: string): Promise<void> {
+  await purgeLegacyCopy();
+  if (Platform.OS === 'web') {
+    webValue = value;
+    return;
+  }
+  await SecureStore.setItemAsync(KEY, value, KEYCHAIN_OPTS);
+}
+
+async function read(): Promise<string> {
+  await purgeLegacyCopy();
+  if (Platform.OS === 'web') return webValue;
+  return (await SecureStore.getItemAsync(KEY)) || '';
+}
+
+async function remove(): Promise<void> {
+  await purgeLegacyCopy();
+  webValue = '';
+  if (Platform.OS !== 'web') await SecureStore.deleteItemAsync(KEY);
+}
 
 const cleanToken = (value: unknown): string => {
   const token = String(value ?? '').trim();
@@ -41,27 +76,30 @@ export async function rememberWhatsAppApprovalUrl(url: string | null | undefined
 export async function rememberWhatsAppApproval(value: unknown): Promise<void> {
   const token = cleanToken(value);
   if (!token) return;
-  await AsyncStorage.setItem(KEY, JSON.stringify({ token, savedAt: Date.now() } satisfies StoredApproval));
+  // This token is short-lived and single-use, but it still authorises a money
+  // action. Keep it in the native keychain/keystore, never plain AsyncStorage;
+  // browser previews hold it only in memory and lose it on reload.
+  await write(JSON.stringify({ token, savedAt: Date.now() } satisfies StoredApproval));
 }
 
 export async function pendingWhatsAppApproval(): Promise<string> {
   try {
-    const raw = await AsyncStorage.getItem(KEY);
+    const raw = await read();
     if (!raw) return '';
     const stored = JSON.parse(raw) as Partial<StoredApproval>;
     const token = cleanToken(stored.token);
     const savedAt = Number(stored.savedAt);
     if (!token || !Number.isFinite(savedAt) || Date.now() - savedAt > MAX_AGE_MS) {
-      await AsyncStorage.removeItem(KEY);
+      await remove();
       return '';
     }
     return token;
   } catch {
-    await AsyncStorage.removeItem(KEY);
+    await remove();
     return '';
   }
 }
 
 export async function clearPendingWhatsAppApproval(): Promise<void> {
-  await AsyncStorage.removeItem(KEY);
+  await remove();
 }

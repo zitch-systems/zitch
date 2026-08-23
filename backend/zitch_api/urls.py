@@ -202,14 +202,16 @@ def _whatsapp_last_flow_error():
 
 
 def _whatsapp_flow_published():
-    """Ask Meta what the published Flow contains. Networked, so it is skipped
-    unless the channel is live and a Flow ID is set (see published_flow_report)."""
-    from whatsapp.providers import published_flow_report
+    """Keep the platform liveness probe independent of Meta.
 
-    try:
-        return published_flow_report()
-    except Exception:  # noqa: BLE001 — a health probe never raises
-        return {"status": "error"}
+    Reading the published Flow is a three-request Graph API exchange with up to
+    45 seconds of provider timeout.  Running it inside ``/healthz`` made Meta's
+    latency capable of failing Render's *own* liveness check and cycling an
+    otherwise healthy banking API.  The authenticated diagnostics page still
+    performs the complete live comparison; the public liveness response points
+    there without making a network call.
+    """
+    return {"status": "diagnostic_only", "live_check": "/whatsapp-diagnose"}
 
 
 def _redis_status():
@@ -334,21 +336,55 @@ def _whatsapp_last_processed_at():
         return None
 
 
-def readyz(_request):
-    """Readiness probe: 200 only if the database is reachable, else 503.
+def _shared_cache_ready() -> bool:
+    """Round-trip the configured cache without leaking the probe key."""
+    import secrets
 
-    Unlike /healthz (pure liveness, always 200 over plain HTTP for the platform
-    probe), this round-trips the DB so orchestration/monitoring can tell a live
-    process apart from one that can't serve traffic (DB down)."""
+    from django.core.cache import cache
+
+    key = "readyz:" + secrets.token_hex(8)
+    try:
+        cache.set(key, "1", timeout=5)
+        ok = cache.get(key) == "1"
+        cache.delete(key)
+        return ok
+    except Exception:  # noqa: BLE001 — unavailable shared state is not ready
+        return False
+
+
+def _database_ready() -> bool:
+    """Round-trip the primary database used by all authenticated requests."""
     from django.db import connection
 
     try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
             cursor.fetchone()
+        return True
     except Exception:  # noqa: BLE001 — any DB error means not ready
-        return JsonResponse({"status": False, "db": False}, status=503)
-    return JsonResponse({"status": True, "db": True})
+        return False
+
+
+def readyz(_request):
+    """Readiness probe: 200 only if required state stores are reachable.
+
+    Unlike /healthz (pure liveness, always 200 over plain HTTP for the platform
+    probe), this round-trips the DB and, when production requires shared state,
+    Redis.  A Redis outage otherwise leaves the process looking ready while its
+    cross-worker rate limits and durable WhatsApp queue are unavailable.
+    """
+    from django.conf import settings
+
+    if not _database_ready():
+        return JsonResponse({"status": False, "db": False, "cache": None}, status=503)
+
+    if getattr(settings, "REQUIRE_SHARED_CACHE", False):
+        cache_ok = _shared_cache_ready()
+        if not cache_ok:
+            return JsonResponse({"status": False, "db": True, "cache": False}, status=503)
+        return JsonResponse({"status": True, "db": True, "cache": True})
+
+    return JsonResponse({"status": True, "db": True, "cache": "not_required"})
 
 
 def robots_txt(_request):

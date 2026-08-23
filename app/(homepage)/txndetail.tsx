@@ -73,7 +73,7 @@ const TxnDetail = () => {
   ];
 
   return (
-    <Screen>
+    <Screen tab>
       <Header title="Transaction details" onBack={() => router.back()} />
 
       {/* The capture target for the JPEG export — explicit background so the
@@ -81,7 +81,7 @@ const TxnDetail = () => {
       <View ref={card} collapsable={false} style={{ backgroundColor: c.bg }}>
         <View style={{ alignItems: 'center', paddingTop: 16 }}>
           <Monogram text={mono} color={inflow ? c.lime : c.brand} size={64} />
-          <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: inflow ? c.lime : c.ink1, marginTop: 14, fontVariant: ['tabular-nums'] }}>
+          <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7} style={{ maxWidth: '100%', fontSize: 32, fontFamily: font.extrabold, color: inflow ? c.lime : c.ink1, marginTop: 14, fontVariant: ['tabular-nums'] }}>
             {(inflow ? '+' : '-') + money(Math.abs(amount))}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, paddingHorizontal: 12, paddingVertical: 5, borderRadius: 999, backgroundColor: `${statusColor}1F` }}>

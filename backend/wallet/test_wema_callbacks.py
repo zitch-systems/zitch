@@ -242,9 +242,16 @@ class WemaAuthenticateCallbackTests(TestCase):
         self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
 
     def test_stale_payout_is_denied(self):
-        txn = self._pending_payout()
-        Transaction.objects.filter(pk=txn.pk).update(
-            created=timezone.now() - timedelta(hours=2))
+        from wallet.tests import make_transaction_at
+
+        txn = make_transaction_at(
+            self.user,
+            created=timezone.now() - timedelta(hours=2),
+            amount="1000.00",
+            service="transfer",
+            meta={"reconcile": True, "bank": {"code": "035"}},
+            reference="ZTRF-stale123",
+        )
         self.assertFalse(self._post({"transactionReference": txn.reference}).json()["authorized"])
 
     def test_missing_reference_is_denied(self):

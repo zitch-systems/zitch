@@ -99,9 +99,9 @@ const Loans = () => {
     <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Loans</Text>
 
-      <Hero style={{ margin: 16 }}>
+      <Hero style={{ marginHorizontal: 20, marginVertical: 16 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Available credit</Text>
-        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <View style={{ height: 6, borderRadius: 4, backgroundColor: 'rgba(255,255,255,.25)', marginTop: 14, overflow: 'hidden' }}>
           <View style={{ width: `${usedPct}%`, height: '100%', backgroundColor: '#fff' }} />
         </View>
@@ -111,14 +111,14 @@ const Loans = () => {
       </Hero>
 
       {!active && (
-        <View style={{ marginHorizontal: 16 }}>
+        <View style={{ marginHorizontal: 20 }}>
           <Card>
             <Btn label="Get a new loan" icon="loan" onPress={() => router.push('/getloan')} />
           </Card>
         </View>
       )}
 
-      <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
         <SectionLabel>Active loans</SectionLabel>
         {!loaded ? (
           <View style={{ alignItems: 'center', paddingTop: 60 }}>
@@ -153,4 +153,3 @@ const Loans = () => {
 };
 
 export default Loans;
-

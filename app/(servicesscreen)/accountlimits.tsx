@@ -82,7 +82,7 @@ const AccountLimits = () => {
               Account Info
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 }}>
-              <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: theme === 'dark' ? '#FFF6DF' : '#2B2205', letterSpacing: -0.4 }}>
+              <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ flexShrink: 1, fontSize: 26, fontFamily: font.extrabold, color: theme === 'dark' ? '#FFF6DF' : '#2B2205', letterSpacing: -0.4 }}>
                 {grouped(accountNumber) || '—'}
               </Text>
               {!!accountNumber && (

@@ -184,12 +184,12 @@ export const ConnectedAccounts = () => {
 
   return (
     <>
-      <View style={{ paddingHorizontal: 18, paddingTop: 6 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 6 }}>
         <SectionLabel action="+ Add" onAction={() => router.push('/linkbank')}>Connected accounts</SectionLabel>
       </View>
 
       {linked.length === 0 ? (
-        <Pressable onPress={() => router.push('/linkbank')} style={{ marginHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
+        <Pressable onPress={() => router.push('/linkbank')} style={{ marginHorizontal: 20, flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}>
           <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="link" size={20} color={c.brand} />
           </View>
@@ -200,7 +200,7 @@ export const ConnectedAccounts = () => {
           <ZIcon name="right" size={18} color={c.ink3} />
         </Pressable>
       ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, gap: 12 }}>
           {linked.map((b) => {
             const reconnect = needsReconnect(b);
             return (
@@ -212,7 +212,7 @@ export const ConnectedAccounts = () => {
                     <NText numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.bold, color: c.ink1 }}>{b.bank_name || 'Bank'}</NText>
                     <Text numberOfLines={1} style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular }}>{b.account_number}</Text>
                   </View>
-                  <Pressable onPress={() => refreshOne(b)} hitSlop={8} style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Pressable onPress={() => refreshOne(b)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Refresh ${b.bank_name} balance`} style={{ width: 32, height: 32, borderRadius: 10, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
                     <ZIcon name="refresh" size={15} color={c.brand} />
                   </Pressable>
                 </View>
@@ -231,11 +231,11 @@ export const ConnectedAccounts = () => {
                 </View>
 
                 <View style={{ flexDirection: 'row', gap: 9, marginTop: 14 }}>
-                  <Pressable onPress={() => openFund(b, 'in')} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)' }}>
+                  <Pressable onPress={() => openFund(b, 'in')} hitSlop={2} accessibilityRole="button" accessibilityLabel={`Fund Zitch from ${b.bank_name}`} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)' }}>
                     <ZIcon name="deposit" size={15} color={c.brand} />
                     <Text style={{ fontSize: 12.5, color: c.brand, fontFamily: font.bold }}>Fund Zitch</Text>
                   </Pressable>
-                  <Pressable onPress={() => openFund(b, 'out')} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, borderWidth: 1.5, borderColor: c.line }}>
+                  <Pressable onPress={() => openFund(b, 'out')} hitSlop={2} accessibilityRole="button" accessibilityLabel={`Fund ${b.bank_name} from Zitch`} style={{ flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 40, borderRadius: 12, borderWidth: 1.5, borderColor: c.line }}>
                     <ZIcon name="withdraw" size={15} color={c.ink2} />
                     <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink2, fontFamily: font.bold }}>Fund bank</Text>
                   </Pressable>

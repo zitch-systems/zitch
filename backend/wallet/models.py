@@ -157,27 +157,25 @@ class Transaction(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        """Enforce ledger immutability for the money-defining fields.
+        """Enforce ledger immutability for identity and money fields.
 
-        A row's ``amount``, ``direction`` and ``currency`` are fixed at creation
-        and must never change â€” no legitimate flow rewrites them (settlement and
-        reversal only move ``transaction_status`` and annotate ``meta``). Blocking
-        them here turns a bug or a stray ``Transaction.objects.get(...).save()``
-        that would silently corrupt balances-vs-ledger into a loud error.
+        Only ``transaction_status`` and ``meta`` may evolve as a payment settles.
+        Ownership, reference and the original transaction description are part of
+        the audit record just as much as amount/direction/currency; allowing any of
+        them to change would let a row be reassigned or disguised after posting.
 
         (ORM-level guard; a queryset ``.update()`` bypasses ``save()`` â€” back it
         with a Postgres BEFORE UPDATE trigger in production for defence in depth.)
         """
         if self.pk:
-            prior = type(self).objects.filter(pk=self.pk).values(
-                "amount", "direction", "currency").first()
-            if prior and (
-                self.amount != prior["amount"]
-                or self.direction != prior["direction"]
-                or self.currency != prior["currency"]
-            ):
+            immutable = (
+                "user_id", "service", "amount", "currency", "direction",
+                "reference", "idempotency_key", "created",
+            )
+            prior = type(self).objects.filter(pk=self.pk).values(*immutable).first()
+            if prior and any(getattr(self, field) != prior[field] for field in immutable):
                 raise ValueError(
-                    "Ledger rows are immutable: amount/direction/currency cannot change once written"
+                    "Ledger rows are immutable: only status and metadata may change once written"
                 )
         super().save(*args, **kwargs)
 

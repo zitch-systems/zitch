@@ -28,7 +28,7 @@ const RowBadge = ({ label, hot }: { label: string; hot?: boolean }) => {
 const GroupLabel = ({ children }: { children: string }) => {
   const { c } = useTheme();
   return (
-    <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 22, marginTop: 20, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+    <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink3, marginLeft: 20, marginTop: 20, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
       {children}
     </Text>
   );
@@ -45,7 +45,7 @@ type Row = { icon: string; title: string; sub?: string; badge?: string; hot?: bo
 const Group = ({ items }: { items: Row[] }) => {
   const { c } = useTheme();
   return (
-    <Card pad={0} style={{ marginHorizontal: 16, paddingHorizontal: 16 }}>
+    <Card pad={0} style={{ marginHorizontal: 20, paddingHorizontal: 16 }}>
       {items.map((r, i) => (
         <ZItem
           key={r.title}
@@ -218,7 +218,7 @@ const Me = () => {
         onPress={() => router.push('/accountdetails')}
         accessibilityRole="button"
         accessibilityLabel="Your profile"
-        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 18, paddingTop: 6 }}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 6 }}
       >
         <Avatar size={50} ring={c.brand} surface={c.surface} uri={avatar} />
         <View style={{ flex: 1 }}>
@@ -242,13 +242,13 @@ const Me = () => {
           <Text style={{ color: c.ink3, fontSize: 13, fontFamily: font.regular }}>Total balance</Text>
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
         </Pressable>
-        <NText style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
+        <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
           {showBal ? money(balance) : '₦ ••••••'}
         </NText>
       </View>
 
       {/* safety tips */}
-      <Pressable onPress={() => router.push('/safetytips')} style={{ marginHorizontal: 16, marginTop: 16 }}>
+      <Pressable onPress={() => router.push('/safetytips')} style={{ marginHorizontal: 20, marginTop: 16 }}>
         <Hero style={{ padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }} watermark={0}>
           <ZIcon name="insurance" size={22} color="#fff" />
           <View style={{ flex: 1 }}>
@@ -262,7 +262,7 @@ const Me = () => {
       </Pressable>
 
       {/* Bank on WhatsApp — the channel's hero entry */}
-      <Card pad={0} style={{ marginHorizontal: 16, marginTop: 14, paddingHorizontal: 16 }}>
+      <Card pad={0} style={{ marginHorizontal: 20, marginTop: 14, paddingHorizontal: 16 }}>
         <ZItem
           leading={<WhatsAppGlyph size={22} color="#fff" />} iconBg="#25D366"
           title="Link WhatsApp" sub="Bank from your WhatsApp chats" last
@@ -287,7 +287,7 @@ const Me = () => {
       <Group items={about} />
 
       {/* logout */}
-      <View style={{ paddingHorizontal: 16, paddingTop: 20 }}>
+      <View style={{ paddingHorizontal: 20, paddingTop: 20 }}>
         <Pressable onPress={handleLogout} style={{ paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(255,59,59,.1)', alignItems: 'center' }}>
           <Text style={{ color: c.red, fontFamily: font.bold }}>Log out</Text>
         </Pressable>

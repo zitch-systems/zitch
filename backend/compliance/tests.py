@@ -63,10 +63,16 @@ class AmlMonitoringTests(TestCase):
         # Three transfers of ₦3m: each under the ₦5m threshold, together over it, on
         # different days. Spreading them is what evades the ₦5m DAILY cap — which is also
         # why the structuring window has to be multi-day to be reachable at all.
+        from wallet.tests import make_transaction_at
+
         for i in range(3):
-            txn = debit(self.user, Decimal("3000000"), f"Transfer to SPLIT {i}")
-            Transaction.objects.filter(pk=txn.pk).update(
-                created=timezone.now() - timedelta(days=i + 1))
+            make_transaction_at(
+                self.user,
+                created=timezone.now() - timedelta(days=i + 1),
+                amount="3000000",
+                service=f"Transfer to SPLIT {i}",
+                status=Transaction.SUCCESS,
+            )
         counts = scan_transactions()
         self.assertEqual(counts["structuring"], 1)
         case = AmlCase.objects.get(trigger=AmlCase.STRUCTURING)

@@ -49,3 +49,14 @@ class AvatarUploadTests(TestCase):
     def test_rejects_invalid_base64(self):
         res, _ = self.post("/api/profile/avatar/", {"access_token": self.token, "image": "not!base64!!"})
         self.assertEqual(res.status_code, 400)
+
+    def test_rejects_base64_that_is_not_an_image(self):
+        import base64
+
+        disguised = base64.b64encode(b"<script>alert('not an image')</script>").decode()
+        res, body = self.post("/api/profile/avatar/", {
+            "access_token": self.token,
+            "image": f"data:image/png;base64,{disguised}",
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(body["message"], "Invalid image data")
