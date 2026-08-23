@@ -435,6 +435,12 @@ def push_register(request):
 
 
 @api
+# Rate-limited because this endpoint CHECKS the current password, which makes it
+# a password-guessing oracle for anyone holding a session token — and one that
+# completely bypasses the signin lockout, since that counts failures against the
+# login form. Unlimited silent guesses at the credential that gates email/phone
+# changes and the PIN-reset fallback is not something a session token should buy.
+@ratelimit("set_password", limit=10, window=300)
 @require_user
 def set_password(request):
     """POST /api/set-password/ {access_token, password}
@@ -637,6 +643,7 @@ def avatar_url(request, user) -> str:
 
 
 @api
+@ratelimit("avatar_upload", limit=10, window=600)
 @require_user
 def avatar_upload(request):
     """POST /api/profile/avatar/ {access_token, image}
@@ -1480,6 +1487,7 @@ def kyc_face_status(request):
 
 
 @api
+@ratelimit("kyc_face_submit", limit=10, window=600)
 @require_user
 def kyc_face(request):
     """POST /api/kyc/face/ {access_token, selfie?}
@@ -1510,6 +1518,7 @@ def kyc_face(request):
 
 
 @api
+@ratelimit("kyc_address", limit=10, window=600)
 @require_user
 def kyc_address(request):
     """POST /api/kyc/address/ {access_token, address, city, state?, document}
@@ -1573,6 +1582,7 @@ def kyc_address(request):
 
 
 @api
+@ratelimit("kyc_id_document", limit=10, window=600)
 @require_user
 def kyc_id_document(request):
     """POST /api/kyc/id/ {access_token, image, doc_type?}

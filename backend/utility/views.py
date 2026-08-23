@@ -10,6 +10,7 @@ from common.http import (
     idempotent_replay, ok, parse_amount, provider_purchase_response, require_user,
     spend_key, verify_transaction_pin,
 )
+from common.ratelimit import ratelimit
 from wallet.services import DuplicateTransaction, InsufficientFunds, LimitExceeded, existing_for_key, run_provider_purchase
 
 from .models import CablePlan, DataPlan
@@ -158,6 +159,12 @@ def get_cable_plans_price(request):
 
 
 @api
+# Third-party PII lookups, so throttled for the same reason wallet.resolve_recipient
+# is: each call discloses a NON-customer's details by number — the meter one returns
+# the holder's name AND home address — which unthrottled is an enumeration oracle
+# over arbitrary Nigerians, not a convenience for the person paying a bill. Each
+# lookup also costs money at the VTU provider, so the cap bounds that too.
+@ratelimit("validate_iuc", limit=20, window=300)
 @require_user
 def validate_iuc(request):
     prov = str(request.data.get("cablenetwork", ""))
@@ -194,6 +201,7 @@ def buycable(request):
 
 # ---------------- ELECTRICITY ----------------
 @api
+@ratelimit("validate_meter", limit=20, window=300)
 @require_user
 def validate_meter(request):
     disco = str(request.data.get("disco", ""))
@@ -260,6 +268,7 @@ def buyelectricity(request):
 
 # ---------------- REMITA (RRR bill payment) ----------------
 @api
+@ratelimit("validate_rrr", limit=20, window=300)
 @require_user
 def validate_rrr(request):
     """POST /api/utility/validate_rrr/ {access_token, rrr} -> {success, name, amount}"""
