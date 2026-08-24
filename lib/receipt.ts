@@ -169,11 +169,11 @@ export const receiptHtml = ({
   tr.total td { font-size: 21px; font-weight: 800; border-bottom: 0; padding-top: 20px; }
   .wa-promo { margin: 24px 0 0; padding: 18px 20px; border: 1px solid #a8ebbd;
               border-radius: 18px; background: #effbf3; position: relative; z-index: 3; }
-  .wa-kicker { color: #128c4a; font-size: 11px; font-weight: 800; letter-spacing: .8px;
+  .wa-kicker { color: #075e54; font-size: 12px; font-weight: 800; letter-spacing: .8px;
                text-transform: uppercase; }
   .wa-title { color: #11181c; font-size: 18px; font-weight: 800; margin-top: 5px; }
   .wa-copy { color: #5c686e; font-size: 13px; line-height: 1.5; margin-top: 5px; }
-  .wa-number { color: #128c4a; font-size: 14px; font-weight: 800; margin-top: 8px; }
+  .wa-number { color: #075e54; font-size: 14px; font-weight: 800; margin-top: 8px; }
   .foot { padding: 26px 44px; color: #7c878c; font-size: 13px; line-height: 1.5; }
   .badge { display: inline-block; background: ${badgeTone(status).bg}; color: ${badgeTone(status).fg};
            border-radius: 20px; padding: 7px 16px; font-size: 14px; font-weight: 700; float: right; }
