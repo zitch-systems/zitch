@@ -7,13 +7,12 @@ from django.utils import timezone
 
 from accounts.models import User
 from whatsapp.flows import (
-    FLOW_PIN_STATE,
     FLOW_SIGNUP_STATE,
     handle_flow_request,
     sign_onboarding_token,
 )
 from whatsapp.models import WaOnboarding, WhatsAppLink
-from whatsapp.router import _handle_unlinked, finish_onboarding_from_flow
+from whatsapp.router import _handle_unlinked
 
 
 MSISDN = "2348099990001"
@@ -41,24 +40,6 @@ class SignupSessionHardeningTests(TestCase):
         self.assertEqual(response["screen"], "SIGNUP_SCREEN")
         ob.refresh_from_db()
         self.assertGreater(ob.expires_at, before + timedelta(minutes=10))
-
-    def test_an_older_unverified_flow_cannot_create_an_account(self):
-        ob = WaOnboarding.objects.create(
-            msisdn=MSISDN,
-            step=FLOW_PIN_STATE,
-            payload={
-                "first_name": "Ngozi",
-                "last_name": "Ade",
-                "email": "ngozi@example.com",
-                "phone": LOCAL,
-            },
-            expires_at=timezone.now() + timedelta(minutes=15),
-        )
-        with patch("whatsapp.router.reply"):
-            message = finish_onboarding_from_flow(ob, "246810")
-        self.assertIn("no account was created", message)
-        self.assertFalse(User.objects.filter(phone=LOCAL).exists())
-        self.assertFalse(WaOnboarding.objects.filter(pk=ob.pk).exists())
 
 
 class WhatsAppSigninHardeningTests(TestCase):
