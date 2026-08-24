@@ -1199,24 +1199,35 @@ class SignupFormFlowTests(TestCase):
                                     "flow_token": sign_onboarding_token(ob),
                                     "data": data})
 
+    def _verify_details(self, ob, email):
+        from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
+
+        with patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.send_email", return_value={"success": True}) as mail:
+            opened = self._submit(
+                ob, first_name="Ngozi", last_name="Ade", email=email)
+        self.assertEqual(opened["screen"], SIGNUP_EMAIL_CODE)
+        code = mail.call_args[0][2].split("code is ")[1][:6]
+        verified = self._submit(ob, email_code=code)
+        self.assertEqual(verified["screen"], SIGNUP_PHONE)
+        return verified
+
     def test_init_opens_the_signup_form(self):
         from .flows import SIGNUP_SCREEN, handle_flow_request, sign_onboarding_token
 
         resp = handle_flow_request({"action": "INIT", "flow_token": sign_onboarding_token(self._ob())})
         self.assertEqual(resp["screen"], SIGNUP_SCREEN)
 
-    def test_valid_details_move_to_the_phone_page_when_no_email_rail_exists(self):
-        # The ladder is details -> email code -> phone -> PIN, but a deploy with
-        # no email rail cannot send a code, so the ladder skips to the phone
-        # page rather than dead-ending the signup.
-        from .flows import SIGNUP_PHONE
+    def test_no_email_delivery_keeps_signup_open_without_creating_an_identity(self):
+        from .flows import FLOW_SIGNUP_STATE, SIGNUP_SCREEN
 
         ob = self._ob()
         resp = self._submit(ob, first_name="Ngozi", last_name="Ade", email="Ngozi@Example.com")
-        self.assertEqual(resp["screen"], SIGNUP_PHONE)        # same flow session
+        self.assertEqual(resp["screen"], SIGNUP_SCREEN)
+        self.assertIn("couldn't send the email code", resp["data"]["error"])
         ob.refresh_from_db()
-        self.assertEqual(ob.payload["email"], "ngozi@example.com")
-        self.assertEqual(ob.payload["first_name"], "Ngozi")
+        self.assertEqual(ob.step, FLOW_SIGNUP_STATE)
+        self.assertFalse(User.objects.filter(email__iexact="ngozi@example.com").exists())
 
     def test_with_an_email_rail_the_code_page_comes_first_and_verifies(self):
         from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
@@ -1238,8 +1249,9 @@ class SignupFormFlowTests(TestCase):
         ob.refresh_from_db()
         self.assertTrue(ob.payload["email_verified_flow"])
 
-    def test_three_wrong_codes_move_on_unverified_instead_of_dead_ending(self):
-        from .flows import SIGNUP_EMAIL_CODE, SIGNUP_PHONE
+    def test_three_wrong_email_codes_abort_without_reserving_the_address(self):
+        from .flows import RESULT_SCREEN, SIGNUP_EMAIL_CODE
+        from .models import WaOnboarding
 
         ob = self._ob()
         with patch("whatsapp.router.email_live", return_value=True), \
@@ -1248,10 +1260,10 @@ class SignupFormFlowTests(TestCase):
         for _ in range(2):
             self.assertEqual(self._submit(ob, email_code="000000")["screen"], SIGNUP_EMAIL_CODE)
         third = self._submit(ob, email_code="000000")
-        self.assertEqual(third["screen"], SIGNUP_PHONE)       # moved on, with the note
-        self.assertIn("⚠️", third["data"]["error"])
-        ob.refresh_from_db()
-        self.assertFalse(ob.payload.get("email_verified_flow"))
+        self.assertEqual(third["screen"], RESULT_SCREEN)
+        self.assertEqual(third["data"]["status"], "❌ Failed")
+        self.assertFalse(WaOnboarding.objects.filter(pk=ob.pk).exists())
+        self.assertFalse(User.objects.filter(email__iexact="n2@example.com").exists())
 
     def test_a_taken_or_malformed_phone_is_refused_with_the_reason(self):
         from .flows import FLOW_PHONE_STATE, SIGNUP_PHONE
@@ -1277,7 +1289,7 @@ class SignupFormFlowTests(TestCase):
         from .flows import PIN_CONFIRM, SUCCESS_SCREEN
 
         ob = self._ob()
-        self._submit(ob, first_name="Ngozi", last_name="Ade", email="ngozi1@example.com")
+        self._verify_details(ob, "ngozi1@example.com")
         # Typing the number you are chatting from proves possession of it.
         self._submit(ob, phone="08099990001")
         ob.refresh_from_db()
@@ -1303,7 +1315,7 @@ class SignupFormFlowTests(TestCase):
         from .flows import PIN_CONFIRM, PIN_RETRY, SUCCESS_SCREEN
 
         ob = self._ob()
-        self._submit(ob, first_name="Ngozi", last_name="Ade", email="weak-pin@example.com")
+        self._verify_details(ob, "weak-pin@example.com")
         self._submit(ob, phone="08099990001")
         rejected = self._submit(ob, pin="123456")
         self.assertEqual(rejected["screen"], PIN_RETRY)
@@ -1318,17 +1330,17 @@ class SignupFormFlowTests(TestCase):
         self.assertEqual(self._submit(ob, pin="246810")["screen"], RESULT_SCREEN)
         self.assertTrue(User.objects.get(phone="08099990001").check_transaction_pin("246810"))
 
-    def test_a_different_account_phone_is_stored_unverified(self):
-        from .flows import SUCCESS_SCREEN
+    def test_a_different_account_phone_cannot_continue_without_sms_proof(self):
+        from .flows import FLOW_PHONE_STATE, SIGNUP_PHONE
 
         ob = self._ob()
-        self._submit(ob, first_name="Ngozi", last_name="Ade", email="ngozi3@example.com")
-        self._submit(ob, phone="08077770002")                  # banks on a different line
-        self._submit(ob, pin="246810")
-        done = self._submit(ob, pin="246810")
-        self.assertEqual(done["screen"], RESULT_SCREEN)
-        u = User.objects.get(phone="08077770002")              # the TYPED number
-        self.assertFalse(u.phone_verified)                     # possession not proven
+        self._verify_details(ob, "ngozi3@example.com")
+        refused = self._submit(ob, phone="08077770002")
+        self.assertEqual(refused["screen"], SIGNUP_PHONE)
+        self.assertIn("couldn't send an SMS", refused["data"]["error"])
+        ob.refresh_from_db()
+        self.assertEqual(ob.step, FLOW_PHONE_STATE)
+        self.assertFalse(User.objects.filter(phone="08077770002").exists())
 
     def test_bad_or_taken_details_re_render_with_the_reason(self):
         from .flows import SIGNUP_SCREEN
@@ -1505,7 +1517,8 @@ class SignupPhoneCodeTests(TestCase):
 
         return WaOnboarding.objects.create(
             msisdn="2348099990001", step=FLOW_PHONE_STATE,
-            payload={"first_name": "Ngozi", "last_name": "Ade", "email": "np@example.com"},
+            payload={"first_name": "Ngozi", "last_name": "Ade", "email": "np@example.com",
+                     "email_verified_flow": True},
             expires_at=timezone.now() + td(minutes=15))
 
     def _submit(self, ob, **data):
@@ -1543,13 +1556,15 @@ class SignupPhoneCodeTests(TestCase):
         ob.refresh_from_db()
         self.assertTrue(ob.payload["phone_verified_flow"])
 
-    def test_no_sms_rail_moves_on_unverified_rather_than_dead_ending(self):
-        from .flows import PIN_CHAIN
+    def test_no_sms_rail_keeps_the_phone_page_open(self):
+        from .flows import FLOW_PHONE_STATE, SIGNUP_PHONE
 
         ob = self._ob()
         resp = self._submit(ob, phone="08077770010")       # sms_live False in tests
-        self.assertEqual(resp["screen"], PIN_CHAIN)
+        self.assertEqual(resp["screen"], SIGNUP_PHONE)
+        self.assertIn("couldn't send an SMS", resp["data"]["error"])
         ob.refresh_from_db()
+        self.assertEqual(ob.step, FLOW_PHONE_STATE)
         self.assertFalse(ob.payload.get("phone_verified_flow"))
 
     def test_a_flow_verified_number_lands_verified_on_the_account(self):
