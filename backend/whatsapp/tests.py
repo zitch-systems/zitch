@@ -2316,12 +2316,22 @@ class SignupPinPrivacyTests(TestCase):
         self.inbound("1", f"p1-{m}", msisdn=m)
         ob = WaOnboarding.objects.get(msisdn=m)
         if ob.step == "flow_signup":
-            # Flows live: details then phone go through the private form, not
-            # the chat. (No email rail in tests, so the code page is skipped.)
+            # Flows live: details, email proof and phone go through the private
+            # form, not the chat. The test captures the real generated email
+            # code so its fixtures exercise the same verified ladder as live.
+            with patch("whatsapp.router.email_live", return_value=True), \
+                 patch("whatsapp.router.send_email",
+                       return_value={"success": True}) as mail:
+                handle_flow_request({
+                    "action": "data_exchange",
+                    "flow_token": sign_onboarding_token(ob),
+                    "data": {"first_name": "Chidi", "last_name": "Obi",
+                             "email": f"chidi{m[-4:]}@zitch.test"},
+                })
+            code = mail.call_args[0][2].split("code is ")[1][:6]
             handle_flow_request({"action": "data_exchange",
                                  "flow_token": sign_onboarding_token(ob),
-                                 "data": {"first_name": "Chidi", "last_name": "Obi",
-                                          "email": f"chidi{m[-4:]}@zitch.test"}})
+                                 "data": {"email_code": code}})
             handle_flow_request({"action": "data_exchange",
                                  "flow_token": sign_onboarding_token(ob),
                                  "data": {"phone": _local_phone(m)}})
@@ -2408,16 +2418,11 @@ class SignupPinPrivacyTests(TestCase):
 
     @patch("whatsapp.router._pin_in_chat_allowed", return_value=False)
     @patch("whatsapp.router.flows_live", return_value=False)
-    def test_production_without_flows_never_asks_for_a_pin_in_chat(self, _live, _chat):
-        # The account is still created — it just has no PIN until the app sets
-        # one, and nothing that spends money works without a PIN.
+    def test_production_without_flows_creates_no_half_usable_account(self, _live, _chat):
         m = self.to_pin_step(m="2349090000032")
-        u = User.objects.get(phone=_local_phone(m))
-        self.assertEqual(u.transaction_pin, "")   # no PIN was ever collected
-        welcome = WaMessageLog.objects.filter(
-            msisdn=m, direction=WaMessageLog.OUT, text__contains="Welcome to Zitch").first()
-        self.assertIn("Set your *transaction PIN* in the Zitch app", welcome.text)
+        self.assertFalse(User.objects.filter(phone=_local_phone(m)).exists())
         self.assertFalse(WaOnboarding.objects.filter(msisdn=m).exists())
+        self.assertIn("Secure signup is temporarily unavailable", self.last_reply(m))
         # Nothing in the thread ever asked for a PIN.
         self.assertFalse(WaMessageLog.objects.filter(
             msisdn=m, direction=WaMessageLog.OUT, text__contains="Create a *4-digit PIN*").exists())
