@@ -1261,7 +1261,7 @@ class SignupFormFlowTests(TestCase):
             self.assertEqual(self._submit(ob, email_code="000000")["screen"], SIGNUP_EMAIL_CODE)
         third = self._submit(ob, email_code="000000")
         self.assertEqual(third["screen"], RESULT_SCREEN)
-        self.assertEqual(third["data"]["status"], "❌ Failed")
+        self.assertEqual(third["data"]["status"], "❌ Not completed")
         self.assertFalse(WaOnboarding.objects.filter(pk=ob.pk).exists())
         self.assertFalse(User.objects.filter(email__iexact="n2@example.com").exists())
 
@@ -1280,10 +1280,10 @@ class SignupFormFlowTests(TestCase):
         from .flows import FLOW_PHONE_STATE, PIN_CHAIN
 
         ob = self._ob(step=FLOW_PHONE_STATE)
-        resp = self._submit(ob, phone="08066660001")
+        resp = self._submit(ob, phone="08099990001")
         self.assertEqual(resp["screen"], PIN_CHAIN)
         ob.refresh_from_db()
-        self.assertEqual(ob.payload["phone"], "08066660001")
+        self.assertEqual(ob.payload["phone"], "08099990001")
 
     def test_the_whole_signup_completes_in_one_flow_session(self):
         from .flows import PIN_CONFIRM, SUCCESS_SCREEN
@@ -1299,7 +1299,7 @@ class SignupFormFlowTests(TestCase):
         self.assertEqual(done["screen"], RESULT_SCREEN)
         u = User.objects.get(phone="08099990001")
         self.assertEqual(u.email, "ngozi1@example.com")
-        self.assertFalse(u.email_verified)                    # no email rail here
+        self.assertTrue(u.email_verified)                     # proved in the Flow
         self.assertTrue(u.phone_verified)                     # same number as the chat
         self.assertTrue(u.check_transaction_pin("246810"))
 
