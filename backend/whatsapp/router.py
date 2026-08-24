@@ -5121,13 +5121,26 @@ def _exec_airtime(pa: PendingAction, user, msisdn: str) -> str:
 
 
 # ---- data ----
-def _start_data(user, msisdn: str) -> None:
+def _start_data(user, msisdn: str, phone=None, network=None) -> None:
+    """Start data purchase with every safe detail already available.
+
+    "Data for me" means the linked Zitch line, so asking for that number again is
+    redundant. The number's Nigerian prefix can also preselect a network; number
+    portability makes that a hint, not an authority, so an explicitly stated
+    network always wins and the final confirmation still shows both values.
+    Unknown prefixes continue to the network picker.
+    """
     if _blocked_from_spending(user, msisdn):
         return None
-    phone = _own_phone(user)
-    payload = {"pin_attempts": 0, **({"phone": phone} if phone else {})}
-    _new_flow(user, msisdn, "data", "network", payload)
-    _ask_network(msisdn)
+    own_or_given = _phone_from(str(phone), user) if phone else _own_phone(user)
+    payload = {"pin_attempts": 0, **({"phone": own_or_given} if own_or_given else {})}
+    pa = _new_flow(user, msisdn, "data", "network", payload)
+    net = _network_id(network) or _network_from_prefix(own_or_given)
+    if net:
+        # Reuse the normal network step so catalogue lookup, plan choices and all
+        # later balance/limit/PIN checks stay on the exact same path.
+        return _advance_data(pa, user, msisdn, net)
+    return _ask_network(msisdn)
 
 
 def _advance_data(pa: PendingAction, user, msisdn: str, text: str) -> None:
@@ -5783,7 +5796,10 @@ def _dispatch_intent(user, msisdn: str, name, p: dict) -> bool:
         return _begin_airtime(user, msisdn, p.get("amount"), p.get("phone"),
                               p.get("network"), p.get("recipient_ref"))
     if name == "buy_data":
-        _start_data(user, msisdn)
+        # Keep the target/network the customer stated. When they said "me", the
+        # model intentionally leaves phone null and _start_data uses the linked
+        # Zitch line, then infers its network when the prefix is recognised.
+        _start_data(user, msisdn, p.get("phone"), p.get("network"))
         return True
     if name == "pay_bill":
         cat = (p.get("category") or "").lower()
