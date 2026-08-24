@@ -735,6 +735,86 @@ class VtuTests(TestCase):
         self.assertEqual(self.bal(), Decimal("200000"))  # not debited
 
 
+class AiMultilingualPromptTests(TestCase):
+    """The model contract understands Nigeria's five requested chat languages."""
+
+    def test_all_supported_languages_and_mixed_messages_are_explicit(self):
+        from whatsapp.ai import LANGUAGE_GUIDE, SUPPORTED_LANGUAGES
+
+        self.assertEqual(
+            SUPPORTED_LANGUAGES,
+            ("English", "Nigerian Pidgin", "Igbo", "Hausa", "Yoruba"),
+        )
+        guide = LANGUAGE_GUIDE.lower()
+        for language in SUPPORTED_LANGUAGES:
+            self.assertIn(language.lower(), guide)
+        self.assertIn("mix two or more", guide)
+        self.assertIn("without igbo/yoruba diacritics", guide)
+
+    def test_each_core_banking_meaning_has_local_language_anchors(self):
+        from whatsapp.ai import LANGUAGE_GUIDE
+
+        guide = LANGUAGE_GUIDE.lower()
+        anchors = {
+            "Pidgin": (
+                "how much dey my account",
+                "send 5k give ada",
+                "money no enter",
+            ),
+            "Igbo": (
+                "ego ole ka m nwere",
+                "zigara ada puku ise",
+                "ego eruteghi",
+            ),
+            "Hausa": (
+                "nawa ne kudina",
+                "aika wa ada dubu biyar",
+                "kudin bai shiga ba",
+            ),
+            "Yoruba": (
+                "elo ni mo ni",
+                "fi egberun marun ranse si ada",
+                "owo ko wole",
+            ),
+        }
+        for language, phrases in anchors.items():
+            with self.subTest(language=language):
+                for phrase in phrases:
+                    self.assertIn(phrase, guide)
+
+    @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
+    def test_code_switched_text_reaches_the_model_and_identifier_stays_private(self):
+        from whatsapp import ai
+
+        captured = {}
+
+        def fake_call(system, user_text, tools, cfg=None):
+            captured["system"] = system
+            captured["text"] = user_text
+            return {
+                "name": "transfer",
+                "input": {
+                    "amount": 5000,
+                    "beneficiary_ref": "Ada",
+                    "account_number": "num_ref_1",
+                    "bank_name": "GTBank",
+                },
+            }
+
+        message = "abeg zigara Ada 5k si 0123456789 GTBank"
+        with patch("whatsapp.llm.call_tools", side_effect=fake_call), \
+             patch("whatsapp.ai.llm_available", return_value=True):
+            intent = ai.extract_intent(message)
+
+        self.assertIn("abeg zigara Ada 5k", captured["text"])
+        self.assertNotIn("0123456789", captured["text"])
+        self.assertIn("num_ref_1", captured["text"])
+        self.assertIn("Nigerian Pidgin", captured["system"])
+        self.assertIn("Igbo", captured["system"])
+        self.assertEqual(intent["input"]["account_number"], "0123456789")
+        self.assertEqual(intent["masked_input"]["account_number"], "num_ref_1")
+
+
 @override_settings(LLM={"API_KEY": "test-key", "MODEL": ""})
 class AiIntentTests(TestCase):
     """LLM intent layer: free text -> structured intent -> the SAME flows.
