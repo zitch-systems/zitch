@@ -3420,6 +3420,73 @@ class AiAirtimeShorthandTests(TestCase):
         self.assertIsNone(_network_from_prefix("12345"))
 
 
+class AiDataShorthandTests(TestCase):
+    """"Data for me" uses the linked line and skips questions we can answer."""
+
+    def setUp(self):
+        self.user, _ = make_user(phone="08051234567")
+        WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE
+        )
+        DataPlan.objects.create(
+            network="2", plan_type="1", name="5GB", validity="30 days",
+            plan_code="glo-5gb", price=Decimal("5000"), active=True,
+        )
+        DataPlan.objects.create(
+            network="3", plan_type="1", name="5GB", validity="30 days",
+            plan_code="airtel-5gb", price=Decimal("5000"), active=True,
+        )
+
+    def last_reply(self):
+        row = (
+            WaMessageLog.objects.filter(msisdn=MSISDN, direction=WaMessageLog.OUT)
+            .order_by("-created")
+            .first()
+        )
+        return row.text if row else ""
+
+    def test_own_line_prefix_skips_phone_and_network_questions(self):
+        from whatsapp import router
+
+        router._start_data(self.user, MSISDN)  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.state, "plan")
+        self.assertEqual(pa.payload["phone"], "08051234567")
+        self.assertEqual(pa.payload["net"], "2")
+        self.assertIn("Choose a plan", self.last_reply())
+        self.assertNotIn("Which network", self.last_reply())
+
+    def test_ai_data_for_me_keeps_the_same_fast_path(self):
+        from whatsapp import router
+
+        self.assertTrue(
+            router._dispatch_intent(  # noqa: SLF001
+                self.user, MSISDN, "buy_data",
+                {"phone": None, "network": None, "plan": "10k"},
+            )
+        )
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.payload["phone"], "08051234567")
+        self.assertEqual(pa.payload["net"], "2")
+
+    def test_stated_network_beats_prefix_for_a_ported_number(self):
+        from whatsapp import router
+
+        router._start_data(self.user, MSISDN, None, "Airtel")  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.payload["net"], "3")
+
+    def test_unknown_prefix_still_asks_instead_of_guessing(self):
+        from whatsapp import router
+
+        self.user.phone = "07000000000"
+        self.user.save(update_fields=["phone"])
+        router._start_data(self.user, MSISDN)  # noqa: SLF001
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="data")
+        self.assertEqual(pa.state, "network")
+        self.assertIn("Which network", self.last_reply())
+
+
 class AiGlobalSwitchTests(TestCase):
     """The switch must read the same from the router and from the console. It did
     not: the router treated a missing row as OFF and ai_config treated it as ON,
