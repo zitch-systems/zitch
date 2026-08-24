@@ -1,6 +1,7 @@
 import {
   outcomeMessage, receiptFileName, receiptHtml, receiptStamp, senderRows,
 } from '@/lib/receipt';
+import { BANK_WHATSAPP_DISPLAY } from '@/components/configFiles/links';
 
 // Dates are built with the local-time constructor on purpose: the stamp is
 // deliberately local (it is what the person holding the phone saw), so a test
@@ -60,6 +61,12 @@ describe('receiptHtml', () => {
 
   it('stamps Successful by default', () => {
     expect(html).toContain('<span class="badge">Successful</span>');
+  });
+
+  it('includes the WhatsApp banking advert and contact on every PDF', () => {
+    expect(html).toContain('Zitch WhatsApp Banking');
+    expect(html).toContain('Bank wherever you chat');
+    expect(html).toContain(BANK_WHATSAPP_DISPLAY);
   });
 
   // The exported file is what a recipient treats as proof. A pending transfer
