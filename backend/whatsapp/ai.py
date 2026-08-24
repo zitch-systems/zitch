@@ -15,6 +15,45 @@ from django.conf import settings
 
 log = logging.getLogger("whatsapp")
 
+SUPPORTED_LANGUAGES = (
+    "English",
+    "Nigerian Pidgin",
+    "Igbo",
+    "Hausa",
+    "Yoruba",
+)
+
+# The provider still returns the same English tool names and JSON fields. This
+# guide is about understanding the customer's words, including code-switching;
+# it never changes the deterministic validation/confirmation path downstream.
+LANGUAGE_GUIDE = (
+    "LANGUAGE SUPPORT:\n"
+    "- Understand English, Nigerian Pidgin, Igbo, Hausa and Yoruba, including "
+    "messages that mix two or more of them. Spelling may be informal, phonetic, "
+    "misspelled or written without Igbo/Yoruba diacritics; classify by meaning.\n"
+    "- Always return the listed English tool name and schema fields. For clarify, "
+    "write only short plain English so the channel's safety checks can validate it.\n"
+    "- Preserve names, bank names, beneficiary labels and narration exactly as the "
+    "customer wrote them. Copy every num_ref token verbatim. Never translate, "
+    "correct, infer or invent any financial identifier.\n"
+    "- Intent examples (the text around names and amounts may be in any language):\n"
+    "  * balance: Pidgin 'how much dey my account'; Igbo 'ego ole ka m nwere'; "
+    "Hausa 'nawa ne kudina'; Yoruba 'elo ni mo ni'.\n"
+    "  * transfer: Pidgin 'send 5k give Ada'; Igbo 'zigara Ada puku ise'; "
+    "Hausa 'aika wa Ada dubu biyar'; Yoruba 'fi egberun marun ranse si Ada'.\n"
+    "  * airtime/data: Pidgin 'buy recharge'/'buy data'; Igbo 'zutara m airtime'/"
+    "'zutara m data'; Hausa 'saya min kati'/'saya min data'; Yoruba 'ra airtime "
+    "fun mi'/'ra data fun mi'.\n"
+    "  * electricity bill: Pidgin 'pay my light bill'; Igbo 'kwuo ugwo oku'; "
+    "Hausa 'biya kudin wuta'; Yoruba 'san owo ina'.\n"
+    "  * history: Pidgin 'show me wetin I don spend'; Igbo 'gosi m azumahia m'; "
+    "Hausa 'nuna min tarihin ciniki'; Yoruba 'fi itan idunadura mi han'.\n"
+    "  * failed payment/report: Pidgin 'money no enter'; Igbo 'ego eruteghi'; "
+    "Hausa 'kudin bai shiga ba'; Yoruba 'owo ko wole'.\n"
+    "- These examples are semantic anchors, not exact phrases. Apply the same "
+    "meaning to natural variants and code-switched messages."
+)
+
 SYSTEM_PROMPT = (
     "You are Zitch's transaction assistant. Convert the user's message into exactly "
     "one tool call. Interpret Nigerian shorthand for amounts (k = thousand, m = "
@@ -35,6 +74,7 @@ SYSTEM_PROMPT = (
     "for. Never invent one, never restate the amount or the recipient in it, and "
     "never put a number the customer did not describe as a purpose into it."
     "\n\n"
+    f"{LANGUAGE_GUIDE}\n\n"
     # ---- the cage -----------------------------------------------------------
     # The model routes; it never acts, never reports, and never speaks outside
     # this remit. Each line below exists because the alternative is a banking
