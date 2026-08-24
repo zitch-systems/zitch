@@ -9,12 +9,11 @@ from accounts.models import User
 from whatsapp.flows import (
     FLOW_PIN_STATE,
     FLOW_SIGNUP_STATE,
-    finish_onboarding_from_flow,
     handle_flow_request,
     sign_onboarding_token,
 )
 from whatsapp.models import WaOnboarding, WhatsAppLink
-from whatsapp.router import _handle_unlinked
+from whatsapp.router import _handle_unlinked, finish_onboarding_from_flow
 
 
 MSISDN = "2348099990001"
