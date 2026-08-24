@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { router } from 'expo-router';
 import { View, Text, Pressable, ActivityIndicator, ScrollView } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import ZIcon from '@/components/design/ZIcon';
@@ -7,6 +8,7 @@ import { NText } from '@/components/design/Naira';
 import { flash } from '@/components/design/Notify';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
 import Watermark from '@/components/design/Watermark';
+import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
 import { ReceiptRow, receiptHtml, receiptStamp, senderRows } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -117,6 +119,14 @@ const Receipt = ({
                 <NText style={{ fontSize: r[2] ? 16 : 14, fontFamily: r[2] ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'], maxWidth: '60%', textAlign: 'right' }}>{r[1]}</NText>
               </View>
             ))}
+          </View>
+
+          {/* A receipt is routinely forwarded into a chat. Keep the WhatsApp
+              banking advert inside the capture target so it travels with the
+              saved JPEG, while the on-screen copy still opens the secure account
+              linking flow. */}
+          <View style={{ marginTop: 16 }}>
+            <WhatsAppBankingPromo receipt onPress={() => router.push('/linkwhatsapp')} />
           </View>
 
           {/* Inside the captured view: the saved JPEG is forwarded on its own, with

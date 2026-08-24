@@ -5,6 +5,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Monogram } from '@/components/design/flowkit';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
+import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
 import { ReceiptRow, receiptHtml, senderRows } from '@/lib/receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -99,6 +100,12 @@ const TxnDetail = () => {
           {/* Same sender lines the exported file carries — the JPEG is a capture
               of this card, so anything missing here is missing from the share. */}
           {from.map(([k, v]) => <Row2 key={k} k={k} v={v} />)}
+        </View>
+
+        {/* Kept inside the capture target so receipts exported later from History
+            carry the same WhatsApp banking advert as immediate success receipts. */}
+        <View style={{ marginTop: 12, marginBottom: 4 }}>
+          <WhatsAppBankingPromo receipt onPress={() => router.push('/linkwhatsapp')} />
         </View>
       </View>
 

@@ -7,6 +7,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Screen, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
+import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -256,21 +257,11 @@ const Home = () => {
         ))}
       </View>
 
-      {/* promo */}
-      <Pressable onPress={() => router.push('/savings')} style={{ marginHorizontal: 20, marginTop: 2 }}>
-        <View style={{ borderRadius: 20, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 }}>
-          <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: 'rgba(15,162,149,.16)', alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="fixed" size={23} color={c.brand} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontFamily: font.bold, fontSize: 14, color: c.ink1 }}>Fixed Save · 22% p.a</Text>
-            <Text style={{ fontSize: 12, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>Grow your savings, locked & safe</Text>
-          </View>
-          <View style={{ paddingVertical: 9, paddingHorizontal: 18, borderRadius: 999, backgroundColor: c.brand }}>
-            <Text style={{ color: '#fff', fontSize: 13, fontFamily: font.bold }}>Save</Text>
-          </View>
-        </View>
-      </Pressable>
+      {/* WhatsApp banking advert — routes through the authenticated linking flow
+          rather than opening a raw chat before the account is securely connected. */}
+      <View style={{ marginHorizontal: 20, marginTop: 2 }}>
+        <WhatsAppBankingPromo onPress={() => router.push('/linkwhatsapp')} />
+      </View>
 
       {/* recent */}
       <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
