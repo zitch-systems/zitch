@@ -644,6 +644,11 @@ def _handle_flow_request(payload: dict) -> dict:
         ob = resolve_onboarding_token(token)
         if ob is None:
             return _success_screen("This signup expired. Send us a message to start again.")
+        # A signup contains several human-paced pages plus two out-of-band code
+        # deliveries. Refresh its sliding deadline on every valid exchange so an
+        # active customer is never expired merely because email or SMS was slow.
+        from .router import _onboard_to
+        _onboard_to(ob, ob.step)
         if action == "data_exchange":
             # Which page submitted is the onboarding's STEP, not the shape of
             # the posted data — same rule as the money session's dispatch.
@@ -816,17 +821,18 @@ def _submit_signup_details(ob, data: dict) -> dict:
         # codes ambiguous — refused at entry, exactly like the chat path.
         return _signup_screen(error="That email is already on a Zitch account — use a different one.")
     ob.payload.update({"first_name": first, "last_name": last, "email": email})
-    from .router import send_onboarding_email_code
+    from .router import _onboard_to, send_onboarding_email_code
 
     if send_onboarding_email_code(ob):
-        ob.step = FLOW_EMAIL_CODE_STATE
-        ob.save(update_fields=["payload", "step"])
+        _onboard_to(ob, FLOW_EMAIL_CODE_STATE)
         return _signup_email_code_screen(ob)
-    # No email rail on this deploy: the address is kept unverified (the KYC
-    # ladder re-verifies it later) and signup moves on rather than dead-ending.
-    ob.step = FLOW_PHONE_STATE
-    ob.save(update_fields=["payload", "step"])
-    return _signup_phone_screen()
+    # Email is the credential used to sign in to the app and to recover the
+    # account. Continuing after a delivery failure used to reserve an address
+    # nobody had proved they owned, while creating an account they could not
+    # reliably recover. Keep the form open instead; a retry may use the same or
+    # a corrected address and no User row has been created yet.
+    return _signup_screen(
+        error="We couldn't send the email code. Check the address and try again.")
 
 
 def _signup_email_code_screen(ob, error: str = "") -> dict:
@@ -847,11 +853,18 @@ def _submit_signup_email_code(ob, data: dict) -> dict:
     status, message = check_onboarding_email_code(ob, str(data.get("email_code", "")))
     if status == "retry":
         return _signup_email_code_screen(ob, error=message)
-    # Verified, or attempts/expiry exhausted — either way the ladder moves on;
-    # an unverified address is re-verified later, a dead end helps nobody.
-    ob.step = FLOW_PHONE_STATE
-    ob.save(update_fields=["payload", "step"])
-    return _signup_phone_screen(error=message if status == "unverified" else "")
+    if status != "ok":
+        # Do not create an account whose sign-in/recovery address was never
+        # proved. End this Flow cleanly because re-rendering the same masked
+        # code screen would retain the rejected digits on the device.
+        from .router import _clear_onboarding
+        _clear_onboarding(ob.msisdn)
+        return _success_screen(
+            "We couldn't verify that email. Start Create account again for a new code.",
+            status="failed")
+    from .router import _onboard_to
+    _onboard_to(ob, FLOW_PHONE_STATE)
+    return _signup_phone_screen()
 
 
 def _submit_signup_phone(ob, data: dict) -> dict:
@@ -868,15 +881,18 @@ def _submit_signup_phone(ob, data: dict) -> dict:
         return _signup_phone_screen(error="That number is already on a Zitch account — "
                                           "open the app to link it, or use another number.")
     ob.payload["phone"] = digits
-    from .router import _local_phone, send_onboarding_phone_code
+    from .router import _local_phone, _onboard_to, send_onboarding_phone_code
 
-    if digits != _local_phone(ob.msisdn) and send_onboarding_phone_code(ob):
-        # A number OTHER than the one they are chatting from: possession is not
-        # proven by the session, so it gets the same code round-trip as the
-        # email. The chat number itself needs no SMS — the chat is the phone.
-        ob.step = FLOW_PHONE_CODE_STATE
-        ob.save(update_fields=["payload", "step"])
-        return _signup_phone_code_screen(ob)
+    if digits != _local_phone(ob.msisdn):
+        # A number OTHER than the one they are chatting from is not proved by
+        # the WhatsApp session. It must complete the SMS round-trip; otherwise
+        # an attacker could reserve somebody else's phone as an account and
+        # block the real owner from registering or recovering it.
+        if send_onboarding_phone_code(ob):
+            _onboard_to(ob, FLOW_PHONE_CODE_STATE)
+            return _signup_phone_code_screen(ob)
+        return _signup_phone_screen(
+            error="We couldn't send an SMS to that number. Try again, or use this WhatsApp number.")
     return _signup_to_pin(ob)
 
 
@@ -982,8 +998,12 @@ def _submit_signup_phone_code(ob, data: dict) -> dict:
     status, message = check_onboarding_phone_code(ob, str(data.get("phone_code", "")))
     if status == "retry":
         return _signup_phone_code_screen(ob, error=message)
-    # Verified, or attempts/expiry exhausted — the ladder moves on either way;
-    # an unverified number gets the KYC ladder's SMS round-trip later.
+    if status != "ok":
+        from .router import _clear_onboarding
+        _clear_onboarding(ob.msisdn)
+        return _success_screen(
+            "We couldn't verify that phone number. Start Create account again for a new code.",
+            status="failed")
     return _signup_to_pin(ob)
 
 
