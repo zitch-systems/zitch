@@ -341,6 +341,11 @@ services:
         sync: false
       - key: WHATSAPP_FLOW_CTA
         sync: false
+      # SIGNUP_PASSWORD is published in Flow 1781880196163772. Keep this
+      # explicit so WhatsApp-created accounts always receive the app password
+      # required for sign-in; an absent flag previously skipped the page.
+      - key: WHATSAPP_FLOW_PASSWORD_SCREEN
+        value: "true"
       # WhatsApp AI intent layer (optional). Blank => the deterministic router
       # handles everything; the model only proposes intents, never moves money.
       - key: LLM_API_KEY
@@ -559,6 +564,8 @@ services:
         sync: false
       - key: WHATSAPP_FLOW_CTA
         sync: false
+      - key: WHATSAPP_FLOW_PASSWORD_SCREEN
+        value: "true"
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
