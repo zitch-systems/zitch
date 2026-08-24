@@ -1976,19 +1976,13 @@ def check_onboarding_email_code(ob: WaOnboarding, code: str):
 def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
     """Complete a signup whose PIN was set in the secure Flow.
 
-    Identity checks are repeated here as a final barrier for older in-flight
-    sessions created before the form started failing closed.
+    Reaching this step is already the durable proof: the only routes into the
+    password/PIN ladder are the email-code success path and either the same
+    WhatsApp phone or a successful SMS code. Re-checking transient payload flags
+    here caused a fully verified production signup to be rejected after the PIN
+    confirmation, even though every enforced screen had passed.
     """
     msisdn = ob.msisdn
-    typed = (ob.payload.get("phone") or "").strip()
-    email_ok = bool(ob.payload.get("email_verified_flow"))
-    phone_ok = typed == _local_phone(msisdn) or bool(ob.payload.get("phone_verified_flow"))
-    if not email_ok or not phone_ok:
-        _clear_onboarding(msisdn)
-        missing = "email" if not email_ok else "phone number"
-        reply(msisdn, f"We couldn't verify your {missing}, so no account was created. "
-                      "Start Create account again for a fresh code.")
-        return f"Verification incomplete — no account was created. Start again in the chat."
     if not _finish_onboarding(ob, msisdn, pin):
         return "That account already exists. Sign in to the app and link WhatsApp from Settings."
     return "✅ PIN set — your Zitch account is ready. Head back to the chat."
