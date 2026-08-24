@@ -1,15 +1,11 @@
 import React from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
-import { BANK_WHATSAPP } from '@/components/configFiles/links';
+import { BANK_WHATSAPP_DISPLAY } from '@/components/configFiles/links';
 import { useTheme, font } from '@/lib/theme';
 
 const WA_GREEN = '#25D366';
 
-const displayWhatsAppNumber = (digits: string) => {
-  const local = digits.startsWith('234') ? digits.slice(3) : digits;
-  return `+234 ${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6)}`.trim();
-};
 
 const WhatsAppBankingPromo = ({
   onPress,
@@ -64,7 +60,7 @@ const WhatsAppBankingPromo = ({
         </Text>
         {receipt ? (
           <Text selectable style={{ color: c.ink2, fontFamily: font.semibold, fontSize: 11, marginTop: 4 }}>
-            {displayWhatsAppNumber(BANK_WHATSAPP)}
+            {BANK_WHATSAPP_DISPLAY}
           </Text>
         ) : null}
       </View>
