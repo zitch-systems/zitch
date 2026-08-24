@@ -1551,6 +1551,12 @@ def _handle_unlinked(msisdn: str, text: str) -> None:
             link.save(update_fields=["link_code"])
             return reply(msisdn, "For your security, send this code from the phone number on your Zitch account. "
                                  "That code has now expired — generate a new one in the Zitch app.")
+        # Re-linking is a sign-in to this banking channel, not permission to
+        # leave an older phone connected forever. Retire the user's previous
+        # active channel before activating the freshly proved one.
+        WhatsAppLink.objects.filter(
+            user=link.user, status=WhatsAppLink.ACTIVE
+        ).exclude(pk=link.pk).delete()
         link.wa_msisdn = msisdn
         link.status = WhatsAppLink.ACTIVE
         link.link_code = ""
@@ -1611,6 +1617,15 @@ def _start_onboarding(msisdn: str) -> None:
             return reply(msisdn, "🎉 Tap *Create account* on the secure form above to get started.")
         log.warning("wa_signup_flow_send_failed msisdn=%s detail=%r",
                     mask_pii(msisdn), res.get("error_detail", ""))
+    # The chat fallback cannot collect an app password safely. In production it
+    # therefore created accounts that immediately failed app sign-in (and, when
+    # the PIN Flow also failed, could not spend here either). Keep the legacy
+    # text ladder only for local/test coverage; a live customer gets an honest,
+    # retryable refusal and no half-usable account is created.
+    if not (getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False)):
+        _clear_onboarding(msisdn)
+        return reply(msisdn, "Secure signup is temporarily unavailable. Please try again "
+                             "shortly, or create your account in the Zitch app.")
     WaOnboarding.objects.update_or_create(
         msisdn=msisdn,
         defaults={"step": "first_name", "payload": {}, "expires_at": timezone.now() + ONBOARD_TTL},
@@ -1668,10 +1683,12 @@ def _arm_onboarding_pin(ob: WaOnboarding, msisdn: str) -> None:
     if _pin_in_chat_allowed():
         _onboard_to(ob, "pin")
         return reply(msisdn, "Create a *6-digit PIN* to authorise payments (any 6 digits — keep it secret).")
-    # No secure channel: finish the signup without a PIN rather than ask for one
-    # in a chat that keeps it forever. Everything that spends money already
-    # requires a PIN, so the account is simply not spendable until it is set.
-    return _finish_onboarding(ob, msisdn, "")
+    # A live signup must never finish without the credentials needed to use it.
+    # If the encrypted screen cannot open, retain no partial signup and let the
+    # customer retry or use the app.
+    _clear_onboarding(msisdn)
+    return reply(msisdn, "Secure signup is temporarily unavailable. Please try again "
+                         "shortly, or create your account in the Zitch app.")
 
 
 def _onboard_to(ob: WaOnboarding, step: str) -> None:
@@ -1757,7 +1774,7 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     return reply(msisdn, UNLINKED)
 
 
-def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
+def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
     wa_local = _local_phone(msisdn)
     # The account phone is the one TYPED on the signup form when there is one —
     # a customer may bank on a different line than they chat on. Falls back to
@@ -1767,7 +1784,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     ln = (ob.payload.get("last_name") or "").strip()
     if User.objects.filter(phone=local).exists():  # raced with the app / another signup
         _clear_onboarding(msisdn)
-        return reply(msisdn, "This number already has a Zitch account — open the app to link it.")
+        reply(msisdn, "This number already has a Zitch account — open the app to link it.")
+        return False
     # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
     # the app: only name + PIN are collected here (no BVN/NIN), and the app's tier
     # ladder (recompute_tier) requires BVN + NIN for Tier 1. The user raises their
@@ -1847,6 +1865,7 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> None:
     # is off; option 6 offers the same setup any time.
     if wallet_views._wema_funding_enabled():
         _start_add_account(user, msisdn, after_signup=True)
+    return True
 
 
 def send_onboarding_email_code(ob: WaOnboarding) -> bool:
@@ -1955,11 +1974,23 @@ def check_onboarding_email_code(ob: WaOnboarding, code: str):
 
 
 def finish_onboarding_from_flow(ob: WaOnboarding, pin: str) -> str:
-    """Complete a signup whose PIN was set in the secure Flow. Returns the terminal
-    message for the Flow's success screen; the chat welcome + account setup are
-    sent by _finish_onboarding as usual."""
+    """Complete a signup whose PIN was set in the secure Flow.
+
+    Identity checks are repeated here as a final barrier for older in-flight
+    sessions created before the form started failing closed.
+    """
     msisdn = ob.msisdn
-    _finish_onboarding(ob, msisdn, pin)
+    typed = (ob.payload.get("phone") or "").strip()
+    email_ok = bool(ob.payload.get("email_verified_flow"))
+    phone_ok = typed == _local_phone(msisdn) or bool(ob.payload.get("phone_verified_flow"))
+    if not email_ok or not phone_ok:
+        _clear_onboarding(msisdn)
+        missing = "email" if not email_ok else "phone number"
+        reply(msisdn, f"We couldn't verify your {missing}, so no account was created. "
+                      "Start Create account again for a fresh code.")
+        return f"Verification incomplete — no account was created. Start again in the chat."
+    if not _finish_onboarding(ob, msisdn, pin):
+        return "That account already exists. Sign in to the app and link WhatsApp from Settings."
     return "✅ PIN set — your Zitch account is ready. Head back to the chat."
 
 
