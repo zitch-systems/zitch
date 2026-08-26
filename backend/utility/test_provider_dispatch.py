@@ -314,11 +314,13 @@ class NinIdentityRailTests(SimpleTestCase):
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_matching_record_verifies(self):
-        payload = {"status": True, "data": {"firstname": "ADA", "surname": "EZE"}}
-        with patch("utility.providers.requests.post", return_value=self._resp(payload)):
+        payload = {"status": True, "data": {"firstName": "ADA", "lastName": "EZE"}}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
             result = P.verify_nin("12345678901", name="Ada Eze")
         self.assertTrue(result["success"])
         self.assertEqual((result["first_name"], result["last_name"]), ("ADA", "EZE"))
+        self.assertEqual(post.call_args.args[0], "https://api.prembly.com/verification/vnin")
+        self.assertEqual(post.call_args.kwargs["json"], {"number": "12345678901"})
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_different_person_is_refused_without_naming_them(self):
@@ -382,6 +384,18 @@ class BvnIdentityRailTests(SimpleTestCase):
         self.assertTrue(result["success"])
         self.assertTrue(result.get("mock"))
         post.assert_not_called()
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_a_matching_record_uses_bvn_advance(self):
+        payload = {"status": True, "data": {
+            "first_name": "ADA", "last_name": "EZE", "phone_number": "08012345678",
+        }}
+        with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
+            result = P.verify_bvn("12345678901", name="Ada Eze")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["phone"], "+2348012345678")
+        self.assertEqual(post.call_args.args[0], "https://api.prembly.com/verification/bvn")
+        self.assertEqual(post.call_args.kwargs["json"], {"number": "12345678901"})
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_different_person_is_refused_without_naming_them(self):

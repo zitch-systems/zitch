@@ -667,9 +667,8 @@ def prembly_verify_bvn(bvn: str, name: str = "") -> dict:
     uncertainty, exactly like the NIN path — this result lifts a tier and, unlike
     NIN, currently gates whether an account may spend at all.
 
-    VERIFY-BEFORE-LIVE: confirm the endpoint path and response field names on
-    your Prembly dashboard. A mismatch surfaces as "could not be confirmed",
-    which is the safe direction but still wrong.
+    Uses Prembly's BVN Advance product because the ownership challenge needs the
+    identity-registered phone number as well as the holder's name.
     """
     if len(bvn) != 11 or not bvn.isdigit():
         return {"success": False, "invalid": True, "message": "BVN must be 11 digits"}
@@ -680,9 +679,21 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
     """Shared BVN/NIN lookup: one request shape, one name match, one failure
     policy. Written once so the two identities cannot drift on what counts as a
     pass — they gate the same money."""
+    # Prembly's current IdentityPass API does not use the older
+    # ``/identitypass/verification/{kind}`` route for these products.  Keep the
+    # product routes explicit so a future API change cannot silently make BVN
+    # and NIN drift onto the wrong verification level.
+    paths = {
+        "bvn": "/verification/bvn",       # BVN Advance
+        "nin": "/verification/vnin",     # NIN Advance
+    }
+    path = paths.get(kind)
+    if path is None:
+        return {"success": False, "message": "Unsupported identity type."}
+
     try:
         resp = requests.post(
-            f"{settings.PREMBLY['BASE_URL']}/identitypass/verification/{kind}",
+            f"{settings.PREMBLY['BASE_URL'].rstrip('/')}{path}",
             json={"number": number}, headers=_prembly_headers(), timeout=REQUEST_TIMEOUT,
         )
         data = resp.json()
@@ -692,7 +703,7 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
         return {"success": False, "message": f"Identity provider unreachable: {exc}"}
 
     record = data.get("data") or data.get(f"{kind}_data") or {}
-    if not (data.get("status") and isinstance(record, dict)):
+    if resp.status_code >= 400 or not (data.get("status") is True and isinstance(record, dict)):
         # The provider answered, and the answer is no. `invalid` means definitive:
         # a wrong number is the customer's to correct, not an operator's to
         # approve — queueing it would put a human in front of a decision the
@@ -700,9 +711,13 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
         return {"success": False, "invalid": True,
                 "message": data.get("message") or f"That {kind.upper()} could not be confirmed.",
                 "raw": data}
-    first = str(record.get("firstname") or record.get("first_name") or "").strip()
-    last = str(record.get("surname") or record.get("lastname") or record.get("last_name") or "").strip()
-    resolved = " ".join(p for p in (first, record.get("middlename") or "", last) if p).strip()
+    first = str(record.get("firstname") or record.get("first_name") or
+                record.get("firstName") or "").strip()
+    last = str(record.get("surname") or record.get("lastname") or
+               record.get("last_name") or record.get("lastName") or "").strip()
+    middle = str(record.get("middlename") or record.get("middle_name") or
+                 record.get("middleName") or "").strip()
+    resolved = " ".join(p for p in (first, middle, last) if p).strip()
     if name and resolved:
         from transfers.views import _names_match
 
@@ -773,8 +788,8 @@ def prembly_verify_nin(nin: str, name: str = "") -> dict:
     checked must land in the review queue rather than be waved through: this
     result is what lifts a tier.
 
-    VERIFY-BEFORE-LIVE: confirm the endpoint path and the response field names
-    against your Prembly dashboard before trusting this in production.
+    Uses Prembly's NIN Advance endpoint so the result contains sufficient
+    holder information for name matching and the registered-line challenge.
     """
     if len(nin) != 11 or not nin.isdigit():
         return {"success": False, "invalid": True, "message": "NIN must be 11 digits"}
