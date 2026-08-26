@@ -7,15 +7,6 @@ python manage.py collectstatic --no-input
 python manage.py migrate
 python manage.py seed_plans
 
-# Explicitly approved, one-deploy-only pre-launch customer reset. The command has its own
-# second gate and preserves all staff/operator accounts. Clear both environment
-# variables immediately after the successful deploy so this can never repeat.
-if [ "${ALLOW_TEST_DATA_PURGE:-false}" = "true" ]; then
-  python manage.py purge_test_customers \
-    --confirm "${PURGE_TEST_DATA_CONFIRMATION:-}"
-  echo "==> Test customer purge completed. Clear ALLOW_TEST_DATA_PURGE and PURGE_TEST_DATA_CONFIRMATION now."
-fi
-
 # Map Wema's VAS catalogue onto our seeded plans, when asked to.
 #
 # Same reason as the operator bootstrap below: there is no shell on this plan, so
