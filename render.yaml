@@ -78,7 +78,7 @@ services:
       - key: LLM_ALLOW_CUSTOM_ENDPOINT
         value: "false"
       - key: DJANGO_ADMIN_ENABLED
-        value: "false"
+        value: "true"
       - key: DJANGO_REQUIRE_SHARED_CACHE
         value: "true"
       # Enrol super-admin/finance authenticators first, then set this true in the
