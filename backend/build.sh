@@ -35,15 +35,22 @@ esac
 # Auto-provision a super_admin operator from env vars (Render free tier has no
 # shell, so this is the only way to bootstrap admin access without one). Skipped
 # when DJANGO_SUPERUSER_PASSWORD is unset, and idempotent: seed_ops upserts the
-# account, so re-deploys never duplicate or reset an existing password unless
-# DJANGO_SUPERUSER_PASSWORD changed.
+# account without re-applying the bootstrap password to an existing operator.
+# This prevents an old Render secret from undoing a password rotation on every
+# deploy. An explicit one-deploy recovery reset is available below.
 if [ -n "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
   ADMIN_USERNAME="${DJANGO_SUPERUSER_USERNAME:-admin}"
+  PASSWORD_MODE="--preserve-existing-password"
+  if [ "${DJANGO_SUPERUSER_RESET_PASSWORD:-false}" = "true" ]; then
+    PASSWORD_MODE=""
+    echo "==> WARNING: Explicit operator password recovery reset requested. Set DJANGO_SUPERUSER_RESET_PASSWORD=false immediately after this deploy."
+  fi
   python manage.py seed_ops \
     --username "$ADMIN_USERNAME" \
     --role super_admin \
     --password "$DJANGO_SUPERUSER_PASSWORD" \
-    --email "${DJANGO_SUPERUSER_EMAIL:-admin@zitch.ng}"
+    --email "${DJANGO_SUPERUSER_EMAIL:-admin@zitch.ng}" \
+    $PASSWORD_MODE
   echo "==> Operator bootstrap OK. Sign in at /portal/ as '$ADMIN_USERNAME' (or its email) with DJANGO_SUPERUSER_PASSWORD."
 else
   # Loud on purpose. This used to skip in silence, which is indistinguishable in
@@ -54,5 +61,7 @@ else
   echo "==>          will reject every login. Set DJANGO_SUPERUSER_PASSWORD (and"
   echo "==>          optionally DJANGO_SUPERUSER_USERNAME, default 'admin') in the"
   echo "==>          Render dashboard, then redeploy. Re-running is safe: the"
-  echo "==>          account is upserted, and the password is reset to match."
+  echo "==>          account is created on the next deploy. For recovery of an"
+  echo "==>          existing operator, set DJANGO_SUPERUSER_RESET_PASSWORD=true"
+  echo "==>          for one deploy only, then return it to false."
 fi

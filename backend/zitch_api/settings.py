@@ -704,6 +704,8 @@ SECURE_SSL_REDIRECT = env_bool("DJANGO_SSL_REDIRECT", _PROD)
 SECURE_REDIRECT_EXEMPT = [r"^healthz$"]
 SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", _PROD)
 CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE", _PROD)
+SESSION_COOKIE_AGE = int(os.environ.get("DJANGO_SESSION_COOKIE_AGE", "7200"))
+SESSION_EXPIRE_AT_BROWSER_CLOSE = env_bool("DJANGO_SESSION_EXPIRE_AT_BROWSER_CLOSE", _PROD)
 # HSTS — tell browsers to use HTTPS only. One year, including subdomains; preload
 # stays opt-in (it's the hard-to-reverse part — enable once you're ready to
 # submit the domain to the browser preload list).

@@ -45,6 +45,11 @@ class Command(BaseCommand):
         parser.add_argument("--role", choices=ROLES)
         parser.add_argument("--password")
         parser.add_argument("--email")
+        parser.add_argument(
+            "--preserve-existing-password",
+            action="store_true",
+            help="Use --password only when the named operator is first created.",
+        )
 
     def handle(self, *args, **opts):
         if opts.get("username"):
@@ -54,7 +59,8 @@ class Command(BaseCommand):
                 )
             self._upsert(opts["username"], opts.get("role") or "read_only",
                          opts["password"],
-                         opts.get("email") or f"{opts['username']}@zitch.ng")
+                         opts.get("email") or f"{opts['username']}@zitch.ng",
+                         preserve_existing_password=opts["preserve_existing_password"])
             return
 
         if not settings.DEBUG:
@@ -70,7 +76,7 @@ class Command(BaseCommand):
             self._upsert(username, role, DEMO_PASSWORD, f"{username}@zitch.ng")
         self.stdout.write(self.style.SUCCESS(f"Seeded {len(DEMO_OPERATORS)} demo operators."))
 
-    def _upsert(self, username, role, password, email):
+    def _upsert(self, username, role, password, email, *, preserve_existing_password=False):
         # phone stays NULL. It used to be fabricated from `hash(username)`, which
         # was both non-deterministic (Python salts str hashes per process, so a
         # re-deploy invented a different number) and a real hazard: the value
@@ -88,11 +94,11 @@ class Command(BaseCommand):
         # this, downgrading a super-admin left is_superuser=True and moving an
         # operator between groups kept the old role's capabilities.
         user.is_superuser = role == "super_admin"
-        user.set_password(password)
+        if created or not preserve_existing_password:
+            user.set_password(password)
         user.save()
         user.groups.clear()
         if role != "super_admin":
             group, _ = Group.objects.get_or_create(name=role)
             user.groups.add(group)
         self.stdout.write(f"  {'created' if created else 'updated'} operator '{username}' ({role})")
-

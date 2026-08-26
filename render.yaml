@@ -67,10 +67,18 @@ services:
         sync: false
       - key: DJANGO_SUPERUSER_PASSWORD
         sync: false
+      # One-deploy recovery switch. Leave false; set true only to apply the
+      # bootstrap password to an existing operator, then immediately restore.
+      - key: DJANGO_SUPERUSER_RESET_PASSWORD
+        value: "false"
       - key: TOKEN_TTL_HOURS
         value: "24"
       - key: ADMIN_TOKEN_TTL_HOURS
         value: "2"
+      - key: DJANGO_SESSION_COOKIE_AGE
+        value: "7200"
+      - key: DJANGO_SESSION_EXPIRE_AT_BROWSER_CLOSE
+        value: "true"
       # Declared explicitly (it matches the code default) so the session-purge
       # cron can read it with fromService and derive the same cutoff this
       # service issues refresh families under.

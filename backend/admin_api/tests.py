@@ -576,6 +576,16 @@ class SeedOpsCommandTests(TestCase):
         self.assertEqual(list(user.groups.values_list("name", flat=True)), ["support"])
         self.assertTrue(user.check_password("Second#pass2"))
 
+    def test_bootstrap_can_preserve_an_existing_password(self):
+        from django.core.management import call_command
+
+        call_command("seed_ops", username="zoe", role="super_admin", password="First#pass1")
+        call_command("seed_ops", username="zoe", role="super_admin", password="Stale#bootstrap2",
+                     preserve_existing_password=True)
+        user = User.objects.get(username="zoe")
+        self.assertTrue(user.check_password("First#pass1"))
+        self.assertFalse(user.check_password("Stale#bootstrap2"))
+
     def test_operator_gets_no_fabricated_phone(self):
         """The operator's phone must stay NULL. It used to be derived from
         hash(username), which invented a plausible 080… number — and `phone` is
