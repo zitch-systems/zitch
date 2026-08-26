@@ -263,6 +263,10 @@ ALLOW_BODY_ACCESS_TOKEN = env_bool("ALLOW_BODY_ACCESS_TOKEN", DEBUG or TESTING)
 # development/tests, but require an explicit break-glass opt-in on a deployed
 # host; normal operations use the RBAC + TOTP operator portal instead.
 DJANGO_ADMIN_ENABLED = env_bool("DJANGO_ADMIN_ENABLED", DEBUG or TESTING)
+# Detailed rail/provider health data belongs behind authenticated diagnostics.
+# Tests retain it to cover the diagnostic calculations; deployed liveness is
+# deliberately a minimal, topology-free response.
+PUBLIC_HEALTH_DETAILS = env_bool("DJANGO_PUBLIC_HEALTH_DETAILS", DEBUG or TESTING)
 # Force-off under tests regardless of any RATELIMIT_ENABLE in the environment /
 # .env, so a dev's local rate-limit setting can't bleed shared cache counts into
 # unrelated test cases (RateLimitTests opts back in via override_settings).

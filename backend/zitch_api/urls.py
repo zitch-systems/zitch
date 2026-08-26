@@ -19,12 +19,18 @@ from whatsapp.views import webhook as whatsapp_webhook
 
 
 def health(_request):
-    """Liveness probe + which integrations are live (True) vs MOCK (False).
+    """Liveness probe; detailed integration diagnostics are non-production only.
 
-    Reports booleans only — never secrets — so ops can confirm prod keys are
-    wired without exposing them. Served at /healthz so the marketing landing
-    page can own "/". (The platform health check points at /healthz.)
+    Provider names, enabled features, timestamps, and recent failure details are
+    useful to operators but still disclose production topology and activity.
+    Production exposes only the stable liveness contract; authenticated portal
+    diagnostics and preflight own the detailed readings.
     """
+    if not getattr(settings, "PUBLIC_HEALTH_DETAILS", False):
+        response = JsonResponse({"status": True, "service": "zitch-api"})
+        response["Cache-Control"] = "no-store"
+        return response
+
     from utility.providers import (_prembly_live, kyc_provider, payment_provider,
                                     payout_live, payout_provider, sms_live,
                                     vas_provider, vtu_live)
@@ -143,7 +149,9 @@ def health(_request):
         # one record that explained a failed Confirm; this one survives them.
         "whatsapp_last_flow_exchange": _whatsapp_last_flow_exchange(),
     }
-    return JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+    response = JsonResponse({"status": True, "service": "zitch-api", "integrations": integrations})
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 def _whatsapp_last_flow_exchange():

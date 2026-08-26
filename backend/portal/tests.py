@@ -384,6 +384,13 @@ class WebPagesTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.json()["status"])
 
+    @override_settings(PUBLIC_HEALTH_DETAILS=False)
+    def test_production_healthz_discloses_no_integration_topology(self):
+        res = Client().get("/healthz")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"status": True, "service": "zitch-api"})
+        self.assertEqual(res["Cache-Control"], "no-store")
+
     def test_healthz_answers_the_whatsapp_question(self):
         """This is the only endpoint reachable without a login, and a silent
         WhatsApp bot is indistinguishable from a healthy one everywhere else. The

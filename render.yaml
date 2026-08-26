@@ -50,6 +50,8 @@ services:
       # so callers cannot bypass the Cloudflare edge by using the origin URL.
       - key: DJANGO_BLOCK_RENDER_ORIGIN
         value: "true"
+      - key: DJANGO_PUBLIC_HEALTH_DETAILS
+        value: "false"
       - key: CSRF_TRUSTED_ORIGINS
         value: "https://api.zitch.ng"
       # Bootstrap the back-office super admin. The free tier has no shell, so
