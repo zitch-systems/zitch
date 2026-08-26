@@ -366,10 +366,11 @@ class WebPagesTests(TestCase):
             for leak in (b"{#", b"#}", b"{%", b"%}", b"{{"):
                 self.assertNotIn(leak, body, f"{leak!r} leaked at /portal/{qs}")
 
-    def test_old_console_portal_url_redirects_to_demo_mode(self):
+    def test_old_console_portal_url_redirects_to_live_portal(self):
+        """The legacy console shortcut must open the authenticated live portal."""
         res = Client().get("/console/portal/")
         self.assertEqual(res.status_code, 302)
-        self.assertEqual(res["Location"], "/portal/?mode=demo")
+        self.assertEqual(res["Location"], "/portal/")
 
     def test_console_landing_and_app_are_untouched(self):
         """Only the duplicate portal was consolidated; the other two console
