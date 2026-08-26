@@ -402,7 +402,7 @@ class BvnIdentityRailTests(SimpleTestCase):
         with patch("utility.providers.requests.post", return_value=self._resp(payload)) as post:
             result = P.verify_bvn("12345678901", name="Ada Eze")
         self.assertTrue(result["success"])
-        self.assertEqual(result["phone"], "+2348012345678")
+        self.assertEqual(result["phone"], "2348012345678")
         self.assertEqual(post.call_args.args[0], "https://api.prembly.com/verification/bvn")
         self.assertEqual(post.call_args.kwargs["json"], {"number": "12345678901"})
 
