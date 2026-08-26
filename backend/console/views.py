@@ -4,7 +4,7 @@ Three browser surfaces share the Zitch brand and the same origin as the API:
 
   /         marketing landing page (self-contained HTML/CSS/JS)
   /app/     interactive app prototype (embedded by the landing hero iframe)
-  /portal/  redirects to the canonical /portal/?mode=demo (see ``portal``)
+  /portal/  redirects to the canonical live /portal/ surface (see ``portal``)
 
 The pages are plain HTML files under ``pages/`` whose asset references were
 rewritten to ``/static/console/...`` at build time, so they are returned
@@ -38,11 +38,8 @@ def app_prototype(_request):
 
 
 def portal(_request):
-    # Consolidated into the single /portal/ surface, which serves this very bundle
-    # under ?mode=demo behind an explicit mode bar. Two indistinguishable portals
-    # was the hazard: same chrome, same twelve-item nav, and no way to tell a
-    # fixture balance from a real one. Redirect rather than delete so existing
-    # bookmarks and the design-handoff links still land somewhere correct.
-    # 302, not 301 — a permanent redirect is cached by the browser and would be
-    # painful to walk back if the mock ever needs its own URL again.
-    return redirect("/portal/?mode=demo")
+    # This compatibility route must open the canonical LIVE portal. Demo data
+    # is available only through the explicit /portal/?mode=demo URL; silently
+    # sending an operator here to fixture data makes the console appear broken
+    # and can make test balances look like production.
+    return redirect("/portal/")
