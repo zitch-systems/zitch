@@ -351,6 +351,15 @@ class NinIdentityRailTests(SimpleTestCase):
             self.assertFalse(P.verify_nin("12345678901", name="Ada Eze")["success"])
 
     @override_settings(PREMBLY=PREMBLY_LIVE)
+    def test_gateway_or_credentials_error_is_not_classed_as_bad_identity(self):
+        response = self._resp({"status": False, "message": "Unauthorized"}, status=401)
+        with patch("utility.providers.requests.post", return_value=response):
+            result = P.verify_nin("12345678901", name="Ada Eze")
+        self.assertFalse(result["success"])
+        self.assertFalse(result.get("invalid", False))
+        self.assertNotIn("Unauthorized", result["message"])
+
+    @override_settings(PREMBLY=PREMBLY_LIVE)
     def test_a_malformed_nin_never_reaches_the_provider(self):
         with patch("utility.providers.requests.post") as post:
             self.assertFalse(P.verify_nin("123", name="Ada Eze")["success"])

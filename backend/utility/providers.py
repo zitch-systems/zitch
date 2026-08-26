@@ -702,8 +702,16 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
         # NOT invalid: we could not ask. Reviewable.
         return {"success": False, "message": f"Identity provider unreachable: {exc}"}
 
+    # HTTP failures are gateway/auth/product problems, never proof that the
+    # customer's identity is wrong.  In particular, treating a 401/403/404 as
+    # ``invalid`` shows "check the digits" for a Zitch configuration fault.
+    if resp.status_code >= 400:
+        log.warning("prembly_%s_http_error status=%s", kind, resp.status_code)
+        return {"success": False,
+                "message": "Identity verification service is temporarily unavailable."}
+
     record = data.get("data") or data.get(f"{kind}_data") or {}
-    if resp.status_code >= 400 or not (data.get("status") is True and isinstance(record, dict)):
+    if not (data.get("status") is True and isinstance(record, dict)):
         # The provider answered, and the answer is no. `invalid` means definitive:
         # a wrong number is the customer's to correct, not an operator's to
         # approve — queueing it would put a human in front of a decision the
