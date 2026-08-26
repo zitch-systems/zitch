@@ -6,6 +6,13 @@ from django.test import TestCase, override_settings
 
 
 class ReadinessTests(TestCase):
+    @override_settings(REQUIRE_SHARED_CACHE=True, PUBLIC_HEALTH_DETAILS=False)
+    def test_production_readiness_discloses_no_component_topology(self):
+        response = self.client.get("/readyz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": True})
+        self.assertEqual(response["Cache-Control"], "no-store")
+
     @override_settings(REQUIRE_SHARED_CACHE=False)
     def test_database_only_deploy_is_ready(self):
         body = self.client.get("/readyz").json()

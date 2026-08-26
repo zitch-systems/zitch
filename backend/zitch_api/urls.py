@@ -383,16 +383,24 @@ def readyz(_request):
     """
     from django.conf import settings
 
+    def response(ok, *, db, cache, status=200):
+        payload = {"status": ok}
+        if getattr(settings, "PUBLIC_HEALTH_DETAILS", False):
+            payload.update(db=db, cache=cache)
+        result = JsonResponse(payload, status=status)
+        result["Cache-Control"] = "no-store"
+        return result
+
     if not _database_ready():
-        return JsonResponse({"status": False, "db": False, "cache": None}, status=503)
+        return response(False, db=False, cache=None, status=503)
 
     if getattr(settings, "REQUIRE_SHARED_CACHE", False):
         cache_ok = _shared_cache_ready()
         if not cache_ok:
-            return JsonResponse({"status": False, "db": True, "cache": False}, status=503)
-        return JsonResponse({"status": True, "db": True, "cache": True})
+            return response(False, db=True, cache=False, status=503)
+        return response(True, db=True, cache=True)
 
-    return JsonResponse({"status": True, "db": True, "cache": "not_required"})
+    return response(True, db=True, cache="not_required")
 
 
 def robots_txt(_request):
