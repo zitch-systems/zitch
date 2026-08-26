@@ -83,6 +83,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "common.middleware.RenderOriginGuardMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -695,6 +696,7 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 # `not TESTING` in keeps the suite (which Django runs with DEBUG off) from
 # tripping the fail-fast guards while still hardening every real deploy.
 _PROD = not DEBUG and not TESTING
+BLOCK_RENDER_ORIGIN = env_bool("DJANGO_BLOCK_RENDER_ORIGIN", _PROD)
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SSL_REDIRECT", _PROD)
 # Keep the "/healthz" liveness probe answering 200 over plain HTTP so a platform
 # health check never trips on the HTTPS redirect (it returns booleans only, no

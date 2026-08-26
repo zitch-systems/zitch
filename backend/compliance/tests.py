@@ -392,6 +392,9 @@ class DsrFromAdminTests(TestCase):
     def _said(self):
         return " ".join(m for m, _ in self.messages)
 
+    def test_generic_user_delete_is_disabled(self):
+        self.assertFalse(self.admin.has_delete_permission(self._req(self.op_a), self.subject))
+
     # --- export ---------------------------------------------------------------
     @override_settings(COMPLIANCE_EXPORT_EMAIL="dpo@zitch.ng")
     def test_export_is_emailed_as_a_file_and_never_returned(self):

@@ -19,6 +19,17 @@ class UserAdmin(BaseUserAdmin):
     fieldsets = BaseUserAdmin.fieldsets + (("Zitch", {"fields": ("phone",)}),)
     actions = ["dsr_export", "dsr_request_erasure", "dsr_carry_out_erasure"]
 
+    def has_delete_permission(self, request, obj=None):
+        """Customer identity rows are retained; use the audited erasure flow.
+
+        A User is the anchor for immutable ledger and regulated KYC/AML records.
+        Exposing Django's generic delete action either fails on PROTECT relations
+        or attempts cascades that the database's ledger guard correctly refuses.
+        The two-person NDPR actions below deactivate and pseudonymise the subject
+        while retaining the records Zitch is required to keep.
+        """
+        return False
+
     # NDPR/GDPR data-subject requests. `manage.py data_subject_request` is the original
     # and stays the reference implementation; these exist because it needs a production
     # shell, and a deploy without one (Render's free tier has none) could not service a

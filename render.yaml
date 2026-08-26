@@ -45,6 +45,11 @@ services:
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
         value: ".onrender.com,api.zitch.ng"
+      # Render's own hostname remains reachable for health checks only. All
+      # customer, webhook and operator traffic must pass through api.zitch.ng
+      # so callers cannot bypass the Cloudflare edge by using the origin URL.
+      - key: DJANGO_BLOCK_RENDER_ORIGIN
+        value: "true"
       - key: CSRF_TRUSTED_ORIGINS
         value: "https://api.zitch.ng"
       # Bootstrap the back-office super admin. The free tier has no shell, so

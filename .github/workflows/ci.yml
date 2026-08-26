@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  schedule:
+    # Re-run dependency and secret checks even when the repository is idle so a
+    # newly disclosed vulnerability does not wait for the next code push.
+    - cron: "17 4 * * *"
   push:
     branches: [main]
     # `landing/**` is no longer ignored: the landing app ships raw .jsx that the
