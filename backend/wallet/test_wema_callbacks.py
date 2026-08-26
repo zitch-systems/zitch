@@ -64,6 +64,24 @@ class WemaCallbackAuthTests(TestCase):
                        REMOTE_ADDR="10.30.1.250")
         self.assertEqual(r.status_code, 403, "right-most public must win, not left-most")
 
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True})
+    def test_cloudflare_client_ip_is_used_only_behind_a_cloudflare_edge(self):
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="135.236.18.76, 172.71.147.174",
+                       HTTP_CF_CONNECTING_IP="135.236.18.76",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertNotEqual(r.status_code, 403, "Cloudflare must preserve the bank IP")
+
+    @override_settings(DEBUG=False, TESTING=False,
+                       WEMA={**WEMA_CB, "CALLBACK_ENFORCE_IPS": True})
+    def test_direct_caller_cannot_spoof_cloudflare_client_ip(self):
+        r = self._post(f"/webhooks/wema/account/{TOKEN}", {"data": {}},
+                       HTTP_X_FORWARDED_FOR="41.58.1.9",
+                       HTTP_CF_CONNECTING_IP="135.236.18.76",
+                       REMOTE_ADDR="10.30.1.250")
+        self.assertEqual(r.status_code, 403)
+
     def test_wrong_token_is_forbidden(self):
         r = self._post("/webhooks/wema/account/wrong-token", {"data": {"nuban": "0123456789"}})
         self.assertEqual(r.status_code, 403)
