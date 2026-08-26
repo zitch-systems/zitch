@@ -74,7 +74,17 @@ class TransactionAdmin(admin.ModelAdmin):
                     "transaction_status", "failure_reason", "created")
     list_filter = ("direction", "transaction_status", "created")
     search_fields = ("reference", "user__phone", "user__email", "service")
-    readonly_fields = ("reference", "created")
+    # A transaction is an append-only banking ledger row. PostgreSQL enforces
+    # this below Django, so exposing ordinary admin edit/delete controls only
+    # produces integrity errors (and, previously, a 500 response).
+    readonly_fields = (
+        "user", "service", "amount", "currency", "direction",
+        "reference", "idempotency_key", "created",
+    )
+
+    def has_delete_permission(self, request, obj=None):
+        """Ledger rows are reversed with a compensating entry, never deleted."""
+        return False
 
     @admin.display(description="Why it failed")
     def failure_reason(self, obj):
