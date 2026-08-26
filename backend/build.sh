@@ -7,7 +7,7 @@ python manage.py collectstatic --no-input
 python manage.py migrate
 python manage.py seed_plans
 
-# Explicit, one-deploy-only pre-launch customer reset. The command has its own
+# Explicitly approved, one-deploy-only pre-launch customer reset. The command has its own
 # second gate and preserves all staff/operator accounts. Clear both environment
 # variables immediately after the successful deploy so this can never repeat.
 if [ "${ALLOW_TEST_DATA_PURGE:-false}" = "true" ]; then
