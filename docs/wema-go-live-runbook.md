@@ -86,6 +86,9 @@ crons too (`render.yaml` already declares the slots on each).
 > | `ALLOW_PRODUCTION_TEST_OTP` | Required alongside the two above whenever `DEBUG` is off — without it the app **refuses to boot** (`production_checks.py`), because a fixed code on a live host is an account takeover if the pair leaks. Setting it does **not** make the deploy launch-ready: `wema_preflight` still hard-fails on `TEST_OTP`. |
 > | `SIMULATE_DEPOSIT_TOKEN` | With `WEMA_SIMULATION=true`, gates two dev endpoints (both **404 whenever `WEMA_SIMULATION` is off**, so neither can touch a live deploy): `POST /api/dev/simulate-deposit/ {token, phone, amount}` credits mock money (the "money-in" step), and `POST /api/dev/simulate-kyc/ {token, phone, tier?}` marks a user KYC-verified to `tier` (1–3, default 3) and provisions a mock NUBAN — so tiers / virtual-account / limit-gated features work without real identity data. |
 >
+> Removing the variables does not remove the DATA they created — see **Step 2b**,
+> which purges the balances, mock NUBANs and fake KYC tiers left behind.
+>
 > **End-to-end simulation walk:** with `WEMA_SIMULATION=true` the whole stack is mocked,
 > so **every** feature works — transfers, airtime/data/bills, virtual cards, FX, loans,
 > savings, statements. Set the test vars, sign up with `TEST_OTP_PHONE`, then `curl`
@@ -120,6 +123,35 @@ KYC rail.
     configure strong development values before profiling or transaction testing.
 - Or hit `/healthz` and confirm `funding_wema: true`, `wema_sandbox: true`.
   (`funding_wema_security_info` reports whether the required callback value is set.)
+
+### Step 2b — purge the simulation data (BEFORE the live host)
+
+Simulated deposits are written through the same path a real reconciled deposit
+takes, so they are ordinary ledger credits: `integrity_check` cannot see them
+(balance and ledger agree — it is only the money behind them that never existed),
+and the balance stays spendable once the rail is live. Bank payouts are already
+refused for a wallet carrying a mock NUBAN, but **VTU has no such guard** and is a
+separate live rail with its own float, so simulated naira converts straight into
+real airtime.
+
+- Run: `python manage.py purge_simulation_data` — read-only, reports what it finds.
+- Then: `python manage.py purge_simulation_data --confirm`
+
+It keys on the only two durable markers simulation leaves: the `WEMA-CR-SIM-`
+reference prefix and `(demo)` in `Wallet.bank_name`. For each account with no real
+ledger activity it appends a compensating debit that withdraws the fake credit
+(the ledger is append-only — migration `0017` installs a Postgres trigger that
+refuses any DELETE), recomputes the balance from the ledger, clears the mock NUBAN
+so a real one can be issued, withdraws the simulated KYC tier, and freezes the
+account (`--keep-active` opts out). Re-running is safe.
+
+An account holding **real** ledger rows is reported and left alone — that is the
+case needing a human, typically fake naira already spent on a live rail. Settle
+those by hand, then re-run.
+
+Add `--fail-nonzero` to use it as a gate: it exits 1 while any simulation data
+remains, so it belongs next to `wema_preflight` in whatever you use to decide the
+deploy is ready.
 
 ### Step 3 — live host
 - Set `WEMA_BASE_URL` to the **live** ALAT host on the web service and all crons.
