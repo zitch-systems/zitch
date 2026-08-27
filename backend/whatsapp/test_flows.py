@@ -585,6 +585,9 @@ class IdentityFlowTests(TestCase):
     It is collected in the encrypted Flow for the same reason the PIN is."""
 
     def setUp(self):
+        self._wema_disabled = patch("wallet.views._wema_funding_enabled", return_value=False)
+        self._wema_disabled.start()
+        self.addCleanup(self._wema_disabled.stop)
         self.user = _make_user()
         self.user.bvn_verified = self.user.nin_verified = False
         self.user.save(update_fields=["bvn_verified", "nin_verified"])

@@ -20,6 +20,9 @@ LOOKUP = "whatsapp.router.verify_bvn"
 class IdentityOtpTests(TestCase):
 
     def setUp(self):
+        self._wema_disabled = patch("wallet.views._wema_funding_enabled", return_value=False)
+        self._wema_disabled.start()
+        self.addCleanup(self._wema_disabled.stop)
         self.user = _make_user()
         self.user.bvn_verified = False
         self.user.save(update_fields=["bvn_verified"])
@@ -203,6 +206,9 @@ class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
     """
 
     def setUp(self):
+        self._wema_disabled = patch("wallet.views._wema_funding_enabled", return_value=False)
+        self._wema_disabled.start()
+        self.addCleanup(self._wema_disabled.stop)
         self.user = _make_user()
         self.user.bvn_verified = False
         self.user.save(update_fields=["bvn_verified"])
