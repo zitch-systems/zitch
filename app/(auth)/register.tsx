@@ -48,9 +48,9 @@ const Register = () => {
         await AsyncStorage.setItem('UserPhone', form.phone);
         // Carry the name forward to OTP verification, which creates the account
         // (so it's named from the very first moment). Same pattern as email/phone.
-        await AsyncStorage.multiSet([
-          ['UserFirstName', first],
-          ['UserLastName', last],
+        await Promise.all([
+          AsyncStorage.setItem('UserFirstName', first),
+          AsyncStorage.setItem('UserLastName', last),
         ]);
         // Mark OTP as pending so reopening the app mid-verification resumes here
         // instead of dropping back to onboarding (cleared on verify / going back).
@@ -135,4 +135,3 @@ const Register = () => {
 };
 
 export default Register;
-

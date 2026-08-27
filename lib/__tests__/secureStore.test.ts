@@ -78,7 +78,7 @@ describe('what survives a sign-out', () => {
     // credential, and clearing them is what made a returning customer retype
     // their own email and re-answer a question they had already answered.
     await clearSession();
-    const removed = asyncStore.multiRemove.mock.calls.flat().flat();
+    const removed = asyncStore.removeItem.mock.calls.flat();
     expect(removed).not.toContain('z-last-identifier');
     expect(removed).not.toContain('z-biopay-offered');
     // ...while everything that IS a credential goes.

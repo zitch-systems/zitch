@@ -44,7 +44,10 @@ const OTPVerification = () => {
       // async-loaded state, so an instant SMS autofill can't race the load and
       // send an unnamed verify — the account is created here, and it's opened in
       // this name.
-      const [[, first], [, last]] = await AsyncStorage.multiGet(['UserFirstName', 'UserLastName']);
+      const [first, last] = await Promise.all([
+        AsyncStorage.getItem('UserFirstName'),
+        AsyncStorage.getItem('UserLastName'),
+      ]);
       const response = await publicPost('/api/verify_otp/', {
         otp, phone: userPhone, first_name: first || '', last_name: last || '',
       });

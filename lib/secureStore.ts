@@ -251,5 +251,8 @@ export async function clearSession(): Promise<void> {
   //
   // LAST_IDENTIFIER_KEY is not cleared either, and for the same reason: it says
   // which account this device belongs to, not how to get into it.
-  await AsyncStorage.multiRemove(['userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt', 'z-locked', 'z-has-pin', DISPLAY_NAME_KEY]);
+  await Promise.all([
+    'userID', 'sessionExpiration', 'UserEmail', 'UserPhone', 'lastActiveAt',
+    'z-locked', 'z-has-pin', DISPLAY_NAME_KEY,
+  ].map((key) => AsyncStorage.removeItem(key)));
 }
