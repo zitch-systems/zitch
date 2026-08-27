@@ -1153,8 +1153,22 @@ def _submit_identity(pa, data: dict) -> dict:
                 return _success_screen(
                     "We couldn't finish setting up your account — see the chat for what happened.")
         else:
-            outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number,
-                                           in_flow=True)
+            # In production the Wallet Creation product is Wema's identity
+            # verification rail: it accepts BVN or NIN, sends its own OTP and
+            # name-matches the holder before the identity can lift KYC.  Start
+            # that flow directly instead of treating a standalone lookup error
+            # as a bad identity number.  Keep the existing fallback for local
+            # and test deployments where Wema account creation is unavailable.
+            from wallet import views as wallet_views
+
+            if wallet_views._wema_funding_enabled():
+                pa.action_type = "add_account"
+                pa.payload["id_type"] = kind
+                pa.save(update_fields=["action_type", "payload"])
+                outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
+                                                   in_flow=True)
+            else:
+                outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
             if outcome == "invalid":
                 # A wrong number is corrected by the customer, not queued — but
                 # on a FRESH screen, so the refused digits are gone and the retry
