@@ -3456,16 +3456,56 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
     payload, status = wallet_views.complete_wema_provisioning(
         user, code, pa.payload.get("tracking_id", ""))
     if payload.get("success"):
-        _clear_actions(msisdn)
         _send_account_details(msisdn, get_or_create_wallet(user),
                               intro="🎉 *Your Zitch account number is ready!*")
-        _kyc_continue_after_account(user, msisdn)
-        return "done", "Account created ✅ — see the chat for your details."
+        # Wema's SMS is the authoritative proof for the BVN/NIN used to open
+        # the account. Require a fresh Resend email code as a second possession
+        # factor as well, even when the address was verified during signup.
+        if _start_identity_email_second_factor(pa, user, msisdn):
+            return "done", "Account created ✅ — enter the email code we sent to finish verification."
+        _clear_actions(msisdn)
+        return "done", "Account created ✅ — see the chat for your account details."
     if status == 400:   # expired / mismatched attempt: retrying the same code cannot help
         _clear_actions(msisdn)
         reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")
         return "done", "That attempt expired — see the chat."
     return "retry", (payload.get("message") or "That code didn't work.")
+
+
+def _start_identity_email_second_factor(pa: PendingAction, user, msisdn: str) -> bool:
+    """Start the Resend email factor that accompanies a Wema identity OTP.
+
+    Wema's SMS code remains the only bank-backed proof of the selected BVN or
+    NIN. This code proves control of the Zitch email address; it is an
+    additional possession factor, never a substitute for Wema.
+    """
+    pa.action_type = "kyc"
+    pa.payload.pop("id_otp_hash", None)
+    pa.payload.update({"id_kind": "email", "id_step": "code"})
+
+    if not user.email:
+        pa.payload["id_step"] = "address"
+        pa.payload["flow_screen"] = EMAIL_SCREEN
+        _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+        if _send_email_flow(pa, "address"):
+            reply(msisdn, "📧 Enter your email address on the secure form to finish verification.")
+            return True
+        return False
+
+    rail_error = _kyc_email_rail_error(user)
+    if rail_error:
+        reply(msisdn, rail_error)
+        return False
+    if not _kyc_mail_code(pa, user):
+        reply(msisdn, "⚠️ We couldn't send the email just now. Please try again shortly.")
+        return False
+    pa.payload["flow_screen"] = CODE_SCREEN
+    _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
+    if _send_email_flow(pa, "code"):
+        reply(msisdn, f"📧 We sent a 6-digit verification code to *{user.email}*. "
+                      "Enter it on the secure form. (Reply *resend* for a new one.)")
+        return True
+    return False
 
 
 def _kyc_continue_after_account(user, msisdn: str) -> None:
