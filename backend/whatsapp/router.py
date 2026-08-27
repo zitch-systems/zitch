@@ -3392,7 +3392,10 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                                   intro="✅ *Found it!* Your Zitch account was already set up")
             return _kyc_continue_after_account(user, msisdn)
         _clear_actions(msisdn)
-        reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
+        if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
+            reply(msisdn, "⏳ We found your existing bank profile, but your account details are still being retrieved. Please try again shortly.")
+        else:
+            reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
         return "fail"
     pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
     pa.payload["using_bvn"] = using_bvn
@@ -3464,6 +3467,7 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
         if _start_identity_email_second_factor(pa, user, msisdn):
             return "done", "Account created ✅ — enter the email code we sent to finish verification."
         _clear_actions(msisdn)
+        _kyc_continue_after_account(user, msisdn)
         return "done", "Account created ✅ — see the chat for your account details."
     if payload.get("pending") or status == 202:
         # Wema has consumed and accepted the OTP, but can take a short time to

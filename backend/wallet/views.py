@@ -298,6 +298,11 @@ def wema_wallet_create(request):
                                                  reason=res.get("message", ""))
         if recovered is not None:
             return ok(**recovered)
+        if _ALREADY_ONBOARDED.search(res.get("message", "") or ""):
+            # Wema knows the customer already, but has not yet exposed the
+            # associated NUBAN through its details endpoint. Do not present the
+            # bank's internal refusal as a customer-data error.
+            return fail("We found your existing bank profile, but your account details are still being retrieved. Please try again shortly.", status=202)
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, tracking_id=res.get("tracking_id", ""),
               otp_destination=res.get("otp_destination", user.phone or ""),
