@@ -147,6 +147,80 @@ class OnboardingOtpTests(TestCase):
         self.assertEqual(res.status_code, 200)
 
 
+PROD = {"DEBUG": False, "TESTING": False}
+KEYED = {"BASE_URL": "https://v3.api.termii.com", "API_KEY": "tk_live",
+         "SENDER_ID": "Zitch", "CHANNEL": "dnd"}
+UNKEYED = {**KEYED, "API_KEY": ""}
+NO_TEST_OTP = {"PHONE": "", "CODE": ""}
+
+
+@override_settings(TEST_OTP=NO_TEST_OTP, **PROD)
+class OtpDeliveryGuardTests(TestCase):
+    """A signup OTP must never be promised over a rail that cannot deliver it.
+
+    send_sms returns a MOCK SUCCESS when TERMII_API_KEY is unset, and the signup
+    endpoints discard the send result on purpose (anti-enumeration). Together those
+    two correct decisions produced one wrong outcome: an unkeyed production deploy
+    answered "a verification code has been sent" and sent nothing at all, with no
+    error logged and nothing for the customer to act on. These tests pin the refusal.
+    """
+
+    def setUp(self):
+        self.client = Client()
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    @override_settings(TERMII=UNKEYED)
+    def test_signup_refuses_instead_of_promising_an_undeliverable_code(self):
+        res, body = self.post("/api/phone_verification/",
+                              {"phone": "08055550001", "email": "a@zitch.test"})
+        self.assertEqual(res.status_code, 503)
+        self.assertNotIn("has been sent", json.dumps(body))
+
+    @override_settings(TERMII=UNKEYED)
+    def test_refusing_issues_no_code_so_the_number_is_not_left_on_cooldown(self):
+        # Issuing a row here would be the worse bug: the customer is refused AND then
+        # rate-limited out of retrying once the rail is fixed.
+        self.post("/api/phone_verification/", {"phone": "08055550002", "email": "b@zitch.test"})
+        self.assertFalse(OTP.objects.filter(phone="08055550002").exists())
+
+    @override_settings(TERMII=UNKEYED)
+    def test_resend_is_guarded_on_the_same_terms(self):
+        res, _ = self.post("/api/resend_verify_otp/", {"phone": "08055550003"})
+        self.assertEqual(res.status_code, 503)
+
+    @override_settings(TERMII=KEYED)
+    def test_a_keyed_rail_sends_normally(self):
+        with patch("accounts.views.send_sms", return_value={"success": True}) as sms:
+            res, _ = self.post("/api/phone_verification/",
+                               {"phone": "08055550004", "email": "c@zitch.test"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(sms.called)
+        self.assertTrue(OTP.objects.filter(phone="08055550004").exists())
+
+    @override_settings(TERMII=UNKEYED, TEST_OTP={"PHONE": "08055550005", "CODE": "424242"})
+    def test_the_test_otp_number_is_exempt(self):
+        # TEST_OTP exists to walk signup while a sender ID awaits carrier approval —
+        # i.e. exactly while the rail is down. Locking it out would break the only
+        # stopgap the setting is there to provide.
+        res, _ = self.post("/api/phone_verification/",
+                           {"phone": "08055550005", "email": "d@zitch.test"})
+        self.assertEqual(res.status_code, 200)
+        res, body = self.post("/api/verify_otp/", {"phone": "08055550005", "otp": "424242"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("access_token", body)
+
+    @override_settings(TERMII=UNKEYED, DEBUG=True)
+    def test_local_development_keeps_mock_mode(self):
+        # Mock mode is the point of a dev box: the guard must not make signup
+        # untestable without a live Termii key.
+        res, _ = self.post("/api/phone_verification/",
+                           {"phone": "08055550006", "email": "e@zitch.test"})
+        self.assertEqual(res.status_code, 200)
+
+
 class OtpTakeoverTests(TestCase):
     """Regression for the password-less account-takeover chain: resend_verify_otp
     must not mint a SIGNUP OTP for an established account (let alone deliver it to a
