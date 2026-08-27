@@ -163,10 +163,9 @@ class Command(BaseCommand):
             else:
                 checks.append((False, "VTU.ng rail", PASS, f"auth ok, balance {bal.get('balance')}"))
 
-        # "Keyed" was the whole check here once, and it passed throughout an
-        # incident where every email OTP was being refused: the key was set, but
-        # its account had never verified the sender domain. A present key says
-        # nothing about whether a send is allowed, so ask Resend.
+        # Resend is still required for Zitch-owned email verification, account
+        # statements and notifications. It is not a delivery channel for Wema
+        # Wallet Service BVN/NIN OTPs, which are phone-only.
         if not settings.RESEND["API_KEY"]:
             checks.append((False, "Email (Resend)", WARN,
                            "RESEND_API_KEY unset — no transactional email"))
