@@ -63,11 +63,12 @@ const Kyc = () => {
   const [bvn, setBvn] = useState('');
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
+  const [bvnTrackingId, setBvnTrackingId] = useState('');
   const [bvnDelivery, setBvnDelivery] = useState('your registered phone');
   const [nin, setNin] = useState('');
-  const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
   const [ninOtp, setNinOtp] = useState('');
   const [ninSent, setNinSent] = useState(false);
+  const [ninTrackingId, setNinTrackingId] = useState('');
   const [ninDelivery, setNinDelivery] = useState('your registered phone');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
@@ -119,62 +120,69 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
 
-  // --- BVN: enter number -> we send a one-time code -> confirm it ---
+  // Wema validates the BVN or NIN used to create the customer's bank account.
+  // The opaque tracking ID binds the OTP to that identity on the server; do not
+  // send a raw BVN/NIN again when the code is confirmed.
   const startBvn = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/kyc/bvn/start/', { bvn });
-      if (res.success) {
-        setBvnDelivery(res.delivery || 'your registered phone');
+      const res = await apiJson('/api/wallet/wema/create/', { bvn });
+      if (res.success && res.tracking_id) {
+        setBvnTrackingId(String(res.tracking_id));
+        setBvnDelivery(res.otp_destination || 'your registered phone');
         setBvnSent(true);
-        notify('Code sent', res.message || 'Enter the verification code.');
-      }
-      else notify('Error', res.message || 'Could not start BVN verification');
+        notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
+      } else if (res.success) {
+        await load();
+        notify('Account already set up', 'Your Wema account is already set up.');
+      } else notify('Error', res.message || 'Could not start Wema BVN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
 
-  // --- NIN: provider + document check -> ownership code -> confirm ---
   const startNin = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/kyc/nin/', { nin, nin_image: ninImage });
-      if (res.success && res.otp_required) {
-        setNinDelivery(res.delivery || 'your registered phone');
+      const res = await apiJson('/api/wallet/wema/create/', { nin });
+      if (res.success && res.tracking_id) {
+        setNinTrackingId(String(res.tracking_id));
+        setNinDelivery(res.otp_destination || 'your registered phone');
         setNinSent(true);
-        notify('Code sent', res.message || 'Enter the verification code.');
+        notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
       } else if (res.success) {
-        // Local development keeps its provider mock immediate; production and
-        // production-simulation always take the ownership challenge above.
-        setStatus(res);
-        setNin('');
-        setNinImage('');
-        notify('Success', 'NIN verified');
-      } else notify('Error', res.message || 'NIN verification failed');
+        await load();
+        notify('Account already set up', 'Your Wema account is already set up. Wema must enable an account-upgrade check to verify an additional identity.');
+      } else notify('Error', res.message || 'Could not start Wema NIN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
   const confirmNin = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/kyc/nin/confirm/', { otp: ninOtp });
+      const res = await apiJson('/api/wallet/wema/verify-otp/', { otp: ninOtp, tracking_id: ninTrackingId });
       if (res.success) {
-        setStatus(res);
+        await load();
         setNinSent(false);
+        setNinTrackingId('');
         setNin('');
-        setNinImage('');
         setNinOtp('');
-        notify('Success', 'NIN verified');
-      } else notify('Error', res.message || 'Incorrect code');
+        notify('Success', 'NIN verified with Wema');
+      } else notify('Error', res.message || 'Incorrect Wema code');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
   const confirmBvn = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/kyc/bvn/confirm/', { otp: bvnOtp });
-      if (res.success) { setStatus(res); setBvnSent(false); setBvn(''); setBvnOtp(''); notify('Success', 'BVN verified'); }
-      else notify('Error', res.message || 'Incorrect code');
+      const res = await apiJson('/api/wallet/wema/verify-otp/', { otp: bvnOtp, tracking_id: bvnTrackingId });
+      if (res.success) {
+        await load();
+        setBvnSent(false);
+        setBvnTrackingId('');
+        setBvn('');
+        setBvnOtp('');
+        notify('Success', 'BVN verified with Wema');
+      } else notify('Error', res.message || 'Incorrect Wema code');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
@@ -202,8 +210,6 @@ const Kyc = () => {
       set(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
-  const pickNinSlip = () => pickImage(setNinImage);
-
   // --- PDF picker (proof of address) ---
   //
   // A bank statement or utility bill arrives as a PDF far more often than as a
@@ -459,40 +465,38 @@ const Kyc = () => {
         </KycRow>
       ) : null}
 
-      <KycRow icon="bank" title="BVN" sub="We'll send a code to verify it's yours" done={!!status?.bvn_verified}>
+        <KycRow icon="bank" title="BVN" sub="Wema will send a code to verify it" done={!!status?.bvn_verified}>
         {!bvnSent ? (
           <>
             <Field value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit BVN" />
             <View style={{ height: 10 }} />
-            <Btn label="Send verification code" size="md" disabled={busy || bvn.length !== 11} onPress={startBvn} />
+            <Btn label="Verify with Wema" size="md" disabled={busy || bvn.length !== 11} onPress={startBvn} />
           </>
         ) : (
           <>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to {bvnDelivery}.</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the Wema code sent to {bvnDelivery}.</Text>
             <Field value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
             <View style={{ height: 10 }} />
-            <Btn label="Confirm BVN" size="md" disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
-            <Text onPress={() => { setBvnSent(false); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text>
+            <Btn label="Confirm with Wema" size="md" disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
+            <Text onPress={() => { setBvnSent(false); setBvnTrackingId(''); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text>
           </>
         )}
       </KycRow>
 
-      <KycRow icon="user" title="NIN" sub="Number + a photo of your NIN slip" done={!!status?.nin_verified}>
+      <KycRow icon="user" title="NIN" sub="Wema will send a code to verify it" done={!!status?.nin_verified}>
         {!ninSent ? (
           <>
             <Field value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit NIN" />
             <View style={{ height: 10 }} />
-            <Btn label={ninImage ? 'NIN slip added ✓' : 'Upload your NIN slip'} icon="copy" size="md" variant="outline" disabled={busy} onPress={pickNinSlip} />
-            <View style={{ height: 10 }} />
-            <Btn label="Send verification code" size="md" disabled={busy || nin.length !== 11 || !ninImage} onPress={startNin} />
+            <Btn label="Verify with Wema" size="md" disabled={busy || nin.length !== 11} onPress={startNin} />
           </>
         ) : (
           <>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the code sent to {ninDelivery}.</Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the Wema code sent to {ninDelivery}.</Text>
             <Field value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
             <View style={{ height: 10 }} />
-            <Btn label="Confirm NIN" size="md" disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
-            <Text onPress={() => { setNinSent(false); setNinOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text>
+            <Btn label="Confirm with Wema" size="md" disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
+            <Text onPress={() => { setNinSent(false); setNinTrackingId(''); setNinOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text>
           </>
         )}
       </KycRow>
