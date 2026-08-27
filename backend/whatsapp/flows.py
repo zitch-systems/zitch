@@ -52,8 +52,9 @@ IDENTITY_CHAIN = "IDENTITY_CHAIN"
 #: refused, and burned the next attempt on it. A separate screen starts empty.
 IDENTITY_RETRY = "IDENTITY_RETRY"
 #: The 6-digit code pages. IDENTITY_CHAIN carries a code reached IN-SESSION
-#: (BVN accepted -> the bank's OTP; email address -> its code); CODE_SCREEN is
-#: the ROOT for a code asked in a fresh flow message; CODE_RETRY carries every
+#: (BVN/NIN accepted -> the bank's phone OTP; email address -> its own
+#: Zitch email code); CODE_SCREEN is the ROOT for a code asked in a fresh
+#: flow message; CODE_RETRY carries every
 #: wrong-code error render so the masked box never comes back holding the code
 #: that just failed. Identity number fields are 11/11 client-side and code
 #: fields 6/6 — which is why codes can no longer ride IDENTITY_SCREEN.
