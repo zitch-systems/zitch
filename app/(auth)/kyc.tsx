@@ -187,6 +187,25 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
 
+  const resendWemaOtp = async (kind: 'bvn' | 'nin') => {
+    const trackingId = kind === 'bvn' ? bvnTrackingId : ninTrackingId;
+    if (!trackingId) {
+      notify('Start again', `Enter your ${kind.toUpperCase()} again so Wema can send a fresh code.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/wallet/wema/resend-otp/', { tracking_id: trackingId });
+      if (res.success) {
+        const destination = res.otp_destination || 'your registered phone';
+        if (kind === 'bvn') setBvnDelivery(destination);
+        else setNinDelivery(destination);
+        notify('Wema OTP resent', res.message || `We sent a new code to ${destination}.`);
+      } else notify('Error', res.message || 'Could not resend the Wema code');
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+
   // --- Generic photo picker (NIN slip / ID document / proof of address) ---
   //
   // `crop` is opt-IN. It used to be forced on for every document, and the crop UI
@@ -478,7 +497,8 @@ const Kyc = () => {
             <Field value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
             <View style={{ height: 10 }} />
             <Btn label="Confirm with Wema" size="md" disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
-            <Text onPress={() => { setBvnSent(false); setBvnTrackingId(''); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change BVN</Text>
+            <Text onPress={() => resendWemaOtp('bvn')} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
+            <Text onPress={() => { setBvnSent(false); setBvnTrackingId(''); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Change BVN</Text>
           </>
         )}
       </KycRow>
@@ -496,7 +516,8 @@ const Kyc = () => {
             <Field value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
             <View style={{ height: 10 }} />
             <Btn label="Confirm with Wema" size="md" disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
-            <Text onPress={() => { setNinSent(false); setNinTrackingId(''); setNinOtp(''); }} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Change NIN</Text>
+            <Text onPress={() => resendWemaOtp('nin')} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
+            <Text onPress={() => { setNinSent(false); setNinTrackingId(''); setNinOtp(''); }} style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Change NIN</Text>
           </>
         )}
       </KycRow>
