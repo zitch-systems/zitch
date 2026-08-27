@@ -3261,14 +3261,16 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, email
     # Either channel reaching the holder is the whole proof, so one is enough.
     if not sent.get("success") and not mailed.get("success"):
         return "the verification code could not be delivered"
-    # Say where it went without printing contacts that belong to the IDENTITY, not
-    # the account — the person in this chat may not be its owner. The phone's last
-    # four are the established hint; the email is named, never shown.
+    # Say where it went in MASKED form — these contacts belong to the IDENTITY, not
+    # the account, and the person in this chat may not be its owner. Masked is the
+    # balance struck in accounts.views: enough for the holder to know which inbox to
+    # open, not enough for a stranger to reconstruct. Same mask_pii as everywhere
+    # else, so the chat and the app cannot drift on how much they reveal.
     went_to = []
     if sent.get("success"):
         went_to.append(f"•••••{phone[-4:]}")
     if mailed.get("success"):
-        went_to.append(f"the email on your {kind.upper()} record")
+        went_to.append(f"the email on your {kind.upper()} record ({mask_pii(email)})")
     pa.payload.update({
         "id_otp_hash": make_password(code),
         "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
