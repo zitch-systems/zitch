@@ -3393,7 +3393,8 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
             return _kyc_continue_after_account(user, msisdn)
         _clear_actions(msisdn)
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
-            reply(msisdn, "⏳ We found your existing bank profile, but your account details are still being retrieved. Please try again shortly.")
+            _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")
+            reply(msisdn, "⚠️ Wema says these details already exist in Wallet Service. Support needs to review this setup; we won't ask you to keep retrying the same BVN/NIN.")
         else:
             reply(msisdn, f"⚠️ {res.get('message', 'Account setup failed — please try again later.')}")
         return "fail"
@@ -3461,11 +3462,10 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
     if payload.get("success"):
         _send_account_details(msisdn, get_or_create_wallet(user),
                               intro="🎉 *Your Zitch account number is ready!*")
-        # Wema's SMS is the authoritative proof for the BVN/NIN used to open
-        # the account. Require a fresh Resend email code as a second possession
-        # factor as well, even when the address was verified during signup.
-        if _start_identity_email_second_factor(pa, user, msisdn):
-            return "done", "Account created ✅ — enter the email code we sent to finish verification."
+        # Temi/Wema confirmed Wallet Creation OTP is phone-only. Do not append a
+        # separate Resend factor here: account creation is complete once Wema's
+        # OTP validates, and any remaining Zitch verification can be resumed with
+        # reply 8 without hiding the successful account details behind a mail rail.
         _clear_actions(msisdn)
         _kyc_continue_after_account(user, msisdn)
         return "done", "Account created ✅ — see the chat for your account details."
