@@ -13,5 +13,5 @@ redis>=5.0,<7   # shared cache backend (only used when REDIS_URL is set)
 Pillow>=12.2,<13   # WhatsApp receipt image rendering. Floor: PYSEC-2026-165 + CVE-2026-259xx batch.
 zxing-cpp>=2.2,<4   # payment-QR decoding (manylinux wheels; no system libzbar needed)
 qrcode>=8.0,<9   # QR rendering, and building fixture codes in the QR tests
-django-storages[s3]>=1.14,<2   # durable profile-photo storage on Render (S3-compatible)
+django-storages[s3]>=1.14.6,<2   # durable profile-photo storage on Render (S3-compatible)
 boto3>=1.35,<2   # explicit pin for the django-storages S3 backend
