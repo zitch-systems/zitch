@@ -3465,6 +3465,14 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
             return "done", "Account created ✅ — enter the email code we sent to finish verification."
         _clear_actions(msisdn)
         return "done", "Account created ✅ — see the chat for your account details."
+    if payload.get("pending") or status == 202:
+        # Wema has consumed and accepted the OTP, but can take a short time to
+        # expose the NUBAN through GetPartnershipAccountDetails. Do not leave the
+        # customer on a retry screen: this OTP is single-use. The provisioning
+        # attempt remains available to the bank callback/reconciliation path.
+        _clear_actions(msisdn)
+        reply(msisdn, "⏳ Your identity was accepted. We’re creating your Zitch account and will message you as soon as it is ready.")
+        return "done", "Identity accepted ✅ — account creation is in progress."
     if status == 400:   # expired / mismatched attempt: retrying the same code cannot help
         _clear_actions(msisdn)
         reply(msisdn, "⚠️ " + (payload.get("message") or "That didn't work.") + " Reply *6* to start again.")

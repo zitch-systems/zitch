@@ -349,8 +349,16 @@ def complete_wema_provisioning(user, otp: str, tracking_id: str,
     else:
         acct = wema_provider.get_account_details(user.phone or "", bvn=using_bvn)
         if not acct.get("success") or not acct.get("account_number"):
-            return {"success": False,
-                    "message": acct.get("message", "Your account is being created — try again shortly")}, 502
+            # ALAT can accept the OTP before its account-details endpoint is
+            # populated. The OTP is one-time, so presenting its transient
+            # "Account Details not found" response as a retry would make the
+            # customer submit a spent credential. Keep the pending attempt for
+            # the profiled Account Creation callback/reconciliation path.
+            return {
+                "success": False,
+                "pending": True,
+                "message": "Your identity was accepted. Your Zitch account is being created; we’ll message you when it is ready.",
+            }, 202
         wallet, outcome = provision_wema_account(
             user, account_number=acct["account_number"],
             account_name=acct.get("account_name", ""), bank_name=acct.get("bank_name", ""),

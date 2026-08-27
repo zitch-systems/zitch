@@ -1251,10 +1251,11 @@ def _account_otp_screen(pa, error: str = "") -> dict:
         destination = "your registered phone"
     return _identity_screen(
         ACCOUNT_OTP,
-        error=error,
+        # Keep delivery guidance in the smaller body text. The summary is a
+        # TextHeading in the published Flow, so paragraphs do not fit there.
+        error=error or "Didn't receive it? Reply RESEND in the chat to send another code.",
         label="SMS code",
-        summary=(f"Enter the 6-digit code we sent to {destination}.\\n\\n"
-                 "Didn't receive it? Reply RESEND in the chat to send another code."),
+        summary=f"Enter the 6-digit code sent to {destination}.",
         screen=screen,
     )
 
