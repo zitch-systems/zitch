@@ -299,10 +299,11 @@ def wema_wallet_create(request):
         if recovered is not None:
             return ok(**recovered)
         if _ALREADY_ONBOARDED.search(res.get("message", "") or ""):
-            # Wema knows the customer already, but has not yet exposed the
-            # associated NUBAN through its details endpoint. Do not present the
-            # bank's internal refusal as a customer-data error.
-            return fail("We found your existing bank profile, but your account details are still being retrieved. Please try again shortly.", status=202)
+            # Wema confirmed existing Wema customers can onboard, so this is not
+            # a customer instruction to retry forever. It means Wallet Service
+            # rejected one of the submitted creation fields as a duplicate and
+            # support needs the provider-side reason/profile outcome.
+            return fail("Wema says these details already exist in Wallet Service. Contact Zitch support so we can review your account setup.", status=409)
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, tracking_id=res.get("tracking_id", ""),
               otp_destination=res.get("otp_destination", user.phone or ""),
