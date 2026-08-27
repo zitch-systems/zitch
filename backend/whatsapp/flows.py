@@ -1238,9 +1238,25 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     always CODE_RETRY — legal from both and from itself, and the masked box
     arrives empty instead of holding the code that just failed."""
     screen = CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN)
-    return _identity_screen(ACCOUNT_OTP, error=error, label="SMS code",
-                            summary="Enter the code we sent to your phone",
-                            screen=screen)
+    # Wema's wallet-creation OTP is sent to the phone number supplied when the
+    # request was opened (the customer's Zitch number). Showing the whole number
+    # would unnecessarily disclose PII, but saying only "your phone" leaves a
+    # customer unable to tell which line should receive the SMS.
+    digits = "".join(ch for ch in str(pa.user.phone or "") if ch.isdigit())
+    if len(digits) >= 8:
+        destination = f"{digits[:4]}•••{digits[-4:]}"
+    elif len(digits) >= 4:
+        destination = f"••••{digits[-4:]}"
+    else:
+        destination = "your registered phone"
+    return _identity_screen(
+        ACCOUNT_OTP,
+        error=error,
+        label="SMS code",
+        summary=(f"Enter the 6-digit code we sent to {destination}.\\n\\n"
+                 "Didn't receive it? Reply RESEND in the chat to send another code."),
+        screen=screen,
+    )
 
 
 def _submit_account_otp(pa, data: dict) -> dict:
