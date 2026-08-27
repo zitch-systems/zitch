@@ -1161,7 +1161,8 @@ def _submit_identity(pa, data: dict) -> dict:
             # and test deployments where Wema account creation is unavailable.
             from wallet import views as wallet_views
 
-            if wallet_views._wema_funding_enabled():
+            if (wallet_views._wema_funding_enabled()
+                    and not bool((getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))):
                 pa.action_type = "add_account"
                 pa.payload["id_type"] = kind
                 pa.save(update_fields=["action_type", "payload"])
