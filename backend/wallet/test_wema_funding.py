@@ -580,8 +580,9 @@ class AdoptExistingWemaAccountTests(TestCase):
              patch("utility.wema.get_account_details",
                    return_value={"success": False, "message": "not found"}):
             res = self._create(bvn="22222222222")
-        self.assertEqual(res.status_code, 202)
-        self.assertIn("existing bank profile", res.json()["message"].lower())
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("wallet service", res.json()["message"].lower())
+        self.assertIn("support", res.json()["message"].lower())
         self.assertNotIn("customer records", res.json()["message"].lower())
         self.assertEqual(Wallet.objects.get(user=self.user).account_number, "")
 
