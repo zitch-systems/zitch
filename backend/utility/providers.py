@@ -322,9 +322,12 @@ def _send_sms_termii(phone: str, message: str, timeout: float = REQUEST_TIMEOUT)
 
 
 def send_sms(phone: str, message: str, timeout: float = REQUEST_TIMEOUT) -> dict:
-    """Send one SMS. Blank key => mock success, unchanged: the OTP flow deliberately
-    ignores the result (anti-enumeration), so branching on configuration here would
-    change nothing for the caller."""
+    """Send one SMS. Blank key => mock success, so this return value CANNOT tell
+    "delivered to a handset" apart from "silently discarded by an unkeyed deploy".
+    A caller that owes someone a real delivery must therefore check sms_live() before
+    promising one — the OTP endpoints do exactly that
+    (accounts.views._otp_undeliverable), because the signup reply is otherwise a
+    cheerful "a code has been sent" over a rail that sent nothing."""
     if not sms_live():
         return {"success": True, "mock": True, "message": "SMS sent (mock mode)"}
     return _send_sms_termii(phone, message, timeout=timeout)
@@ -335,8 +338,9 @@ def send_email(to: str, subject: str, message: str, html: str | None = None,
     """Send a transactional email via Resend. Mirrors send_sms's mock-mode
     contract: blank API_KEY or empty `to` returns a silent-success dict so
     callers can fire-and-forget without branching on configuration. Used as a
-    parallel OTP channel alongside Termii so SMS routing issues never strand
-    a user mid-signup. Pass `html` for a branded body (the plain `message` is
+    channel for ACCOUNT-RECOVERY codes, which go to the address already on file —
+    never for the signup OTP, whose email is caller-supplied and unverified. Pass
+    `html` for a branded body (the plain `message` is
     kept as the text fallback for clients that don't render HTML).
 
     `attachments` is [{"filename": str, "content": bytes|str}] — used by the NDPR

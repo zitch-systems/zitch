@@ -83,6 +83,49 @@ def _otp_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
+def _delivery_must_be_real() -> bool:
+    """True on any deploy where a mocked "sent" would be a lie told to a real person.
+
+    The provider wrappers return a MOCK SUCCESS when unconfigured (utility.providers):
+    useful in local dev and in tests, dishonest anywhere a customer is waiting on a
+    code. Deliberately NOT mock_disabled_in_prod(), which exempts simulation deploys —
+    a simulation deploy fakes MONEY, not people: its codes still have to reach a real
+    handset.
+    """
+    return not settings.DEBUG and not getattr(settings, "TESTING", False)
+
+
+def _test_otp_phone(phone: str) -> bool:
+    """True when `phone` is the configured TEST-ONLY bypass number (settings.TEST_OTP).
+
+    That pair exists precisely so signup can be walked end to end while a real sender
+    ID awaits carrier approval — i.e. exactly while the SMS rail cannot deliver — and
+    OTP.verify_code accepts its fixed code with no SMS involved. So the guard below
+    must not lock it out.
+    """
+    test = settings.TEST_OTP
+    return bool(test["PHONE"] and test["CODE"] and phone == test["PHONE"])
+
+
+def _otp_undeliverable(phone: str) -> bool:
+    """True when a signup OTP for `phone` cannot actually reach anyone.
+
+    The signup code is SMS-only (see phone_verification), and send_sms returns a mock
+    success when TERMII_API_KEY is unset — so an unkeyed production deploy answers
+    "a verification code has been sent" and sends nothing, with no error anywhere.
+    That silent failure is the whole reason this check exists; the KYC identity flow
+    below already refuses on the same grounds.
+
+    Safe against enumeration, which is what the rest of this endpoint is built to
+    resist: the answer is a property of the DEPLOY's configuration and is identical
+    for every number (bar the test pair), so it cannot tell a registered number apart
+    from an unregistered one.
+    """
+    if _test_otp_phone(phone):
+        return False
+    return _delivery_must_be_real() and not sms_live()
+
+
 def _weak_password(password: str, user=None) -> str | None:
     """Returns a user-facing reason if the password is unacceptable, else None.
 
@@ -145,6 +188,9 @@ def phone_verification(request):
     email = (request.data.get("email") or "").strip()
     if not phone:
         return fail("Phone is required")
+    if _otp_undeliverable(phone):
+        return fail("SMS verification is temporarily unavailable. Please try again later.",
+                    status=503)
     if not _otp_on_cooldown(phone):
         existing = User.objects.filter(phone=phone).first()
         if existing is not None:
@@ -240,6 +286,9 @@ def resend_verify_otp(request):
     phone = (request.data.get("phone") or "").strip()
     if not phone:
         return fail("Phone is required")
+    if _otp_undeliverable(phone):
+        return fail("SMS verification is temporarily unavailable. Please try again later.",
+                    status=503)
     if _otp_on_cooldown(phone):
         return fail("Please wait a moment before requesting another code", status=429)
     # A SIGNUP OTP authenticates into the matching account (verify_otp resolves the
@@ -1203,7 +1252,7 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
     # Provider wrappers return a mock success when unconfigured. That is useful
     # in local tests but a production simulation is intended to exercise actual
     # delivery, so refuse to pretend a code was sent there.
-    require_real_delivery = not settings.DEBUG and not getattr(settings, "TESTING", False)
+    require_real_delivery = _delivery_must_be_real()
     if require_real_delivery and not sms_live():
         return fail("SMS verification is temporarily unavailable.", status=503)
     if require_real_delivery and simulated and user.email and not email_live():

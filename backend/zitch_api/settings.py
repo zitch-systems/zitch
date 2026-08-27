@@ -536,9 +536,14 @@ TEST_OTP = {
 # never fabricate real money on a live deploy. `manage.py wema_preflight` HARD-FAILS
 # while this is set. Remove it before launch.
 SIMULATE_DEPOSIT_TOKEN = os.environ.get("SIMULATE_DEPOSIT_TOKEN", "").strip()
-# Email / OTP fallback — Resend. Sends the same OTP code in parallel with
-# Termii so SMS delivery issues (DND, sender ID approval, carrier blocks)
-# don't strand a user. Blank API_KEY => mock mode (silent success).
+# Transactional email — Resend. NOT a fallback for the SIGNUP OTP: that code is
+# SMS-only by design (accounts.views.phone_verification), because the email on a
+# signup request is caller-supplied and unverified — mailing the code there would
+# hand an attacker the code for someone else's number. Resend does carry codes for
+# ACCOUNT RECOVERY, where the address is the one already on file, plus alerts and
+# statements. Resend has no SMS product at all, so an OTP that never arrives BY TEXT
+# is never a Resend problem however healthy the account looks: check the Termii rail
+# above via /sms-diagnose. Blank API_KEY => mock mode (silent success).
 # FROM_EMAIL MUST be on a Resend-verified domain or every send is REJECTED (dropped).
 # The verified sending domain is `send.zitch.ng` (DKIM + SPF verified) — NOT the bare
 # `zitch.ng` root — so the default sends from a `send.zitch.ng` address with a friendly
