@@ -86,9 +86,10 @@ class IdentityOtpDestinationTests(TestCase):
         self.assertEqual(delivery, "registered phone •••••4567")
         self.assertNotIn(RECORD_PHONE, response.content.decode())
 
-    def test_the_same_phone_only_rule_applies_to_simulation(self):
+    def test_mock_provider_results_are_not_treated_as_live_delivery(self):
         result = {"success": True, "mock": True, "email": RECORD_EMAIL}
         response, send_sms, send_email = self._run(result)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(send_sms.call_args[0][0], self.user.phone)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(json.loads(response.content)["code"], "identity_phone_unavailable")
+        send_sms.assert_not_called()
         send_email.assert_not_called()
