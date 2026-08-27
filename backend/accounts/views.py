@@ -1310,16 +1310,19 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
     )
     # Describe only the channels that actually took the code, so a customer whose
     # SMS rail was down is not sent to stare at a handset that will never buzz.
-    # Name the email channel WITHOUT showing the address: the holder knows their own
-    # inbox, so a hint adds nothing for them, while any masked form of it would tell
-    # a stranger who guessed this BVN something true about its owner. The last four
-    # phone digits are already shown, and that is as far as this should go.
+    # Both contacts are shown MASKED, through the same mask_pii the audit trail
+    # uses, so one scheme covers both places an identity contact is ever rendered.
+    # A hint is what makes this useful — a customer with several inboxes needs to
+    # know which one to open — and masking is what keeps the cost small: someone
+    # who guessed this BVN learns an initial and a domain, not an address they can
+    # write to. That is a real if minor disclosure about the identity's owner, and
+    # a deliberate trade, not an oversight.
     sent_to = []
     if sms_result.get("success"):
         sent_to.append(f"registered phone •••••{destination[-4:]}")
     if email_result.get("success"):
-        sent_to.append("email on file" if simulated
-                       else f"email on your {kind.upper()} record")
+        where = "email on file" if simulated else f"email on your {kind.upper()} record"
+        sent_to.append(f"{where} ({mask_pii(email_target)})")
     channel = " and ".join(sent_to)
     return ok(success=True, otp_required=True, delivery=channel,
               message=f"We sent a verification code to your {channel}.")

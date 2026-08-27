@@ -96,8 +96,17 @@ class IdentityOtpDestinationTests(TestCase):
         self.assertNotIn("registered phone", delivery)
         self.assertIn("BVN record", delivery)
 
-    def test_the_record_email_is_never_echoed_back_to_the_caller(self):
+    def test_the_record_email_is_shown_masked_never_in_full(self):
         # The address belongs to the identity's owner, who may not be the person
-        # asking — so naming the channel is fine, showing it is not.
+        # asking. A masked hint tells a customer with several inboxes which one to
+        # open; the full address would be a contact detail a stranger could use.
         response, _, _ = self._run()
-        self.assertNotIn(RECORD_EMAIL, response.content.decode())
+        body = response.content.decode()
+        self.assertIn("h***@record.example", body)
+        self.assertNotIn(RECORD_EMAIL, body)
+
+    def test_the_local_part_is_not_recoverable_from_the_mask(self):
+        # "holder" must not survive as anything more than its initial — the mask is
+        # the only thing standing between this hint and a usable address.
+        response, _, _ = self._run()
+        self.assertNotIn("holder", response.content.decode())
