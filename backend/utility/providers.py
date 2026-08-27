@@ -747,7 +747,7 @@ def _prembly_identity_lookup(kind: str, number: str, name: str) -> dict:
         return {"success": False, "invalid": True,
                 "message": f"That {kind.upper()} could not be confirmed.", "raw": data}
     return {"success": True, "first_name": first, "last_name": last,
-            "phone": _record_phone(record), "raw": data}
+            "phone": _record_phone(record), "email": _record_email(record), "raw": data}
 
 
 #: Field names the BVN and NIN records use for the registered line. Both are
@@ -771,6 +771,37 @@ def _record_phone(record: dict) -> str:
         digits = "".join(ch for ch in raw if ch.isdigit())
         if len(digits) >= 10:
             return _ng_msisdn(digits)
+    return ""
+
+
+#: Field names the BVN and NIN records use for the registered email address.
+#: Tried for both identities for the same reason as _PHONE_FIELDS: the provider's
+#: naming is not stable across products.
+_EMAIL_FIELDS = ("email", "emailAddress", "email_address", "emailaddress")
+
+
+def _record_email(record: dict) -> str:
+    """The email registered against the identity, or "".
+
+    The companion to _record_phone, and it earns its place for the same reason:
+    this address belongs to the BVN/NIN HOLDER, so a code sent there proves the
+    same thing the SMS does. The Zitch account's own email proves nothing at all
+    about who owns the identity — whoever is logged in reads that inbox — so it is
+    never a substitute here.
+
+    Often absent: NIMC records rarely carry an email and bank records carry one
+    inconsistently. "" is the normal answer, not an error, and the caller falls
+    back to SMS alone rather than to the account address.
+    """
+    for field in _EMAIL_FIELDS:
+        value = str(record.get(field) or "").strip().lower()
+        # Deliberately shallow: this is a "did the provider give us something
+        # postable" check, not address validation. Resend is the authority on
+        # deliverability, and a stricter regex here would silently drop valid
+        # addresses rather than let it answer.
+        local, _, domain = value.partition("@")
+        if local and "." in domain and " " not in value and len(value) <= 254:
+            return value
     return ""
 
 
