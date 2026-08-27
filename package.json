@@ -34,7 +34,7 @@
     "@expo-google-fonts/manrope": "^0.4.2",
     "@expo/vector-icons": "^15.0.3",
     "@mono.co/connect-react-native": "^2.2.0",
-    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-async-storage/async-storage": "3.1.1",
     "@react-native-picker/picker": "2.11.4",
     "expo": "~57.0.17",
     "expo-build-properties": "~57.0.15",
