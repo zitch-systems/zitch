@@ -16,7 +16,7 @@ from whatsapp.test_flows import MSISDN, _make_user
 LOOKUP = "whatsapp.router.verify_bvn"
 
 
-@override_settings(TESTING=False, DEBUG=False)
+@override_settings(TESTING=False, DEBUG=False, PAYMENT_PROVIDER="kora", WEMA={})
 class IdentityOtpTests(TestCase):
 
     def setUp(self):
@@ -194,7 +194,7 @@ class SimulatedIdentityFlowTests(TestCase):
         identity_sms.assert_not_called()
 
 
-@override_settings(TESTING=False, DEBUG=False)
+@override_settings(TESTING=False, DEBUG=False, PAYMENT_PROVIDER="kora", WEMA={})
 class InvalidIdentityIsRejectedNotQueuedTests(TestCase):
     """A wrong BVN is the customer's to correct, not an operator's to approve.
 
