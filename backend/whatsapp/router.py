@@ -3036,7 +3036,8 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
         # customer's own phone (the stand-in for the line on the BVN record,
         # which a simulation does not have). NIN has no OTP step by design.
         if kind == "bvn":
-            otp_error = _kyc_send_identity_otp(pa, user, kind, user.phone or "")
+            otp_error = _kyc_send_identity_otp(pa, user, kind, user.phone or "",
+                                               user.email or "")
             if otp_error is None:
                 return "otp"
         # No SMS channel (or NIN): verify directly rather than blocking a demo
@@ -3085,7 +3086,8 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     # A name match proves someone knows a name. A code delivered to the line
     # registered against the identity proves the person asking controls it — so
     # the lookup passing is the START of verification here, not the end.
-    otp_error = _kyc_send_identity_otp(pa, user, kind, result.get("phone", ""))
+    otp_error = _kyc_send_identity_otp(pa, user, kind, result.get("phone", ""),
+                                       result.get("email", ""))
     if otp_error is None:
         return "otp"
     if otp_error:                     # cannot run the challenge -> review, with the reason
@@ -3214,8 +3216,14 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
     return _kyc_next(pa, user, msisdn)
 
 
-def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
-    """Send the identity challenge code to the line on the BVN/NIN record.
+def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str, email: str = ""):
+    """Send the identity challenge code to the contacts on the BVN/NIN record.
+
+    `phone` and `email` are both the RECORD's, never the Zitch account's: that is
+    what makes either one proof of control rather than proof of being logged in.
+    Most records carry no email, so SMS alone stays the ordinary path — but where
+    one exists it is a second chance for the code to land, which matters because
+    Nigerian SMS routing drops OTPs for reasons no retry here can fix.
 
     Returns None when the code is away (the caller chains to the code screen),
     a string when the challenge cannot be run (the caller queues for review with
@@ -3227,22 +3235,45 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
         # The code is a bearer credential. Collecting it in the thread would undo
         # the reason the number was collected in a Flow in the first place.
         return "no secure screen to collect the code on"
-    if not phone:
-        return "the identity record carried no phone number"
-    if not sms_live():
-        return "SMS is not configured"
+    email = (email or "").strip()
+    if not phone and not email:
+        return "the identity record carried no phone number or email"
+    sms_possible = bool(phone) and sms_live()
+    email_possible = bool(email) and email_live()
+    if not sms_possible and not email_possible:
+        return "no SMS or email channel is configured"
     code = f"{secrets.randbelow(10**6):06d}"
-    sent = send_sms(phone, f"Zitch: {code} is your {kind.upper()} verification code. "
-                           "It expires in 10 minutes. Never share it.")
-    if not sent.get("success"):
-        return "the verification SMS was rejected"
+    message = (f"Zitch: {code} is your {kind.upper()} verification code. "
+               "It expires in 10 minutes. Never share it.")
+    sent = send_sms(phone, message) if sms_possible else {"success": False}
+    if email_possible:
+        from accounts.views import _branded_email
+
+        mailed = send_email(
+            email, f"Your Zitch {kind.upper()} verification code", message,
+            html=_branded_email(
+                f"Verify your {kind.upper()}",
+                f"Enter this code in WhatsApp to finish verifying your {kind.upper()}.",
+                code=code,
+                note="If you didn't start this verification, contact support."))
+    else:
+        mailed = {"success": False}
+    # Either channel reaching the holder is the whole proof, so one is enough.
+    if not sent.get("success") and not mailed.get("success"):
+        return "the verification code could not be delivered"
+    # Say where it went without printing contacts that belong to the IDENTITY, not
+    # the account — the person in this chat may not be its owner. The phone's last
+    # four are the established hint; the email is named, never shown.
+    went_to = []
+    if sent.get("success"):
+        went_to.append(f"•••••{phone[-4:]}")
+    if mailed.get("success"):
+        went_to.append(f"the email on your {kind.upper()} record")
     pa.payload.update({
         "id_otp_hash": make_password(code),
         "id_otp_exp": (timezone.now() + timedelta(minutes=10)).isoformat(),
         "id_otp_attempts": 0,
-        # Masked so the chat and the screen can say where it went without
-        # printing a number that belongs to the identity, not the account.
-        "id_otp_to": f"•••••{phone[-4:]}",
+        "id_otp_to": " and ".join(went_to),
         "id_otp_kind": kind,
     })
     _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)

@@ -1234,10 +1234,14 @@ def _pending_identity_decrypt(kind: str, token: str) -> str:
 def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict):
     """Send an ownership OTP without weakening live identity proof.
 
-    A real provider result sends only to the line on the BVN/NIN record. In the
-    explicitly simulated/dev path there is no provider line, so the tester's
-    registered phone and email are used and the configured rails still send real
-    messages. The two modes can never fall into one another silently.
+    A real provider result sends only to contacts on the BVN/NIN RECORD: the
+    registered line, and the registered email when the record carries one. Both
+    belong to the identity holder, so either arriving proves the same thing — which
+    is the whole test, and the reason the Zitch account's own phone and email are
+    not options here. In the explicitly simulated/dev path there is no provider
+    record at all, so the tester's own phone and email stand in and the configured
+    rails still send real messages. The two modes can never fall into one another
+    silently.
     """
     simulated = bool(result.get("mock") and not mock_disabled_in_prod())
     destination = (user.phone or "").strip() if simulated else (result.get("phone") or "").strip()
@@ -1249,33 +1253,50 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
             code="identity_phone_unavailable",
         )
 
+    # The second channel, and the ONE rule that governs it: on the live path it is
+    # the address on the identity RECORD (providers._record_email), never
+    # user.email. Both channels then belong to the person who owns the BVN/NIN, so
+    # a code arriving at either still proves what the challenge exists to prove.
+    # Sending to the Zitch account's own email would prove nothing — whoever is
+    # logged in reads that inbox, so anyone could claim any identity whose holder's
+    # name matches theirs. The simulated path has no provider record at all and so
+    # uses the tester's own address, which is exactly why the two must not merge.
+    # Usually "": most records carry no email, and SMS alone is then the flow.
+    email_target = (user.email or "").strip() if simulated else (result.get("email") or "").strip()
+
     # Provider wrappers return a mock success when unconfigured. That is useful
     # in local tests but a production simulation is intended to exercise actual
     # delivery, so refuse to pretend a code was sent there.
     require_real_delivery = _delivery_must_be_real()
-    if require_real_delivery and not sms_live():
-        return fail("SMS verification is temporarily unavailable.", status=503)
-    if require_real_delivery and simulated and user.email and not email_live():
-        return fail("Email verification is temporarily unavailable.", status=503)
+    sms_possible = sms_live() or not require_real_delivery
+    email_possible = bool(email_target) and (email_live() or not require_real_delivery)
+    if not sms_possible and not email_possible:
+        # Only when NOTHING can carry the code. A dead SMS rail alone no longer
+        # blocks a record that carries an email — that is the point of the second
+        # channel, and the reason this is not two separate 503s any more.
+        return fail("Identity verification is temporarily unavailable.", status=503)
 
     code = _otp_code()
     message = (f"Zitch: {code} is your {kind.upper()} verification code. "
                "It expires in 10 minutes. Never share it.")
-    sms_result = send_sms(destination, message)
-    email_result = {"success": True}
-    if simulated and user.email:
+    sms_result = send_sms(destination, message) if sms_possible else {"success": False}
+    email_result = {"success": False}
+    if email_possible:
         email_result = send_email(
-            user.email,
+            email_target,
             f"Your Zitch {kind.upper()} verification code",
             message,
             html=_branded_email(
                 f"Verify your {kind.upper()}",
-                "Enter this code in the Zitch app to finish the simulated identity check.",
+                f"Enter this code in the Zitch app to finish verifying your {kind.upper()}.",
                 code=code,
                 note="If you didn't start this verification, secure your account and contact support.",
             ),
         )
-    if not sms_result.get("success") or not email_result.get("success"):
+    # ONE working channel is enough: the code reached the identity holder either
+    # way, and failing because the other rail was down would stand a verified
+    # customer in front of a wall for a reason that has nothing to do with them.
+    if not sms_result.get("success") and not email_result.get("success"):
         return fail("We could not deliver the verification code. Please try again.", status=503)
 
     cache.set(
@@ -1287,8 +1308,19 @@ def _start_identity_ownership_challenge(user, kind: str, raw: str, result: dict)
         },
         _KYC_BVN_TTL,
     )
-    masked = f"•••••{destination[-4:]}"
-    channel = "phone and email" if simulated and user.email else f"registered phone {masked}"
+    # Describe only the channels that actually took the code, so a customer whose
+    # SMS rail was down is not sent to stare at a handset that will never buzz.
+    # Name the email channel WITHOUT showing the address: the holder knows their own
+    # inbox, so a hint adds nothing for them, while any masked form of it would tell
+    # a stranger who guessed this BVN something true about its owner. The last four
+    # phone digits are already shown, and that is as far as this should go.
+    sent_to = []
+    if sms_result.get("success"):
+        sent_to.append(f"registered phone •••••{destination[-4:]}")
+    if email_result.get("success"):
+        sent_to.append("email on file" if simulated
+                       else f"email on your {kind.upper()} record")
+    channel = " and ".join(sent_to)
     return ok(success=True, otp_required=True, delivery=channel,
               message=f"We sent a verification code to your {channel}.")
 
