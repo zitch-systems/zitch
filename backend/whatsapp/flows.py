@@ -1153,7 +1153,8 @@ def _submit_identity(pa, data: dict) -> dict:
                 return _success_screen(
                     "We couldn't finish setting up your account — see the chat for what happened.")
         else:
-            outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
+            outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number,
+                                           in_flow=True)
             if outcome == "invalid":
                 # A wrong number is corrected by the customer, not queued — but
                 # on a FRESH screen, so the refused digits are gone and the retry

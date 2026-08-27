@@ -126,6 +126,32 @@ class IdentityOtpTests(TestCase):
         self.assertNotEqual(resp["screen"], IDENTITY_SCREEN)
 
 
+@override_settings(TESTING=False, DEBUG=False)
+class WemaWalletIdentityHandoffTests(TestCase):
+    """Live WhatsApp KYC must initiate the Wema Wallet Creation OTP flow,
+    not a separate standalone identity lookup."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state=FLOW_ID_STATE,
+            payload={"id_kind": "bvn"}, expires_at=timezone.now() + timedelta(minutes=10))
+
+    def test_first_live_identity_is_handed_to_wema_account_creation(self):
+        from whatsapp import router
+
+        with patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True), \
+             patch("whatsapp.router._account_submit_identity", return_value="otp") as submit:
+            outcome = router._kyc_submit_identity(
+                self.pa, self.user, MSISDN, "bvn", "22222222222", in_flow=True)
+
+        self.assertEqual(outcome, "otp")
+        submit.assert_called_once_with(self.pa, self.user, MSISDN, "22222222222", in_flow=True)
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.action_type, "add_account")
+        self.assertEqual(self.pa.payload["id_type"], "bvn")
+
+
 @override_settings(
     TESTING=False,
     DEBUG=False,
