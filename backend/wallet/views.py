@@ -229,6 +229,88 @@ def _adopt_existing_wema_account(user, *, using_bvn: bool, reason: str) -> dict 
         message="Your bank account was already set up — we've reconnected it.")
 
 
+def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identity: str) -> tuple[dict, int]:
+    kind = "bvn" if identity_type == WemaProvisioningAttempt.BVN else "nin"
+    raw_identity = "".join(ch for ch in (raw_identity or "") if ch.isdigit())
+    if len(raw_identity) != 11:
+        return {"success": False, "message": f"Enter your 11-digit {kind.upper()}"}, 400
+    if not wallet.account_number:
+        return {"success": False, "message": "Set up your Wema account first"}, 400
+
+    if getattr(user, f"{kind}_verified", False):
+        return _account_payload(
+            wallet,
+            already=True,
+            upgraded=True,
+            tier=user.tier,
+            bvn_verified=user.bvn_verified,
+            nin_verified=user.nin_verified,
+            message=f"{kind.upper()} already verified with your existing Wema account",
+        ), 200
+
+    if _identity_owned_by_another_user(user, kind, raw_identity):
+        return {
+            "success": False,
+            "message": f"This {kind.upper()} is already linked to another Zitch account",
+        }, 409
+
+    kwargs = {"bvn": raw_identity} if kind == "bvn" else {"nin": raw_identity}
+    res = wema_provider.upgrade_tier2(wallet.account_number, **kwargs)
+    if not res.get("success"):
+        log.warning(
+            "wema_existing_identity_upgrade_failed user=%s account=%s kind=%s msg=%s",
+            user.id,
+            mask_pii(wallet.account_number),
+            kind,
+            res.get("message", ""),
+        )
+        return {
+            "success": False,
+            "message": res.get("message")
+            or "Your Wema account is already set up, but we could not verify this identity against it. Please contact support.",
+        }, 502
+
+    updates = []
+    if kind == "bvn":
+        user.bvn_hash = hash_identifier(raw_identity)
+        user.bvn_last4 = raw_identity[-4:]
+        user.bvn_verified = True
+        updates.extend(["bvn_hash", "bvn_last4", "bvn_verified"])
+    else:
+        user.nin_hash = hash_identifier(raw_identity)
+        user.nin_last4 = raw_identity[-4:]
+        user.nin_verified = True
+        updates.extend(["nin_hash", "nin_last4", "nin_verified"])
+
+    user.recompute_tier()
+    updates.append("tier")
+    try:
+        with db_transaction.atomic():
+            user.save(update_fields=updates)
+    except IntegrityError:
+        return {
+            "success": False,
+            "message": f"This {kind.upper()} is already linked to another Zitch account",
+        }, 409
+
+    try:
+        sync_bank_tier(wallet)
+    except Exception as exc:  # pragma: no cover - Wema sync must not undo local verification
+        log.warning("wema_existing_identity_tier_sync_failed user=%s err=%s", user.id, exc)
+
+    user.refresh_from_db()
+    wallet.refresh_from_db()
+    return _account_payload(
+        wallet,
+        already=True,
+        upgraded=True,
+        tier=user.tier,
+        bvn_verified=user.bvn_verified,
+        nin_verified=user.nin_verified,
+        message=f"{kind.upper()} verified with your existing Wema account",
+    ), 200
+
+
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
@@ -278,14 +360,27 @@ def wema_wallet_create(request):
         return fail("Bank account creation is not available right now")
     user = request.user_obj
     wallet = get_or_create_wallet(user)
-    if wallet.account_number:
-        return ok(**_account_payload(wallet, already=True,
-                                     message="Your account is already set up"))
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
-    if len(bvn) != 11 and len(nin) != 11:
+    if len(bvn) == 11:
+        using_bvn = True
+        identity_type = WemaProvisioningAttempt.BVN
+        raw_identity = bvn
+    elif len(nin) == 11:
+        using_bvn = False
+        identity_type = WemaProvisioningAttempt.NIN
+        raw_identity = nin
+    else:
+        if wallet.account_number:
+            return ok(**_account_payload(wallet, already=True,
+                                         message="Your account is already set up"))
         return fail("Enter your 11-digit BVN or NIN")
-    using_bvn = len(bvn) == 11
+
+    if wallet.account_number:
+        payload, status = _verify_existing_wema_identity(user, wallet, identity_type, raw_identity)
+        if payload.get("success"):
+            return ok(**payload)
+        return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
     res, identity_error = _start_wema_attempt(user, bvn, nin)
     if identity_error:
         return fail(identity_error, status=409)
