@@ -134,7 +134,11 @@ const Kyc = () => {
         notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
       } else if (res.success) {
         await load();
-        notify('Account already set up', 'Your Wema account is already set up.');
+        if (res.bvn_verified || res.upgraded) {
+          notify('Success', res.message || 'BVN verified with Wema.');
+        } else {
+          notify('Account already set up', res.message || 'Your Wema account is already set up.');
+        }
       } else notify('Error', res.message || 'Could not start Wema BVN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
@@ -151,7 +155,11 @@ const Kyc = () => {
         notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
       } else if (res.success) {
         await load();
-        notify('Account already set up', 'Your Wema account is already set up. Wema must enable an account-upgrade check to verify an additional identity.');
+        if (res.nin_verified || res.upgraded) {
+          notify('Success', res.message || 'NIN verified with Wema.');
+        } else {
+          notify('Account already set up', res.message || 'Your Wema account is already set up.');
+        }
       } else notify('Error', res.message || 'Could not start Wema NIN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
