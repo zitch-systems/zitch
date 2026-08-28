@@ -344,6 +344,12 @@ WA_REAUTH_IDLE_MINUTES = 0 if TESTING else int(os.environ.get("WA_REAUTH_IDLE_MI
 # HMAC derived from WEMA_SECURITY_INFO, a private seed chosen by Zitch. See utility.wema.
 WEMA = {
     "BASE_URL": os.environ.get("WEMA_BASE_URL", "https://apiplayground.alat.ng"),
+    # Optional per-product host override for cases where Wema profiles one live
+    # product on a different APIM host. Values should be the host only; product
+    # paths such as /account-upgrade are appended by utility.wema._url.
+    "BASE_URLS": {
+        "upgrade": os.environ.get("WEMA_UPGRADE_BASE_URL", ""),
+    },
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
     "KEYS": {
         # Wallet Services covers wallet creation, credit/debit wallet, account
