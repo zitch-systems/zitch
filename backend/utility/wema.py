@@ -206,7 +206,8 @@ def _headers(product: str) -> dict:
 
 
 def _url(product: str, path: str) -> str:
-    base = settings.WEMA["BASE_URL"].rstrip("/")
+    product_bases = settings.WEMA.get("BASE_URLS") or {}
+    base = (product_bases.get(product) or settings.WEMA["BASE_URL"]).rstrip("/")
     return f"{base}{_PATH[product]}{path}"
 
 
