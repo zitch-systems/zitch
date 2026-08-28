@@ -2186,13 +2186,17 @@ class ChatAccountSetupTests(TestCase):
             return {"success": True}, 200
 
         complete.side_effect = provision
+        before_success = WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT).count()
         with patch("whatsapp.router.sms_live", return_value=True), \
              patch("whatsapp.router.email_live", return_value=True), \
              patch("whatsapp.router.flows_live", return_value=False):
             self.inbound("55555", f"b3-{m}", msisdn=m)
 
         replies = "\n".join(WaMessageLog.objects.filter(
-            msisdn=m, direction=WaMessageLog.OUT).values_list("text", flat=True))
+            msisdn=m, direction=WaMessageLog.OUT).order_by("id")[
+                before_success:
+            ].values_list("text", flat=True))
         self.assertIn("9900000124", replies)
         self.assertNotIn("Enter your 11-digit *BVN*", replies)
         self.assertNotIn("Enter your BVN privately", replies)
