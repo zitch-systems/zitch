@@ -3344,7 +3344,26 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
                the pending action is cleared. The Flow must NOT close green.
       other  — the account was adopted/created successfully.
     """
-    using_bvn = pa.payload.get("id_type") == "bvn"
+    kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
+    using_bvn = kind == "bvn"
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        payload, status = wallet_views._verify_existing_wema_identity(user, wallet, kind, digits)
+        if payload.get("success"):
+            _clear_actions(msisdn)
+            reply(msisdn, f"✅ Your {kind.upper()} has been verified on your existing Wema account.")
+            return _kyc_continue_after_account(user, msisdn, attempted={kind})
+        _clear_actions(msisdn)
+        reply(
+            msisdn,
+            "⚠️ "
+            + (
+                payload.get("message")
+                or "We couldn't verify that identity against your existing Wema account. Please contact support."
+            ),
+        )
+        return "fail"
+
     res, identity_error = wallet_views._start_wema_attempt(
         user, digits if using_bvn else "", "" if using_bvn else digits)
     if identity_error:
@@ -3357,10 +3376,25 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
         recovered = wallet_views._adopt_existing_wema_account(
             user, using_bvn=using_bvn, reason=res.get("message", ""))
         if recovered is not None:
+            wallet = get_or_create_wallet(user)
+            kind = "bvn" if using_bvn else "nin"
+            payload, status = wallet_views._verify_existing_wema_identity(user, wallet, kind, digits)
+            if payload.get("success"):
+                _clear_actions(msisdn)
+                _send_account_details(msisdn, wallet,
+                                      intro="✅ *Found it!* Your Zitch account was already set up")
+                reply(msisdn, f"✅ Your {kind.upper()} has been verified on your existing Wema account.")
+                return _kyc_continue_after_account(user, msisdn, attempted={kind})
             _clear_actions(msisdn)
-            _send_account_details(msisdn, get_or_create_wallet(user),
-                                  intro="✅ *Found it!* Your Zitch account was already set up")
-            return _kyc_continue_after_account(user, msisdn)
+            reply(
+                msisdn,
+                "⚠️ "
+                + (
+                    payload.get("message")
+                    or "We reconnected your Wema account but could not verify that identity yet. Please contact support."
+                ),
+            )
+            return "fail"
         _clear_actions(msisdn)
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
             _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")
