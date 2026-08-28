@@ -201,7 +201,10 @@ def _record_wema_attempt(user, tracking_id: str, identity_type: str,
 # The gateway's way of saying "this customer is already onboarded". Matched on the
 # durable part of the wording rather than the whole string, which varies by product
 # and is brand-stripped by _msg before it reaches us.
-_ALREADY_ONBOARDED = re.compile(r"already\s+exist", re.I)
+_ALREADY_ONBOARDED = re.compile(
+    r"(already\s+exist|already\s+set\s*up|account\s+already|customer\s+already)",
+    re.I,
+)
 
 
 def _adopt_existing_wema_account(user, *, using_bvn: bool, reason: str) -> dict | None:
@@ -297,7 +300,14 @@ def wema_wallet_create(request):
         recovered = _adopt_existing_wema_account(user, using_bvn=using_bvn,
                                                  reason=res.get("message", ""))
         if recovered is not None:
-            return ok(**recovered)
+            wallet = get_or_create_wallet(user)
+            payload, status = _verify_existing_wema_identity(user, wallet, identity_type, raw_identity)
+            if payload.get("success"):
+                return ok(**payload)
+            return fail(
+                payload.get("message", recovered.get("message", "Couldn't verify identity with Wema")),
+                status=status,
+            )
         if _ALREADY_ONBOARDED.search(res.get("message", "") or ""):
             # Wema confirmed existing Wema customers can onboard, so this is not
             # a customer instruction to retry forever. It means Wallet Service
