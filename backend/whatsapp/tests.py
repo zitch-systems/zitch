@@ -2166,6 +2166,37 @@ class ChatAccountSetupTests(TestCase):
         self.assertNotIn("can't send", last)
         self.assertFalse(PendingAction.objects.filter(msisdn=m, action_type="kyc").exists())
 
+    @patch("whatsapp.router.wallet_views.complete_wema_provisioning")
+    @patch("whatsapp.router.wallet_views._start_wema_attempt")
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    def test_successful_bvn_mint_does_not_ask_for_bvn_again(self, _en, start, complete):
+        """If account creation succeeds but BVN still needs manual review, do not
+        loop the customer back to the same BVN prompt. The same submission was
+        already spent at Wema; the only useful next step is another missing check,
+        or a clean stop."""
+        start.return_value = ({"success": True, "tracking_id": "trk-bvn"}, None)
+        m = self.start_flow(m="2349090000124")
+        self.inbound("1", f"b1-{m}", msisdn=m)          # BVN
+        self.inbound("12345678901", f"b2-{m}", msisdn=m)
+
+        def provision(user, otp, tracking_id, echoed_identity=""):
+            w = get_or_create_wallet(user)
+            w.account_number, w.bank_name, w.account_name = "9900000124", "Wema Bank", "NGOZI ADE"
+            w.save(update_fields=["account_number", "bank_name", "account_name"])
+            return {"success": True}, 200
+
+        complete.side_effect = provision
+        with patch("whatsapp.router.sms_live", return_value=True), \
+             patch("whatsapp.router.email_live", return_value=True), \
+             patch("whatsapp.router.flows_live", return_value=False):
+            self.inbound("55555", f"b3-{m}", msisdn=m)
+
+        replies = "\n".join(WaMessageLog.objects.filter(
+            msisdn=m, direction=WaMessageLog.OUT).values_list("text", flat=True))
+        self.assertIn("9900000124", replies)
+        self.assertNotIn("Enter your 11-digit *BVN*", replies)
+        self.assertNotIn("Enter your BVN privately", replies)
+
     @patch("whatsapp.router.wallet_views._start_wema_attempt")
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
     def test_the_account_id_is_collected_in_the_flow_not_the_chat(self, _enabled, start):
