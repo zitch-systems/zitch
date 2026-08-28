@@ -2642,7 +2642,7 @@ def _kyc_status_lines(user) -> str:
     ] + ([f"{mark(user.face_verified)} Face check"] if _face_step_available() else []))
 
 
-def _start_kyc(user, msisdn: str) -> None:
+def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     outstanding = _kyc_outstanding(user)
     if not outstanding:
         return reply(msisdn, "✅ *You're fully verified.*\n\n" + _kyc_status_lines(user)
@@ -2650,7 +2650,7 @@ def _start_kyc(user, msisdn: str) -> None:
     _clear_actions(msisdn)
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state="idle",
-        payload={}, expires_at=_flow_deadline("idle"),
+        payload={"attempted": sorted(attempted or set())}, expires_at=_flow_deadline("idle"),
     )
     reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user)
           + "\n\nThese raise your limits. Let's do the rest now — "
@@ -3430,13 +3430,14 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
     payload, status = wallet_views.complete_wema_provisioning(
         user, code, pa.payload.get("tracking_id", ""))
     if payload.get("success"):
+        attempted_identity = "bvn" if pa.payload.get("using_bvn") else "nin"
         _send_account_details(msisdn, get_or_create_wallet(user),
                               intro="🎉 *Your Zitch account number is ready!*")
         # Wema Wallet Service OTP is phone-only. Account creation is complete
         # once Wema validates that code; do not add a parallel Resend/email OTP
         # that the bank will not validate.
         _clear_actions(msisdn)
-        _kyc_continue_after_account(user, msisdn)
+        _kyc_continue_after_account(user, msisdn, attempted={attempted_identity})
         return "done", "Account created ✅ — see the chat for your account details."
     if payload.get("pending") or status == 202:
         # Wema has consumed and accepted the OTP, but can take a short time to
@@ -3453,7 +3454,7 @@ def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:
     return "retry", (payload.get("message") or "That code didn't work.")
 
 
-def _kyc_continue_after_account(user, msisdn: str) -> None:
+def _kyc_continue_after_account(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     """Roll straight from account setup into whatever identity checks remain.
 
     Verification is meant to happen once, at signup, rather than being deferred
@@ -3474,7 +3475,7 @@ def _kyc_continue_after_account(user, msisdn: str) -> None:
     if not all(_kyc_rail_ready(user, step) for step in outstanding):
         log.info("wa_kyc_rollin_skipped steps=%s — a rail is unavailable", ",".join(outstanding))
         return None
-    return _start_kyc(user, msisdn)
+    return _start_kyc(user, msisdn, attempted=attempted)
 
 
 def _kyc_rail_ready(user, step: str) -> bool:
