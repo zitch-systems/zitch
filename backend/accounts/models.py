@@ -338,7 +338,7 @@ class User(AbstractUser):
         else:
             self.tier = 0
 
-    def set_address(    def set_address(self, raw: str) -> None:
+    def set_address(self, raw: str) -> None:
         self.address = (raw or "").strip()[:255]
 
     class Meta(AbstractUser.Meta):
