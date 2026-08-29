@@ -348,6 +348,7 @@ WEMA = {
     # product on a different APIM host. Values should be the host only; product
     # paths such as /account-upgrade are appended by utility.wema._url.
     "BASE_URLS": {
+        "acct_mgt": os.environ.get("WEMA_ACCT_MGT_BASE_URL", ""),
         "upgrade": os.environ.get("WEMA_UPGRADE_BASE_URL", ""),
     },
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
@@ -363,6 +364,7 @@ WEMA = {
         # so make it settable without a code change. Leave blank unless Wema issued a
         # distinct key for Account Creation.
         "wallet_bvn": os.environ.get("WEMA_ACCOUNT_CREATION_KEY", ""),
+        "acct_mgt": os.environ.get("WEMA_ACCT_MGT_KEY", ""),
         "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API
         "bills": os.environ.get("WEMA_BILLS_KEY", ""),     # optional override; Wallet Services covers bills
