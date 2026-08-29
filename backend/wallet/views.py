@@ -350,7 +350,7 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
     }, 409
 
 
-def _start_wema_attempt(def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
+def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
     if _identity_owned_by_another_user(user, identity_type, raw_identity):
