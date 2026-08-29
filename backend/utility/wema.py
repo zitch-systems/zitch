@@ -363,6 +363,14 @@ def _response_meta(resp: requests.Response, data) -> dict:
     }
 
 
+def _mask_account(value: str) -> str:
+    """Keep enough account-number shape for support without logging the full NUBAN."""
+    s = re.sub(r"\D", "", str(value or ""))
+    if len(s) <= 4:
+        return "****" if s else ""
+    return "*" * max(0, len(s) - 4) + s[-4:]
+
+
 def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
     """Return a safe provider-unavailable result.
 
@@ -917,7 +925,10 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
             # wrong — our bank_codes are a NIBSS/Paystack mirror, not the rail's own
             # list (see wema_banks_sync).
             out["message"] = _msg(data)
-            log.warning("wema_name_enquiry_failed bank_code=%s msg=%s", bank_code, out["message"])
+            log.warning(
+                "wema_name_enquiry_failed bank_code=%s account=%s meta=%s raw=%s",
+                bank_code, _mask_account(account_number), _response_meta(resp, data), _trim(data),
+            )
         return out
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -1016,10 +1027,15 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
             "transactionReference": reference,
             "useCustomNarration": bool(narration),
         }
-        data = _post("debit", "/api/Shared/ProcessClientTransfer", body).json()
+        resp = _post("debit", "/api/Shared/ProcessClientTransfer", body)
+        data = resp.json()
         out = _parse_transfer(data, reference)
         if not out["success"]:
-            log.warning("wema_transfer_failed ref=%s msg=%s", reference, out.get("message"))
+            log.warning(
+                "wema_transfer_failed ref=%s source=%s dest=%s bank_code=%s meta=%s raw=%s",
+                reference, _mask_account(source_account), _mask_account(destination_account),
+                destination_bank_code, _response_meta(resp, data), _trim(data),
+            )
         return out
     except (requests.RequestException, ValueError) as exc:
         # The transfer POST is non-idempotent.  A timeout, broken connection, or
@@ -1950,3 +1966,4 @@ def wema_diagnostics() -> dict:
     out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
                    "integration guide before go-live.")
     return out
+
