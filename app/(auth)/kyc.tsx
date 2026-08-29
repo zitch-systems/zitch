@@ -94,6 +94,8 @@ const Kyc = () => {
   const faceSession = useRef('');
   // The address rail decides whether a proof-of-address document is even asked for.
   const bankAddress = status?.address_rail === 'wema';
+  const [identityFlow, setIdentityFlow] = useState<null | 'bvn' | 'nin'>(null);
+  const [identityStep, setIdentityStep] = useState<'number' | 'otp'>('number');
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -120,6 +122,29 @@ const Kyc = () => {
     finally { setBusy(false); }
   };
 
+  const openIdentityFlow = (kind: 'bvn' | 'nin') => {
+    setIdentityFlow(kind);
+    setIdentityStep(kind === 'bvn' && bvnSent ? 'otp' : kind === 'nin' && ninSent ? 'otp' : 'number');
+  };
+
+  const closeIdentityFlow = () => {
+    setIdentityFlow(null);
+    setIdentityStep('number');
+  };
+
+  const resetIdentityFlow = (kind: 'bvn' | 'nin') => {
+    if (kind === 'bvn') {
+      setBvnSent(false);
+      setBvnTrackingId('');
+      setBvnOtp('');
+    } else {
+      setNinSent(false);
+      setNinTrackingId('');
+      setNinOtp('');
+    }
+    setIdentityStep('number');
+  };
+
   // Wema validates the BVN or NIN used to create the customer's bank account.
   // The opaque tracking ID binds the OTP to that identity on the server; do not
   // send a raw BVN/NIN again when the code is confirmed.
@@ -131,6 +156,7 @@ const Kyc = () => {
         setBvnTrackingId(String(res.tracking_id));
         setBvnDelivery(res.otp_destination || 'your registered phone');
         setBvnSent(true);
+        setIdentityStep('otp');
         notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
       } else if (res.success) {
         await load();
@@ -152,6 +178,7 @@ const Kyc = () => {
         setNinTrackingId(String(res.tracking_id));
         setNinDelivery(res.otp_destination || 'your registered phone');
         setNinSent(true);
+        setIdentityStep('otp');
         notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
       } else if (res.success) {
         await load();
@@ -174,6 +201,7 @@ const Kyc = () => {
         setNinTrackingId('');
         setNin('');
         setNinOtp('');
+        closeIdentityFlow();
         notify('Success', 'NIN verified with Wema');
       } else notify('Error', res.message || 'Incorrect Wema code');
     } catch { notify('Error', 'Something went wrong.'); }
@@ -189,6 +217,7 @@ const Kyc = () => {
         setBvnTrackingId('');
         setBvn('');
         setBvnOtp('');
+        closeIdentityFlow();
         notify('Success', 'BVN verified with Wema');
       } else notify('Error', res.message || 'Incorrect Wema code');
     } catch { notify('Error', 'Something went wrong.'); }
@@ -393,6 +422,55 @@ const Kyc = () => {
     submit('/api/kyc/face/', { selfie: base64 }, 'Selfie');
   };
 
+  if (identityFlow) {
+    const isBvn = identityFlow === 'bvn';
+    const title = isBvn ? 'Verify BVN' : 'Verify NIN';
+    const value = isBvn ? bvn : nin;
+    const otp = isBvn ? bvnOtp : ninOtp;
+    const sent = isBvn ? bvnSent : ninSent;
+    const delivery = isBvn ? bvnDelivery : ninDelivery;
+    const setValue = isBvn ? setBvn : setNin;
+    const setOtp = isBvn ? setBvnOtp : setNinOtp;
+    const start = isBvn ? startBvn : startNin;
+    const confirm = isBvn ? confirmBvn : confirmNin;
+
+    return (
+      <Screen>
+        <Header title={title} sub="Wema sends the code to the phone linked to this identity" onBack={closeIdentityFlow} />
+
+        <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
+          <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
+            <ZIcon name={isBvn ? 'bank' : 'user'} size={24} color={c.brand} stroke={2} />
+          </View>
+
+          {identityStep === 'number' ? (
+            <>
+              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{title}</Text>
+              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
+                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Zitch does not store the raw number; Wema returns a tracking reference for the OTP step.
+              </Text>
+              <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
+              <View style={{ height: 14 }} />
+              <Btn label="Next" size="md" disabled={busy || value.length !== 11} onPress={start} />
+            </>
+          ) : (
+            <>
+              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Enter Wema OTP</Text>
+              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
+                Enter the code Wema sent to {delivery || 'your registered phone'}.
+              </Text>
+              <Field value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
+              <View style={{ height: 14 }} />
+              <Btn label="Confirm with Wema" size="md" disabled={busy || otp.length !== 6 || !sent} onPress={confirm} />
+              <Text onPress={() => resendWemaOtp(identityFlow)} style={{ textAlign: 'center', marginTop: 14, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
+              <Text onPress={() => resetIdentityFlow(identityFlow)} style={{ textAlign: 'center', marginTop: 12, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Use a different {isBvn ? 'BVN' : 'NIN'}</Text>
+            </>
+          )}
+        </View>
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
       <Header title="Verify identity" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
@@ -493,41 +571,11 @@ const Kyc = () => {
       ) : null}
 
         <KycRow icon="bank" title="BVN" sub="Wema will send a code to verify it" done={!!status?.bvn_verified}>
-        {!bvnSent ? (
-          <>
-            <Field value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit BVN" />
-            <View style={{ height: 10 }} />
-            <Btn label="Verify with Wema" size="md" disabled={busy || bvn.length !== 11} onPress={startBvn} />
-          </>
-        ) : (
-          <>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the Wema code sent to {bvnDelivery}.</Text>
-            <Field value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
-            <View style={{ height: 10 }} />
-            <Btn label="Confirm with Wema" size="md" disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
-            <Text onPress={() => resendWemaOtp('bvn')} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
-            <Text onPress={() => { setBvnSent(false); setBvnTrackingId(''); setBvnOtp(''); }} style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Change BVN</Text>
-          </>
-        )}
+        <Btn label={bvnSent ? 'Enter BVN OTP' : 'Verify BVN'} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
       </KycRow>
 
       <KycRow icon="user" title="NIN" sub="Wema will send a code to verify it" done={!!status?.nin_verified}>
-        {!ninSent ? (
-          <>
-            <Field value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder="Enter 11-digit NIN" />
-            <View style={{ height: 10 }} />
-            <Btn label="Verify with Wema" size="md" disabled={busy || nin.length !== 11} onPress={startNin} />
-          </>
-        ) : (
-          <>
-            <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>Enter the Wema code sent to {ninDelivery}.</Text>
-            <Field value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
-            <View style={{ height: 10 }} />
-            <Btn label="Confirm with Wema" size="md" disabled={busy || ninOtp.length !== 6} onPress={confirmNin} />
-            <Text onPress={() => resendWemaOtp('nin')} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
-            <Text onPress={() => { setNinSent(false); setNinTrackingId(''); setNinOtp(''); }} style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Change NIN</Text>
-          </>
-        )}
+        <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
       </KycRow>
 
       {status?.face_rail === 'wema' ? (
