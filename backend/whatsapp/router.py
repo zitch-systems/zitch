@@ -6181,37 +6181,45 @@ def _await_settlement(action_id: int, user, action_type: str = ""):
         time.sleep(_SETTLE_POLL)
 
 
-@db_transaction.atomic
 def run_flow_execution(pa: PendingAction, user) -> str:
     # Token resolution and PIN verification happen before this call. Re-read and
-    # lock both records here so a concurrent cancel, replay, expiry or account
+    # lock both records briefly so a concurrent cancel, replay, expiry or account
     # freeze cannot race past the final execution boundary.
-    live = PendingAction.objects.select_for_update().filter(
-        pk=pa.pk,
-        user_id=user.pk,
-        msisdn=pa.msisdn,
-        state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
-    ).first()
-    if live is None:
-        return Outcome("This request expired or was cancelled. Start again in the chat.",
-                       OUTCOME_FAILED)
-    # An action already authorised is past the point where expiry means anything:
-    # the PIN was accepted inside the window, and the clock that ran out was the
-    # one measuring how long the customer had to confirm. Dropping it here would
-    # discard a payment the customer was told was on its way.
-    if live.expired and live.state != EXECUTING_STATE:
-        live.delete()
-        return Outcome("This request expired or was cancelled. Start again in the chat.",
-                       OUTCOME_FAILED)
+    #
+    # Do NOT wrap the provider call below in this transaction. Wema's debit-wallet
+    # rail calls our Authentication Callback while ProcessClientTransfer is still
+    # in flight. If the PENDING ledger row is created inside an outer transaction
+    # that has not committed yet, the callback cannot see it and correctly denies
+    # the payout as "unknown_reference", which Wema surfaces as "Authentication
+    # Failed". Keep only the claim/eligibility check atomic; the executor's own
+    # debit() transaction then commits the row before the Wema network call.
+    with db_transaction.atomic():
+        live = PendingAction.objects.select_for_update().filter(
+            pk=pa.pk,
+            user_id=user.pk,
+            msisdn=pa.msisdn,
+            state__in=(FLOW_PIN_STATE, "pin", EXECUTING_STATE),
+        ).first()
+        if live is None:
+            return Outcome("This request expired or was cancelled. Start again in the chat.",
+                           OUTCOME_FAILED)
+        # An action already authorised is past the point where expiry means anything:
+        # the PIN was accepted inside the window, and the clock that ran out was the
+        # one measuring how long the customer had to confirm. Dropping it here would
+        # discard a payment the customer was told was on its way.
+        if live.expired and live.state != EXECUTING_STATE:
+            live.delete()
+            return Outcome("This request expired or was cancelled. Start again in the chat.",
+                           OUTCOME_FAILED)
 
-    live_user = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
-    if live_user is None or not live_user.is_active:
-        _clear_actions(live.msisdn)
-        return Outcome("Your Zitch account is currently suspended. Please contact support.",
-                       OUTCOME_FAILED)
+        live_user = get_user_model().objects.select_for_update().filter(pk=user.pk).first()
+        if live_user is None or not live_user.is_active:
+            _clear_actions(live.msisdn)
+            return Outcome("Your Zitch account is currently suspended. Please contact support.",
+                           OUTCOME_FAILED)
 
-    pa = live
-    user = live_user
+        pa = live
+        user = live_user
     # Getting here means the PIN or a verified biometric just passed, so it
     # starts the re-auth window: someone who just authorised a payment should
     # not be challenged again to read their own balance.
