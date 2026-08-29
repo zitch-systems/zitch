@@ -268,22 +268,12 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             "message": f"This {kind.upper()} is already linked to another Zitch account",
         }, 409
 
-    kwargs = {"bvn": raw_identity} if kind == "bvn" else {"nin": raw_identity}
-    res = wema_provider.upgrade_tier2(wallet.account_number, **kwargs)
-    if not res.get("success"):
-        log.warning(
-            "wema_existing_identity_upgrade_failed user=%s account=%s kind=%s msg=%s",
-            user.id,
-            mask_pii(wallet.account_number),
-            kind,
-            res.get("message", ""),
-        )
-        return {
-            "success": False,
-            "message": res.get("message")
-            or "Your Wema account is already set up, but we could not verify this identity against it. Please contact support.",
-        }, 502
-
+    # Account Upgrade Tier 2 is not a single-identity lookup endpoint. Wema validates
+    # it as a complete Tier-2 upgrade bundle and rejects BVN-only/NIN-only calls with
+    # "NIN must not be empty" / "live image of face is required". For an already
+    # provisioned NUBAN, treat the submitted identifier as Zitch-side KYC evidence
+    # only when it is unique to this user; bank-tier upgrade is attempted later from
+    # the face/combined KYC flow where BVN + NIN + liveImageOfFace are available.
     updates = []
     if kind == "bvn":
         user.bvn_hash = hash_identifier(raw_identity)
@@ -317,11 +307,11 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
     return _account_payload(
         wallet,
         already=True,
-        upgraded=True,
+        upgraded=False,
         tier=user.tier,
         bvn_verified=user.bvn_verified,
         nin_verified=user.nin_verified,
-        message=f"{kind.upper()} verified with your existing Wema account",
+        message=f"{kind.upper()} verified. Complete the remaining identity steps to sync your bank tier.",
     ), 200
 
 
