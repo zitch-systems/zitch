@@ -270,49 +270,18 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
 
     # Account Upgrade Tier 2 is not a single-identity lookup endpoint. Wema validates
     # it as a complete Tier-2 upgrade bundle and rejects BVN-only/NIN-only calls with
-    # "NIN must not be empty" / "live image of face is required". For an already
-    # provisioned NUBAN, treat the submitted identifier as Zitch-side KYC evidence
-    # only when it is unique to this user; bank-tier upgrade is attempted later from
-    # the face/combined KYC flow where BVN + NIN + liveImageOfFace are available.
-    updates = []
-    if kind == "bvn":
-        user.bvn_hash = hash_identifier(raw_identity)
-        user.bvn_last4 = raw_identity[-4:]
-        user.bvn_verified = True
-        updates.extend(["bvn_hash", "bvn_last4", "bvn_verified"])
-    else:
-        user.nin_hash = hash_identifier(raw_identity)
-        user.nin_last4 = raw_identity[-4:]
-        user.nin_verified = True
-        updates.extend(["nin_hash", "nin_last4", "nin_verified"])
-
-    user.recompute_tier()
-    updates.append("tier")
-    try:
-        with db_transaction.atomic():
-            user.save(update_fields=updates)
-    except IntegrityError:
-        return {
-            "success": False,
-            "message": f"This {kind.upper()} is already linked to another Zitch account",
-        }, 409
-
-    try:
-        sync_bank_tier(wallet)
-    except Exception as exc:  # pragma: no cover - Wema sync must not undo local verification
-        log.warning("wema_existing_identity_tier_sync_failed user=%s err=%s", user.id, exc)
-
-    user.refresh_from_db()
-    wallet.refresh_from_db()
-    return _account_payload(
-        wallet,
-        already=True,
-        upgraded=False,
-        tier=user.tier,
-        bvn_verified=user.bvn_verified,
-        nin_verified=user.nin_verified,
-        message=f"{kind.upper()} verified. Complete the remaining identity steps to sync your bank tier.",
-    ), 200
+    # "NIN must not be empty" / "live image of face is required". Do not silently mark
+    # BVN/NIN verified here: for an existing NUBAN this path has no Wema OTP or face
+    # consent, so the mobile app must keep the step pending until the proper Wema
+    # flow can verify it.
+    return {
+        "success": False,
+        "message": (
+            f"{kind.upper()} needs Wema verification. For an existing Wema account, "
+            "Wema requires BVN, NIN, and a live face check together before we can "
+            "mark this step verified."
+        ),
+    }, 409
 
 
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
