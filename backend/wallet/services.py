@@ -509,8 +509,29 @@ def settle_reserved_funding(transaction_reference: str, amount, user) -> Transac
     if not transaction_reference or amount is None:
         log.warning("reserved_funding_incomplete txref=%r amount=%r", transaction_reference, amount)
         return None
-    if Transaction.objects.filter(reference=transaction_reference).exists():
-        log.info("reserved_funding_duplicate txref=%s (already applied)", transaction_reference)
+    existing = (
+        Transaction.objects
+        .filter(reference=transaction_reference)
+        .select_related("user")
+        .only("id", "user_id", "amount", "direction", "transaction_status", "service", "meta")
+        .first()
+    )
+    if existing is not None:
+        meta = existing.meta or {}
+        log.warning(
+            "reserved_funding_duplicate txref=%s target_user=%s existing_user=%s "
+            "existing_amount=%s incoming_amount=%s existing_direction=%s "
+            "existing_status=%s existing_service=%s existing_channel=%s",
+            transaction_reference,
+            getattr(user, "id", None),
+            existing.user_id,
+            existing.amount,
+            amount,
+            existing.direction,
+            existing.transaction_status,
+            existing.service,
+            meta.get("channel") or meta.get("provider") or "",
+        )
         return None
     try:
         return credit(
