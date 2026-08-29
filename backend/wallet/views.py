@@ -131,12 +131,26 @@ def wallet_account_create(request):
     """
     user = request.user_obj
     wallet = get_or_create_wallet(user)
-    if wallet.account_number:  # already provisioned — return it (idempotent)
+    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
+    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+
+    if wallet.account_number:
+        if len(bvn) == 11:
+            payload, status = _verify_existing_wema_identity(
+                user, wallet, WemaProvisioningAttempt.BVN, bvn)
+            if payload.get("success"):
+                return ok(**payload)
+            return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
+        if len(nin) == 11:
+            payload, status = _verify_existing_wema_identity(
+                user, wallet, WemaProvisioningAttempt.NIN, nin)
+            if payload.get("success"):
+                return ok(**payload)
+            return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
+        # already provisioned — return it (idempotent)
         return ok(**_account_payload(
             wallet, tier=user.tier, bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
-    bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
-    nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     if len(bvn) != 11 and len(nin) != 11:
         return fail("Enter your 11-digit BVN or NIN")
     using_bvn = len(bvn) == 11
