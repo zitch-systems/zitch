@@ -220,6 +220,55 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(b["tracking_id"])
         self.assertTrue(b["using_bvn"])
 
+    def test_existing_account_reuses_pending_identity_otp(self):
+        tracking = self._post("/api/wallet/wema/create/",
+                              {"bvn": "22222222222"}).json()["tracking_id"]
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.account_number = "0123456789"
+        wallet.account_name = "ADA EZE"
+        wallet.bank_name = "Wema Bank"
+        wallet.save(update_fields=["account_number", "account_name", "bank_name"])
+
+        r = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["otp_required"])
+        self.assertEqual(body["tracking_id"], tracking)
+
+    def test_existing_account_can_recover_bvn_from_bank_kyc_status(self):
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.account_number = "0123456789"
+        wallet.account_name = "ADA EZE"
+        wallet.bank_name = "Wema Bank"
+        wallet.bank_tier = 1
+        wallet.save(update_fields=["account_number", "account_name", "bank_name", "bank_tier"])
+        with patch("utility.wema.get_kyc_status",
+                   return_value={"success": True, "name": "EZE ADA CHIDINMA", "tier": 1}), \
+             patch("utility.wema.wema_live", return_value=True), \
+             patch("wallet.views.sync_bank_tier"):
+            r = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.bvn_hash, hash_identifier("22222222222"))
+        self.assertEqual(self.user.tier, 1)
+
+    def test_existing_account_recovery_rejects_bank_name_mismatch(self):
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.account_number = "0123456789"
+        wallet.account_name = "ADA EZE"
+        wallet.bank_name = "Wema Bank"
+        wallet.save(update_fields=["account_number", "account_name", "bank_name"])
+        with patch("utility.wema.get_kyc_status",
+                   return_value={"success": True, "name": "JOHN DOE", "tier": 1}), \
+             patch("utility.wema.wema_live", return_value=True):
+            r = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+
+        self.assertEqual(r.status_code, 409)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+
 
 @override_settings(PAYMENT_PROVIDER="wema")
 class WemaAlatFundingTests(TestCase):
