@@ -916,7 +916,8 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
         data = resp.json()
         r = data.get("result", {}) or {}
         name = r.get("accountName", "")
-        out = {"success": _ok(data) and bool(name), "name": name,
+        explicit_error = data.get("hasError") is True or data.get("status") is False
+        out = {"success": bool(name) and not explicit_error, "name": name,
                "bank_code": r.get("bankCode", bank_code), "raw": data}
         if not out["success"]:
             # Carry the gateway's own reason (brand-stripped by _msg) rather than
