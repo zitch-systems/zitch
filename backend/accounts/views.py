@@ -32,7 +32,7 @@ from utility.providers import (
     sms_live,
     verify_bvn, verify_nin,
 )
-from wallet.models import Wallet, WemaFaceSession
+from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import get_or_create_wallet, wema_account_reference
 
 from .models import (
@@ -935,7 +935,41 @@ def email_verify_confirm(request):
     return ok(message="Email verified", **_kyc_state(user))
 
 
+def _wema_otp_verified(user, identity_type: str) -> bool:
+    return WemaProvisioningAttempt.objects.filter(
+        user=user,
+        identity_type=identity_type,
+        status=WemaProvisioningAttempt.VERIFIED,
+    ).exists()
+
+
+def _repair_unbacked_wema_identity_flags(user) -> None:
+    """Clear identity flags created without the bank OTP proof required on Wema live.
+
+    A short-lived regression let existing-Wema-account customers be marked BVN/NIN
+    verified locally even though Wema never issued or validated an OTP for that
+    identity. The mobile app reads these booleans to decide whether to show the OTP
+    fields, so leaving them set traps the customer on a false "verified" screen.
+    """
+    if not wema.wema_live():
+        return
+
+    fields: list[str] = []
+    if user.bvn_verified and not _wema_otp_verified(user, WemaProvisioningAttempt.BVN):
+        user.bvn_verified = False
+        fields.append("bvn_verified")
+    if user.nin_verified and not _wema_otp_verified(user, WemaProvisioningAttempt.NIN):
+        user.nin_verified = False
+        fields.append("nin_verified")
+    if not fields:
+        return
+    user.recompute_tier()
+    user.save(update_fields=fields + ["tier"])
+    log.warning("repaired_unbacked_wema_identity_flags user=%s fields=%s", user.id, fields)
+
+
 def _kyc_state(user) -> dict:
+    _repair_unbacked_wema_identity_flags(user)
     wallet = Wallet.objects.filter(user=user).only("bank_tier").first()
     bank_tier = wallet.bank_tier if wallet else 0
     bank_limits = {
