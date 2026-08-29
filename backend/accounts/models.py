@@ -112,8 +112,8 @@ class User(AbstractUser):
 
     # KYC tiers (CBN-style; adjust to your licence). Tier requirements ascend:
     #   Tier 0 — Unverified: email + phone only (sign-up).
-    #   Tier 1 — Verified:   + BVN AND NIN verified.
-    #   Tier 2 — Enhanced:   + facial (liveness) AND residential-address verified.
+    #   Tier 1 — Verified:   + BVN OR NIN verified.
+    #   Tier 2 — Enhanced:   + BVN AND NIN plus facial/liveness and address.
     #   Tier 3 — Premium:    + a government-issued ID document verified.
     # See recompute_tier(). The per-tier caps below live on the user, so they apply
     # identically in the app and on WhatsApp.
@@ -313,30 +313,32 @@ class User(AbstractUser):
 
     def recompute_tier(self) -> None:
         """Derive the KYC tier from the verifications completed (ascending):
-        Tier 1 needs a verified EMAIL and PHONE plus BVN AND NIN; Tier 2 adds
-        face AND address; Tier 3 adds a verified government ID document. Anything
-        less is Tier 0 (unverified).
+        Tier 1 needs a verified EMAIL and PHONE plus BVN OR NIN; Tier 2 adds
+        the second identity plus face AND address; Tier 3 adds a verified
+        government ID document. Anything less is Tier 0 (unverified).
 
         Both contact requirements apply to every account, however it signed up.
         The app earns `phone_verified` at signup (that IS the signup OTP); a
         WhatsApp signup earns it in the chat KYC flow, because a messenger
         session outlives a SIM swap and so is not by itself proof of the
         number."""
+        has_identity = self.bvn_verified or self.nin_verified
+        has_both_identities = self.bvn_verified and self.nin_verified
+
         # Both contact channels must be proven before any tier above the floor.
         if not (self.email_verified and self.phone_verified):
             self.tier = 0
-        elif (self.bvn_verified and self.nin_verified and self.face_verified
+        elif (has_both_identities and self.face_verified
                 and self.address_verified and self.id_document_verified):
             self.tier = 3
-        elif (self.bvn_verified and self.nin_verified and self.face_verified
-                and self.address_verified):
+        elif has_both_identities and self.face_verified and self.address_verified:
             self.tier = 2
-        elif self.bvn_verified and self.nin_verified:
+        elif has_identity:
             self.tier = 1
         else:
             self.tier = 0
 
-    def set_address(self, raw: str) -> None:
+    def set_address(    def set_address(self, raw: str) -> None:
         self.address = (raw or "").strip()[:255]
 
     class Meta(AbstractUser.Meta):
