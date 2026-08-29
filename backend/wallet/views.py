@@ -318,6 +318,17 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             try:
                 with db_transaction.atomic():
                     user.save(update_fields=fields + ["tier"])
+                    WemaProvisioningAttempt.objects.update_or_create(
+                        user=user,
+                        tracking_id=f"KYC-STATUS-{wallet.account_number}-{kind}-{raw_identity[-4:]}",
+                        defaults={
+                            "identity_type": identity_type,
+                            "identity_hash": identity_hash,
+                            "identity_last4": raw_identity[-4:],
+                            "status": WemaProvisioningAttempt.VERIFIED,
+                            "expires_at": timezone.now() + timedelta(days=3650),
+                        },
+                    )
             except IntegrityError:
                 return {
                     "success": False,
