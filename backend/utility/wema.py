@@ -205,10 +205,17 @@ def _headers(product: str) -> dict:
     }
 
 
-def _url(product: str, path: str) -> str:
+def _base_url(product: str) -> str:
     product_bases = settings.WEMA.get("BASE_URLS") or {}
-    base = (product_bases.get(product) or settings.WEMA["BASE_URL"]).rstrip("/")
-    return f"{base}{_PATH[product]}{path}"
+    return (product_bases.get(product) or settings.WEMA["BASE_URL"]).rstrip("/")
+
+
+def _url(product: str, path: str) -> str:
+    return f"{_base_url(product)}{_PATH[product]}{path}"
+
+
+def _url_for_base(product: str, base: str, path: str) -> str:
+    return f"{base.rstrip('/')}{_PATH[product]}{path}"
 
 
 def _ok(data: dict) -> bool:
@@ -652,11 +659,43 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
     policy. Fails soft in production when unkeyed."""
     if not _product_live("upgrade"):
         return {"success": not _mock_blocked(), "mock": True}
+    body = {"accountNumber": account_number, "nin": nin, "bvn": bvn,
+            "liveImageOfFace": live_image}
+    path = "/api/partnership/partner-account-upgrade-tier2"
     try:
-        data = _post("upgrade", "/api/partnership/partner-account-upgrade-tier2",
-                     {"accountNumber": account_number, "nin": nin, "bvn": bvn,
-                      "liveImageOfFace": live_image}).json()
-        return {"success": _ok(data), "message": _msg(data), "raw": data}
+        resp = _post("upgrade", path, body)
+        data = resp.json()
+        msg = _msg(data)
+        ok = _ok(data)
+        if not ok:
+            log.warning("wema_upgrade_tier2_failed status=%s base=%s msg=%s",
+                        resp.status_code, _base_url("upgrade"), msg)
+        if ok or resp.status_code != 404 or "resource not found" not in msg.lower():
+            return {"success": ok, "message": msg, "raw": data}
+
+        # Wema has issued both p.alat.ng and prism.alat.ng as production hosts. Some
+        # products are profiled on one host while another product succeeds on the
+        # other. A 404 Resource-not-found from APIM means the request never reached an
+        # account mutation, so retrying the alternate host once is safe and prevents a
+        # host/profile mismatch from blocking already-created customers.
+        current = _base_url("upgrade").lower()
+        alternates = [
+            "https://prism.alat.ng",
+            "https://p.alat.ng",
+        ]
+        for base in alternates:
+            if base.lower().rstrip("/") == current.rstrip("/"):
+                continue
+            retry = _raise_if_ambiguous(
+                requests.post(_url_for_base("upgrade", base, path), json=body,
+                              headers=_headers("upgrade"), timeout=REQUEST_TIMEOUT))
+            retry_data = retry.json()
+            retry_msg = _msg(retry_data)
+            retry_ok = _ok(retry_data)
+            log.warning("wema_upgrade_tier2_retry status=%s base=%s success=%s msg=%s",
+                        retry.status_code, base, retry_ok, retry_msg)
+            return {"success": retry_ok, "message": retry_msg, "raw": retry_data}
+        return {"success": False, "message": msg, "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
