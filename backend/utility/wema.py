@@ -686,15 +686,21 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
         for base in alternates:
             if base.lower().rstrip("/") == current.rstrip("/"):
                 continue
-            retry = _raise_if_ambiguous(
-                requests.post(_url_for_base("upgrade", base, path), json=body,
-                              headers=_headers("upgrade"), timeout=REQUEST_TIMEOUT))
+            try:
+                retry = _raise_if_ambiguous(
+                    requests.post(_url_for_base("upgrade", base, path), json=body,
+                                  headers=_headers("upgrade"), timeout=REQUEST_TIMEOUT))
+            except requests.RequestException as exc:
+                log.warning("wema_upgrade_tier2_retry_unreachable base=%s error_type=%s",
+                            base, type(exc).__name__)
+                continue
             retry_data = retry.json()
             retry_msg = _msg(retry_data)
             retry_ok = _ok(retry_data)
             log.warning("wema_upgrade_tier2_retry status=%s base=%s success=%s msg=%s",
                         retry.status_code, base, retry_ok, retry_msg)
-            return {"success": retry_ok, "message": retry_msg, "raw": retry_data}
+            if retry_ok or retry.status_code != 404:
+                return {"success": retry_ok, "message": retry_msg, "raw": retry_data}
         return {"success": False, "message": msg, "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
