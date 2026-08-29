@@ -340,20 +340,31 @@ def _post(product: str, path: str, body: dict, params: dict | None = None) -> re
                       headers=_headers(product), timeout=REQUEST_TIMEOUT))
 
 
+def _response_meta(resp: requests.Response, data) -> dict:
+    """Small, secret-free diagnostics for gateway envelopes."""
+    return {
+        "http_status": resp.status_code,
+        "gateway_successful": data.get("successful") if isinstance(data, dict) else None,
+        "gateway_status_code": data.get("statusCode") if isinstance(data, dict) else None,
+        "gateway_code": data.get("code") if isinstance(data, dict) else None,
+        "message": _msg(data),
+    }
+
+
 def _unreachable(exc: Exception, *, pending: bool = False) -> dict:
     """Return a safe provider-unavailable result.
 
-    ``pending`` is required for non-idempotent money POSTs and their status
+    pending is required for non-idempotent money POSTs and their status
     requeries: a timeout does not prove that the bank rejected the instruction.
     Callers must hold the debit until a later authenticated requery establishes a
-    terminal outcome.  Do not echo the exception to clients; request exceptions can
+    terminal outcome. Do not echo the exception to clients; request exceptions can
     contain provider URLs and customer identifiers.
     """
     log.warning("wema_gateway_unreachable operation_pending=%s error_type=%s",
                 pending, type(exc).__name__)
     return {"success": False, "pending": pending,
-            "message": "Bank gateway is temporarily unavailable"}
-
+            "message": "Bank gateway is temporarily unavailable",
+            "diagnostic": {"error_type": type(exc).__name__}}
 
 def security_info_value() -> str:
     """Return the private seed used to derive per-transaction securityInfo.
@@ -730,15 +741,21 @@ def get_balance(account_number: str) -> dict:
             return {"success": False, "message": "Account services are not configured"}
         return {"success": True, "mock": True, "balance_naira": Decimal("0.00")}
     try:
-        data = _get("acct_mgt",
-                    f"/api/AccountMaintenance/CustomerAccount/GetAccountV2/accountNumber/{account_number}").json()
+        resp = _get("acct_mgt",
+                    f"/api/AccountMaintenance/CustomerAccount/GetAccountV2/accountNumber/{account_number}")
+        data = resp.json()
+        if not isinstance(data, dict):
+            return {"success": False, "balance_naira": None,
+                    "message": "Request failed", "diagnostic": _response_meta(resp, data),
+                    "raw": data}
         r = data.get("result", {}) or {}
         # GetAccountV2 uses the account-maintenance envelope {result, successful,
         # message} — no status/hasError — so _ok() alone would report every valid
         # read as a failure (same envelope handled in get_transactions).
         ok = bool(data.get("successful")) or _ok(data)
         return {"success": ok, "balance_naira": _naira(r.get("availableBalance")),
-                "wallet_status": r.get("walletStatus", ""), "raw": data}
+                "wallet_status": r.get("walletStatus", ""), "message": _msg(data),
+                "diagnostic": _response_meta(resp, data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
@@ -750,12 +767,17 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
             return {"success": False, "message": "Account services are not configured"}
         return {"success": True, "mock": True, "transactions": []}
     try:
-        data = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
+        resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                      {"accountNumber": account_number, "from": date_from, "to": date_to,
-                      "keyWord": keyword}).json()
+                      "keyWord": keyword})
+        data = resp.json()
+        if not isinstance(data, dict):
+            return {"success": False, "transactions": [], "message": "Request failed",
+                    "diagnostic": _response_meta(resp, data), "raw": data}
         # This envelope uses {successful, result[], message} rather than status/hasError.
         ok = bool(data.get("successful")) or _ok(data)
-        return {"success": ok, "transactions": data.get("result", []) or [], "raw": data}
+        return {"success": ok, "transactions": data.get("result", []) or [],
+                "message": _msg(data), "diagnostic": _response_meta(resp, data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
