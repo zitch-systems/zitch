@@ -80,6 +80,16 @@ class Command(BaseCommand):
             res = wema.get_transactions(wallet.account_number, date_from, date_to)
             if not res.get("success"):
                 fetch_failures += 1
+                diag = res.get("diagnostic") or {}
+                self.stderr.write(
+                    "wema_history_fetch_failed "
+                    f"account={wallet.account_number} "
+                    f"http_status={diag.get('http_status')} "
+                    f"gateway_status_code={diag.get('gateway_status_code')} "
+                    f"gateway_code={diag.get('gateway_code')} "
+                    f"gateway_successful={diag.get('gateway_successful')} "
+                    f"message={res.get('message')}"
+                )
                 continue
             # The user's own payout references, fetched once per wallet: a credit
             # row matching one is a payout REVERSAL (routed through
