@@ -736,7 +736,7 @@ def upgrade_tier3(account_number: str, address) -> dict:
 # Account maintenance — balance + history (credit detection is by polling)
 # ---------------------------------------------------------------------------
 def get_balance(account_number: str) -> dict:
-    if not wema_live():
+    if not _product_live("acct_mgt"):
         if _mock_blocked():
             return {"success": False, "message": "Account services are not configured"}
         return {"success": True, "mock": True, "balance_naira": Decimal("0.00")}
@@ -762,7 +762,7 @@ def get_balance(account_number: str) -> dict:
 
 def get_transactions(account_number: str, date_from: str, date_to: str, keyword: str = "") -> dict:
     """Transaction history — the source for detecting inbound credits (creditType=='Credit')."""
-    if not wema_live():
+    if not _product_live("acct_mgt"):
         if _mock_blocked():
             return {"success": False, "message": "Account services are not configured"}
         return {"success": True, "mock": True, "transactions": []}
