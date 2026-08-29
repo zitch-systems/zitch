@@ -778,7 +778,8 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
     """Transaction history — the source for detecting inbound credits (creditType=='Credit')."""
     if not _product_live("acct_mgt"):
         if _mock_blocked():
-            return {"success": False, "message": "Account services are not configured"}
+            return {"success": False, "message": "Account services are not configured",
+                    "diagnostic": _product_config_diag("acct_mgt")}
         return {"success": True, "mock": True, "transactions": []}
     try:
         resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
