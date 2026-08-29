@@ -268,23 +268,89 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             "message": f"This {kind.upper()} is already linked to another Zitch account",
         }, 409
 
-    # Account Upgrade Tier 2 is not a single-identity lookup endpoint. Wema validates
-    # it as a complete Tier-2 upgrade bundle and rejects BVN-only/NIN-only calls with
-    # "NIN must not be empty" / "live image of face is required". Do not silently mark
-    # BVN/NIN verified here: for an existing NUBAN this path has no Wema OTP or face
-    # consent, so the mobile app must keep the step pending until the proper Wema
-    # flow can verify it.
+    identity_hash = hash_identifier(raw_identity)
+    pending = WemaProvisioningAttempt.objects.filter(
+        user=user,
+        identity_type=identity_type,
+        identity_hash=identity_hash,
+        status=WemaProvisioningAttempt.PENDING,
+        expires_at__gt=timezone.now(),
+    ).order_by("-created").first()
+    if pending is not None:
+        return _account_payload(
+            wallet,
+            otp_required=True,
+            tracking_id=pending.tracking_id,
+            otp_destination=user.phone or "",
+            using_bvn=identity_type == WemaProvisioningAttempt.BVN,
+            tier=user.tier,
+            bvn_verified=user.bvn_verified,
+            nin_verified=user.nin_verified,
+            message="Enter the OTP sent to your phone",
+        ), 200
+
+    # If Wema has already issued/attached the NUBAN before the customer completed
+    # the OTP screen, creation cannot be replayed: Wema rejects reused BVN/NIN data.
+    # The safe recovery is to read the bank's own KYC/tier status for that NUBAN,
+    # name-match it to the Zitch profile, then bind only the identifier the customer
+    # just re-entered. This keeps spending blocked for mismatched accounts while
+    # avoiding a permanent dead end for callback/adoption interleavings.
+    status = wema_provider.get_kyc_status(wallet.account_number)
+    if status.get("success"):
+        holder_name = str(status.get("name") or wallet.account_name or "")
+        name_ok = True
+        if wema_provider.wema_live():
+            name_ok = not wema_provider.holder_name_mismatch(
+                user.get_full_name() or "", holder_name)
+        if name_ok:
+            fields = []
+            if identity_type == WemaProvisioningAttempt.BVN:
+                user.bvn_hash = identity_hash
+                user.bvn_last4 = raw_identity[-4:]
+                user.bvn_verified = True
+                fields = ["bvn_hash", "bvn_last4", "bvn_verified"]
+            else:
+                user.nin_hash = identity_hash
+                user.nin_last4 = raw_identity[-4:]
+                user.nin_verified = True
+                fields = ["nin_hash", "nin_last4", "nin_verified"]
+            user.recompute_tier()
+            try:
+                with db_transaction.atomic():
+                    user.save(update_fields=fields + ["tier"])
+            except IntegrityError:
+                return {
+                    "success": False,
+                    "message": "This identity is already linked to another account. Contact support.",
+                }, 409
+            try:
+                sync_bank_tier(wallet)
+                wallet.refresh_from_db(fields=["bank_tier", "updated"])
+            except Exception:  # noqa: BLE001
+                log.warning("wema_bank_tier_sync_failed user=%s", user.id, exc_info=True)
+            return _account_payload(
+                wallet,
+                already=True,
+                upgraded=True,
+                tier=user.tier,
+                bvn_verified=user.bvn_verified,
+                nin_verified=user.nin_verified,
+                message=f"{kind.upper()} verified with your existing Wema account",
+            ), 200
+        log.warning("wema_existing_identity_name_mismatch user=%s account=%s wema_name=%r",
+                    user.id, wallet.account_number, holder_name)
+
     return {
         "success": False,
         "message": (
-            f"{kind.upper()} needs Wema verification. For an existing Wema account, "
-            "Wema requires BVN, NIN, and a live face check together before we can "
-            "mark this step verified."
+            "We can see your Wema account, but could not confirm this identity "
+            "against it yet. Please try again, or contact support if the account "
+            "was already created before OTP verification."
         ),
     }, 409
 
 
-def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
+def _start_wema_attempt(def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
     """Start and bind an OTP request, returning (provider_result, error)."""
     identity_type, raw_identity = _identity_for_attempt(bvn, nin)
     if _identity_owned_by_another_user(user, identity_type, raw_identity):
