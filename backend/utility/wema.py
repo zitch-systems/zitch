@@ -179,6 +179,18 @@ def _product_live(product: str) -> bool:
     return bool(settings.WEMA.get("CHANNEL_ID") and _sub_key(product))
 
 
+def _product_config_diag(product: str) -> dict:
+    """Secret-free config flags for diagnosing product gate failures."""
+    return {
+        "simulation": bool(wema_simulation()),
+        "has_channel": bool(settings.WEMA.get("CHANNEL_ID")),
+        "has_product_key": bool((settings.WEMA.get("KEYS") or {}).get(product)),
+        "has_fallback_wallet_key": bool((settings.WEMA.get("KEYS") or {}).get("wallet")),
+        "product_allows_wallet_fallback": product in _WALLET_COVERED,
+        "has_effective_key": bool(_sub_key(product)),
+    }
+
+
 def _bnpl_headers() -> dict:
     """BNPL uses merchant credentials (x-merchant-id + x-merchant-authorization-key)
     alongside its APIM subscription key — NOT the channel id the other products use."""
@@ -630,7 +642,8 @@ def get_kyc_status(account_number: str) -> dict:
     address_verification, name}."""
     if not _product_live("upgrade"):
         if _mock_blocked():
-            return {"success": False, "message": "Account services are not configured"}
+            return {"success": False, "message": "Account services are not configured",
+                    "diagnostic": _product_config_diag("acct_mgt")}
         return {"success": True, "mock": True, "tier": "", "restriction_status": ""}
     try:
         data = _get("upgrade", "/api/partnership/partner-account-kyc-status",
@@ -738,7 +751,8 @@ def upgrade_tier3(account_number: str, address) -> dict:
 def get_balance(account_number: str) -> dict:
     if not _product_live("acct_mgt"):
         if _mock_blocked():
-            return {"success": False, "message": "Account services are not configured"}
+            return {"success": False, "message": "Account services are not configured",
+                    "diagnostic": _product_config_diag("acct_mgt")}
         return {"success": True, "mock": True, "balance_naira": Decimal("0.00")}
     try:
         resp = _get("acct_mgt",
