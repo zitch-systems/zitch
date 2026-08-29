@@ -142,6 +142,7 @@ class Command(BaseCommand):
             alert(f"reconcile_wema: all {scanned} wallet history fetches failed â€” Wema "
                   f"unreachable or auth rejected; no deposits can be detected",
                   level="error", wallets=scanned)
+            raise SystemExit(1)
         # A payout stuck PENDING is invisible to every other control. It is a
         # pending DEBIT, so integrity_check counts it as owed, reconcile_balances
         # sees only the benign bank-over-ledger direction, and settlement_report
