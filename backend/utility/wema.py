@@ -912,7 +912,8 @@ def resolve_account(account_number: str, bank_code: str) -> dict:
             return {"success": False, "message": "Name enquiry is not configured"}
         return {"success": True, "mock": True, "name": "ADEYEMI WILLIAM"}
     try:
-        data = _get("debit", f"/api/Shared/AccountNameEnquiry/{bank_code}/{account_number}").json()
+        resp = _get("debit", f"/api/Shared/AccountNameEnquiry/{bank_code}/{account_number}")
+        data = resp.json()
         r = data.get("result", {}) or {}
         name = r.get("accountName", "")
         out = {"success": _ok(data) and bool(name), "name": name,
@@ -1966,4 +1967,3 @@ def wema_diagnostics() -> dict:
     out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
                    "integration guide before go-live.")
     return out
-
