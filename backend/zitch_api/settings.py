@@ -814,7 +814,15 @@ WHATSAPP_QUEUE_KEY_PREV = os.environ.get("WHATSAPP_QUEUE_KEY_PREV", "").strip()
 if not WHATSAPP_QUEUE_KEY and not _PROD:
     WHATSAPP_QUEUE_KEY = SECRET_KEY
 
-if _wa_mode == "live":
+_WHATSAPP_EGRESS_ONLY_COMMANDS = {
+    "reconcile_wema",
+    "run_maturities",
+    "reconcile_vtu",
+}
+_wa_command = sys.argv[1] if len(sys.argv) > 1 else ""
+_wa_requires_full_live_config = _wa_command not in _WHATSAPP_EGRESS_ONLY_COMMANDS
+
+if _wa_mode == "live" and _wa_requires_full_live_config:
     from django.core.exceptions import ImproperlyConfigured
 
     required = {
