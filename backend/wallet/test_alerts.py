@@ -191,6 +191,35 @@ class WhatsAppChannelAlertTests(TestCase):
         wa_reply.assert_called_once()
         self.assertIn("Debit alert", wa_reply.call_args[0][1])
 
+    def test_a_failed_whatsapp_alert_retries_without_dup_email(self):
+        """A Meta outage must not permanently silence app-originated WhatsApp
+        alerts. The email/push/SMS alert has its own dedupe, but WhatsApp remains
+        owed until a send is accepted."""
+        credit(self.user, Decimal("10000"), "funding")
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply",
+                   return_value={"success": False, "error_code": 131000}) as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn = debit(self.user, Decimal("1000"), "Transfer to Ada",
+                            meta={"channel": "app"})
+                txn.transaction_status = Transaction.SUCCESS
+                txn.save(update_fields=["transaction_status"])
+        email.assert_called_once()
+        wa_reply.assert_called_once()
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("alerted"))
+        self.assertFalse(txn.meta.get("whatsapp_alerted"))
+
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply",
+                   return_value={"success": True, "message_id": "wamid.1"}) as wa_reply:
+            with self.captureOnCommitCallbacks(execute=True):
+                txn.save(update_fields=["meta"])
+        email.assert_not_called()
+        wa_reply.assert_called_once()
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
+
     def test_an_app_transfer_alert_identifies_the_destination(self):
         """The chat must say more than amount/ref for a debit made in the app."""
         from .alerts import _describe
