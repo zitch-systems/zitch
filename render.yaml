@@ -814,6 +814,22 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_CHANNEL}
       - key: TERMII_BASE_URL
         fromService: {type: web, name: zitch-api, envVarKey: TERMII_BASE_URL}
+      - key: TXN_ALERTS_WHATSAPP
+        fromService: {type: web, name: zitch-api, envVarKey: TXN_ALERTS_WHATSAPP}
+      - key: WHATSAPP_MODE
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_MODE}
+      - key: WHATSAPP_BASE_URL
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BASE_URL}
+      - key: WHATSAPP_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+      - key: WHATSAPP_BUSINESS_NUMBER
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+      - key: WHATSAPP_TXN_ALERT_TEMPLATE
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
+      - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE_LANG}
 
   # Wema reconciliation — Wema exposes NO webhooks, so this poller does two jobs:
   # (1) FUNDING: sweep each Wema NUBAN's transaction history and credit inbound
