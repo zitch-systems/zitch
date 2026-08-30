@@ -301,6 +301,41 @@ class WemaAuthenticateCallbackTests(TestCase):
         self.assertFalse(self._post({"transactionReference": txn.reference,
                                      "securityInfo": "anything"}).json()["authorized"])
 
+    def test_authorizes_a_nested_data_envelope(self):
+        # ALAT nests the reference under `data` on some payloads (the transaction
+        # callback already had to tolerate this). Reading only the top level here
+        # would deny a valid payout as no_reference — which the bank shows the
+        # customer as "Authentication Failed".
+        txn = self._pending_payout(ref="ZTRF-nested-data")
+        r = self._post({"data": {"transactionReference": txn.reference,
+                                 "securityInfo": "opaque"}})
+        self.assertTrue(r.json()["authorized"])
+
+    def test_authorizes_a_nested_request_envelope(self):
+        txn = self._pending_payout(ref="ZTRF-nested-request")
+        r = self._post({"request": {"transactionReference": txn.reference}})
+        self.assertTrue(r.json()["authorized"])
+
+    def test_authorizes_a_json_string_data_envelope(self):
+        # `data` has arrived as a JSON STRING in production, not an object.
+        txn = self._pending_payout(ref="ZTRF-string-data")
+        r = self._post({"data": json.dumps({"transactionReference": txn.reference})})
+        self.assertTrue(r.json()["authorized"])
+
+    @override_settings(WEMA={**WEMA_CB, "AUTH_REQUIRE_SECURITY_INFO": True,
+                             "SECURITY_INFO": "expected-value"})
+    def test_security_info_read_from_a_nested_envelope(self):
+        # When securityInfo is enforced AND the payload is nested, the value has to
+        # be read from the same nested object, or every payout fails the HMAC check.
+        txn = self._pending_payout(ref="ZTRF-nested-si")
+        expected = wema.security_info_for_reference(txn.reference)
+        self.assertFalse(self._post(
+            {"data": {"transactionReference": txn.reference, "securityInfo": "wrong"}}
+        ).json()["authorized"])
+        self.assertTrue(self._post(
+            {"data": {"transactionReference": txn.reference, "securityInfo": expected}}
+        ).json()["authorized"])
+
 
 @override_settings(WEMA=WEMA_CB)
 class WemaTransactionCallbackTests(TestCase):
