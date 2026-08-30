@@ -3254,6 +3254,8 @@ def _kyc_send_identity_otp(pa: PendingAction, user, kind: str, phone: str):
 
 def kyc_flow_identity_otp(pa: PendingAction, code: str):
     """Check the identity challenge code. ("retry", msg) | ("stop", msg) | ("ok", msg)."""
+    from accounts.models import IdentityProof, record_identity_proof
+
     user = pa.user
     kind = pa.payload.get("id_otp_kind", "bvn")
     expires = pa.payload.get("id_otp_exp")
@@ -3279,7 +3281,14 @@ def kyc_flow_identity_otp(pa: PendingAction, code: str):
         return "retry", f"That code isn't right. {3 - attempts} attempt(s) left."
     setattr(user, f"{kind}_verified", True)
     user.recompute_tier()
+    hash_field = "bvn_hash" if kind == "bvn" else "nin_hash"
     user.save(update_fields=[f"{kind}_verified", "tier"])
+    record_identity_proof(
+        user, kind, getattr(user, hash_field, ""),
+        source=IdentityProof.IDENTITY_PROVIDER_OTP,
+        provider_reference=f"wa:{pa.id}:{kind}",
+        prehashed=True,
+    )
     for key in ("id_otp_hash", "id_otp_exp", "id_otp_attempts", "id_otp_to", "id_otp_kind"):
         pa.payload.pop(key, None)
     _touch(pa, payload=pa.payload)
@@ -3348,21 +3357,14 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     using_bvn = kind == "bvn"
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
-        payload, status = wallet_views._verify_existing_wema_identity(user, wallet, kind, digits)
-        if payload.get("success"):
-            _clear_actions(msisdn)
-            reply(msisdn, f"✅ Your {kind.upper()} has been verified on your existing Wema account.")
-            return _kyc_continue_after_account(user, msisdn, attempted={kind})
         _clear_actions(msisdn)
-        reply(
-            msisdn,
-            "⚠️ "
-            + (
-                payload.get("message")
-                or "We couldn't verify that identity against your existing Wema account. Please contact support."
-            ),
-        )
-        return "fail"
+        _send_account_details(msisdn, wallet,
+                              intro="✅ *Your Zitch account number is already set up*")
+        reply(msisdn,
+              "To upgrade this existing Wema account, the bank requires BVN, NIN "
+              "and a live face check together. Please open *Verify identity* in "
+              "the Zitch app to complete the bank Tier 2 upgrade.")
+        return "adopted"
 
     res, identity_error = wallet_views._start_wema_attempt(
         user, digits if using_bvn else "", "" if using_bvn else digits)
@@ -3377,24 +3379,14 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
             user, using_bvn=using_bvn, reason=res.get("message", ""))
         if recovered is not None:
             wallet = get_or_create_wallet(user)
-            kind = "bvn" if using_bvn else "nin"
-            payload, status = wallet_views._verify_existing_wema_identity(user, wallet, kind, digits)
-            if payload.get("success"):
-                _clear_actions(msisdn)
-                _send_account_details(msisdn, wallet,
-                                      intro="✅ *Found it!* Your Zitch account was already set up")
-                reply(msisdn, f"✅ Your {kind.upper()} has been verified on your existing Wema account.")
-                return _kyc_continue_after_account(user, msisdn, attempted={kind})
             _clear_actions(msisdn)
-            reply(
-                msisdn,
-                "⚠️ "
-                + (
-                    payload.get("message")
-                    or "We reconnected your Wema account but could not verify that identity yet. Please contact support."
-                ),
-            )
-            return "fail"
+            _send_account_details(msisdn, wallet,
+                                  intro="✅ *Found it!* Your Zitch account was already set up")
+            reply(msisdn,
+                  "We reconnected the account. To verify another identity on an "
+                  "existing Wema account, complete BVN, NIN and live face together "
+                  "from *Verify identity* in the Zitch app.")
+            return "adopted"
         _clear_actions(msisdn)
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
             _record_identity_review(pa.payload.get("id_type", "id"), "Wema Wallet Service returned customer already exists")

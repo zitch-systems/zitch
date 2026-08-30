@@ -366,6 +366,66 @@ class User(AbstractUser):
         return self.phone or self.email or self.username
 
 
+class IdentityProof(models.Model):
+    """Durable proof that a sensitive identity was verified by a trusted rail.
+
+    User.bvn_verified/User.nin_verified are convenient current-state flags; this
+    model records why the flag is allowed to stay true after a refresh or repair.
+    It deliberately stores only the keyed identity hash and last four digits.
+    """
+
+    BVN = "bvn"
+    NIN = "nin"
+    WEMA_WALLET_OTP = "wema_wallet_otp"
+    WEMA_TIER2 = "wema_tier2"
+    IDENTITY_PROVIDER_OTP = "identity_provider_otp"
+
+    IDENTITY_CHOICES = ((BVN, "BVN"), (NIN, "NIN"))
+    SOURCE_CHOICES = (
+        (WEMA_WALLET_OTP, "Wema wallet OTP"),
+        (WEMA_TIER2, "Wema Tier 2 upgrade"),
+        (IDENTITY_PROVIDER_OTP, "Identity provider OTP"),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="identity_proofs")
+    identity_type = models.CharField(max_length=8, choices=IDENTITY_CHOICES)
+    identity_hash = models.CharField(max_length=64)
+    identity_last4 = models.CharField(max_length=4, blank=True, default="")
+    source = models.CharField(max_length=32, choices=SOURCE_CHOICES)
+    provider_reference = models.CharField(max_length=128, blank=True, default="")
+    created = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "identity_type", "identity_hash", "source"],
+                name="uniq_identity_proof_source",
+            ),
+        ]
+
+
+def record_identity_proof(user: User, identity_type: str, raw_or_hash: str, *,
+                          source: str, provider_reference: str = "",
+                          prehashed: bool = False) -> IdentityProof:
+    identity_hash = raw_or_hash if prehashed else hash_identifier(raw_or_hash)
+    last4 = "" if prehashed else (raw_or_hash or "")[-4:]
+    proof, _ = IdentityProof.objects.update_or_create(
+        user=user,
+        identity_type=identity_type,
+        identity_hash=identity_hash,
+        source=source,
+        defaults={"identity_last4": last4, "provider_reference": provider_reference[:128]},
+    )
+    return proof
+
+
+def identity_has_proof(user: User, identity_type: str, identity_hash: str = "") -> bool:
+    qs = IdentityProof.objects.filter(user=user, identity_type=identity_type)
+    if identity_hash:
+        qs = qs.filter(identity_hash=identity_hash)
+    return qs.exists()
+
+
 class AccessToken(models.Model):
     """Opaque bearer token for the app's `access_token`.
 

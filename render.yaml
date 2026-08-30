@@ -168,6 +168,12 @@ services:
         sync: false
       - key: WEMA_UPGRADE_KEY
         sync: false
+      - key: WEMA_UPGRADE_BASE_URL
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
+        sync: false
       - key: WEMA_KYC_KEY
         sync: false
       - key: WEMA_REMITA_KEY
@@ -482,6 +488,12 @@ services:
       - key: WEMA_BILLS_KEY
         sync: false
       - key: WEMA_UPGRADE_KEY
+        sync: false
+      - key: WEMA_UPGRADE_BASE_URL
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
         sync: false
       - key: WEMA_KYC_KEY
         sync: false
@@ -800,6 +812,10 @@ services:
       - key: WEMA_WALLET_KEY
         sync: false
       - key: WEMA_ACCOUNT_CREATION_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_KEY
+        sync: false
+      - key: WEMA_ACCT_MGT_BASE_URL
         sync: false
       - key: WEMA_SOURCE_ACCOUNT
         sync: false

@@ -651,7 +651,7 @@ def get_kyc_status(account_number: str) -> dict:
     if not _product_live("upgrade"):
         if _mock_blocked():
             return {"success": False, "message": "Account services are not configured",
-                    "diagnostic": _product_config_diag("acct_mgt")}
+                    "diagnostic": _product_config_diag("upgrade")}
         return {"success": True, "mock": True, "tier": "", "restriction_status": ""}
     try:
         data = _get("upgrade", "/api/partnership/partner-account-kyc-status",
@@ -702,38 +702,7 @@ def upgrade_tier2(account_number: str, *, bvn: str = "", nin: str = "", live_ima
         if not ok:
             log.warning("wema_upgrade_tier2_failed status=%s base=%s msg=%s",
                         resp.status_code, _base_url("upgrade"), msg)
-        if ok or resp.status_code != 404 or "resource not found" not in msg.lower():
-            return {"success": ok, "message": msg, "raw": data}
-
-        # Wema has issued both p.alat.ng and prism.alat.ng as production hosts. Some
-        # products are profiled on one host while another product succeeds on the
-        # other. A 404 Resource-not-found from APIM means the request never reached an
-        # account mutation, so retrying the alternate host once is safe and prevents a
-        # host/profile mismatch from blocking already-created customers.
-        current = _base_url("upgrade").lower()
-        alternates = [
-            "https://prism.alat.ng",
-            "https://p.alat.ng",
-        ]
-        for base in alternates:
-            if base.lower().rstrip("/") == current.rstrip("/"):
-                continue
-            try:
-                retry = _raise_if_ambiguous(
-                    requests.post(_url_for_base("upgrade", base, path), json=body,
-                                  headers=_headers("upgrade"), timeout=REQUEST_TIMEOUT))
-            except requests.RequestException as exc:
-                log.warning("wema_upgrade_tier2_retry_unreachable base=%s error_type=%s",
-                            base, type(exc).__name__)
-                continue
-            retry_data = retry.json()
-            retry_msg = _msg(retry_data)
-            retry_ok = _ok(retry_data)
-            log.warning("wema_upgrade_tier2_retry status=%s base=%s success=%s msg=%s",
-                        retry.status_code, base, retry_ok, retry_msg)
-            if retry_ok or retry.status_code != 404:
-                return {"success": retry_ok, "message": retry_msg, "raw": retry_data}
-        return {"success": False, "message": msg, "raw": data}
+        return {"success": ok, "message": msg, "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 

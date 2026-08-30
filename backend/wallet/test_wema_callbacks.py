@@ -340,6 +340,23 @@ class WemaTransactionCallbackTests(TestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
 
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_json_string_data_envelope(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        payload = self._payload(txn.reference)
+        payload["data"] = json.dumps(payload["data"])
+        self._post(payload)
+        mock_status.assert_called_once_with(txn.reference)
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_nested_request_envelope(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        payload = {"requestType": 3, "request": {"data": self._payload(txn.reference)["data"]}}
+        self._post(payload)
+        mock_status.assert_called_once_with(txn.reference)
+
     @patch("utility.wema.confirm_transfer_status",
            return_value={"success": True, "pending": False})
     def test_stamps_bank_identifiers_under_a_namespaced_key(self, _s):

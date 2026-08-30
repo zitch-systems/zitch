@@ -1143,6 +1143,8 @@ def _submit_identity(pa, data: dict) -> dict:
                 # the NEXT PAGE of this same session, not a second flow message.
                 pa.refresh_from_db()
                 return _account_otp_screen(pa)
+            if outcome == "adopted":
+                return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
             if outcome == "fail":
                 # A hard failure: the ID was refused, name-matched to a different
                 # person, or the provider was unreachable. _account_submit_identity

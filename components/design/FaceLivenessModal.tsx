@@ -47,6 +47,7 @@ const FaceLivenessModal = ({
   });
   const [faceCount, setFaceCount] = useState(0);
   const [capturing, setCapturing] = useState(false);
+  const [captureError, setCaptureError] = useState('');
   const held = useRef(false);
 
   const hold = () => { if (!held.current) { held.current = true; beginExternalActivity(); } };
@@ -59,6 +60,7 @@ const FaceLivenessModal = ({
     hold();
     setFaceCount(0);
     setCapturing(false);
+    setCaptureError('');
     if (!hasPermission) requestPermission();
   };
 
@@ -81,32 +83,34 @@ const FaceLivenessModal = ({
   const capture = async () => {
     if (!ready) return;
     setCapturing(true);
+    setCaptureError('');
     try {
-      const photo = await photoOutput.capturePhoto({ flashMode: 'off' }, {});
+      const photo = await photoOutput.capturePhotoToFile({ flashMode: 'off' }, {});
+      const uri = photo.filePath.startsWith('file://') ? photo.filePath : `file://${photo.filePath}`;
+      const FS = await import('expo-file-system/legacy');
       try {
-        const path = await photo.saveToTemporaryFileAsync();
-        const FS = await import('expo-file-system/legacy');
-        const b64 = await FS.readAsStringAsync(path, { encoding: 'base64' });
+        const b64 = await FS.readAsStringAsync(uri, { encoding: 'base64' });
         onCapture(b64);
       } finally {
-        photo.dispose();
+        FS.deleteAsync(uri, { idempotent: true }).catch(() => {});
       }
-    } catch {
+    } catch (err) {
       // Left in place with the shutter re-enabled — a failed capture is not
       // a failed verification, and the customer should just be able to
       // try again rather than meet a dead end.
+      setCaptureError(err instanceof Error ? err.message : 'Could not capture the photo. Try again.');
     } finally {
       setCapturing(false);
     }
   };
 
-  const status = !hasPermission
+  const status = captureError || (!hasPermission
     ? 'Camera access is off — allow it in Settings to take your selfie.'
     : faceCount === 0
       ? 'No face detected — center your face in the oval'
       : faceCount > 1
         ? 'Only one face at a time, please'
-        : 'Hold still…';
+        : 'Hold still…');
 
   return (
     <Modal visible={visible} animationType="slide" onShow={open} onRequestClose={close}>
@@ -182,7 +186,7 @@ const FaceLivenessModal = ({
               opacity: ready ? 1 : 0.6,
             }}
           >
-            {capturing ? <ActivityIndicator color="#fff" /> : null}
+            {capturing ? <ActivityIndicator color="#fff" /> : <ZIcon name="camera" size={24} color="#fff" stroke={2.2} />}
           </Pressable>
           <Text style={{ color: 'rgba(255,255,255,.6)', fontFamily: font.regular, fontSize: 11, textAlign: 'center' }}>
             Your photo is used only to verify it&apos;s you.

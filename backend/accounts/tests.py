@@ -490,9 +490,10 @@ class KycTierTests(TestCase):
         return res, res.json()
 
     def test_bvn_plus_nin_promote_to_tier_1(self):
-        # New ladder: BVN + NIN together = Tier 1 (BVN alone stays Tier 0).
+        # Tier 1 requires one verified identity; both identities prepare the
+        # account for the higher ladder once face/address are done.
         r, b0 = self.post("/api/kyc/bvn/", {"access_token": self.token, "bvn": "12345678901"})
-        self.assertEqual(b0["tier"], 0)  # BVN only -> still Tier 0
+        self.assertEqual(b0["tier"], 1)
         res, body = self.post("/api/kyc/nin/", {"access_token": self.token, "nin": "10987654321"})
         self.assertEqual(res.status_code, 200)
         self.assertEqual(body["tier"], 1)
@@ -646,7 +647,7 @@ class KycTierTests(TestCase):
         self.assertNotIn("12345678901", str(pending))
         r2, body = self.post("/api/kyc/bvn/confirm/", {"access_token": self.token, "otp": "654321"})
         self.assertEqual(r2.status_code, 200)
-        self.assertEqual(body["tier"], 0)  # BVN alone (NIN still pending) -> Tier 0
+        self.assertEqual(body["tier"], 1)
         self.assertTrue(User.objects.get(pk=self.user.pk).bvn_verified)
 
     def test_bvn_otp_rejects_wrong_code(self):

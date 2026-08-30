@@ -235,24 +235,19 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(body["otp_required"])
         self.assertEqual(body["tracking_id"], tracking)
 
-    def test_existing_account_can_recover_bvn_from_bank_kyc_status(self):
+    def test_existing_account_requires_combined_bank_upgrade_for_new_identity(self):
         wallet = Wallet.objects.get(user=self.user)
         wallet.account_number = "0123456789"
         wallet.account_name = "ADA EZE"
         wallet.bank_name = "Wema Bank"
         wallet.bank_tier = 1
         wallet.save(update_fields=["account_number", "account_name", "bank_name", "bank_tier"])
-        with patch("utility.wema.get_kyc_status",
-                   return_value={"success": True, "name": "EZE ADA CHIDINMA", "tier": 1}), \
-             patch("utility.wema.wema_live", return_value=True), \
-             patch("wallet.views.sync_bank_tier"):
-            r = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
+        r = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
 
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 409)
         self.user.refresh_from_db()
-        self.assertTrue(self.user.bvn_verified)
-        self.assertEqual(self.user.bvn_hash, hash_identifier("22222222222"))
-        self.assertEqual(self.user.tier, 1)
+        self.assertFalse(self.user.bvn_verified)
+        self.assertIn("BVN, NIN, and a live face check", r.json()["message"])
 
     def test_existing_account_recovery_rejects_bank_name_mismatch(self):
         wallet = Wallet.objects.get(user=self.user)
@@ -268,6 +263,28 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertEqual(r.status_code, 409)
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
+
+    @patch("utility.wema.upgrade_tier2", return_value={"success": True, "raw": {"message": "ok"}})
+    @patch("wallet.views.sync_bank_tier")
+    def test_existing_account_combined_upgrade_marks_bvn_nin_and_face(self, _sync, mock_upgrade):
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.account_number = "0123456789"
+        wallet.account_name = "ADA EZE"
+        wallet.bank_name = "Wema Bank"
+        wallet.save(update_fields=["account_number", "account_name", "bank_name"])
+        r = self._post("/api/wallet/wema/upgrade-tier2/", {
+            "bvn": "22222222222",
+            "nin": "12345678901",
+            "live_image": "base64-face",
+        })
+        self.assertEqual(r.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertTrue(self.user.nin_verified)
+        self.assertTrue(self.user.face_verified)
+        mock_upgrade.assert_called_once_with(
+            "0123456789", bvn="22222222222", nin="12345678901",
+            live_image="base64-face")
 
 
 @override_settings(PAYMENT_PROVIDER="wema")

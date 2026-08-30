@@ -8,6 +8,7 @@ urlpatterns = [
     path("wallet/account/create/", views.wallet_account_create),
     # Wema/ALAT wallet provisioning — OTP round-trip (create -> verify -> resend).
     path("wallet/wema/create/", views.wema_wallet_create),
+    path("wallet/wema/upgrade-tier2/", views.wema_wallet_upgrade_tier2),
     path("wallet/wema/verify-otp/", views.wema_wallet_verify_otp),
     path("wallet/wema/resend-otp/", views.wema_wallet_resend_otp),
     path("user-transaction-history/", views.transaction_history),

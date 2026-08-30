@@ -23,6 +23,8 @@ type Status = {
   address_verified?: boolean; id_document_verified?: boolean;
   email?: string; email_verified?: boolean; email_verification_required?: boolean;
   bank_tier?: number;
+  has_wema_account?: boolean;
+  bank_upgrade_required?: boolean;
   bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
   // Which rail each step runs on. The server decides, because it is the only side
   // that knows which bank products are actually keyed on this deploy — a screen
@@ -96,6 +98,8 @@ const Kyc = () => {
   const bankAddress = status?.address_rail === 'wema';
   const [identityFlow, setIdentityFlow] = useState<null | 'bvn' | 'nin'>(null);
   const [identityStep, setIdentityStep] = useState<'number' | 'otp'>('number');
+  const [bankUpgradeOpen, setBankUpgradeOpen] = useState(false);
+  const [bankUpgradeStep, setBankUpgradeStep] = useState<'bvn' | 'nin' | 'selfie'>('bvn');
 
   const load = useCallback(async () => {
     const t = await getToken();
@@ -123,6 +127,11 @@ const Kyc = () => {
   };
 
   const openIdentityFlow = (kind: 'bvn' | 'nin') => {
+    if (status?.has_wema_account && status?.bank_upgrade_required) {
+      setBankUpgradeOpen(true);
+      setBankUpgradeStep(kind);
+      return;
+    }
     setIdentityFlow(kind);
     setIdentityStep(kind === 'bvn' && bvnSent ? 'otp' : kind === 'nin' && ninSent ? 'otp' : 'number');
   };
@@ -422,6 +431,63 @@ const Kyc = () => {
     submit('/api/kyc/face/', { selfie: base64 }, 'Selfie');
   };
 
+  const onBankUpgradeSelfie = async (base64: string) => {
+    setFaceCaptureOpen(false);
+    if (base64.length > MAX_IMAGE_BASE64) {
+      notify('Image too large', 'Retake the photo at a lower device resolution.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await apiJson('/api/wallet/wema/upgrade-tier2/', { bvn, nin, live_image: base64 });
+      if (res.success) {
+        await load();
+        setBvn('');
+        setNin('');
+        setBankUpgradeOpen(false);
+        setBankUpgradeStep('bvn');
+        notify('Success', res.message || 'Bank identity upgrade complete');
+      } else {
+        notify('Error', res.message || 'Wema could not complete the bank upgrade.');
+      }
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+
+  if (bankUpgradeOpen) {
+    const isBvn = bankUpgradeStep === 'bvn';
+    return (
+      <Screen>
+        <Header title="Bank Tier 2" sub="Wema verifies BVN, NIN and live selfie together" onBack={() => { setBankUpgradeOpen(false); setBankUpgradeStep('bvn'); }} />
+        <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
+          <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
+            <ZIcon name={isBvn ? 'bank' : bankUpgradeStep === 'nin' ? 'user' : 'faceid'} size={24} color={c.brand} stroke={2} />
+          </View>
+          {bankUpgradeStep === 'selfie' ? (
+            <>
+              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Live selfie</Text>
+              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
+                Wema requires a live face image with your BVN and NIN to upgrade this existing account.
+              </Text>
+              <Btn label="Take selfie and submit" icon="faceid" size="md" disabled={busy} onPress={() => setFaceCaptureOpen(true)} />
+              <FaceLivenessModal visible={faceCaptureOpen} onClose={() => setFaceCaptureOpen(false)} onCapture={onBankUpgradeSelfie} />
+            </>
+          ) : (
+            <>
+              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{isBvn ? 'Enter BVN' : 'Enter NIN'}</Text>
+              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
+                Existing Wema accounts use a combined upgrade check, so there is no separate OTP screen for this step.
+              </Text>
+              <Field value={isBvn ? bvn : nin} onChangeText={(v) => (isBvn ? setBvn : setNin)(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
+              <View style={{ height: 14 }} />
+              <Btn label="Next" size="md" disabled={busy || (isBvn ? bvn : nin).length !== 11} onPress={() => setBankUpgradeStep(isBvn ? 'nin' : 'selfie')} />
+            </>
+          )}
+        </View>
+      </Screen>
+    );
+  }
+
   if (identityFlow) {
     const isBvn = identityFlow === 'bvn';
     const title = isBvn ? 'Verify BVN' : 'Verify NIN';
@@ -570,11 +636,11 @@ const Kyc = () => {
         </KycRow>
       ) : null}
 
-        <KycRow icon="bank" title="BVN" sub="Wema will send a code to verify it" done={!!status?.bvn_verified}>
+        <KycRow icon="bank" title="BVN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.bvn_verified}>
         <Btn label={bvnSent ? 'Enter BVN OTP' : 'Verify BVN'} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
       </KycRow>
 
-      <KycRow icon="user" title="NIN" sub="Wema will send a code to verify it" done={!!status?.nin_verified}>
+      <KycRow icon="user" title="NIN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.nin_verified}>
         <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
       </KycRow>
 

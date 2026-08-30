@@ -539,6 +539,45 @@ def _requery_cooled(txn) -> bool:
     return (timezone.now() - seen).total_seconds() < REQUERY_COOLDOWN
 
 
+def _callback_dict(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and len(value) <= 65536:
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _transaction_callback_data(body: dict) -> dict:
+    """Return the nested object that carries Wema's transaction reference.
+
+    Production callbacks have arrived with ``data`` present but not directly
+    addressable as a dict, so accept the documented envelope plus JSON-string and
+    common nested variants. This endpoint still treats the callback as a trigger:
+    the reference only decides which transaction to requery over APIM.
+    """
+    candidates = [
+        body.get("data"),
+        body.get("request"),
+        body.get("result"),
+        body,
+    ]
+    for candidate in candidates:
+        data = _callback_dict(candidate)
+        if not data:
+            continue
+        if data.get("transactionReference"):
+            return data
+        for nested_key in ("data", "request", "result"):
+            nested = _callback_dict(data.get(nested_key))
+            if nested.get("transactionReference"):
+                return nested
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # 3. Transaction callback (requestType 3) — a trigger, never an oracle
 # ---------------------------------------------------------------------------
@@ -555,7 +594,7 @@ def wema_transaction_callback(request):
     Never credits a wallet: the payload has no amount and no account number.
     """
     body = request.wema_body
-    data = body.get("data") or {}
+    data = _transaction_callback_data(body)
     ref = str(data.get("transactionReference") or "").strip()[:_REF_MAX]
     payload_status = str(data.get("status") or "").strip()
 

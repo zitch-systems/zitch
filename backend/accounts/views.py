@@ -36,8 +36,8 @@ from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import get_or_create_wallet, wema_account_reference
 
 from .models import (
-    OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier,
-    password_rejection,
+    IdentityProof, OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier,
+    identity_has_proof, password_rejection, record_identity_proof,
 )
 
 # The shared design system in common.emails is the only place email HTML lives.
@@ -827,7 +827,9 @@ def _identity_owned_by_another_user(user, identity_type: str, raw: str) -> bool:
     ).exists()
 
 
-def _save_verified_identity(user, identity_type: str, raw: str) -> bool:
+def _save_verified_identity(user, identity_type: str, raw: str,
+                            source: str = IdentityProof.IDENTITY_PROVIDER_OTP,
+                            provider_reference: str = "") -> bool:
     """Atomically claim a verified BVN/NIN for exactly one Zitch user.
 
     The pre-check gives a clean response in the common case; the database unique
@@ -847,6 +849,8 @@ def _save_verified_identity(user, identity_type: str, raw: str) -> bool:
     try:
         with db_transaction.atomic():
             user.save(update_fields=fields + ["tier"])
+            record_identity_proof(user, identity_type, raw, source=source,
+                                  provider_reference=provider_reference)
     except IntegrityError:
         return False
     return True
@@ -936,11 +940,7 @@ def email_verify_confirm(request):
 
 
 def _wema_otp_verified(user, identity_type: str) -> bool:
-    return WemaProvisioningAttempt.objects.filter(
-        user=user,
-        identity_type=identity_type,
-        status=WemaProvisioningAttempt.VERIFIED,
-    ).exists()
+    return identity_has_proof(user, identity_type)
 
 
 def _repair_unbacked_wema_identity_flags(user) -> None:
@@ -956,11 +956,15 @@ def _repair_unbacked_wema_identity_flags(user) -> None:
 
     fields: list[str] = []
     if user.bvn_verified and not _wema_otp_verified(user, WemaProvisioningAttempt.BVN):
+        user.bvn_hash = ""
+        user.bvn_last4 = ""
         user.bvn_verified = False
-        fields.append("bvn_verified")
+        fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
     if user.nin_verified and not _wema_otp_verified(user, WemaProvisioningAttempt.NIN):
+        user.nin_hash = ""
+        user.nin_last4 = ""
         user.nin_verified = False
-        fields.append("nin_verified")
+        fields += ["nin_hash", "nin_last4", "nin_verified"]
     if not fields:
         return
     user.recompute_tier()
@@ -998,6 +1002,10 @@ def _kyc_state(user) -> dict:
         # Separate from Zitch's verification/spend ladder: these are enforced by
         # Wema on the dedicated NUBAN itself.
         "bank_tier": bank_tier,
+        "has_wema_account": bool(wallet and wallet.account_number),
+        "bank_upgrade_required": bool(wallet and wallet.account_number and (
+            bank_tier < 2 or not (user.bvn_verified and user.nin_verified and user.face_verified)
+        )),
         "bank_tier_limits": bank_limits,
         # Which rail each step runs on, so the screen renders what will ACTUALLY
         # happen rather than a fixed set of inputs. The face and address steps look

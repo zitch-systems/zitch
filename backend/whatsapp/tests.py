@@ -4362,7 +4362,7 @@ class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
         adopt.return_value = {"success": True}
         give_account(self.user, "9912345678")
         body = json.dumps(self._submit(), ensure_ascii=False)
-        self.assertIn("received ✅", body)
+        self.assertIn("Account found ✅", body)
 
 
 class TemplateErrorAbandonsTheWholeBroadcastTests(TestCase):
