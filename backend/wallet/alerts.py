@@ -176,7 +176,8 @@ def send_transaction_alert(txn, *, reversal: bool = False) -> None:
                     "credentials for them, so the customer was NOT notified",
                     txn.reference, ",".join(mocked))
     _push_alert(txn, subject)
-    _whatsapp_alert(txn, subject, body, reversal=reversal)
+    if _whatsapp_alert(txn, subject, body, reversal=reversal):
+        _mark_flag(txn.pk, "whatsapp_alerted")
 
 
 def _push_alert(txn, subject: str) -> None:
@@ -220,7 +221,24 @@ def _push_alert(txn, subject: str) -> None:
         log.exception("txn_alert_push_failed ref=%s", txn.reference)
 
 
-def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> None:
+def send_whatsapp_transaction_alert(txn, *, reversal: bool = False) -> bool:
+    """Send only the WhatsApp leg of a transaction alert.
+
+    The main ``alerted`` flag covers email/SMS/push. WhatsApp needs its own
+    retryable flag because app-originated transactions can settle while Meta is
+    briefly refusing sends, while the customer's WhatsApp link is being repaired,
+    or inside a process missing WhatsApp credentials. In those cases email must
+    not duplicate, but the chat alert is still owed on the next ledger save or
+    reconciliation touch.
+    """
+    subject, body = _describe(txn, reversal=reversal)
+    if _whatsapp_alert(txn, subject, body, reversal=reversal):
+        _mark_flag(txn.pk, "whatsapp_alerted")
+        return True
+    return False
+
+
+def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> bool:
     """Alert the customer where they actually bank, for a WhatsApp customer.
 
     Costs nothing per message and lands in the thread they already use, which
@@ -245,22 +263,31 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
     write that triggered it.
     """
     if not _alerts_on("whatsapp"):
-        return
+        return False
     meta = _meta(txn)
     if (not reversal and meta.get("channel") == "whatsapp"
             and not meta.get("wa_awaiting_settlement")):
-        return
+        return False
     try:
         from whatsapp.models import WhatsAppLink
         from whatsapp.router import reply
 
         link = WhatsAppLink.objects.filter(user=txn.user, status=WhatsAppLink.ACTIVE).first()
         if link is None:
-            return
+            log.info("txn_alert_whatsapp_no_active_link ref=%s user=%s",
+                     txn.reference, txn.user_id)
+            return False
         icon = "💰" if txn.direction == txn.IN else "💸"
-        reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
+        result = reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
+        if not (result or {}).get("success"):
+            log.warning("txn_alert_whatsapp_not_delivered ref=%s user=%s code=%s detail=%r",
+                        txn.reference, txn.user_id, (result or {}).get("error_code"),
+                        (result or {}).get("error_detail") or (result or {}).get("message"))
+            return False
+        return True
     except Exception:  # noqa: BLE001
         log.exception("txn_alert_whatsapp_failed ref=%s", txn.reference)
+        return False
 
 
 def mark_awaiting_settlement(txn) -> None:
@@ -317,12 +344,37 @@ def _alert_on_settled_transaction(sender, instance, **kwargs):
 
     if txn.transaction_status != txn.SUCCESS:
         return
-    if _meta(txn).get("alerted"):
+    meta = _meta(txn)
+    if meta.get("alerted"):
+        if not meta.get("whatsapp_alerted") and _whatsapp_retry_due(txn):
+            _defer(txn, "whatsapp_alerted", reversal=False, whatsapp_only=True)
         return
     _defer(txn, "alerted", reversal=False)
 
 
-def _defer(txn, flag: str, *, reversal: bool, requires: str = "") -> None:
+def _whatsapp_retry_due(txn) -> bool:
+    """Whether a settled row still owes a WhatsApp transaction alert."""
+    if not _alerts_on("whatsapp"):
+        return False
+    meta = _meta(txn)
+    if meta.get("channel") == "whatsapp" and not meta.get("wa_awaiting_settlement"):
+        return False
+    return True
+
+
+def _mark_flag(txn_pk, flag: str) -> None:
+    from .models import Transaction
+
+    row = Transaction.objects.filter(pk=txn_pk).first()
+    if row is None or _meta(row).get(flag):
+        return
+    merged = dict(_meta(row))
+    merged[flag] = True
+    Transaction.objects.filter(pk=txn_pk).exclude(meta__has_key=flag).update(meta=merged)
+
+
+def _defer(txn, flag: str, *, reversal: bool, requires: str = "",
+           whatsapp_only: bool = False) -> None:
     """Claim `flag` on the row and send once the surrounding transaction commits.
 
     `requires` names a flag that must ALREADY be set for this send to happen —
@@ -348,14 +400,18 @@ def _defer(txn, flag: str, *, reversal: bool, requires: str = "") -> None:
         # `has_key` rather than `meta__<flag>=True`: a JSON lookup for a key the
         # row does not have yields NULL, and an `exclude` on NULL drops the row —
         # which would make this claim "already alerted" for every first send.
-        merged = dict(_meta(row))
-        merged[flag] = True
-        updated = Transaction.objects.filter(
-            pk=txn.pk).exclude(meta__has_key=flag).update(meta=merged)
-        if not updated:
-            return
         try:
-            send_transaction_alert(txn, reversal=reversal)
+            if whatsapp_only:
+                if send_whatsapp_transaction_alert(row, reversal=reversal):
+                    _mark_flag(row.pk, flag)
+                return
+            merged = dict(_meta(row))
+            merged[flag] = True
+            updated = Transaction.objects.filter(
+                pk=txn.pk).exclude(meta__has_key=flag).update(meta=merged)
+            if not updated:
+                return
+            send_transaction_alert(row, reversal=reversal)
         except Exception:  # noqa: BLE001 — an alert must never break a payment
             log.exception("txn_alert_failed ref=%s flag=%s", txn.reference, flag)
 
@@ -364,9 +420,9 @@ def _defer(txn, flag: str, *, reversal: bool, requires: str = "") -> None:
 
 #: Nigerian bank alerts all follow one shape, and customers read them by
 #: position rather than by reading them: direction and amount on line one, the
-#: masked account, the description, the balance, the timestamp. Matching it
-#: means a Zitch alert is scanned the same way as the one from their bank
-#: sitting directly above it, instead of asking them to learn a second format.
+    masked account, the description, the balance, the timestamp. Matching it
+    means a Zitch alert is scanned the same way as the one from their bank
+    sitting directly above it, instead of asking them to learn a second format.
 _SMS_MAX = 160          # one GSM-7 segment; a multi-part alert costs multiples
 
 
@@ -409,72 +465,3 @@ def _sms_alert(txn, *, reversal: bool = False) -> str:
             or (txn.service or "").strip() or ("Credit" if credit else "Debit"))
     if reversal:
         desc = f"REVERSAL-{desc}"
-
-    head = (f"{'CR' if credit else 'DR'}:{_sms_money(txn.amount, txn.currency)}\n"
-            f"Acct No:{_mask_account(account)}\n")
-    tail = f"\nBal :{balance}\n{txn.created:%d-%m-%Y %H:%M:%S}"
-    # Trim the description rather than the balance or the timestamp: those are
-    # what the customer checks, and a second segment costs a second message.
-    room = _SMS_MAX - len(head) - len(tail) - len("Desc :")
-    return head + "Desc :" + desc[:max(room, 0)].strip() + tail
-
-
-def _email_alert_html(txn, *, reversal: bool = False) -> str:
-    """The alert as a bank-standard card inside the shared brand shell — same
-    header, same footer (team sign-off, contact points, socials) as every other
-    Zitch email. The plain-text body stays as the fallback, so clients that
-    refuse HTML lose the layout and nothing else."""
-    from common.emails import email_shell
-
-    from .services import get_or_create_wallet
-
-    credit = reversal or txn.direction == txn.IN
-    word = "Reversal" if reversal else ("Credit" if credit else "Debit")
-    colour = "#0f9c93" if credit else "#b8402f"
-    sign = "+" if credit else "\u2212"
-
-    try:
-        wallet = get_or_create_wallet(txn.user)
-        account = _mask_account(wallet.account_number)
-        balance = _money(wallet.balance)
-    except Exception:  # noqa: BLE001 \u2014 an alert must never depend on reading a wallet
-        account, balance = "\u2014", "\u2014"
-
-    counterparty = (_meta(txn).get("recipient_name") or _meta(txn).get("counterparty")
-                    or (txn.service or "").strip() or word)
-    first = (txn.user.first_name or "").strip().title() or "there"
-
-    def row(label, value, bold=False):
-        weight = "600" if bold else "400"
-        return (f'<tr><td style="padding:7px 0;color:#8fa3a0;font-size:13px;'
-                f'font-family:Arial,Helvetica,sans-serif">{label}</td>'
-                f'<td align="right" style="padding:7px 0;color:#12201f;font-size:13px;'
-                f'font-weight:{weight};font-family:Arial,Helvetica,sans-serif">{value}</td></tr>')
-
-    content = f"""
-  <tr><td style="padding:28px 28px 6px;font-family:Arial,Helvetica,sans-serif">
-    <p style="margin:0 0 4px;color:#8fa3a0;font-size:12px;letter-spacing:.12em;
-              text-transform:uppercase">{word} alert</p>
-    <p style="margin:0;color:{colour};font-size:32px;font-weight:700">
-      {sign}{_money(txn.amount, txn.currency)}</p>
-    <p style="margin:10px 0 0;color:#5f7370;font-size:14px">Hi {first}, here are the details:</p>
-  </td></tr>
-  <tr><td style="padding:14px 28px 4px;font-family:Arial,Helvetica,sans-serif">
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
-           style="border-top:1px solid #e4ecea">
-      {row("Description", counterparty)}
-      {row("Account", account)}
-      {row("Reference", txn.reference)}
-      {row("Date", f"{txn.created:%d %b %Y, %I:%M %p}")}
-      {row("Available balance", balance, bold=True)}
-    </table>
-  </td></tr>
-  <tr><td style="padding:16px 28px 26px;font-family:Arial,Helvetica,sans-serif">
-    <p style="margin:0;padding:12px 14px;background:#eef4f3;border-radius:8px;
-              color:#5f7370;font-size:12px;line-height:1.5">
-      Didn\u2019t make this transaction? Contact
-      <a href="mailto:support@zitch.ng" style="color:#0a6b65">support@zitch.ng</a> immediately.
-    </p>
-  </td></tr>"""
-    return email_shell(content,
-                       preheader=f"{word} of {_money(txn.amount, txn.currency)} \u2014 balance {balance}")
