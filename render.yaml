@@ -672,8 +672,16 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
       - key: WHATSAPP_PHONE_NUMBER_ID
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+      - key: WHATSAPP_VERIFY_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+      - key: WHATSAPP_APP_SECRET
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
       - key: WHATSAPP_BUSINESS_NUMBER
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+      - key: WHATSAPP_QUEUE_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
+      - key: WHATSAPP_QUEUE_KEY_PREV
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
@@ -894,8 +902,16 @@ services:
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TOKEN}
       - key: WHATSAPP_PHONE_NUMBER_ID
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_PHONE_NUMBER_ID}
+      - key: WHATSAPP_VERIFY_TOKEN
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_VERIFY_TOKEN}
+      - key: WHATSAPP_APP_SECRET
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_APP_SECRET}
       - key: WHATSAPP_BUSINESS_NUMBER
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_BUSINESS_NUMBER}
+      - key: WHATSAPP_QUEUE_KEY
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY}
+      - key: WHATSAPP_QUEUE_KEY_PREV
+        fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_QUEUE_KEY_PREV}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE
         fromService: {type: web, name: zitch-api, envVarKey: WHATSAPP_TXN_ALERT_TEMPLATE}
       - key: WHATSAPP_TXN_ALERT_TEMPLATE_LANG
