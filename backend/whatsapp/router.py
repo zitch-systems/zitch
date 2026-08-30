@@ -56,7 +56,7 @@ from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STAT
                     sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
 from .providers import (flows_live, send_buttons, send_cta_url, send_flow, send_image,
-                        send_list, send_text)
+                        send_list, send_template, send_text)
 
 User = get_user_model()
 log = logging.getLogger("whatsapp")
@@ -295,6 +295,27 @@ def reply(msisdn: str, text: str) -> dict:
     would have no failed sends to count."""
     result = send_text(msisdn, text)
     _log_out(msisdn, text, result)
+    return result
+
+
+def reply_template(msisdn: str, template_name: str, params: list | None = None,
+                   *, lang: str = "en_US", log_text: str = "") -> dict:
+    """Send a pre-approved template message and record the OUT audit row.
+
+    The template twin of `reply()`. Free-form text (what `reply()` sends) is the
+    right thing inside WhatsApp's 24-hour customer-service window, but Meta
+    refuses it once that window closes — which is exactly when a proactive
+    notice, like a transaction alert for something the customer did in the app,
+    needs to go out. A pre-approved UTILITY template is the only message the
+    platform lets us send then, so this is the fallback the alert path reaches
+    for on a re-engagement rejection.
+
+    Like `reply()`, it never raises and always records an OUT row, so a refused
+    template send (unapproved/paused template, expired token) is still visible in
+    `WaMessageLog` and the health counters rather than vanishing silently.
+    """
+    result = send_template(msisdn, template_name, params, lang=lang)
+    _log_out(msisdn, log_text or f"[template] {template_name}", result)
     return result
 
 

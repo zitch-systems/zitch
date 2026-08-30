@@ -261,6 +261,12 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
     Best-effort in every direction: no link, no send; a failure is logged and
     never propagates, because an alert must not be able to roll back the ledger
     write that triggered it.
+
+    Sent as free-form text, which WhatsApp delivers only inside the customer's
+    24-hour service window. Outside it — the usual case for an app transaction or
+    a late-settling payout — Meta refuses the text and the send falls back to a
+    pre-approved UTILITY template (`_whatsapp_alert_via_template`), the only
+    proactive message the platform allows there.
     """
     if not _alerts_on("whatsapp"):
         return False
@@ -279,15 +285,125 @@ def _whatsapp_alert(txn, subject: str, body: str, *, reversal: bool = False) -> 
             return False
         icon = "💰" if txn.direction == txn.IN else "💸"
         result = reply(link.wa_msisdn, f"{icon} *{subject}*\n\n{body}")
-        if not (result or {}).get("success"):
-            log.warning("txn_alert_whatsapp_not_delivered ref=%s user=%s code=%s detail=%r",
-                        txn.reference, txn.user_id, (result or {}).get("error_code"),
-                        (result or {}).get("error_detail") or (result or {}).get("message"))
-            return False
-        return True
+        if (result or {}).get("success"):
+            return True
+        # Free-form text is delivered only INSIDE WhatsApp's 24-hour
+        # customer-service window. Meta refuses it once that window closes
+        # (re-engagement error 131047) — and that is the normal state for the
+        # alert this channel exists to send: a transaction the customer did in the
+        # app, or a payout that settles hours after they last chatted, when they
+        # have not messaged the bot at all. A pre-approved UTILITY template is the
+        # only message the platform still delivers then, so fall back to it.
+        #
+        # ONLY on the window-closed codes: any other rejection (a transient Meta
+        # error, an undeliverable number) is left owed and retried as free-form on
+        # the next ledger touch or the reconcile sweep — the customer may be back
+        # inside the window by then, and escalating a transient blip to a paid
+        # template every time would be both wasteful and a duplicate once the text
+        # goes through. The in-window path already returned above, so a template
+        # is spent only when the text was genuinely refused for being out-of-window.
+        if _window_closed(result) and _whatsapp_alert_via_template(
+                txn, link.wa_msisdn, reversal=reversal):
+            return True
+        log.warning("txn_alert_whatsapp_not_delivered ref=%s user=%s code=%s detail=%r",
+                    txn.reference, txn.user_id, (result or {}).get("error_code"),
+                    (result or {}).get("error_detail") or (result or {}).get("message"))
+        return False
     except Exception:  # noqa: BLE001
         log.exception("txn_alert_whatsapp_failed ref=%s", txn.reference)
         return False
+
+
+#: Meta error codes that mean WhatsApp's 24-hour customer-service window has
+#: closed, so the free-form text was refused and only a template can reach the
+#: customer. 131047 is the Cloud API "re-engagement message" code; 470 is the
+#: older Graph code for the same condition, still returned by some versions.
+_WINDOW_CLOSED_CODES = frozenset({131047, 470})
+
+
+def _window_closed(result) -> bool:
+    """True when a send was refused specifically for being outside the 24-hour
+    window. `error_code` is Meta's int, but `_message_result` can fall back to an
+    HTTP status or the string "provider_error", so coerce defensively."""
+    try:
+        return int((result or {}).get("error_code")) in _WINDOW_CLOSED_CODES
+    except (TypeError, ValueError):
+        return False
+
+
+def _oneline(text) -> str:
+    """One-line form for a WhatsApp template parameter.
+
+    Meta rejects a template variable that contains a newline, a tab, or four or
+    more consecutive spaces, so every value substituted into the alert template
+    is flattened first. Whitespace is collapsed rather than merely stripped, so a
+    name or narration carrying an embedded newline cannot slip a rejection
+    through and silently drop the whole alert."""
+    return " ".join(str(text or "").split())
+
+
+def _whatsapp_template_summary(txn, *, reversal: bool) -> str:
+    """The single-line headline for the template's ``{{1}}``.
+
+    Carries the same facts the free-form alert leads with — direction, amount,
+    counterparty, resulting balance — flattened onto one line, because a template
+    variable cannot hold the line breaks the free-form body uses.
+    """
+    from .services import get_or_create_wallet
+
+    credit = reversal or txn.direction == txn.IN
+    amount = _money(txn.amount, txn.currency)
+    counterparty = _meta(txn).get("recipient_name") or _meta(txn).get("counterparty") or ""
+    try:
+        balance = _money(get_or_create_wallet(txn.user).balance)
+    except Exception:  # noqa: BLE001 — an alert must not depend on reading a balance
+        balance = ""
+    if reversal:
+        where = f" to {counterparty}" if counterparty else ""
+        summary = f"Reversal: {amount}{where} returned to your Zitch account."
+    else:
+        word = "Credit" if credit else "Debit"
+        where = f" {'from' if credit else 'to'} {counterparty}" if counterparty else ""
+        summary = f"{word} of {amount}{where} on your Zitch account."
+    if balance:
+        summary += f" Balance {balance}."
+    return _oneline(summary)
+
+
+def _whatsapp_alert_via_template(txn, msisdn: str, *, reversal: bool = False) -> bool:
+    """Deliver the alert through the pre-approved UTILITY template.
+
+    A template is the only message WhatsApp will send outside the 24-hour window,
+    so this is the fallback ``_whatsapp_alert`` reaches for when the free-form
+    send is refused. Two body variables, both single-line: ``{{1}}`` the summary,
+    ``{{2}}`` the reference (see ``WHATSAPP["TXN_ALERT_TEMPLATE"]`` and
+    ``docs/whatsapp-production-operations.md`` for the exact template to create and approve).
+    A blank template name disables the fallback — in-window free-form still works.
+
+    Best-effort, like every other leg: a refused or unconfigured template is
+    logged with the fix and never raised, so it cannot break the ledger write
+    that triggered the alert. Returns True only when Meta accepted the template.
+    """
+    cfg = getattr(settings, "WHATSAPP", {}) or {}
+    template = str(cfg.get("TXN_ALERT_TEMPLATE") or "").strip()
+    if not template:
+        return False
+    lang = str(cfg.get("TXN_ALERT_TEMPLATE_LANG") or "en_US").strip() or "en_US"
+    from whatsapp.router import reply_template
+
+    summary = _whatsapp_template_summary(txn, reversal=reversal)
+    result = reply_template(msisdn, template, [summary, txn.reference], lang=lang)
+    if (result or {}).get("success"):
+        log.info("txn_alert_whatsapp_template_sent ref=%s template=%s", txn.reference, template)
+        return True
+    log.warning(
+        "txn_alert_whatsapp_template_not_delivered ref=%s template=%s code=%s detail=%r — the "
+        "out-of-window fallback needs a two-variable UTILITY template named %r, APPROVED in "
+        "WhatsApp Manager (see docs/whatsapp-production-operations.md); set WHATSAPP_TXN_ALERT_TEMPLATE to "
+        "rename it, or blank to disable the fallback",
+        txn.reference, template, (result or {}).get("error_code"),
+        (result or {}).get("error_detail") or (result or {}).get("message"), template)
+    return False
 
 
 def mark_awaiting_settlement(txn) -> None:

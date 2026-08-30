@@ -332,3 +332,117 @@ class WhatsAppChannelAlertTests(TestCase):
         meta = Transaction.objects.get(pk=txn.pk).meta
         self.assertEqual(meta["provider_ref"], "rail-99")
         self.assertTrue(meta["wa_awaiting_settlement"])
+
+
+# A minimal WHATSAPP config carrying just the two template keys the fallback
+# reads. The send legs themselves are patched (`whatsapp.router.reply` /
+# `reply_template`), so no other WhatsApp credential is touched by these tests.
+_WA_TMPL = {"TXN_ALERT_TEMPLATE": "txn_alert", "TXN_ALERT_TEMPLATE_LANG": "en_US"}
+
+
+@override_settings(TXN_ALERTS={"EMAIL": True, "SMS": False, "WHATSAPP": True}, WHATSAPP=_WA_TMPL)
+class WhatsAppAlertTemplateFallbackTests(TestCase):
+    """Free-form text is delivered only inside WhatsApp's 24-hour service window.
+    An alert about an app transaction — or a payout that settles hours after the
+    customer last chatted — is the normal case for that window being CLOSED, and
+    Meta refuses free-form text there (error 131047). The only message the
+    platform still delivers is a pre-approved UTILITY template, so the alert must
+    fall back to one; without it the debit/credit alert silently never lands."""
+
+    def setUp(self):
+        from whatsapp.models import WhatsAppLink
+
+        self.user = _user()
+        self.link = WhatsAppLink.objects.create(
+            user=self.user, wa_msisdn="2348012340000", status=WhatsAppLink.ACTIVE)
+        credit(self.user, Decimal("10000"), "funding")
+
+    def _settle_app_debit(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            txn = debit(self.user, Decimal("1000"), "Transfer to Ada",
+                        meta={"channel": "app", "recipient_name": "ADA LOVELACE"})
+            txn.transaction_status = Transaction.SUCCESS
+            txn.save(update_fields=["transaction_status"])
+        return txn
+
+    def test_out_of_window_alert_falls_back_to_the_template(self):
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply",
+                   return_value={"success": False, "error_code": 131047}) as wa_reply, \
+             patch("whatsapp.router.reply_template",
+                   return_value={"success": True, "message_id": "wamid.t"}) as wa_tmpl:
+            txn = self._settle_app_debit()
+
+        email.assert_called_once()          # email leg is unaffected
+        wa_reply.assert_called_once()       # free-form tried first (cheap, in-window)
+        wa_tmpl.assert_called_once()        # then the template, because Meta refused it
+        msisdn, template, params = wa_tmpl.call_args[0]
+        self.assertEqual(msisdn, "2348012340000")
+        self.assertEqual(template, "txn_alert")
+        self.assertEqual(wa_tmpl.call_args[1].get("lang"), "en_US")
+        self.assertIn("Debit of", params[0])
+        self.assertIn("ADA LOVELACE", params[0])
+        self.assertEqual(params[1], txn.reference)
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))   # counted as delivered
+
+    def test_in_window_alert_never_touches_the_template(self):
+        """When the free-form text is accepted, no template conversation is spent."""
+        with patch("utility.providers.send_email"), \
+             patch("whatsapp.router.reply",
+                   return_value={"success": True, "message_id": "wamid.1"}) as wa_reply, \
+             patch("whatsapp.router.reply_template") as wa_tmpl:
+            txn = self._settle_app_debit()
+
+        wa_reply.assert_called_once()
+        wa_tmpl.assert_not_called()
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
+
+    @override_settings(WHATSAPP={"TXN_ALERT_TEMPLATE": "", "TXN_ALERT_TEMPLATE_LANG": "en_US"})
+    def test_a_blank_template_name_disables_the_fallback(self):
+        """No template configured → the alert stays owed (retried later), it is
+        never marked delivered off a send Meta refused."""
+        with patch("utility.providers.send_email"), \
+             patch("whatsapp.router.reply",
+                   return_value={"success": False, "error_code": 131047}) as wa_reply, \
+             patch("whatsapp.router.reply_template") as wa_tmpl:
+            txn = self._settle_app_debit()
+
+        wa_reply.assert_called_once()
+        wa_tmpl.assert_not_called()
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("alerted"))
+        self.assertFalse(txn.meta.get("whatsapp_alerted"))
+
+    def test_template_parameters_are_single_line(self):
+        """Meta rejects a template variable carrying a newline, a tab, or four or
+        more consecutive spaces — so a recipient name with an embedded newline
+        must not be able to drop the whole alert."""
+        from .alerts import _whatsapp_template_summary
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("2500"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="APP-LINE-1",
+            transaction_status=Transaction.SUCCESS,
+            meta={"channel": "app", "recipient_name": "ADA\nLOVELACE\t  ADETOLA"})
+        summary = _whatsapp_template_summary(txn, reversal=False)
+        self.assertNotIn("\n", summary)
+        self.assertNotIn("\t", summary)
+        self.assertNotIn("    ", summary)          # no run of 4+ spaces
+        self.assertIn("ADA LOVELACE ADETOLA", summary)
+
+    def test_reversal_summary_reads_as_money_returning(self):
+        """A reversal is money coming back — the one-line template summary must
+        say so, never repeat it as another debit."""
+        from .alerts import _whatsapp_template_summary
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="APP-REV-1",
+            transaction_status=Transaction.FAILED,
+            meta={"channel": "app", "recipient_name": "ADA LOVELACE"})
+        summary = _whatsapp_template_summary(txn, reversal=True)
+        self.assertIn("Reversal", summary)
+        self.assertIn("returned to your Zitch account", summary)
+        self.assertNotIn("\n", summary)
