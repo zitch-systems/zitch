@@ -432,6 +432,29 @@ def _resolve_user(*, phone: str = "", email: str = ""):
 # ---------------------------------------------------------------------------
 # 2. Authentication callback — the payout authorisation gate
 # ---------------------------------------------------------------------------
+def _auth_callback_fields(body: dict) -> tuple:
+    """(transactionReference, securityInfo) from an authentication callback.
+
+    ALAT does not send the same envelope shape on every callback, and the
+    transaction callback already had to grow ``_transaction_callback_data`` because
+    production payloads arrived with the reference nested under ``data`` (or a
+    JSON-string ``data``) rather than at the top level. The authentication callback
+    is the same bank on the same rail, so it can nest the same way — and a
+    reference we fail to find here denies a perfectly good payout as
+    ``no_reference``, which ALAT surfaces to the customer as the generic
+    "Authentication Failed". So look in the same places, and read ``securityInfo``
+    from whichever object carried the reference (falling back to the top level for
+    a mixed shape). Widening where we READ the fields changes nothing about the
+    decision: `_authorize_payout` still gates on our own PENDING ledger row.
+    """
+    holder = _transaction_callback_data(body) or {}
+
+    def pick(key: str) -> str:
+        return str(holder.get(key) or body.get(key) or "")
+
+    return pick("transactionReference").strip(), pick("securityInfo")
+
+
 @wema_callback("auth")
 def wema_authenticate_callback(request):
     """The bank asks whether a payout may proceed; we answer authorized true/false.
@@ -447,8 +470,9 @@ def wema_authenticate_callback(request):
     Always 200: the bank parses the body, not the status code.
     """
     body = request.wema_body
-    ref = str(body.get("transactionReference") or "").strip()[:_REF_MAX]
-    security_info = str(body.get("securityInfo") or "")[:_SECURITY_INFO_MAX]
+    ref_raw, security_info_raw = _auth_callback_fields(body)
+    ref = ref_raw[:_REF_MAX]
+    security_info = security_info_raw[:_SECURITY_INFO_MAX]
 
     authorized = False
     reason = "denied"
