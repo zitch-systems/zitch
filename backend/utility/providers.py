@@ -71,17 +71,30 @@ def vas_provider() -> str:
     """VAS (airtime/data/bills) rail — 'wema' or 'vtung'.
 
     Explicit VAS_PROVIDER wins. Blank => AUTO: use Wema once its VAS keys are
-    configured (or simulation is on), else VTU.ng — so airtime/data/bills never break
-    on a deploy that has no Wema VAS keys yet. When Wema is selected the routing is
-    still per-service: AIRTIME (network + amount, no catalogue) always goes to Wema;
-    DATA and CABLE go to Wema once the plan's `wema_code` is synced
-    (`manage.py seed_wema_plans`), else VTU.ng; ELECTRICITY and BETTING stay on VTU.ng
-    until their Wema billers are mapped."""
+    configured AND it can SETTLE a purchase (or simulation is on), else VTU.ng — so
+    airtime/data/bills never break on a deploy that has no Wema VAS keys yet. When
+    Wema is selected the routing is still per-service: AIRTIME (network + amount, no
+    catalogue) always goes to Wema; DATA and CABLE go to Wema once the plan's
+    `wema_code` is synced (`manage.py seed_wema_plans`), else VTU.ng; ELECTRICITY and
+    BETTING stay on VTU.ng until their Wema billers are mapped.
+
+    "Can settle" is the load-bearing half. A Wema VAS purchase usually comes back
+    PROCESSING and is resolved by requerying its INTEGER transactionStatus, whose
+    meaning ALAT does not publish — so without WEMA_VAS_STATUS_LEGEND configured the
+    requery can never decode, and the top-up sits PENDING forever: the customer is
+    DEBITED and the airtime neither arrives nor refunds. Auto-selecting Wema in that
+    state is exactly how "debited but not delivered" happens, so AUTO refuses it and
+    stays on the proven VTU.ng rail until the legend is set. An operator who knows
+    their Wema VAS settles synchronously can still force it with VAS_PROVIDER=wema."""
     choice = (getattr(settings, "VAS_PROVIDER", "") or "").strip().lower()
     if choice in ("wema", "vtung"):
         return choice
     from . import wema
-    return "wema" if (wema._vas_live("airtime") or wema.wema_simulation()) else "vtung"
+    if wema.wema_simulation():
+        return "wema"
+    if wema._vas_live("airtime") and wema._vas_legend("airtime"):
+        return "wema"
+    return "vtung"
 
 
 def _wema_vas_route(service_id: str, payload: dict):

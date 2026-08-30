@@ -163,6 +163,30 @@ class VasDispatchTests(SimpleTestCase):
             P.vtu_purchase("mtn-airtime", {"amount": "500", "phone": "080"}, reference="R")
         mv.assert_called_once()
 
+    # AUTO must not route to a Wema VAS rail it cannot SETTLE. A Wema top-up comes
+    # back PROCESSING and is resolved by requerying an integer status whose legend
+    # Wema must supply; with no WEMA_VAS_STATUS_LEGEND the requery can't decode and
+    # the purchase strands PENDING — debited, never delivered or refunded. So AUTO
+    # stays on VTU.ng until the legend exists.
+    _WEMA_VAS_KEYED = {**WEMA_LIVE, "KEYS": {"wallet": "subkey", "airtime": "airkey"}}
+
+    @override_settings(WEMA=_WEMA_VAS_KEYED)
+    def test_auto_stays_on_vtung_without_a_vas_legend(self):
+        self.assertEqual(P.vas_provider(), "vtung")
+
+    @override_settings(WEMA={**_WEMA_VAS_KEYED, "VAS_STATUS_LEGEND": "3=success 2=pending 5=failed"})
+    def test_auto_uses_wema_once_the_vas_legend_is_configured(self):
+        self.assertEqual(P.vas_provider(), "wema")
+
+    @override_settings(WEMA={**_WEMA_VAS_KEYED, "SIMULATION": True})
+    def test_auto_uses_wema_in_simulation_even_without_a_legend(self):
+        self.assertEqual(P.vas_provider(), "wema")
+
+    @override_settings(VAS_PROVIDER="wema", WEMA=_WEMA_VAS_KEYED)
+    def test_explicit_wema_is_honoured_without_a_legend(self):
+        # An operator whose Wema VAS settles synchronously can still force it.
+        self.assertEqual(P.vas_provider(), "wema")
+
 
 class CardDispatchTests(SimpleTestCase):
     def test_card_issue_routes_to_generic_issuer_by_default(self):
