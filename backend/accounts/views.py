@@ -939,37 +939,36 @@ def email_verify_confirm(request):
     return ok(message="Email verified", **_kyc_state(user))
 
 
-def _wema_otp_verified(user, identity_type: str) -> bool:
+def _wema_identity_proven(user, identity_type: str) -> bool:
+    """Whether this account has durable proof for a verified identity flag.
+
+    KYC status is a read path. It must never make a destructive decision about a
+    customer's identity just because an older flow did not write the newest proof
+    row shape. A previous repair routine cleared verified BVN/NIN flags during
+    status refreshes; on live accounts that turned a green check back into an
+    empty prompt and blocked transfers. The safe repair is one-way: restore a
+    flag from a durable proof when possible, otherwise report the stored flag.
+    """
     return identity_has_proof(user, identity_type)
 
 
 def _repair_unbacked_wema_identity_flags(user) -> None:
-    """Clear identity flags created without the bank OTP proof required on Wema live.
-
-    A short-lived regression let existing-Wema-account customers be marked BVN/NIN
-    verified locally even though Wema never issued or validated an OTP for that
-    identity. The mobile app reads these booleans to decide whether to show the OTP
-    fields, so leaving them set traps the customer on a false "verified" screen.
-    """
+    """Rehydrate identity flags from proof rows; never clear them on a read."""
     if not wema.wema_live():
         return
 
     fields: list[str] = []
-    if user.bvn_verified and not _wema_otp_verified(user, WemaProvisioningAttempt.BVN):
-        user.bvn_hash = ""
-        user.bvn_last4 = ""
-        user.bvn_verified = False
-        fields += ["bvn_hash", "bvn_last4", "bvn_verified"]
-    if user.nin_verified and not _wema_otp_verified(user, WemaProvisioningAttempt.NIN):
-        user.nin_hash = ""
-        user.nin_last4 = ""
-        user.nin_verified = False
-        fields += ["nin_hash", "nin_last4", "nin_verified"]
+    if not user.bvn_verified and _wema_identity_proven(user, WemaProvisioningAttempt.BVN):
+        user.bvn_verified = True
+        fields.append("bvn_verified")
+    if not user.nin_verified and _wema_identity_proven(user, WemaProvisioningAttempt.NIN):
+        user.nin_verified = True
+        fields.append("nin_verified")
     if not fields:
         return
     user.recompute_tier()
     user.save(update_fields=fields + ["tier"])
-    log.warning("repaired_unbacked_wema_identity_flags user=%s fields=%s", user.id, fields)
+    log.info("rehydrated_wema_identity_flags user=%s fields=%s", user.id, fields)
 
 
 def _kyc_state(user) -> dict:
