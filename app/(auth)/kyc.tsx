@@ -636,12 +636,26 @@ const Kyc = () => {
         </KycRow>
       ) : null}
 
-        <KycRow icon="bank" title="BVN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.bvn_verified}>
-        <Btn label={bvnSent ? 'Enter BVN OTP' : 'Verify BVN'} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
+        {/* Tier 1 is earned on ONE verified identity (BVN or NIN) — see the
+            server's recompute_tier. So once either is verified, the OTHER is no
+            longer a pending requirement: it's optional and only adds Tier 2. Keep
+            offering it, but stop presenting it as "Verify BVN" as though the
+            customer still owes it, which reads as the app demanding a BVN it does
+            not need. */}
+        <KycRow icon="bank" title="BVN"
+          sub={status?.nin_verified
+            ? "Optional — you're already Tier 1 verified. Adding a second identity (with a selfie) unlocks Tier 2."
+            : status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"}
+          done={!!status?.bvn_verified}>
+        <Btn label={status?.nin_verified ? 'Add for Tier 2' : (bvnSent ? 'Enter BVN OTP' : 'Verify BVN')} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
       </KycRow>
 
-      <KycRow icon="user" title="NIN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.nin_verified}>
-        <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
+      <KycRow icon="user" title="NIN"
+        sub={status?.bvn_verified
+          ? "Optional — you're already Tier 1 verified. Adding a second identity (with a selfie) unlocks Tier 2."
+          : status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"}
+        done={!!status?.nin_verified}>
+        <Btn label={status?.bvn_verified ? 'Add for Tier 2' : (ninSent ? 'Enter NIN OTP' : 'Verify NIN')} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
       </KycRow>
 
       {status?.face_rail === 'wema' ? (

@@ -1809,8 +1809,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         return False
     # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
     # the app: only name + PIN are collected here (no BVN/NIN), and the app's tier
-    # ladder (recompute_tier) requires BVN + NIN for Tier 1. The user raises their
-    # tier by verifying their identity in the app.
+    # ladder (recompute_tier) requires a verified BVN or NIN for Tier 1. The user
+    # raises their tier by verifying their identity in the app.
     user = User.objects.create(
         username=local, phone=local, first_name=fn, last_name=ln, tier=0,
         email=(ob.payload.get("email") or "").strip().lower(),
