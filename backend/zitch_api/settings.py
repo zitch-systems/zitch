@@ -616,6 +616,17 @@ WHATSAPP = {
     "APP_SECRET": os.environ.get("WHATSAPP_APP_SECRET", ""),
     "BUSINESS_NUMBER": os.environ.get("WHATSAPP_BUSINESS_NUMBER", ""),  # for wa.me deep links
     "ALLOW_CHAT_SIGNUP": True,  # resolved from the environment below
+    # Pre-approved UTILITY template used to deliver a credit/debit alert when the
+    # customer is OUTSIDE WhatsApp's 24-hour customer-service window — the case
+    # for a transaction they did in the app, or a payout that settles hours after
+    # they last chatted. Meta refuses free-form text there, so without a template
+    # the alert silently never lands. Two body variables, both single-line:
+    # {{1}} = the alert summary, {{2}} = the reference. The template must be
+    # created and approved in WhatsApp Manager (see the "Credit and debit alerts"
+    # section of docs/whatsapp-production-operations.md); a blank value disables
+    # the fallback (in-window free-form still works).
+    "TXN_ALERT_TEMPLATE": os.environ.get("WHATSAPP_TXN_ALERT_TEMPLATE", "txn_alert").strip(),
+    "TXN_ALERT_TEMPLATE_LANG": os.environ.get("WHATSAPP_TXN_ALERT_TEMPLATE_LANG", "en_US").strip(),
 }
 
 # Public-facing links shown in the WhatsApp menu and help. Env-overridable so a

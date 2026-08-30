@@ -258,6 +258,56 @@ commits. A settled debit that is later reversed sends a reversal notice, because
 customer would be told money left and never told it came back. A provider outage
 is logged and swallowed: an alert must never fail a payment that succeeded.
 
+#### The WhatsApp leg needs a template (the 24-hour window)
+
+The email/SMS/push legs reach anyone. The **WhatsApp** leg carries a real
+platform constraint: Meta delivers a free-form text message only inside the
+customer's **24-hour customer-service window** — the 24 hours after their last
+inbound message to the business number. The two cases this alert exists for are
+exactly the ones where that window is usually **closed**:
+
+- a transaction the customer did **in the app**, having not messaged the bot; and
+- a bank payout that settles minutes-to-hours later (`reconcile_wema` /
+  `settle_payout`), by which time an earlier chat may have aged out.
+
+Outside the window Meta refuses the text with error **131047** ("re-engagement
+message"), and the alert silently never lands. This was the reported symptom:
+*"the WhatsApp alert for debit and credit is not working; transactions done on
+the mobile app should show the alert on WhatsApp."* An in-window transfer done on
+WhatsApp still gets its receipt and settlement lines normally — the gap is only
+proactive, out-of-window notices.
+
+The only message the platform lets us send outside the window is a
+**pre-approved UTILITY template**. So the alert path (`wallet/alerts.py`
+`_whatsapp_alert`) sends the free-form text first — free, and correct inside the
+window — and on a 131047 refusal falls back to the template
+(`reply_template` → `send_template`). A template conversation is therefore spent
+only when the free-form send was genuinely refused for being out-of-window; a
+transient error is left owed and retried as free-form by the reconcile sweep.
+
+**Ops action — create and approve the template (one-time).** Until it exists,
+out-of-window alerts still cannot land (the code logs
+`txn_alert_whatsapp_template_not_delivered` with the exact fix). In WhatsApp
+Manager → Message templates, create:
+
+| Field | Value |
+| --- | --- |
+| Name | `txn_alert` (or set `WHATSAPP_TXN_ALERT_TEMPLATE` to your chosen name) |
+| Category | **UTILITY** (not MARKETING — utility templates send inside a service context and are not gated by marketing opt-in) |
+| Language | `en_US` (or set `WHATSAPP_TXN_ALERT_TEMPLATE_LANG`) |
+| Body | `Zitch: {{1}}`<br>`Ref {{2}} — open the Zitch app for full details. Not you? Contact Zitch support immediately.` |
+
+Two body variables, both **single-line**: `{{1}}` the alert summary (e.g.
+`Debit of ₦70.00 to ADETAYO ADETOLA OGUNTIMEHIN. Balance ₦480.00.`) and `{{2}}`
+the reference. The code flattens both before sending — Meta rejects a variable
+carrying a newline, a tab, or four or more consecutive spaces. Provide a sample
+for each variable when submitting, or Meta rejects the template. Setting
+`WHATSAPP_TXN_ALERT_TEMPLATE=""` disables the fallback (in-window free-form still
+works).
+
+`inspect_failed_message_deliveries` (aggregate sent/delivered counts) and the
+`txn_alert_whatsapp_template_*` log lines are how you confirm it after approval.
+
 ### Approving with a fingerprint — the deep-link hand-off
 
 Biometric approval is the **primary** confirmation for any customer who has the
