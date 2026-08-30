@@ -362,6 +362,34 @@ def _whatsapp_retry_due(txn) -> bool:
     return True
 
 
+def retry_pending_whatsapp_alerts(*, since=None, limit: int = 50) -> int:
+    """Best-effort sweep for settled rows whose WhatsApp leg never landed.
+
+    The post-save signal retries when a row is touched, but a completed transfer
+    can otherwise sit quiet forever after one Meta outage. Reconciliation already
+    runs frequently and is the right place to sweep a bounded recent window.
+    """
+    from .models import Transaction
+
+    qs = (Transaction.objects
+          .filter(transaction_status=Transaction.SUCCESS, meta__alerted=True)
+          .exclude(meta__has_key="whatsapp_alerted")
+          .select_related("user")
+          .order_by("-created"))
+    if since is not None:
+        qs = qs.filter(created__gte=since)
+
+    sent = 0
+    for txn in qs[:max(0, int(limit or 0))]:
+        if str(txn.service or "").startswith(_SILENT_SERVICES):
+            continue
+        if not _whatsapp_retry_due(txn):
+            continue
+        if send_whatsapp_transaction_alert(txn):
+            sent += 1
+    return sent
+
+
 def _mark_flag(txn_pk, flag: str) -> None:
     from .models import Transaction
 

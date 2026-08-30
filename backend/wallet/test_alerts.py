@@ -220,6 +220,28 @@ class WhatsAppChannelAlertTests(TestCase):
         txn.refresh_from_db()
         self.assertTrue(txn.meta.get("whatsapp_alerted"))
 
+    def test_retry_sweep_sends_already_missed_app_alerts(self):
+        """Rows that settled before the retry fix may already have the generic
+        alert flag without the WhatsApp delivery flag. The reconcile sweep should
+        repair those without another email."""
+        from .alerts import retry_pending_whatsapp_alerts
+
+        txn = Transaction.objects.create(
+            user=self.user, amount=Decimal("1000"), direction=Transaction.OUT,
+            service="Transfer to Ada", reference="APP-MISSED-1",
+            transaction_status=Transaction.SUCCESS,
+            meta={"channel": "app", "alerted": True})
+
+        with patch("utility.providers.send_email") as email, \
+             patch("whatsapp.router.reply",
+                   return_value={"success": True, "message_id": "wamid.2"}) as wa_reply:
+            sent = retry_pending_whatsapp_alerts(limit=10)
+        self.assertEqual(sent, 1)
+        email.assert_not_called()
+        wa_reply.assert_called_once()
+        txn.refresh_from_db()
+        self.assertTrue(txn.meta.get("whatsapp_alerted"))
+
     def test_an_app_transfer_alert_identifies_the_destination(self):
         """The chat must say more than amount/ref for a debit made in the app."""
         from .alerts import _describe

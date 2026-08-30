@@ -167,6 +167,13 @@ class Command(BaseCommand):
             alert(f"reconcile_wema: all {payouts_seen} pending-payout status queries failed â€” "
                   f"settlement stalled", level="error", payouts=payouts_seen)
 
+        from wallet.alerts import retry_pending_whatsapp_alerts
+        whatsapp_alerts = retry_pending_whatsapp_alerts(
+            since=timezone.now() - timedelta(days=max(1, options["lookback_days"])),
+            limit=50,
+        )
+
         self.stdout.write(
             f"Wema reconcile: {credited} credit(s) / {scanned} wallet(s); "
-            f"payouts settled {settled}, reversed {reversed_}")
+            f"payouts settled {settled}, reversed {reversed_}; "
+            f"WhatsApp alerts retried {whatsapp_alerts}")
