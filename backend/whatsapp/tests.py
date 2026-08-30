@@ -3139,7 +3139,11 @@ class ChatKycTests(TestCase):
         self.assertTrue(self.user.bvn_verified)
         self.assertFalse(self.user.nin_verified)
         self.assertTrue(self.user.nin_hash)   # submitted for review, hashed
-        self.assertEqual(self.user.tier, 0)   # NOT granted on a pending identity
+        # Tier 1 is earned on the FIRST verified identity (email + phone + BVN or
+        # NIN — see User.recompute_tier). The second identity being queued for
+        # review is what unlocks Tier 2, and must not hold the customer at the
+        # floor in the meantime.
+        self.assertEqual(self.user.tier, 1)
         self.assertIn("review", self.last_reply().lower())
         # And the flow ended rather than asking for the same number again.
         self.assertFalse(PendingAction.objects.filter(msisdn=MSISDN, action_type="kyc").exists())
