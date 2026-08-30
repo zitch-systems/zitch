@@ -889,6 +889,54 @@ class FullJourneyE2ETests(TestCase):
                                    disco="1", meter="1234567890")[0], 200)
 
 
+class KycStatusRepairTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="08070000001",
+            phone="08070000001",
+            email="kyc-repair@zitch.test",
+            password="Passw0rd123!",
+        )
+        self.user.bvn_verified = True
+        self.user.nin_verified = True
+        self.user.recompute_tier()
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "tier"])
+
+    @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
+                             "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
+    def test_kyc_status_never_clears_existing_verified_flags(self):
+        """A status refresh must not turn a completed identity back into a prompt."""
+        from accounts.views import _kyc_state
+
+        state = _kyc_state(self.user)
+        self.user.refresh_from_db()
+
+        self.assertTrue(state["bvn_verified"])
+        self.assertTrue(state["nin_verified"])
+        self.assertTrue(self.user.bvn_verified)
+        self.assertTrue(self.user.nin_verified)
+
+    @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
+                             "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
+    def test_kyc_status_rehydrates_flags_from_identity_proof(self):
+        from accounts.models import IdentityProof, record_identity_proof
+        from accounts.views import _kyc_state
+
+        self.user.bvn_verified = False
+        self.user.nin_verified = False
+        self.user.tier = 0
+        self.user.save(update_fields=["bvn_verified", "nin_verified", "tier"])
+        record_identity_proof(self.user, IdentityProof.BVN, "12345678901",
+                              source=IdentityProof.WEMA_WALLET_OTP)
+
+        state = _kyc_state(self.user)
+        self.user.refresh_from_db()
+
+        self.assertTrue(state["bvn_verified"])
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(state["nin_verified"])
+
+
 class TransactionPinLockoutTests(TestCase):
     """A stolen session token must not be usable to brute-force the short
     transaction PIN that gates money movement. The lock is per-user, so it can't
