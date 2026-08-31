@@ -13,18 +13,18 @@ import { useTheme, font } from '@/lib/theme';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 
 /**
- * In-app liveness capture for the non-bank (document/Prembly) KYC rail — a
+ * In-app liveness capture for the Tier-2 Prembly + Wema upgrade rail — a
  * live front-camera preview with a face guide and real-time "no face
  * detected" feedback, replacing a bare gallery-style camera snap.
  *
  * On-device face detection here is UX only, never the security boundary:
  * it just tells the customer when to press the shutter. The actual liveness
  * verdict is still decided server-side by Prembly on the captured photo,
- * exactly as before — nothing here changes what `/api/kyc/face/` trusts.
+ * before the same image is sent to Wema's combined account-upgrade endpoint.
  *
  * The bank rail (`FaceVerifyModal`) is a completely different component: it
  * hands the whole capture off to the bank's own hosted page. This one is
- * for the deploys where that rail isn't live.
+ * only for proving a BVN/NIN instead of SMS OTP.
  */
 const FaceLivenessModal = ({
   visible,
@@ -110,7 +110,7 @@ const FaceLivenessModal = ({
       ? 'No face detected — center your face in the oval'
       : faceCount > 1
         ? 'Only one face at a time, please'
-        : 'Hold still…');
+        : 'Face detected — tap the button');
 
   return (
     <Modal visible={visible} animationType="slide" onShow={open} onRequestClose={close}>

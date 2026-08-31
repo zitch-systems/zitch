@@ -49,7 +49,7 @@ import logging
 import re
 from functools import wraps
 
-from django.db import transaction as db_transaction
+from django.db import IntegrityError, transaction as db_transaction
 from django.http import JsonResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
@@ -702,10 +702,13 @@ def wema_face_callback(request, state=""):
       * the returned identity must hash to the one that session was opened with;
       * the session must not have expired, and is consumed either way.
 
-    Only then is `face_verified` set. Always answers 200 — a non-2xx invites a retry
-    of something we have already recorded.
+    Only then is the session's BVN or NIN marked verified. This hosted Wema check is
+    the ownership-proof alternative to Wallet Service SMS OTP; it is NOT the
+    Prembly live-selfie check used for Tier 2, so it must never set ``face_verified``.
+    Always answers 200 — a non-2xx invites a retry of something already recorded.
     """
-    from accounts.models import hash_identifier
+    from accounts.models import (IdentityProof, User, hash_identifier,
+                                 record_identity_proof)
 
     from .models import WemaFaceSession
 
@@ -720,6 +723,7 @@ def wema_face_callback(request, state=""):
     body = request.wema_body
     correlation = str(body.get("c_id") or "")[:160]
     identity = str(body.get("id") or "")
+    returned_kind = str(body.get("id_type") or "").strip().lower()
     claimed = bool(body.get("success"))
     # ALAT names the identity number "id", and the decorator records this body into
     # WebhookEvent — the one table we keep deliberately immutable — after we return.
@@ -762,21 +766,112 @@ def wema_face_callback(request, state=""):
                   session=(state or "")[:8])
             request.wema_action = "denied:identity_mismatch"
             return JsonResponse({"status": True}, status=200)
+        if returned_kind and returned_kind != session.identity_type:
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:identity_type_mismatch"
+            return JsonResponse({"status": True}, status=200)
+
+        # Lock the user as well as the session. Two face sessions for two different
+        # BVNs could otherwise both observe an unverified user and both succeed,
+        # leaving the last writer as the account identity while retaining two proof
+        # rows. Serialising here makes the second callback hit the replacement guard.
+        user = User.objects.select_for_update().get(pk=session.user_id)
+        kind = session.identity_type
+        flag_field = f"{kind}_verified"
+        hash_field = f"{kind}_hash"
+        last4_field = f"{kind}_last4"
+
+        # A successful face check may CLAIM an unverified identity, but it may not
+        # replace a different identity this account has already proven. The global
+        # uniqueness check closes the race with another customer claiming the same
+        # identity through OTP at the same time; the database constraint is the final
+        # guard and the inner savepoint lets us turn that collision into a clean deny.
+        stored_hash = getattr(user, hash_field, "") or ""
+        if getattr(user, flag_field, False) and not hmac.compare_digest(
+                stored_hash, session.identity_hash):
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:verified_identity_replacement"
+            return JsonResponse({"status": True}, status=200)
+        if User.objects.exclude(pk=user.pk).filter(
+                **{hash_field: session.identity_hash}).exists():
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:identity_owned"
+            return JsonResponse({"status": True}, status=200)
+
+        setattr(user, hash_field, session.identity_hash)
+        setattr(user, last4_field, identity[-4:])
+        setattr(user, flag_field, True)
+        user.recompute_tier()
+        try:
+            with db_transaction.atomic():
+                user.save(update_fields=[hash_field, last4_field, flag_field, "tier"])
+                record_identity_proof(
+                    user, kind, session.identity_hash,
+                    source=IdentityProof.WEMA_FACE,
+                    provider_reference=correlation,
+                    prehashed=True,
+                )
+        except IntegrityError:
+            session.status = WemaFaceSession.FAILED
+            session.save(update_fields=["status", "updated"])
+            request.wema_action = "denied:identity_race"
+            return JsonResponse({"status": True}, status=200)
 
         session.status = WemaFaceSession.VERIFIED
         session.correlation_id = correlation
         session.save(update_fields=["status", "correlation_id", "updated"])
-        user = session.user
-        if not user.face_verified:
-            user.face_verified = True
-            user.recompute_tier()
-            user.save(update_fields=["face_verified", "tier"])
+
+    # A face pass can also replace OTP in Tier-1 account creation. The creation call
+    # is intentionally outside the database transaction: an APIM timeout must not
+    # hold locks or roll back genuine identity proof. Wema's profiled account callback
+    # remains the authoritative NUBAN delivery; the immediate read-back only shortens
+    # the happy path when the account is already visible.
+    account_started = True
+    account_failed = False
+    from .services import attach_existing_bank_account, get_or_create_wallet
+    wallet = get_or_create_wallet(user)
+    if not wallet.account_number:
+        account = wema_provider.create_wallet_with_face(
+            user.phone or "", user.email or f"{user.phone}@zitch.app",
+            identity_type=kind, identity_value=identity,
+            correlation_id=correlation,
+        )
+        account_started = bool(account.get("success"))
+        account_failed = not account_started
+        # Read back on BOTH outcomes. "Customer already exists" is a failed create
+        # response but often means the NUBAN was created by an earlier request whose
+        # callback we missed; adopting it is the correct recovery, not asking the
+        # customer to verify again.
+        try:
+            recovered, _detail = attach_existing_bank_account(
+                user, using_bvn=kind == "bvn")
+            if recovered and recovered.account_number:
+                account_started = True
+                account_failed = False
+        except Exception:  # noqa: BLE001 — callback/reconcile remains authoritative
+            log.warning("wema_face_account_readback_failed user=%s", user.id,
+                        exc_info=True)
+        if account_failed:
+            log.warning("wema_face_account_start_failed user=%s kind=%s msg=%s",
+                        user.id, kind, account.get("message", ""))
+            alert("Wema face identity passed but account creation did not start",
+                  level="error", user_id=user.id, identity_type=kind)
+    wallet.refresh_from_db(fields=["account_number"])
     request.wema_action = "verified"
-    _tell_whatsapp_face_passed(user)
+    _tell_whatsapp_face_passed(
+        user, kind,
+        account_pending=bool(account_started and not wallet.account_number),
+        account_failed=account_failed,
+    )
     return JsonResponse({"status": True}, status=200)
 
 
-def _tell_whatsapp_face_passed(user) -> None:
+def _tell_whatsapp_face_passed(user, identity_type: str,
+                               *, account_pending: bool = False,
+                               account_failed: bool = False) -> None:
     """Close the loop for a customer who started this in chat.
 
     The result arrives on OUR server, so a chat customer is left staring at a link
@@ -784,9 +879,16 @@ def _tell_whatsapp_face_passed(user) -> None:
     allowed to fail the callback: the tier is already lifted, and a messaging hiccup
     must not turn a completed verification into a 500 the bank will retry.
     """
-    from whatsapp.models import WhatsAppLink
+    from whatsapp.models import PendingAction, WhatsAppLink
 
     try:
+        # If account creation started, this face result replaced the bank SMS code
+        # and the old action must stop intercepting later messages. When account
+        # creation failed, keep that OTP action alive as the customer's fallback.
+        if not account_failed:
+            PendingAction.objects.filter(
+                user=user, action_type="add_account",
+            ).delete()
         msisdn = (WhatsAppLink.objects
                   .filter(user=user, status=WhatsAppLink.ACTIVE)
                   .exclude(wa_msisdn="")
@@ -794,8 +896,17 @@ def _tell_whatsapp_face_passed(user) -> None:
         if not msisdn:
             return
         from whatsapp.router import reply
-        reply(msisdn, "✅ *Face check confirmed.*\n\n"
+        if account_failed:
+            account_note = ("\n\n⚠️ The bank did not start account creation. You can "
+                            "still enter the SMS code already sent to finish setup.")
+        elif account_pending:
+            account_note = ("\n\n🏦 Your account is being created; we'll confirm the "
+                            "account number when the bank sends it.")
+        else:
+            account_note = ""
+        reply(msisdn, f"✅ *{identity_type.upper()} verified by face.*\n\n"
                       f"You're now Tier {user.tier} — up to "
-                      f"₦{user.transaction_limit:,.0f} per transaction.")
+                      f"₦{user.transaction_limit:,.0f} per transaction."
+                      + account_note)
     except Exception:  # noqa: BLE001
         log.warning("wa_face_notify_failed user=%s", user.id, exc_info=True)

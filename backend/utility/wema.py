@@ -67,6 +67,7 @@ log = logging.getLogger("zitch")
 _PATH = {
     "wallet_nin": "/wallet-creation",        # create wallet with NIN (OTP)
     "wallet_bvn": "/account-creation",       # create wallet with BVN (OTP)
+    "face_account": "/create-account-face",  # create Tier-1 wallet with Wema face correlation
     "acct_mgt": "/ws-acct-mgt",              # balance + transaction history
     "upgrade": "/account-upgrade",           # tier upgrade + KYC/PND status read
     "credit": "/credit-wallet",              # fund a wallet from the channel account
@@ -597,6 +598,52 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     query = urlencode({kind: identity_value, "x_tk": _face_key(),
                        "cb_uri": callback_url}, quote_via=quote)
     return f"{base}/?{query}"
+
+
+def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
+                            identity_value: str, correlation_id: str) -> dict:
+    """Create a Tier-1 partnership NUBAN after Wema's hosted face check.
+
+    This is the documented OTP alternative. The hosted verifier returns the
+    correlationId to our authenticated callback; only then do we call the
+    ``*-withoutOtp-v2`` account-creation endpoint. It is deliberately separate
+    from ``upgrade_tier2``: this proves one BVN/NIN and creates Tier 1, while the
+    Tier-2 endpoint needs both identities plus a Prembly-approved live image.
+    """
+    kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
+    if not _product_live("face_account"):
+        if _mock_blocked():
+            return {"success": False,
+                    "message": "Face-based account creation is not configured",
+                    "diagnostic": _product_config_diag("face_account")}
+        return {"success": True, "mock": True, "tracking_id": "mock-face"}
+    if not correlation_id:
+        return {"success": False, "message": "Missing face verification reference"}
+    path = f"/api/partnership/tier1-{kind}-withoutOtp-v2"
+    body = {
+        "phoneNumber": phone,
+        "email": email,
+        kind: identity_value,
+        "correlationId": correlation_id,
+    }
+    try:
+        resp = _post("face_account", path, body)
+        data = resp.json()
+        d = data.get("data", {}) if isinstance(data, dict) else {}
+        ok = _ok(data)
+        message = _msg(data)
+        if not ok:
+            log.warning("wema_face_account_failed status=%s msg=%s",
+                        resp.status_code, message)
+        return {
+            "success": ok,
+            "message": message,
+            "tracking_id": str((d or {}).get("trackingId") or ""),
+            "account_status": str((d or {}).get("accountGenerationStatus") or ""),
+            "raw": data,
+        }
+    except requests.RequestException as exc:
+        return _unreachable(exc)
 
 
 def get_account_details(phone: str, *, bvn: bool = False) -> dict:

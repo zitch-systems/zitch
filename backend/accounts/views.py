@@ -989,7 +989,18 @@ def _kyc_state(user) -> dict:
         # completely different on the bank rail — one opens the bank's own verifier,
         # the other stops asking for a document — and a screen that guesses wrong
         # either asks for a file nobody will read or hides the only working button.
-        "face_rail": "wema" if wema.face_verify_live() else "document",
+        # Two different face products exist and must never share a flag:
+        # - Wema hosted face is an alternative to SMS OTP for proving one BVN/NIN.
+        # - Prembly live selfie is the Tier-2 biometric sent with BVN+NIN to upgrade.
+        # Older app builds understand face_rail=document, which safely keeps the
+        # generic Tier-2 face card on Prembly instead of mislabelling Wema identity
+        # proof as a Tier-2 face pass.
+        "identity_face_available": wema.face_verify_live(),
+        "identity_verification_methods": (["sms_otp", "wema_face"]
+                                          if wema.face_verify_live()
+                                          else ["sms_otp"]),
+        "face_rail": "document",
+        "tier2_face_rail": "prembly",
         "address_rail": ("wema" if (kyc_provider() == "wema" and wema.address_verify_live())
                          else "document"),
     }
@@ -1451,21 +1462,14 @@ FACE_SESSION_TTL_MINUTES = 20
 def face_identity_error(user, identity_type: str, raw: str) -> str:
     """Why this identity may NOT open a face session for this user, or "".
 
-    The face check only means something when it runs against an identity the account
-    has already PROVEN. Without this the session bound to whatever eleven digits the
-    caller supplied, and the callback then compared the bank's answer to that same
-    self-chosen value — a loop that is internally consistent and establishes nothing.
-
-    The attack it closes: someone who has taken over an account documented to another
-    person passes the bank's liveness check honestly, using their OWN unused BVN. The
-    face matches the BVN they presented, the bank says yes, and the tier lifts on the
-    victim's account — which is the exact substitution the face step exists to catch.
-
-    Shared by both entry points on purpose. The chat rail had no check at all, so a
-    number the API answered with a 409 was accepted in WhatsApp.
+    Wema's hosted face flow is itself an ownership proof for a BVN/NIN, so an
+    unverified identity is allowed. What it may never do is replace a different
+    identity of the same type that this Zitch account has already proved. Global
+    uniqueness is checked separately before the session is created and again in the
+    callback transaction.
     """
     if not getattr(user, f"{identity_type}_verified", False):
-        return (f"Verify your {identity_type.upper()} first — the face check runs against it.")
+        return ""
     stored = getattr(user, f"{identity_type}_hash", "") or ""
     if not stored or not hmac.compare_digest(hash_identifier(raw), stored):
         return (f"That {identity_type.upper()} isn't the one on this account. "
@@ -1504,8 +1508,9 @@ def _face_callback_url(state: str) -> str:
 def kyc_face_start(request):
     """POST /api/kyc/face/start/ {access_token, bvn|nin} -> {url, session}
 
-    Opens a run of ALAT's face-biometric web app. The customer presents their face to
-    the BANK's verifier against their own BVN/NIN; we never see or store an image.
+    Opens ALAT's hosted face-biometric ownership check. This is an alternative to
+    Wallet Service SMS OTP for proving one BVN/NIN and creating Tier 1; it is not the
+    Prembly live-selfie requirement for a Tier-2 account upgrade.
 
     The BVN/NIN is used to build the URL and then discarded — only its keyed hash is
     kept on the session, which is what the bank's callback is later matched against.
@@ -1521,6 +1526,12 @@ def kyc_face_start(request):
         return fail("Enter your 11-digit BVN or NIN")
     if _identity_owned_by_another_user(user, identity_type, raw):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
+    stored_hash = getattr(user, f"{identity_type}_hash", "") or ""
+    if (getattr(user, f"{identity_type}_verified", False)
+            and hmac.compare_digest(hash_identifier(raw), stored_hash)):
+        return ok(success=True, status="verified", already=True,
+                  message=f"{identity_type.upper()} is already verified",
+                  **_kyc_state(user))
     binding = face_identity_error(user, identity_type, raw)
     if binding:
         return fail(binding, status=400)

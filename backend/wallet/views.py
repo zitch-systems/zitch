@@ -17,7 +17,8 @@ from common.http import (
     mask_pii, ok, parse_amount, require_user, spend_key, verify_transaction_pin,
 )
 from common.ratelimit import ratelimit
-from utility.providers import funding_initialize, funding_verify, payment_provider
+from utility.providers import (funding_initialize, funding_verify, kyc_verify_face,
+                               payment_provider)
 from utility import wema as wema_provider
 
 from .models import FundingIntent, Wallet, WemaProvisioningAttempt
@@ -594,6 +595,15 @@ def wema_wallet_upgrade_tier2(request):
         return fail("This BVN is already linked to another Zitch account", status=409)
     if _identity_owned_by_another_user(user, WemaProvisioningAttempt.NIN, nin):
         return fail("This NIN is already linked to another Zitch account", status=409)
+
+    # Prembly is the liveness authority for Tier 2. A camera frame is only input;
+    # accepting it directly would let any still photo become ``face_verified`` and
+    # would send unverified biometric data to the bank. Only forward the same image
+    # after Prembly has returned a positive liveness/face verdict.
+    biometric = kyc_verify_face(live_image)
+    if not biometric.get("success"):
+        return fail(biometric.get("message", "Live face verification failed"),
+                    status=400)
 
     res = wema_provider.upgrade_tier2(wallet.account_number, bvn=bvn, nin=nin,
                                      live_image=live_image)

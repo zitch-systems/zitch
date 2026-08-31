@@ -377,12 +377,14 @@ class IdentityProof(models.Model):
     BVN = "bvn"
     NIN = "nin"
     WEMA_WALLET_OTP = "wema_wallet_otp"
+    WEMA_FACE = "wema_face"
     WEMA_TIER2 = "wema_tier2"
     IDENTITY_PROVIDER_OTP = "identity_provider_otp"
 
     IDENTITY_CHOICES = ((BVN, "BVN"), (NIN, "NIN"))
     SOURCE_CHOICES = (
         (WEMA_WALLET_OTP, "Wema wallet OTP"),
+        (WEMA_FACE, "Wema hosted face verification"),
         (WEMA_TIER2, "Wema Tier 2 upgrade"),
         (IDENTITY_PROVIDER_OTP, "Identity provider OTP"),
     )

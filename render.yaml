@@ -160,6 +160,12 @@ services:
         sync: false
       - key: WEMA_ACCOUNT_CREATION_KEY
         sync: false
+      # Used only by the API callback after Wema hosted face verification. Leave
+      # blank to reuse WEMA_ACCOUNT_CREATION_KEY and WEMA_BASE_URL.
+      - key: WEMA_FACE_ACCOUNT_KEY
+        sync: false
+      - key: WEMA_FACE_ACCOUNT_BASE_URL
+        sync: false
       - key: WEMA_CARD_KEY
         sync: false
       - key: WEMA_AIRTIME_KEY

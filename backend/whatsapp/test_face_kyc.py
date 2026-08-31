@@ -49,12 +49,12 @@ def _user(**flags):
 
 @override_settings(WEMA=FACE_ON)
 class FaceStepLadderTests(TestCase):
-    def test_the_ladder_lists_the_face_check_when_the_rail_is_live(self):
+    def test_hosted_face_is_not_a_separate_kyc_rung(self):
         u = _user()
-        self.assertIn("face", router._kyc_outstanding(u))
-        self.assertIn("Face check", router._kyc_status_lines(u))
+        self.assertNotIn("face", router._kyc_outstanding(u))
+        self.assertNotIn("Face check", router._kyc_status_lines(u))
 
-    def test_a_verified_face_is_no_longer_outstanding(self):
+    def test_tier2_face_status_does_not_change_the_identity_ladder(self):
         u = _user(face_verified=True)
         self.assertNotIn("face", router._kyc_outstanding(u))
 
@@ -65,13 +65,11 @@ class FaceStepLadderTests(TestCase):
         self.assertNotIn("face", router._kyc_outstanding(u))
         self.assertNotIn("Face check", router._kyc_status_lines(u))
 
-    def test_the_face_step_is_not_offered_before_an_identity_is_verified(self):
-        # It runs against a BVN/NIN the customer has proven. Offering it first
-        # would send them to the bank with a number we have no reason to trust.
+    def test_unverified_identities_remain_the_only_identity_rungs(self):
         u = _user()
         u.bvn_verified = u.nin_verified = False
         u.save(update_fields=["bvn_verified", "nin_verified"])
-        self.assertNotIn("face", router._kyc_outstanding(u))
+        self.assertEqual(router._kyc_outstanding(u), ["bvn", "nin"])
 
 
 @override_settings(WEMA=FACE_ON)
@@ -89,6 +87,17 @@ class FaceLinkTests(TestCase):
         self.assertFalse(self.user.face_verified)
         cta.assert_called_once()
         self.assertIn("face.example", cta.call_args.args[2])
+
+    def test_account_otp_also_offers_hosted_face_as_an_alternative(self):
+        with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
+            offered = router._send_account_face_option(
+                self.pa, self.user, MSISDN, "bvn", VERIFIED_BVN)
+        self.assertTrue(offered)
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+        body, url = str(cta.call_args.args[1]), str(cta.call_args.args[2])
+        self.assertIn("instead of entering the SMS code", body)
+        self.assertNotIn(VERIFIED_BVN, body)
+        self.assertIn("face.example", url)
 
     def test_the_session_binds_the_identity_that_was_entered(self):
         from accounts.models import hash_identifier
@@ -148,9 +157,10 @@ class FaceCallbackNotifiesChatTests(TestCase):
                                    content_type="application/json")
         self.assertEqual(res.status_code, 200)
         user.refresh_from_db()
-        self.assertTrue(user.face_verified)
+        self.assertTrue(user.bvn_verified)
+        self.assertFalse(user.face_verified)
         rep.assert_called_once()
-        self.assertIn("Face check confirmed", str(rep.call_args.args[1]))
+        self.assertIn("BVN verified by face", str(rep.call_args.args[1]))
 
     def test_a_messaging_failure_never_fails_the_callback(self):
         # The tier is already lifted; a 500 here would have the bank retry a
@@ -171,7 +181,21 @@ class FaceCallbackNotifiesChatTests(TestCase):
                                    content_type="application/json")
         self.assertEqual(res.status_code, 200)
         user.refresh_from_db()
-        self.assertTrue(user.face_verified)
+        self.assertTrue(user.bvn_verified)
+        self.assertFalse(user.face_verified)
+
+    def test_failed_face_account_start_keeps_the_sms_otp_fallback(self):
+        from wallet.wema_callbacks import _tell_whatsapp_face_passed
+
+        user = _user()
+        action = PendingAction.objects.create(
+            user=user, msisdn=MSISDN, action_type="add_account", state="otp",
+            payload={"tracking_id": "TRACK"}, expires_at=router._flow_deadline("otp"),
+        )
+        with patch("whatsapp.router.reply") as rep:
+            _tell_whatsapp_face_passed(user, "bvn", account_failed=True)
+        self.assertTrue(PendingAction.objects.filter(pk=action.pk).exists())
+        self.assertIn("enter the SMS code", str(rep.call_args.args[1]))
 
 
 @override_settings(WEMA=FACE_ON)

@@ -2592,7 +2592,7 @@ def _do_support(msisdn: str) -> None:
 # the chat. Each step drives the same server-side checks the app uses, and the
 # tier is DERIVED at the end (recompute_tier), never granted by this flow.
 # --------------------------------------------------------------------------- #
-_KYC_STEPS = ("phone", "email", "bvn", "nin", "face")
+_KYC_STEPS = ("phone", "email", "bvn", "nin")
 
 
 #: PendingAction.state while the face step is waiting for an identity number that
@@ -2645,15 +2645,11 @@ def _kyc_outstanding(user) -> list:
         "email": user.email_verified,
         "bvn": user.bvn_verified,
         "nin": user.nin_verified,
-        "face": user.face_verified,
     }
-    steps = _KYC_STEPS if _face_step_available() else _KYC_STEPS[:-1]
-    # The face check runs against a BVN/NIN the customer has already proven, so it
-    # is never offered before one of them is verified — otherwise the chat would
-    # send them to the bank with a number we have no reason to trust.
-    if not (user.bvn_verified or user.nin_verified):
-        steps = tuple(s for s in steps if s != "face")
-    return [step for step in steps if not done[step]]
+    # Wema hosted face is an ALTERNATIVE way to complete the BVN/NIN item, not a
+    # fifth KYC rung. Tier-2 liveness is Prembly and is handled by the combined bank
+    # upgrade, so neither belongs in the initial identity checklist.
+    return [step for step in _KYC_STEPS if not done[step]]
 
 
 def _kyc_status_lines(user) -> str:
@@ -2666,7 +2662,7 @@ def _kyc_status_lines(user) -> str:
         f"{mark(user.email_verified)} Email address",
         f"{mark(user.bvn_verified)} BVN",
         f"{mark(user.nin_verified)} NIN",
-    ] + ([f"{mark(user.face_verified)} Face check"] if _face_step_available() else []))
+    ])
 
 
 def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
@@ -3424,6 +3420,10 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     pa.payload["tracking_id"] = str(res.get("tracking_id") or "")
     pa.payload["using_bvn"] = using_bvn
     _touch(pa, state="otp", payload=pa.payload)
+    # Wema face is the bank-documented alternative to this SMS OTP. Send it as a
+    # second secure option while leaving the OTP attempt intact; whichever provider
+    # result arrives first completes the same identity/account setup.
+    _send_account_face_option(pa, user, msisdn, kind, digits)
     # The code completes account creation and is what name-matches the ID, so it
     # belongs on the secure screen too. Collecting the BVN privately and then
     # asking for the code that unlocks it in clear would be half a fix.
@@ -3467,6 +3467,53 @@ def _send_account_otp_flow(pa: PendingAction) -> bool:
     log.warning("wa_account_otp_flow_send_failed pa=%s detail=%r", pa.id,
                 res.get("error_detail", ""))
     return False
+
+
+def _send_account_face_option(pa: PendingAction, user, msisdn: str,
+                              kind: str, digits: str) -> bool:
+    """Offer Wema hosted face as the alternative to the just-sent account OTP.
+
+    The raw identity appears only inside the CTA URL sent through Meta's button
+    payload, never as message text. The callback owns the verdict and uses Wema's
+    correlationId to start the matching without-OTP Tier-1 account creation.
+    """
+    if not _face_step_available():
+        return False
+    from accounts.models import hash_identifier
+    from accounts.views import (FACE_SESSION_TTL_MINUTES, _face_callback_url,
+                                _identity_owned_by_another_user,
+                                face_identity_error)
+    from wallet.models import WemaFaceSession
+
+    if _identity_owned_by_another_user(user, kind, digits):
+        return False
+    if face_identity_error(user, kind, digits):
+        return False
+    session = WemaFaceSession.objects.create(
+        user=user,
+        state=secrets.token_urlsafe(32)[:64],
+        identity_type=kind,
+        identity_hash=hash_identifier(digits),
+        expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
+    )
+    url = wema_provider.face_verification_url(
+        kind, digits, _face_callback_url(session.state))
+    result = send_cta_url(
+        msisdn,
+        "🤳 *Prefer face verification?*\n\nYou can complete the same "
+        f"{kind.upper()} check on Wema's secure face page instead of entering "
+        "the SMS code. Use either option — not both.",
+        url,
+        cta="Use Wema face instead",
+        footer="Secured by your bank",
+        allow_text_fallback=False,
+    )
+    if not result.get("success"):
+        session.delete()
+        return False
+    log.info("wa_account_face_option_sent user=%s kind=%s session=%s",
+             user.pk, kind, session.state[:8])
+    return True
 
 
 def account_flow_otp(pa: PendingAction, code: str) -> tuple[str, str]:

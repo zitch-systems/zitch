@@ -264,9 +264,11 @@ class WemaWalletProvisioningTests(TestCase):
         self.user.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
 
+    @patch("wallet.views.kyc_verify_face", return_value={"success": True})
     @patch("utility.wema.upgrade_tier2", return_value={"success": True, "raw": {"message": "ok"}})
     @patch("wallet.views.sync_bank_tier")
-    def test_existing_account_combined_upgrade_marks_bvn_nin_and_face(self, _sync, mock_upgrade):
+    def test_existing_account_combined_upgrade_marks_bvn_nin_and_face(
+            self, _sync, mock_upgrade, mock_liveness):
         wallet = Wallet.objects.get(user=self.user)
         wallet.account_number = "0123456789"
         wallet.account_name = "ADA EZE"
@@ -282,9 +284,27 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(self.user.bvn_verified)
         self.assertTrue(self.user.nin_verified)
         self.assertTrue(self.user.face_verified)
+        mock_liveness.assert_called_once_with("base64-face")
         mock_upgrade.assert_called_once_with(
             "0123456789", bvn="22222222222", nin="12345678901",
             live_image="base64-face")
+
+    @patch("wallet.views.kyc_verify_face",
+           return_value={"success": False, "message": "No live face detected"})
+    @patch("utility.wema.upgrade_tier2")
+    def test_existing_account_upgrade_never_reaches_wema_when_liveness_fails(
+            self, mock_upgrade, _mock_liveness):
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.account_number = "0123456789"
+        wallet.save(update_fields=["account_number"])
+        r = self._post("/api/wallet/wema/upgrade-tier2/", {
+            "bvn": "22222222222",
+            "nin": "12345678901",
+            "live_image": "still-photo",
+        })
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("live face", r.json()["message"].lower())
+        mock_upgrade.assert_not_called()
 
 
 @override_settings(PAYMENT_PROVIDER="wema")

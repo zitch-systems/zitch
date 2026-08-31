@@ -14,7 +14,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from accounts.models import User, hash_identifier
+from accounts.models import IdentityProof, User, hash_identifier
 from wallet.models import WemaFaceSession
 
 # No token segment: this URL is handed to the customer, so it carries the
@@ -37,6 +37,18 @@ class FaceCallbackTests(TestCase):
             user=self.user, state="s" * 40, identity_type="bvn",
             identity_hash=hash_identifier("22222222222"),
             expires_at=timezone.now() + timedelta(minutes=20))
+        self.account_start = mock.patch(
+            "utility.wema.create_wallet_with_face",
+            return_value={"success": True},
+        )
+        self.mock_account_start = self.account_start.start()
+        self.addCleanup(self.account_start.stop)
+        self.readback = mock.patch(
+            "wallet.services.attach_existing_bank_account",
+            return_value=(None, "Account creation pending"),
+        )
+        self.mock_readback = self.readback.start()
+        self.addCleanup(self.readback.stop)
 
     def _post(self, state, body):
         return self.client.post(CB.format(state), body,
@@ -48,7 +60,15 @@ class FaceCallbackTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.user.refresh_from_db()
         self.session.refresh_from_db()
-        self.assertTrue(self.user.face_verified)
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(self.user.face_verified)
+        proof = IdentityProof.objects.get(user=self.user, identity_type=IdentityProof.BVN)
+        self.assertEqual(proof.source, IdentityProof.WEMA_FACE)
+        self.mock_account_start.assert_called_once_with(
+            self.user.phone, self.user.email or f"{self.user.phone}@zitch.app",
+            identity_type="bvn", identity_value="22222222222",
+            correlation_id="COR1",
+        )
         self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
         self.assertEqual(self.session.correlation_id, "COR1")
 
@@ -63,8 +83,30 @@ class FaceCallbackTests(TestCase):
         self.assertEqual(res.status_code, 200)
         self.user.refresh_from_db()
         self.session.refresh_from_db()
-        self.assertTrue(self.user.face_verified)
+        self.assertTrue(self.user.bvn_verified)
+        self.assertFalse(self.user.face_verified)
         self.assertEqual(self.session.correlation_id, "COR2")
+
+    def test_customer_already_exists_recovers_the_existing_nuban(self):
+        from wallet.services import get_or_create_wallet
+
+        self.mock_account_start.return_value = {
+            "success": False, "message": "Customer already exists",
+        }
+
+        def recover(user, **_kwargs):
+            wallet = get_or_create_wallet(user)
+            wallet.account_number = "0123456789"
+            wallet.save(update_fields=["account_number"])
+            return wallet, "Recovered"
+
+        self.mock_readback.side_effect = recover
+        res = self._post(self.session.state,
+                         {"success": True, "c_id": "COR3", "id": "22222222222"})
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.wallet.account_number, "0123456789")
 
     def test_the_fixed_path_with_no_state_verifies_nobody(self):
         # A bare POST to the registered URL names no session, so it decides nothing.
@@ -84,6 +126,17 @@ class FaceCallbackTests(TestCase):
         self.user.refresh_from_db()
         self.session.refresh_from_db()
         self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.FAILED)
+
+    def test_a_different_identity_type_never_verifies_the_session_owner(self):
+        # BVN and NIN are distinct claims even if an upstream payload happens to
+        # return the same eleven digits for both.
+        self._post(self.session.state,
+                   {"success": True, "c_id": "COR1", "id": "22222222222",
+                    "id_type": "nin"})
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.session.status, WemaFaceSession.FAILED)
 
     def test_an_unknown_state_verifies_nobody(self):
@@ -115,14 +168,14 @@ class FaceCallbackTests(TestCase):
     def test_a_completed_session_cannot_be_replayed(self):
         self._post(self.session.state,
                    {"success": True, "c_id": "C1", "id": "22222222222"})
-        self.user.face_verified = False
-        self.user.save(update_fields=["face_verified"])
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
         # Same state, second delivery: the session is no longer PENDING.
         self._post(self.session.state,
                    {"success": True, "c_id": "C2", "id": "22222222222"})
         self.user.refresh_from_db()
         self.session.refresh_from_db()
-        self.assertFalse(self.user.face_verified)
+        self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.session.correlation_id, "C1")
 
     def test_get_is_refused(self):
@@ -280,15 +333,8 @@ class TheCallbackUrlCarriesNoSharedSecretTests(TestCase):
           "FACE_CALLBACK_IPS": ["9.9.9.9"],
           "KEYS": {"wallet": "k"}, "CHANNEL_ID": "c", "SIMULATION": False,
           "FACE_VERIFY_URL": "https://face.example/"})
-class FaceSessionBindsToTheProvenIdentityTests(TestCase):
-    """A face check against an identity the account never proved establishes nothing.
-
-    The session used to bind to whatever eleven digits the caller sent, and the
-    callback then compared the bank's answer to that same self-chosen value — a loop
-    that agrees with itself. Someone who had taken over an account documented to
-    another person could pass liveness honestly with their OWN BVN and lift the
-    victim's tier, which is precisely the substitution this step exists to catch.
-    """
+class FaceSessionIdentityBindingTests(TestCase):
+    """Hosted face may prove a new identity but may not replace a proven one."""
 
     def setUp(self):
         self.user = User.objects.create_user(username="b1", phone="08040000001",
@@ -305,21 +351,25 @@ class FaceSessionBindsToTheProvenIdentityTests(TestCase):
                                 {"access_token": self.token, **body},
                                 content_type="application/json")
 
-    def test_the_proven_identity_opens_a_session(self):
+    def test_the_proven_identity_is_not_reopened(self):
         res = self._start(bvn="22222222222")
         self.assertEqual(res.status_code, 200)
-        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
+        self.assertTrue(res.json()["already"])
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 0)
 
     def test_a_different_identity_is_refused(self):
         res = self._start(bvn="33333333333")
         self.assertEqual(res.status_code, 400)
         self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
 
-    def test_an_unverified_identity_type_is_refused(self):
-        # NIN is not verified on this account, so it cannot anchor a face check.
+    def test_an_unverified_identity_type_can_open_a_session(self):
+        # The hosted check is itself the ownership proof, so an unverified NIN is a
+        # valid input. The callback still has to return the matching identity.
         res = self._start(nin="44444444444")
-        self.assertEqual(res.status_code, 400)
-        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+        self.assertEqual(res.status_code, 200)
+        session = WemaFaceSession.objects.get(user=self.user)
+        self.assertEqual(session.identity_type, "nin")
+        self.assertEqual(session.identity_hash, hash_identifier("44444444444"))
 
 
 class TheFaceRailRefusesWhatItCannotAuthenticateTests(TestCase):

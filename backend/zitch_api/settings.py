@@ -350,6 +350,7 @@ WEMA = {
     "BASE_URLS": {
         "acct_mgt": os.environ.get("WEMA_ACCT_MGT_BASE_URL", ""),
         "upgrade": os.environ.get("WEMA_UPGRADE_BASE_URL", ""),
+        "face_account": os.environ.get("WEMA_FACE_ACCOUNT_BASE_URL", ""),
     },
     "CHANNEL_ID": os.environ.get("WEMA_CHANNEL_ID", ""),   # x-api-key / access value
     "KEYS": {
@@ -364,6 +365,11 @@ WEMA = {
         # so make it settable without a code change. Leave blank unless Wema issued a
         # distinct key for Account Creation.
         "wallet_bvn": os.environ.get("WEMA_ACCOUNT_CREATION_KEY", ""),
+        # Partnership Account - Face Biometric Authentication. Most Wema tenants
+        # profile this under the account-creation subscription, so retain that as
+        # the explicit fallback while allowing a separately-issued key.
+        "face_account": (os.environ.get("WEMA_FACE_ACCOUNT_KEY", "")
+                         or os.environ.get("WEMA_ACCOUNT_CREATION_KEY", "")),
         "acct_mgt": os.environ.get("WEMA_ACCT_MGT_KEY", ""),
         "card": os.environ.get("WEMA_CARD_KEY", ""),       # Virtual Naira Card
         "airtime": os.environ.get("WEMA_AIRTIME_KEY", ""), # Airtime and Data API

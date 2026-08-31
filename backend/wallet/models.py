@@ -267,7 +267,9 @@ class WemaFaceSession(models.Model):
     ALAT's Account Creation product does liveness in a WEB app, not an API: we send
     the customer to it with their BVN/NIN, they present their face, and the bank
     hands back a `correlationId` proving the check passed. That id — not any image
-    and not a client claim — is what marks the customer face-verified here.
+    and not a client claim — is what verifies the matching BVN/NIN and authorizes
+    the without-OTP Tier-1 account-creation call. Tier-2 liveness is a separate
+    Prembly-backed flow and never uses this row.
 
     The row exists to bind the three parties together. Without it the bank's callback
     carries only an identity number, so anyone able to reach the callback URL could

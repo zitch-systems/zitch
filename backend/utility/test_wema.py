@@ -110,6 +110,50 @@ class WemaLiveTests(SimpleTestCase):
     def test_wema_live_true(self):
         self.assertTrue(wema.wema_live())
 
+    @override_settings(WEMA={
+        **WEMA_LIVE,
+        "BASE_URLS": {"face_account": "https://lagos-alat-blueapi.azure-api.net"},
+        "KEYS": {**WEMA_LIVE["KEYS"], "face_account": "face-sub-key"},
+    })
+    @patch("utility.wema.requests.post")
+    def test_face_correlation_creates_bvn_wallet_on_the_face_product(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "message": "Processing",
+                                        "data": {"accountGenerationStatus": "Pending"}})
+        result = wema.create_wallet_with_face(
+            "08030000000", "ada@example.com", identity_type="bvn",
+            identity_value="22222222222", correlation_id="COR-123",
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            mock_post.call_args.args[0],
+            "https://lagos-alat-blueapi.azure-api.net/create-account-face/"
+            "api/partnership/tier1-bvn-withoutOtp-v2",
+        )
+        self.assertEqual(mock_post.call_args.kwargs["json"], {
+            "phoneNumber": "08030000000",
+            "email": "ada@example.com",
+            "bvn": "22222222222",
+            "correlationId": "COR-123",
+        })
+        headers = mock_post.call_args.kwargs["headers"]
+        self.assertEqual(headers["x-api-key"], "chan-1")
+        self.assertEqual(headers["Ocp-Apim-Subscription-Key"], "face-sub-key")
+
+    @override_settings(WEMA={
+        **WEMA_LIVE,
+        "KEYS": {**WEMA_LIVE["KEYS"], "face_account": "face-sub-key"},
+    })
+    @patch("utility.wema.requests.post")
+    def test_face_correlation_selects_the_nin_without_otp_endpoint(self, mock_post):
+        mock_post.return_value = _resp({"status": True, "data": {}})
+        wema.create_wallet_with_face(
+            "08030000000", "ada@example.com", identity_type="nin",
+            identity_value="12345678901", correlation_id="COR-456",
+        )
+        self.assertTrue(mock_post.call_args.args[0].endswith(
+            "/create-account-face/api/partnership/tier1-nin-withoutOtp-v2"))
+        self.assertEqual(mock_post.call_args.kwargs["json"]["nin"], "12345678901")
+
     @patch("utility.wema.requests.get")
     def test_name_enquiry_live(self, mock_get):
         mock_get.return_value = _resp({"result": {"accountName": "ADA EZE", "bankCode": "035"},

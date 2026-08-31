@@ -31,6 +31,9 @@ type Status = {
   // that hardcoded "bank" would show a button that 503s, and one that hardcoded
   // "document" would ask for a utility bill nobody reads.
   face_rail?: 'wema' | 'document';
+  identity_face_available?: boolean;
+  identity_verification_methods?: ('sms_otp' | 'wema_face')[];
+  tier2_face_rail?: 'prembly';
   address_rail?: 'wema' | 'document';
 };
 
@@ -83,10 +86,6 @@ const Kyc = () => {
   const [emailAddr, setEmailAddr] = useState('');
   const [emailOtpSent, setEmailOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
-  // Bank face check: which identity the customer is presenting, and the number
-  // itself (held only long enough to build the bank's URL — never persisted).
-  const [faceIdType, setFaceIdType] = useState<'bvn' | 'nin'>('bvn');
-  const [faceId, setFaceId] = useState('');
   const [facePolling, setFacePolling] = useState(false);
   // The bank's page, shown inside the app rather than handed to the system browser.
   const [faceUrl, setFaceUrl] = useState('');
@@ -94,6 +93,7 @@ const Kyc = () => {
   // token, and it has to be readable by a loop that started before the render that
   // would have updated a state value.
   const faceSession = useRef('');
+  const faceIdentityKind = useRef<'bvn' | 'nin'>('bvn');
   // The address rail decides whether a proof-of-address document is even asked for.
   const bankAddress = status?.address_rail === 'wema';
   const [identityFlow, setIdentityFlow] = useState<null | 'bvn' | 'nin'>(null);
@@ -327,13 +327,19 @@ const Kyc = () => {
   // The identity number is asked for again rather than reused, because we keep only
   // a keyed hash of it: the raw BVN/NIN is sent to the bank and dropped. Retyping
   // eleven digits is the cost of not storing them.
-  const verifyFaceWithBank = async () => {
-    const raw = faceId.trim();
+  const verifyFaceWithBank = async (kind: 'bvn' | 'nin', identityValue: string) => {
+    const raw = identityValue.trim();
     if (raw.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN or NIN.'); return; }
     setBusy(true);
     let started: { url: string; session: string } | null = null;
     try {
-      const res = await apiJson('/api/kyc/face/start/', faceIdType === 'bvn' ? { bvn: raw } : { nin: raw });
+      const res = await apiJson('/api/kyc/face/start/', kind === 'bvn' ? { bvn: raw } : { nin: raw });
+      if (res.success && res.status === 'verified') {
+        setStatus(res);
+        closeIdentityFlow();
+        notify('Already verified', `${kind.toUpperCase()} is already verified.`);
+        return;
+      }
       if (!res.success || !res.url) {
         notify('Not available', res.message || 'Face verification is unavailable right now.');
         return;
@@ -347,6 +353,7 @@ const Kyc = () => {
       setBusy(false);
     }
     if (!started) return;
+    faceIdentityKind.current = kind;
     faceSession.current = started.session;
     setFaceUrl(started.url);
     // Polled alongside the sheet, never in place of it. The result arrives on our
@@ -370,10 +377,10 @@ const Kyc = () => {
    * lose, often enough — leaving somebody who passed looking at an unverified
    * screen. The loop stops on its own when the verdict lands or the session dies.
    */
-  const dismissFace = useCallback(() => {
+  const dismissFace = () => {
     setFaceUrl('');
     load();
-  }, [load]);
+  };
 
   const pollFace = async (session: string) => {
     setFacePolling(true);
@@ -403,10 +410,13 @@ const Kyc = () => {
           continue; // a dropped request is not a failed check
         }
         if (res.status === 'verified') {
+          const kind = faceIdentityKind.current;
           setStatus(res);
-          setFaceId('');
+          if (kind === 'bvn') setBvn('');
+          else setNin('');
+          closeIdentityFlow();
           closeFace();
-          notify('Success', 'Face verification complete');
+          notify('Success', `${kind.toUpperCase()} verified by Wema face check`);
           return;
         }
         if (res.status === 'failed' || res.status === 'expired') {
@@ -420,21 +430,12 @@ const Kyc = () => {
     }
   };
 
-  // --- Selfie: a real captured image for server-side liveness (NOT device
+  // --- Tier-2 selfie: a real captured image for Prembly liveness (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove).
   // Captured through FaceLivenessModal's live camera + face guide, not a
   // gallery-style picker — the on-device face check there is UX only, the
   // actual liveness verdict is still Prembly's, decided on this same photo. ---
   const [faceCaptureOpen, setFaceCaptureOpen] = useState(false);
-  const verifySelfie = () => setFaceCaptureOpen(true);
-  const onSelfieCaptured = (base64: string) => {
-    setFaceCaptureOpen(false);
-    if (base64.length > MAX_IMAGE_BASE64) {
-      notify('Image too large', 'Retake the photo at a lower device resolution.');
-      return;
-    }
-    submit('/api/kyc/face/', { selfie: base64 }, 'Selfie');
-  };
 
   const onBankUpgradeSelfie = async (base64: string) => {
     setFaceCaptureOpen(false);
@@ -463,7 +464,7 @@ const Kyc = () => {
     const isBvn = bankUpgradeStep === 'bvn';
     return (
       <Screen>
-        <Header title="Bank Tier 2" sub="Wema verifies BVN, NIN and live selfie together" onBack={() => { setBankUpgradeOpen(false); setBankUpgradeStep('bvn'); }} />
+        <Header title="Bank Tier 2" sub="Prembly checks liveness, then Wema upgrades the account" onBack={() => { setBankUpgradeOpen(false); setBankUpgradeStep('bvn'); }} />
         <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
           <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
             <ZIcon name={isBvn ? 'bank' : bankUpgradeStep === 'nin' ? 'user' : 'faceid'} size={24} color={c.brand} stroke={2} />
@@ -472,7 +473,7 @@ const Kyc = () => {
             <>
               <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Live selfie</Text>
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Wema requires a live face image with your BVN and NIN to upgrade this existing account.
+                Prembly first confirms this is a live face. After it passes, the same image is sent with your BVN and NIN to Wema for the Tier 2 upgrade.
               </Text>
               <Btn label="Take selfie and submit" icon="faceid" size="md" disabled={busy} onPress={() => setFaceCaptureOpen(true)} />
               <FaceLivenessModal visible={faceCaptureOpen} onClose={() => setFaceCaptureOpen(false)} onCapture={onBankUpgradeSelfie} />
@@ -507,7 +508,7 @@ const Kyc = () => {
 
     return (
       <Screen>
-        <Header title={title} sub="Wema sends the code to the phone linked to this identity" onBack={closeIdentityFlow} />
+        <Header title={title} sub="Choose SMS OTP or Wema face verification" onBack={closeIdentityFlow} />
 
         <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
           <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
@@ -518,11 +519,20 @@ const Kyc = () => {
             <>
               <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{title}</Text>
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Zitch does not store the raw number; Wema returns a tracking reference for the OTP step.
+                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}, then choose SMS OTP or Wema&apos;s secure face check. Zitch does not store the raw number.
               </Text>
               <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
               <View style={{ height: 14 }} />
-              <Btn label="Next" size="md" disabled={busy || value.length !== 11} onPress={start} />
+              <Btn label="Send SMS OTP" size="md" disabled={busy || value.length !== 11} onPress={start} />
+              {status?.identity_face_available ? (
+                <>
+                  <View style={{ height: 10 }} />
+                  <Btn label="Verify with Wema face" icon="faceid" variant="outline" size="md"
+                    disabled={busy || facePolling || value.length !== 11}
+                    onPress={() => verifyFaceWithBank(identityFlow, value)} />
+                  <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={dismissFace} />
+                </>
+              ) : null}
             </>
           ) : (
             <>
@@ -649,40 +659,15 @@ const Kyc = () => {
         <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
       </KycRow>
 
-      {status?.face_rail === 'wema' ? (
-        <KycRow icon="faceid" title="Face verification"
-          sub="Verified by your bank — unlocks Tier 2" done={!!status?.face_verified}>
-          <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 10, fontFamily: font.regular, lineHeight: 19 }}>
-            Your bank runs this check against your BVN or NIN. We open their secure page —
-            your face is never sent to or stored by Zitch.
-          </Text>
-          <View style={{ flexDirection: 'row', gap: 10, marginBottom: 10 }}>
-            {(['bvn', 'nin'] as const).map((k) => (
-              <View key={k} style={{ flex: 1 }}>
-                <Btn label={k.toUpperCase()} size="md"
-                  variant={faceIdType === k ? 'primary' : 'outline'}
-                  disabled={busy}
-                  onPress={() => { setFaceIdType(k); setFaceId(''); }} />
-              </View>
-            ))}
-          </View>
-          <Field value={faceId} onChangeText={(v) => setFaceId(v.replace(/\D/g, '').slice(0, 11))}
-            keyboardType="number-pad" placeholder={`Enter your 11-digit ${faceIdType.toUpperCase()}`} />
-          <View style={{ height: 10 }} />
-          <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with your bank'} icon="faceid" size="md"
-            disabled={busy || facePolling || faceId.length !== 11} onPress={verifyFaceWithBank} />
-          <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={dismissFace} />
-        </KycRow>
-      ) : (
-        <KycRow icon="faceid" title="Selfie verification" sub="A quick selfie — unlocks Tier 2" done={!!status?.face_verified}>
-          <Btn label="Take a selfie" icon="faceid" size="md" variant="outline" disabled={busy} onPress={verifySelfie} />
-          <FaceLivenessModal
-            visible={faceCaptureOpen}
-            onClose={() => setFaceCaptureOpen(false)}
-            onCapture={onSelfieCaptured}
-          />
-        </KycRow>
-      )}
+      <KycRow icon="faceid" title="Tier 2 live selfie"
+        sub="Prembly liveness + Wema account upgrade" done={!!status?.face_verified}>
+        <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 10, fontFamily: font.regular, lineHeight: 19 }}>
+          This is separate from Wema&apos;s BVN/NIN face option. Prembly checks that the selfie is live, then Wema receives it with both identities for the bank upgrade.
+        </Text>
+        <Btn label="Start Tier 2 upgrade" icon="faceid" size="md" variant="outline"
+          disabled={busy || !status?.has_wema_account}
+          onPress={() => { setBankUpgradeStep('bvn'); setBankUpgradeOpen(true); }} />
+      </KycRow>
 
       <KycRow icon="home"
         title="Residential address"
