@@ -32,12 +32,12 @@ from utility.providers import (
     sms_live,
     verify_bvn, verify_nin,
 )
-from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
+from wallet.models import Wallet, WemaFaceSession
 from wallet.services import get_or_create_wallet, wema_account_reference
 
 from .models import (
     IdentityProof, OTP, AccessToken, PushDevice, RefreshToken, User, hash_identifier,
-    identity_has_proof, password_rejection, record_identity_proof,
+    password_rejection, record_identity_proof, rehydrate_verified_identity_flags,
 )
 
 # The shared design system in common.emails is the only place email HTML lives.
@@ -939,36 +939,14 @@ def email_verify_confirm(request):
     return ok(message="Email verified", **_kyc_state(user))
 
 
-def _wema_identity_proven(user, identity_type: str) -> bool:
-    """Whether this account has durable proof for a verified identity flag.
-
-    KYC status is a read path. It must never make a destructive decision about a
-    customer's identity just because an older flow did not write the newest proof
-    row shape. A previous repair routine cleared verified BVN/NIN flags during
-    status refreshes; on live accounts that turned a green check back into an
-    empty prompt and blocked transfers. The safe repair is one-way: restore a
-    flag from a durable proof when possible, otherwise report the stored flag.
-    """
-    return identity_has_proof(user, identity_type)
-
-
 def _repair_unbacked_wema_identity_flags(user) -> None:
     """Rehydrate identity flags from proof rows; never clear them on a read."""
     if not wema.wema_live():
         return
 
-    fields: list[str] = []
-    if not user.bvn_verified and _wema_identity_proven(user, WemaProvisioningAttempt.BVN):
-        user.bvn_verified = True
-        fields.append("bvn_verified")
-    if not user.nin_verified and _wema_identity_proven(user, WemaProvisioningAttempt.NIN):
-        user.nin_verified = True
-        fields.append("nin_verified")
-    if not fields:
-        return
-    user.recompute_tier()
-    user.save(update_fields=fields + ["tier"])
-    log.info("rehydrated_wema_identity_flags user=%s fields=%s", user.id, fields)
+    fields = rehydrate_verified_identity_flags(user)
+    if fields:
+        log.info("rehydrated_wema_identity_flags user=%s fields=%s", user.id, fields)
 
 
 def _kyc_state(user) -> dict:
