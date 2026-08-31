@@ -244,6 +244,12 @@ def unverified_error(user) -> "str | None":
     This is a floor beneath the tier ceilings, not a replacement for them. The
     ceilings answer "how much"; this answers "at all".
     """
+    try:
+        from accounts.models import rehydrate_verified_identity_flags
+
+        rehydrate_verified_identity_flags(user)
+    except Exception:  # noqa: BLE001
+        log.warning("identity_flag_rehydrate_failed user=%s", getattr(user, "id", None), exc_info=True)
     stale = stale_pin_error(user)
     if stale:
         return stale
