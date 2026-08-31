@@ -808,7 +808,7 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
     try:
         resp = _post("acct_mgt", "/api/AccountMaintenance/CustomerAccount/transhistoryV2",
                      {"accountNumber": account_number, "from": date_from, "to": date_to,
-                      "keyWord": keyword})
+                      "keyword": keyword})
         data = resp.json()
         if not isinstance(data, dict):
             return {"success": False, "transactions": [], "message": "Request failed",

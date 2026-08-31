@@ -177,6 +177,34 @@ class WemaLiveTests(SimpleTestCase):
         self.assertEqual(r["balance_naira"], Decimal("8420.10"))
         self.assertEqual(mock_get.call_args[1]["headers"]["x-api-key"], "chan-1")  # acct-mgt uses x-api-key
 
+    @patch("utility.wema.requests.post")
+    def test_transaction_history_uses_wema_documented_payload(self, mock_post):
+        mock_post.return_value = _resp({
+            "result": [{"referenceId": "338135484403", "amount": 100,
+                        "creditType": "Credit", "status": "Default"}],
+            "successful": True,
+            "message": "Successful!",
+        })
+
+        result = wema.get_transactions(
+            "0410530975", "2026-07-01", "2026-08-20", keyword="payment"
+        )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["transactions"][0]["referenceId"], "338135484403")
+        self.assertTrue(mock_post.call_args.args[0].endswith(
+            "/ws-acct-mgt/api/AccountMaintenance/CustomerAccount/transhistoryV2"
+        ))
+        self.assertEqual(mock_post.call_args.kwargs["json"], {
+            "accountNumber": "0410530975",
+            "from": "2026-07-01",
+            "to": "2026-08-20",
+            "keyword": "payment",
+        })
+        headers = mock_post.call_args.kwargs["headers"]
+        self.assertEqual(headers["x-api-key"], "chan-1")
+        self.assertEqual(headers["Ocp-Apim-Subscription-Key"], "subkey")
+
     def test_naira_tolerates_formatting(self):
         self.assertEqual(wema._naira("1,000.50"), Decimal("1000.50"))
         self.assertEqual(wema._naira("₦2,500"), Decimal("2500.00"))
