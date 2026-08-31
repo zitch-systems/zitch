@@ -524,15 +524,7 @@ const Kyc = () => {
               <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
               <View style={{ height: 14 }} />
               <Btn label="Send SMS OTP" size="md" disabled={busy || value.length !== 11} onPress={start} />
-              {status?.identity_face_available ? (
-                <>
-                  <View style={{ height: 10 }} />
-                  <Btn label="Verify with Wema face" icon="faceid" variant="outline" size="md"
-                    disabled={busy || facePolling || value.length !== 11}
-                    onPress={() => verifyFaceWithBank(identityFlow, value)} />
-                </>
-              ) : null}
-            </>
+</>
           ) : (
             <>
               <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Enter Wema OTP</Text>
