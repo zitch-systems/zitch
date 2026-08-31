@@ -9,7 +9,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import AbstractUser
-from django.db import models
+from django.db import IntegrityError, models
 from django.db.models.functions import Lower
 from django.utils import timezone
 
@@ -424,6 +424,59 @@ def identity_has_proof(user: User, identity_type: str, identity_hash: str = "") 
     if identity_hash:
         qs = qs.filter(identity_hash=identity_hash)
     return qs.exists()
+
+
+def rehydrate_verified_identity_flags(user: User) -> list[str]:
+    """Restore BVN/NIN flags from durable proof rows or verified Wema attempts.
+
+    This is deliberately one-way. A read path may repair a missing flag, but it
+    must never clear a verified identity and send the customer back to BVN/NIN.
+    Older successful Wema OTP flows predate IdentityProof, so the verified
+    WemaProvisioningAttempt row is also accepted as durable evidence.
+    """
+    from wallet.models import WemaProvisioningAttempt
+
+    fields: list[str] = []
+    for identity_type, flag, hash_field, last4_field in (
+        (IdentityProof.BVN, "bvn_verified", "bvn_hash", "bvn_last4"),
+        (IdentityProof.NIN, "nin_verified", "nin_hash", "nin_last4"),
+    ):
+        if getattr(user, flag, False):
+            continue
+        proof = (
+            IdentityProof.objects.filter(user=user, identity_type=identity_type)
+            .order_by("-created")
+            .first()
+        )
+        source_hash = proof.identity_hash if proof else ""
+        source_last4 = proof.identity_last4 if proof else ""
+        if not source_hash:
+            attempt = (
+                WemaProvisioningAttempt.objects.filter(
+                    user=user,
+                    identity_type=identity_type,
+                    status=WemaProvisioningAttempt.VERIFIED,
+                )
+                .order_by("-updated")
+                .first()
+            )
+            source_hash = attempt.identity_hash if attempt else ""
+            source_last4 = attempt.identity_last4 if attempt else ""
+        if not source_hash:
+            continue
+        setattr(user, hash_field, getattr(user, hash_field) or source_hash)
+        setattr(user, last4_field, getattr(user, last4_field) or source_last4)
+        setattr(user, flag, True)
+        fields.extend([hash_field, last4_field, flag])
+    if not fields:
+        return []
+    user.recompute_tier()
+    try:
+        user.save(update_fields=fields + ["tier"])
+    except IntegrityError:
+        log.warning("identity_flag_rehydrate_conflict user=%s fields=%s", user.id, fields)
+        return []
+    return fields
 
 
 class AccessToken(models.Model):
