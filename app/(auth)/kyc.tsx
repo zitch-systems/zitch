@@ -530,7 +530,6 @@ const Kyc = () => {
                   <Btn label="Verify with Wema face" icon="faceid" variant="outline" size="md"
                     disabled={busy || facePolling || value.length !== 11}
                     onPress={() => verifyFaceWithBank(identityFlow, value)} />
-                  <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={dismissFace} />
                 </>
               ) : null}
             </>
@@ -544,10 +543,41 @@ const Kyc = () => {
               <View style={{ height: 14 }} />
               <Btn label="Confirm with Wema" size="md" disabled={busy || otp.length !== 6 || !sent} onPress={confirm} />
               <Text onPress={() => resendWemaOtp(identityFlow)} style={{ textAlign: 'center', marginTop: 14, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
-              <Text onPress={() => resetIdentityFlow(identityFlow)} style={{ textAlign: 'center', marginTop: 12, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Use a different {isBvn ? 'BVN' : 'NIN'}</Text>
+
+              {/* The same face option the previous screen offers, repeated HERE —
+                  which is where it is actually needed. Choosing between SMS and face
+                  up front asks the customer to predict whether a code will arrive;
+                  they only find out it will not once they are on this screen, and
+                  until now that was a dead end. Resend does not help them either:
+                  the code goes to the phone on the identity record, not the one in
+                  their hand. Nothing is cancelled by tapping it — whichever proof
+                  the bank returns first completes the same step. */}
+              {status?.identity_face_available ? (
+                <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
+                  <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
+                    No code arriving?
+                  </Text>
+                  <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
+                    The SMS goes to the phone registered on your {isBvn ? 'BVN' : 'NIN'} — not
+                    always the one you carry. Verify on Wema&apos;s secure face page instead:
+                    they match you against the photo on that record. Your face is never sent
+                    to or stored by Zitch.
+                  </Text>
+                  <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with Wema face'}
+                    icon="faceid" variant="outline" size="md"
+                    disabled={busy || facePolling || value.length !== 11}
+                    onPress={() => verifyFaceWithBank(identityFlow, value)} />
+                </View>
+              ) : null}
+
+              <Text onPress={() => resetIdentityFlow(identityFlow)} style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Use a different {isBvn ? 'BVN' : 'NIN'}</Text>
             </>
           )}
         </View>
+        {/* Rendered once for the whole screen rather than inside the number step,
+            so the sheet still has a host when the face route starts from the code
+            step. Two copies would fight over the same `faceUrl`. */}
+        <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={dismissFace} />
       </Screen>
     );
   }

@@ -3110,6 +3110,12 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
     # the lookup passing is the START of verification here, not the end.
     otp_error = _kyc_send_identity_otp(pa, user, kind, result.get("phone", ""))
     if otp_error is None:
+        # The same alternative account creation already offers beside its OTP. This
+        # rail is where it matters most: the code goes to the line registered against
+        # the IDENTITY, which is routinely not the phone the customer is holding, and
+        # without this the step simply ended for those customers. The OTP stays armed
+        # — whichever proof the bank returns first completes the same step.
+        _send_identity_face_option(pa, user, msisdn, kind, digits)
         return "otp"
     if otp_error:                     # cannot run the challenge -> review, with the reason
         _record_identity_review(kind, otp_error)
@@ -3423,7 +3429,7 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     # Wema face is the bank-documented alternative to this SMS OTP. Send it as a
     # second secure option while leaving the OTP attempt intact; whichever provider
     # result arrives first completes the same identity/account setup.
-    _send_account_face_option(pa, user, msisdn, kind, digits)
+    _send_identity_face_option(pa, user, msisdn, kind, digits)
     # The code completes account creation and is what name-matches the ID, so it
     # belongs on the secure screen too. Collecting the BVN privately and then
     # asking for the code that unlocks it in clear would be half a fix.
@@ -3469,9 +3475,13 @@ def _send_account_otp_flow(pa: PendingAction) -> bool:
     return False
 
 
-def _send_account_face_option(pa: PendingAction, user, msisdn: str,
-                              kind: str, digits: str) -> bool:
-    """Offer Wema hosted face as the alternative to the just-sent account OTP.
+def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
+                               kind: str, digits: str) -> bool:
+    """Offer Wema hosted face as the alternative to a just-sent identity OTP.
+
+    Shared by both rails that send one — account creation and the KYC ladder — so
+    the escape from an undeliverable code exists wherever the code is sent, and the
+    two cannot drift on how the session is bound or what the customer is told.
 
     The raw identity appears only inside the CTA URL sent through Meta's button
     payload, never as message text. The callback owns the verdict and uses Wema's
