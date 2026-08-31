@@ -1809,8 +1809,8 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         return False
     # WhatsApp onboarding creates an UNVERIFIED account at Tier 0, identically to
     # the app: only name + PIN are collected here (no BVN/NIN), and the app's tier
-    # ladder (recompute_tier) requires a verified BVN or NIN for Tier 1. The user
-    # raises their tier by verifying their identity in the app.
+    # ladder (recompute_tier) requires BVN + NIN for Tier 1. The user raises their
+    # tier by verifying their identity in the app.
     user = User.objects.create(
         username=local, phone=local, first_name=fn, last_name=ln, tier=0,
         email=(ob.payload.get("email") or "").strip().lower(),
@@ -2637,6 +2637,9 @@ def _kyc_test_code(user) -> str:
 
 def _kyc_outstanding(user) -> list:
     """Which steps this customer still owes, in order."""
+    from accounts.models import rehydrate_verified_identity_flags
+
+    rehydrate_verified_identity_flags(user)
     done = {
         "phone": user.phone_verified,
         "email": user.email_verified,
@@ -2654,6 +2657,9 @@ def _kyc_outstanding(user) -> list:
 
 
 def _kyc_status_lines(user) -> str:
+    from accounts.models import rehydrate_verified_identity_flags
+
+    rehydrate_verified_identity_flags(user)
     mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
     return "\n".join([
         f"{mark(user.phone_verified)} Phone number",
