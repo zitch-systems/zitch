@@ -90,7 +90,7 @@ class FaceLinkTests(TestCase):
 
     def test_account_otp_also_offers_hosted_face_as_an_alternative(self):
         with patch.object(router, "send_cta_url", return_value={"success": True}) as cta:
-            offered = router._send_account_face_option(
+            offered = router._send_identity_face_option(
                 self.pa, self.user, MSISDN, "bvn", VERIFIED_BVN)
         self.assertTrue(offered)
         self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
@@ -248,3 +248,60 @@ class TypedInChatTests(TestCase):
              patch.object(router, "_kyc_submit_identity") as submit:
             router._advance_kyc(self.pa, self.user, MSISDN, "22222222222")
         submit.assert_not_called()
+
+
+@override_settings(WEMA=FACE_ON)
+class TheKycRailAlsoOffersFaceBesideItsCodeTests(TestCase):
+    """Account creation already sent the face option beside its OTP; the KYC ladder
+    did not, and that is the rail where it matters most.
+
+    Its code goes to the line registered against the IDENTITY — routinely not the
+    phone the customer is holding — so resending cannot help, and the step simply
+    ended for those customers.
+    """
+
+    def setUp(self):
+        self.user = _user()
+        self.user.bvn_verified = False
+        self.user.save()
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
+            payload={}, expires_at=router._flow_deadline("idle"))
+
+    def _submit(self):
+        """Drive _kyc_submit_identity to the point where the code has just gone out."""
+        with patch.object(router, "verify_bvn",
+                          return_value={"success": True, "phone": "08099998888"}), \
+             patch.object(router, "_kyc_send_identity_otp", return_value=None), \
+             patch.object(router, "send_cta_url", return_value={"success": True}) as cta, \
+             patch.object(router, "reply"):
+            outcome = router._kyc_submit_identity(self.pa, self.user, MSISDN,
+                                                  "bvn", VERIFIED_BVN)
+        return outcome, cta
+
+    def test_the_face_option_is_offered_beside_the_identity_code(self):
+        outcome, cta = self._submit()
+        self.assertEqual(outcome, "otp")
+        cta.assert_called_once()
+        self.assertIn("face.example", str(cta.call_args.args[2]))
+
+    def test_the_code_stays_armed_so_either_proof_still_works(self):
+        # Offering the alternative must not cancel the SMS the customer may yet
+        # receive — whichever the bank answers first completes the same step.
+        outcome, _ = self._submit()
+        self.assertEqual(outcome, "otp")
+
+    def test_the_number_never_appears_in_the_chat_body(self):
+        _, cta = self._submit()
+        self.assertNotIn(VERIFIED_BVN, str(cta.call_args.args[1]))
+
+    def test_without_the_rail_the_code_step_still_proceeds(self):
+        with override_settings(WEMA=FACE_OFF), \
+             patch.object(router, "verify_bvn",
+                          return_value={"success": True, "phone": "08099998888"}), \
+             patch.object(router, "_kyc_send_identity_otp", return_value=None), \
+             patch.object(router, "send_cta_url") as cta, patch.object(router, "reply"):
+            outcome = router._kyc_submit_identity(self.pa, self.user, MSISDN,
+                                                  "bvn", VERIFIED_BVN)
+        self.assertEqual(outcome, "otp")
+        cta.assert_not_called()
