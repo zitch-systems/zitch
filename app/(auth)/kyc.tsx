@@ -508,7 +508,7 @@ const Kyc = () => {
 
     return (
       <Screen>
-        <Header title={title} sub="Choose SMS OTP or Wema face verification" onBack={closeIdentityFlow} />
+        <Header title={title} sub="Verify by SMS, with a secure face-check fallback" onBack={closeIdentityFlow} />
 
         <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
           <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
@@ -519,7 +519,7 @@ const Kyc = () => {
             <>
               <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{title}</Text>
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}, then choose SMS OTP or Wema&apos;s secure face check. Zitch does not store the raw number.
+                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Wema will send a code to the phone number registered on that identity. Zitch does not store the raw number.
               </Text>
               <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
               <View style={{ height: 14 }} />
@@ -555,7 +555,7 @@ const Kyc = () => {
               {status?.identity_face_available ? (
                 <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
                   <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
-                    No code arriving?
+                    Can&apos;t receive the SMS?
                   </Text>
                   <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
                     The SMS goes to the phone registered on your {isBvn ? 'BVN' : 'NIN'} — not
@@ -563,7 +563,7 @@ const Kyc = () => {
                     they match you against the photo on that record. Your face is never sent
                     to or stored by Zitch.
                   </Text>
-                  <Btn label={facePolling ? 'Waiting for your bank…' : 'Verify with Wema face'}
+                  <Btn label={facePolling ? 'Waiting for Wema…' : 'Open Wema face verification'}
                     icon="faceid" variant="outline" size="md"
                     disabled={busy || facePolling || value.length !== 11}
                     onPress={() => verifyFaceWithBank(identityFlow, value)} />
@@ -689,10 +689,10 @@ const Kyc = () => {
         <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
       </KycRow>
 
-      <KycRow icon="faceid" title="Tier 2 live selfie"
+      <KycRow icon="faceid" title="Tier 2 Face ID"
         sub="Prembly liveness + Wema account upgrade" done={!!status?.face_verified}>
         <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 10, fontFamily: font.regular, lineHeight: 19 }}>
-          This is separate from Wema&apos;s BVN/NIN face option. Prembly checks that the selfie is live, then Wema receives it with both identities for the bank upgrade.
+          This is separate from Wema&apos;s BVN/NIN face fallback. Prembly Face ID checks that your selfie is live, then Wema receives it with both identities for the Tier 2 upgrade.
         </Text>
         <Btn label="Start Tier 2 upgrade" icon="faceid" size="md" variant="outline"
           disabled={busy || !status?.has_wema_account}
