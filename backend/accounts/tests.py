@@ -936,6 +936,35 @@ class KycStatusRepairTests(TestCase):
         self.assertTrue(self.user.bvn_verified)
         self.assertFalse(state["nin_verified"])
 
+    @override_settings(WEMA={"BASE_URL": "https://alat.test", "CHANNEL_ID": "chan",
+                             "KEYS": {"wallet": "wallet-key"}, "SIMULATION": False})
+    def test_kyc_status_rehydrates_flags_from_verified_wema_attempt(self):
+        from accounts.views import _kyc_state
+        from wallet.models import WemaProvisioningAttempt
+
+        self.user.bvn_verified = False
+        self.user.bvn_hash = ""
+        self.user.bvn_last4 = ""
+        self.user.tier = 0
+        self.user.save(update_fields=["bvn_verified", "bvn_hash", "bvn_last4", "tier"])
+        WemaProvisioningAttempt.objects.create(
+            user=self.user,
+            tracking_id="TRK-REPAIR-BVN",
+            identity_type=WemaProvisioningAttempt.BVN,
+            identity_hash="a" * 64,
+            identity_last4="8901",
+            status=WemaProvisioningAttempt.VERIFIED,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        state = _kyc_state(self.user)
+        self.user.refresh_from_db()
+
+        self.assertTrue(state["bvn_verified"])
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.user.bvn_hash, "a" * 64)
+        self.assertEqual(self.user.bvn_last4, "8901")
+
 
 class TransactionPinLockoutTests(TestCase):
     """A stolen session token must not be usable to brute-force the short
