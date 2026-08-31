@@ -3510,11 +3510,11 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
         kind, digits, _face_callback_url(session.state))
     result = send_cta_url(
         msisdn,
-        "🤳 *Prefer face verification?*\n\nYou can complete the same "
+        "🤳 *Can't receive the SMS?*\n\nYou can complete the same "
         f"{kind.upper()} check on Wema's secure face page instead of entering "
-        "the SMS code. Use either option — not both.",
+        "Use either option — not both.",
         url,
-        cta="Use Wema face instead",
+        cta="Open face verification",
         footer="Secured by your bank",
         allow_text_fallback=False,
     )
