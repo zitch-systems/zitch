@@ -286,7 +286,7 @@ export const saveReceipt = async (format: ReceiptFormat, src: ReceiptSource): Pr
     const { uri, mime, filename } = await exportReceipt(format, src);
 
     if (format === 'jpeg') {
-      const MediaLibrary = await import('expo-media-library');
+      // SDK 57 throws for the root mutating helper; use the supported legacy namespace for this operation.\n      const MediaLibrary = await import('expo-media-library/legacy');
       // writeOnly is LOAD-BEARING, not an optimisation. Saving needs no read
       // access to the gallery, so the Android manifest blocks READ_MEDIA_IMAGES
       // (a Play-restricted permission a money app can't justify carrying) — and
