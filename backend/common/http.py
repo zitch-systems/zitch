@@ -21,6 +21,18 @@ log = logging.getLogger("zitch.security")
 
 
 def ok(data=None, **extra):
+    """A 200 response with exactly the keys the caller passes.
+
+    Deliberately does NOT default `success: True`, even though the app branches on
+    that flag and most callers pass it. A 200 here does not always mean the thing
+    the customer asked for happened: a bank transfer that the rail queued, or whose
+    POST timed out ambiguously, answers 200 with `pending` set and `success` LEFT
+    OUT, precisely so the app says "processing" rather than "sent". Defaulting the
+    flag would report money as delivered that is still in flight.
+
+    So a handler that means success must say so. See email_verify_start/confirm for
+    what forgetting costs.
+    """
     payload = {}
     if data:
         payload.update(data)
