@@ -6,7 +6,7 @@ import re
 import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from django.conf import settings
 from django.core.cache import cache
@@ -1555,7 +1555,16 @@ def kyc_face_start(request):
         expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
     )
     url = wema.face_verification_url(identity_type, raw, _face_callback_url(session.state))
-    log.info("wema_face_start user=%s type=%s session=%s", user.id, identity_type, session.state[:8])
+    # Log the verifier HOST and the callback we hand it. Neither is a secret — the
+    # customer's own browser loads both — and without them a failure inside the
+    # bank's page is undiagnosable from here: the page renders its own error, the
+    # callback never fires, and the logs show only that a session opened. Which host
+    # we sent them to, and which cb_uri that host was given, are exactly the two
+    # facts every round of this has turned on. The BVN is NOT logged: it rides in
+    # the URL's query string, so the host is parsed out rather than printed raw.
+    log.info("wema_face_start user=%s type=%s session=%s verifier=%s cb=%s",
+             user.id, identity_type, session.state[:8],
+             urlparse(url).hostname or "unset", _face_callback_url(""))
     return ok(success=True, url=url, session=session.state,
               expires_in=FACE_SESSION_TTL_MINUTES * 60,
               message="Complete the face check to continue.")
