@@ -3512,7 +3512,7 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
         msisdn,
         "🤳 *Can't receive the SMS?*\n\nYou can complete the same "
         f"{kind.upper()} check on Wema's secure face page instead of entering "
-        "Use either option — not both.",
+        "the SMS code. Use either option — not both.",
         url,
         cta="Open face verification",
         footer="Secured by your bank",
