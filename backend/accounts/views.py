@@ -886,7 +886,7 @@ def email_verify_start(request):
     delivering it to the phone would verify nothing."""
     user = request.user_obj
     if user.email_verified:
-        return ok(message="Email already verified", **_kyc_state(user))
+        return ok(success=True, message="Email already verified", **_kyc_state(user))
     # While unverified, the address may be set or corrected — an account with a
     # blank or mistyped email would otherwise be locked out of Tier 1 for good.
     new_email = (request.data.get("email") or "").strip().lower()
@@ -908,7 +908,12 @@ def email_verify_start(request):
                                        "Enter this code in the Zitch app to confirm your email address.",
                                        code=code,
                                        note="If you didn't request this, you can ignore this email."))
-    return ok(message=f"We sent a code to {user.email}")
+    # success=True is load-bearing, not decoration: the app advances to the code
+    # entry on `res.success`. Without it this endpoint sent the email and then told
+    # the customer it had failed — rendering THIS message inside an error, because
+    # the screen falls back to res.message. Email gates Tier 1, so that was the
+    # whole ladder, for every app customer.
+    return ok(success=True, message=f"We sent a code to {user.email}")
 
 
 @ratelimit("otp_verify", limit=20, window=60)
@@ -936,7 +941,7 @@ def email_verify_confirm(request):
     user.email_verified = True
     user.recompute_tier()  # Tier 1 requires the verified email; it may be the last piece
     user.save(update_fields=["email_verified", "tier"])
-    return ok(message="Email verified", **_kyc_state(user))
+    return ok(success=True, message="Email verified", **_kyc_state(user))
 
 
 def _repair_unbacked_wema_identity_flags(user) -> None:

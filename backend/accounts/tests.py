@@ -1422,3 +1422,56 @@ class ChatOnboardedUpgradeTests(TestCase):
                              data=json.dumps({"email_or_phone": "08155550002"}),
                              content_type="application/json")
         self.assertEqual(email.call_args[0][0], "plain@zitch.test")
+
+
+class EmailVerificationReportsSuccessTests(TestCase):
+    """The email endpoints must set `success` — the app branches on it.
+
+    Every other KYC endpoint passes success=True; these two did not, and nothing
+    caught it because the existing tests assert status codes and side effects only.
+    The cost was total: the app advances to the code entry on `res.success`, so
+    start() mailed the code and then reported a failure — rendering its own success
+    message inside an error, since the screen falls back to res.message — and
+    confirm() was unreachable behind it. Email gates Tier 1, so no app customer
+    could climb the ladder at all.
+
+    Pinned as behaviour rather than fixed in ok(): a 200 there does NOT universally
+    mean success. A queued or ambiguously-timed-out payout answers 200 with
+    `pending` and no `success`, exactly so the app says "processing" instead of
+    "sent", and defaulting the flag would report money as delivered mid-flight.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000077", "e@zitch.test",
+                                          identity_verified=False)
+        self.user.email_verified = False
+        self.user.save(update_fields=["email_verified"])
+
+    def post(self, path, payload):
+        res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
+        return res, res.json()
+
+    def test_sending_the_code_reports_success(self):
+        with patch("accounts.views._otp_code", return_value="909090"):
+            res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success"))
+
+    def test_confirming_the_code_reports_success(self):
+        with patch("accounts.views._otp_code", return_value="909090"):
+            self.post("/api/email/verify/start/", {"access_token": self.token})
+        res, body = self.post("/api/email/verify/confirm/",
+                              {"access_token": self.token, "otp": "909090"})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_verified)
+
+    def test_an_already_verified_email_reports_success(self):
+        # Re-entering the step must not read as a failure either.
+        self.user.email_verified = True
+        self.user.save(update_fields=["email_verified"])
+        res, body = self.post("/api/email/verify/start/", {"access_token": self.token})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(body.get("success"))
