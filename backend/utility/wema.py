@@ -565,14 +565,26 @@ def face_verify_live() -> bool:
     return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
 
 
-def face_verify_on_dev_host() -> bool:
-    """True while the face app points at ALAT's DEV verifier.
+#: Host markers that mean "this verifier is not ALAT's production one".
+#:
+#: `-dev.` was the only one here, which made the check silently stop applying the
+#: moment we were pointed at face-verification-pilot: a different hostname, the same
+#: problem. The list is deliberately broad — every name ALAT is likely to use for a
+#: non-production instance — because the cost of a false FAIL is someone reading a
+#: preflight line, and the cost of a false PASS is real KYC tiers lifted on a check
+#: that proves nothing.
+_NONPROD_FACE_HOSTS = ("-dev.", "-pilot.", "-uat.", "-test.", "-sandbox.", "-staging.")
 
-    Separate from face_verify_live() because the dev host answers happily — it just
-    does not prove anything about a real person, which makes it exactly the kind of
+
+def face_verify_on_nonprod_host() -> bool:
+    """True while the face app points at a NON-PRODUCTION ALAT verifier.
+
+    Separate from face_verify_live() because these hosts answer happily — they just
+    do not prove anything about a real person, which makes this exactly the kind of
     thing that survives to production unnoticed.
     """
-    return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
+    url = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
+    return any(marker in url for marker in _NONPROD_FACE_HOSTS)
 
 
 def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
