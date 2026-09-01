@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, Share, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
@@ -7,6 +7,7 @@ import { apiJson } from '@/lib/api';
 import { Loading } from '@/components/design/Loading';
 import { Screen, Header, Card, Btn, Field, ZItem, NText, HeaderLink } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
+import FaceVerifyModal from '@/components/design/FaceVerifyModal';
 import { useTheme, font, radius, iconTint } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -161,6 +162,18 @@ const AddMoney = () => {
   const [otp, setOtp] = useState('');
   const [verifying, setVerifying] = useState(false);
 
+  // Wema's hosted face check — the bank's own documented alternative to that OTP.
+  // It matters most on THIS screen: the code goes to the line registered against the
+  // BVN, which is routinely not the phone in the customer's hand, and without a way
+  // round it the account simply never gets created.
+  const [faceAvailable, setFaceAvailable] = useState(false);
+  const [faceUrl, setFaceUrl] = useState('');
+  const [facePolling, setFacePolling] = useState(false);
+  // The poll loop's cancellation token — a ref because the loop starts before the
+  // render that would have carried a new state value.
+  const faceSession = useRef('');
+  useEffect(() => () => { faceSession.current = ''; }, []);
+
   const loadAccount = () => {
     let alive = true;
     setLoading(true);
@@ -185,6 +198,89 @@ const AddMoney = () => {
     const timer = setTimeout(() => { cleanup = loadAccount(); }, 0);
     return () => { clearTimeout(timer); cleanup?.(); };
   }, []);
+
+  // The server owns this: only it knows whether the bank's verifier is keyed and
+  // its callback allowlist configured. Offering the button otherwise would just
+  // 503 the customer at the worst possible moment.
+  useEffect(() => {
+    let alive = true;
+    apiJson('/api/kyc/status/')
+      .then((r) => { if (alive && r?.success) setFaceAvailable(!!r.identity_face_available); })
+      .catch(() => { /* the OTP route still works — leave the option hidden */ });
+    return () => { alive = false; };
+  }, []);
+
+  /** Hand the customer to the bank's hosted face page instead of the SMS code.
+   *
+   * Nothing here decides anything: the bank posts the result to our own callback,
+   * which is the only version a client cannot fake by driving its own WebView. On a
+   * pass the callback creates the Tier-1 NUBAN (the bank's documented without-OTP
+   * path), so a verdict is followed by re-reading the account rather than by
+   * trusting the page.
+   */
+  const verifyWithFace = async () => {
+    if (bvn.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN.'); return; }
+    setCreating(true);
+    let started: { url: string; session: string } | null = null;
+    try {
+      const r = await apiJson('/api/kyc/face/start/', { bvn });
+      if (!r?.success || !r.url) {
+        notify('Not available', r?.message || 'Face verification is unavailable right now.');
+        return;
+      }
+      started = { url: String(r.url), session: String(r.session) };
+    } catch { notify('Error', 'Something went wrong. Please try again later.'); }
+    finally { setCreating(false); }
+    if (!started) return;
+    faceSession.current = started.session;
+    setFaceUrl(started.url);
+    pollFace(started.session);
+  };
+
+  const pollFace = async (session: string) => {
+    setFacePolling(true);
+    // Matches the server's session TTL: polling past the point where the check can
+    // still complete only burns battery and requests.
+    const deadline = Date.now() + 20 * 60 * 1000;
+    const startedAt = Date.now();
+    try {
+      while (faceSession.current === session && Date.now() < deadline) {
+        // Tight while the customer is actually in the check, then slow down — a flat
+        // 3s for twenty minutes would start drawing 429s, which this loop cannot tell
+        // apart from "not verified yet".
+        await new Promise((r) => setTimeout(r, Date.now() - startedAt < 60_000 ? 3000 : 10_000));
+        if (faceSession.current !== session) return;
+        let r;
+        try { r = await apiJson('/api/kyc/face/status/', { session }); }
+        catch { continue; }   // a dropped request is not a failed check
+        if (r?.status === 'verified') {
+          faceSession.current = '';
+          setFaceUrl('');
+          setBvn('');
+          // Started from the code screen? That step is finished, so take it down —
+          // leaving it up would ask for a code that no longer decides anything.
+          setOtpFlow(null);
+          setOtp('');
+          loadAccount();      // the callback mints the NUBAN — read it back
+          notify('Verified', 'Your bank confirmed it. Setting up your account number…');
+          return;
+        }
+        if (r?.status === 'failed' || r?.status === 'expired') {
+          faceSession.current = '';
+          setFaceUrl('');
+          notify('Not verified', 'The face check did not complete. You can try again.');
+          return;
+        }
+      }
+      // No verdict inside the session's life. Say so rather than leaving the button
+      // disabled and the customer staring at a screen that never moves.
+      if (faceSession.current === session) {
+        faceSession.current = '';
+        setFaceUrl('');
+        notify('Not verified', 'Your bank didn’t send a result. Use the SMS code, or try again.');
+      }
+    } finally { setFacePolling(false); }
+  };
 
   // The dedicated-account lookup is authoritative; the wallet context carries the
   // same NUBAN and covers the window before that request lands.
@@ -332,9 +428,35 @@ const AddMoney = () => {
         <Pressable onPress={resendOtp} hitSlop={10} style={{ alignItems: 'center', marginTop: 16 }}>
           <Text style={{ fontSize: 13.5, color: c.brand, fontFamily: font.bold }}>Resend code</Text>
         </Pressable>
-        <Pressable onPress={() => { setOtpFlow(null); setOtp(''); }} hitSlop={10} style={{ alignItems: 'center', marginTop: 12 }}>
+
+        {/* The way out for a code that never lands. It goes to the line registered
+            against the BVN, not necessarily the phone in their hand, so resending is
+            no help to the people who need help most — and this screen was otherwise
+            a dead end for them. The OTP stays live: whichever proof the bank returns
+            first creates the same account. */}
+        {faceAvailable ? (
+          <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 20, paddingTop: 16 }}>
+            <Text style={{ fontSize: 13.5, color: c.ink1, fontFamily: font.bold, textAlign: 'center' }}>
+              No code arriving?
+            </Text>
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, textAlign: 'center', marginTop: 6, marginBottom: 14, lineHeight: 19 }}>
+              The code goes to the phone registered on your BVN. Verify on Wema’s secure
+              face page instead — your face is never sent to or stored by Zitch.
+            </Text>
+            <Btn
+              label={facePolling ? 'Waiting for Wema…' : 'Verify with Wema face'}
+              icon="faceid"
+              variant="outline"
+              disabled={creating || facePolling}
+              onPress={verifyWithFace}
+            />
+          </View>
+        ) : null}
+
+        <Pressable onPress={() => { setOtpFlow(null); setOtp(''); }} hitSlop={10} style={{ alignItems: 'center', marginTop: 16 }}>
           <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.medium }}>Start over</Text>
         </Pressable>
+        <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => { setFaceUrl(''); loadAccount(); }} />
       </Screen>
     );
   }
@@ -468,9 +590,26 @@ const AddMoney = () => {
               disabled={creating || bvn.length !== 11}
               onPress={createAccount}
             />
+            {/* The bank's own alternative to the SMS code, offered up front as well
+                as on the code step — the customers who need it are exactly the ones
+                whose BVN is registered to a line they no longer carry, and they have
+                no way to know that until the code fails to arrive. */}
+            {faceAvailable ? (
+              <>
+                <View style={{ height: 10 }} />
+                <Btn
+                  label={facePolling ? 'Waiting for Wema…' : 'Verify with Wema face instead'}
+                  icon="faceid"
+                  variant="outline"
+                  disabled={creating || facePolling || bvn.length !== 11}
+                  onPress={verifyWithFace}
+                />
+              </>
+            ) : null}
           </>
         )}
       </Card>
+      <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => { setFaceUrl(''); loadAccount(); }} />
 
       {/* ---- 2–5. The other ways in, one card each ---- */}
       <Card pad={16} style={{ marginTop: 12 }}>
