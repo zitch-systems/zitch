@@ -41,6 +41,15 @@ const MAX_IMAGE_BASE64 = 2_800_000;
 // Matches FACE_SESSION_TTL_MINUTES on the server. Polling past the point where the
 // session can still be completed only burns battery and requests.
 const FACE_SESSION_MAX_MS = 20 * 60 * 1000;
+// How long the poll keeps going after the customer closes the bank's sheet.
+//
+// Not zero, because they may have passed the check a second before closing and the
+// bank's callback can still be in flight — cancelling instantly would lose it. Not
+// the full session either: when the bank's page fails (it renders its own error card
+// inside the sheet, which we cannot read from out here), closing it is the only
+// signal we get, and twenty more minutes of silent polling leaves the retry button
+// disabled the whole time. Long enough for a callback that is really coming.
+const FACE_DISMISS_GRACE_MS = 90 * 1000;
 
 const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: string; sub: string; done: boolean; children?: React.ReactNode }) => {
   const { c } = useTheme();
@@ -94,6 +103,9 @@ const Kyc = () => {
   // would have updated a state value.
   const faceSession = useRef('');
   const faceIdentityKind = useRef<'bvn' | 'nin'>('bvn');
+  // When the customer closed the bank's sheet, or 0 while it is still open. A ref
+  // for the same reason as faceSession: the poll loop has to see it mid-flight.
+  const faceDismissedAt = useRef(0);
   // The address rail decides whether a proof-of-address document is even asked for.
   const bankAddress = status?.address_rail === 'wema';
   const [identityFlow, setIdentityFlow] = useState<null | 'bvn' | 'nin'>(null);
@@ -354,6 +366,9 @@ const Kyc = () => {
     }
     if (!started) return;
     faceIdentityKind.current = kind;
+    // Cleared per attempt: a retry after a closed sheet would otherwise start out
+    // already past its grace window and give up on the first tick.
+    faceDismissedAt.current = 0;
     faceSession.current = started.session;
     setFaceUrl(started.url);
     // Polled alongside the sheet, never in place of it. The result arrives on our
@@ -375,12 +390,33 @@ const Kyc = () => {
    * the check a second before closing, and the bank's callback can still be in
    * flight. Cancelling on close and reading the status once would race it — and
    * lose, often enough — leaving somebody who passed looking at an unverified
-   * screen. The loop stops on its own when the verdict lands or the session dies.
+   * screen.
+   *
+   * It no longer runs to the full session deadline, though. Closing the sheet is
+   * also what someone does when the BANK'S page failed — it shows its own error card
+   * in there, which we cannot see from out here — and for them every extra minute of
+   * polling is a minute the retry button stays disabled reading "Waiting for Wema…".
+   * So the poll gets a grace window from here and then says what happened.
    */
   const dismissFace = () => {
+    faceDismissedAt.current = Date.now();
     setFaceUrl('');
     load();
   };
+
+  /** No verdict is coming: stop, release the button, and say what to do next.
+   *
+   * The important part is the second sentence. This lands when the bank never
+   * answered at all, and "nothing happened" reads as the app being broken — while
+   * the SMS code sitting on the screen behind it is still perfectly good.
+   */
+  const faceGaveNoResult = useCallback(() => {
+    const kind = faceIdentityKind.current.toUpperCase();
+    closeFace();
+    notify('Not verified',
+           `Wema didn't send a result, so your ${kind} isn't verified yet. `
+           + 'Enter the code they sent by SMS, or try the face check again.');
+  }, [closeFace]);
 
   const pollFace = async (session: string) => {
     setFacePolling(true);
@@ -424,7 +460,18 @@ const Kyc = () => {
           notify('Not verified', 'The face check did not complete. You can try again.');
           return;
         }
+        // Checked AFTER the status read above, never before it: that read is the
+        // last chance for a callback that landed while the sheet was closing, and
+        // giving up without it would throw away a verification we already have.
+        const dismissedAt = faceDismissedAt.current;
+        if (dismissedAt && Date.now() - dismissedAt > FACE_DISMISS_GRACE_MS) {
+          return faceGaveNoResult();
+        }
       }
+      // Fell out of the loop on the session deadline with no verdict — the bank
+      // never answered. This used to end in silence, leaving the customer looking
+      // at an unverified screen with nothing to act on.
+      if (faceSession.current === session) faceGaveNoResult();
     } finally {
       setFacePolling(false);
     }

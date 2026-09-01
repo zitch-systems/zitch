@@ -252,3 +252,45 @@ class PreflightTotpKeyTests(TestCase):
              mock.patch(_PROBE, return_value=_VTU_OK):
             _, code = _run()
         self.assertEqual(code, 0)
+
+
+class NonProductionFaceVerifierIsRefusedTests(TestCase):
+    """ALAT's non-production face verifiers answer happily and prove nothing about a
+    real person, so pointing at one must fail go-live rather than quietly pass.
+
+    The check used to look for "-dev." alone. The moment Wema moved us to
+    face-verification-pilot it stopped applying — a different hostname, the identical
+    problem — and the preflight went green on a verifier that decides nothing. That
+    is the exact shape of thing this check exists to catch, so it now recognises the
+    whole family of non-production names.
+    """
+
+    def _nonprod(self, url: str) -> bool:
+        from utility.wema import face_verify_on_nonprod_host
+        with override_settings(WEMA={"FACE_VERIFY_URL": url}):
+            return face_verify_on_nonprod_host()
+
+    def test_the_pilot_verifier_is_not_production(self):
+        # The regression: this returned False and the preflight reported "live verifier".
+        self.assertTrue(self._nonprod("https://face-verification-pilot.azurewebsites.net/"))
+
+    def test_the_dev_verifier_is_still_caught(self):
+        self.assertTrue(self._nonprod("https://face-verification-dev.azurewebsites.net/"))
+
+    def test_other_non_production_names_are_caught(self):
+        for host in ("uat", "test", "sandbox", "staging"):
+            with self.subTest(host=host):
+                self.assertTrue(
+                    self._nonprod(f"https://face-verification-{host}.azurewebsites.net/"))
+
+    def test_the_production_verifier_passes(self):
+        # The check must not be so broad that the real host can never go live.
+        self.assertFalse(self._nonprod("https://face-verification.azurewebsites.net/"))
+
+    def test_the_report_names_the_host_it_found(self):
+        # "the DEV verifier" sent whoever read it looking for a -dev URL they no
+        # longer had. The line has to say which host is actually configured.
+        from utility.management.commands.wema_preflight import _face_host
+        with override_settings(
+                WEMA={"FACE_VERIFY_URL": "https://face-verification-pilot.azurewebsites.net/"}):
+            self.assertEqual(_face_host(), "face-verification-pilot.azurewebsites.net")

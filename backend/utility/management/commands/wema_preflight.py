@@ -29,6 +29,13 @@ from utility import wema
 from utility.providers import card_provider, kyc_provider, payment_provider, payout_provider, vas_provider
 from utility.vtung import vtu_probe
 
+
+def _face_host() -> str:
+    """Just the hostname of the configured face verifier, for the report line."""
+    from urllib.parse import urlparse
+
+    return urlparse(settings.WEMA.get("FACE_VERIFY_URL", "") or "").hostname or "unset"
+
 PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
 
 
@@ -225,7 +232,7 @@ class Command(BaseCommand):
         # It answers happily and returns a correlationId, so nothing downstream can
         # tell it apart from the real one — the check simply proves nothing about the
         # person, while lifting a tier and clearing the large-transfer step-up.
-        from utility.wema import address_verify_live, face_verify_live, face_verify_on_dev_host
+        from utility.wema import address_verify_live, face_verify_live, face_verify_on_nonprod_host
         # HARD: the face callback carries no shared token — its URL is shown to the
         # customer — so the source-IP allowlist is the whole of its authentication.
         # Without it, anyone who reads that URL out of their own browser can assert
@@ -246,10 +253,12 @@ class Command(BaseCommand):
         if face_verify_live():
             checks.append((
                 True, "Face biometric host",
-                FAIL if face_verify_on_dev_host() else PASS,
-                "WEMA_FACE_VERIFY_URL still points at ALAT's DEV verifier — a dev face "
-                "check lifts real tiers on no evidence" if face_verify_on_dev_host()
-                else "live verifier"))
+                FAIL if face_verify_on_nonprod_host() else PASS,
+                # Name the host. "the DEV verifier" sent whoever read this looking for
+                # a -dev URL they no longer had, on a deploy pointed at -pilot.
+                f"WEMA_FACE_VERIFY_URL points at a non-production verifier "
+                f"({_face_host()}) — it answers happily and lifts real tiers on no "
+                f"evidence" if face_verify_on_nonprod_host() else "live verifier"))
         else:
             checks.append((False, "Face biometric (ALAT)", WARN,
                            "no channel id or WEMA_FACE_VERIFY_URL — the face step falls "
