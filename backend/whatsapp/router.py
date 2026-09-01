@@ -13,6 +13,7 @@ import secrets
 import time
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -3221,7 +3222,11 @@ def _kyc_send_face_link(pa: PendingAction, user, msisdn: str, kind: str, digits:
         expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
     )
     url = wema_provider.face_verification_url(kind, digits, _face_callback_url(session.state))
-    log.info("wa_face_link_sent user=%s kind=%s session=%s", user.pk, kind, session.state[:8])
+    # Same reason as kyc_face_start: without the verifier host a failure inside the
+    # bank's page leaves no trace on our side at all. Host only — the URL's query
+    # string carries the customer's BVN.
+    log.info("wa_face_link_sent user=%s kind=%s session=%s verifier=%s",
+             user.pk, kind, session.state[:8], urlparse(url).hostname or "unset")
     # A BUTTON, not a pasted link. The URL carries the customer's own BVN in its
     # query string, and WhatsApp would render that as visible tappable text sitting
     # in their history forever — while also looking exactly like the phishing
@@ -3521,8 +3526,8 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
     if not result.get("success"):
         session.delete()
         return False
-    log.info("wa_account_face_option_sent user=%s kind=%s session=%s",
-             user.pk, kind, session.state[:8])
+    log.info("wa_account_face_option_sent user=%s kind=%s session=%s verifier=%s",
+             user.pk, kind, session.state[:8], urlparse(url).hostname or "unset")
     return True
 
 
