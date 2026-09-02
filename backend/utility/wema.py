@@ -587,16 +587,36 @@ def face_verify_on_nonprod_host() -> bool:
     return any(marker in url for marker in _NONPROD_FACE_HOSTS)
 
 
+def face_cb_mode() -> str:
+    """How the face verifier is told where to report its result.
+
+    "cb_uri" puts the destination in the customer-facing URL. "profiled" leaves it
+    out entirely and relies on the callback URL registered against our channel, the
+    way ALAT's four other callbacks are profiled. See WEMA["FACE_CB_MODE"] for why
+    both exist and why the safer one is the default.
+    """
+    mode = (settings.WEMA.get("FACE_CB_MODE", "") or "").strip().lower()
+    return "profiled" if mode == "profiled" else "cb_uri"
+
+
 def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
     """Build the customer-facing URL for ALAT's face-biometric web app.
 
-    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}&cb_uri={callback}`.
-    On success it POSTs {success, c_id, id, id_type} to `cb_uri`.
+    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}` — plus `&cb_uri={cb}`
+    under the "cb_uri" mode. On success the page reports {success, c_id, id, id_type}
+    to the callback.
 
-    We pass cb_uri, never rd_uri. A redirect hands the result to whatever opened the
-    page — which for WhatsApp onboarding is a browser we do not control, and for the
-    app is a WebView whose navigation a determined user can drive by hand. The server
-    callback is the only variant where the bank tells US the outcome directly.
+    Wema's own sample URLs carry only the two parameters, and their integration
+    contact describes the callback as something to send for whitelisting rather than
+    something to pass per request — the same profiling every other ALAT callback
+    needs. `face_cb_mode()` decides which shape we send, because whether their page
+    accepts a per-request cb_uri is a fact about their web app that we cannot
+    establish from here, only test against.
+
+    We never pass rd_uri. A redirect hands the result to whatever opened the page —
+    for WhatsApp onboarding a browser we do not control, for the app a WebView whose
+    navigation a determined user can drive by hand. A server callback, however it is
+    addressed, is the only variant where the bank tells US the outcome directly.
 
     SECURITY: `x_tk` is the channel id (see _face_key), and the bank's design puts it
     in a URL the customer's browser loads — so treat the channel id as public. It is
@@ -607,9 +627,10 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
 
     base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
     kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
-    query = urlencode({kind: identity_value, "x_tk": _face_key(),
-                       "cb_uri": callback_url}, quote_via=quote)
-    return f"{base}/?{query}"
+    params = {kind: identity_value, "x_tk": _face_key()}
+    if callback_url and face_cb_mode() == "cb_uri":
+        params["cb_uri"] = callback_url
+    return f"{base}/?{urlencode(params, quote_via=quote)}"
 
 
 def create_wallet_with_face(phone: str, email: str, *, identity_type: str,

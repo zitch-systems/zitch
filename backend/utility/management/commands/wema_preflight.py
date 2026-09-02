@@ -251,6 +251,17 @@ class Command(BaseCommand):
                      "face callback carries no shared token, so without the allowlist it "
                      "has no authentication at all; ask Wema for the face app's egress IPs"))
         if face_verify_live():
+            # The profiled shape gives up the per-session state, leaving the IP
+            # allowlist as the only thing authenticating a callback that lifts a KYC
+            # tier. That is a deliberate trade, but it is not one to make silently on
+            # a go-live report — say which mode is running and what it costs.
+            checks.append((
+                True, "Face callback shape",
+                WARN if wema.face_cb_mode() == "profiled" else PASS,
+                "profiled — the bank posts to the registered URL, so the callback "
+                "carries no per-session state and the IP allowlist above is its only "
+                "authentication" if wema.face_cb_mode() == "profiled"
+                else "cb_uri — each verification carries its own single-use state"))
             checks.append((
                 True, "Face biometric host",
                 FAIL if face_verify_on_nonprod_host() else PASS,

@@ -227,14 +227,23 @@ services:
         sync: false
       - key: WEMA_REMITA_STATUS_LEGEND
         sync: false
-      # ALAT's face-biometric web app. The default is their DEV verifier, which
-      # answers happily and proves nothing — wema_preflight FAILS go-live until this
-      # points at the production host Wema gives you.
+      # ALAT's face-biometric web app. There is deliberately NO default: unset, the
+      # face rail reports itself unavailable and the flow falls back to SMS OTP or
+      # the document rail. wema_preflight FAILS go-live while this points at any
+      # non-production verifier (-dev, -pilot, -uat, ...), which answer happily and
+      # prove nothing about a real person.
       - key: WEMA_FACE_VERIFY_URL
         sync: false
       # The face callback carries no shared token (its URL is shown to the customer),
       # so this allowlist IS its authentication. Unset, the face rail refuses to run.
       - key: WEMA_FACE_CALLBACK_IPS
+        sync: false
+      # How the verifier learns where to report: "cb_uri" (default) passes the
+      # callback in the customer's URL; "profiled" sends only ?bvn=&x_tk= and relies
+      # on the callback URL registered with Wema, which is the two-parameter shape
+      # their integration samples use. Profiled mode has no per-session state, so it
+      # leans entirely on WEMA_FACE_CALLBACK_IPS above — set those first.
+      - key: WEMA_FACE_CB_MODE
         sync: false
       # Keep deterministic identity/OTP hashes stable independently of ordinary
       # Django secret-key rotation. Generate once; never rotate KYC_HASH_KEY unless
@@ -539,6 +548,11 @@ services:
         sync: false
       - key: WEMA_FACE_CALLBACK_IPS
         sync: false
+      # Must match zitch-api: this worker builds the same face URLs for WhatsApp
+      # onboarding, and a split setting would send chat and app customers to two
+      # different shapes.
+      - key: WEMA_FACE_CB_MODE
+        sync: false
       - key: ALLOW_PRODUCTION_SIMULATION
         fromService: {type: web, name: zitch-api, envVarKey: ALLOW_PRODUCTION_SIMULATION}
       - key: VTUNG_API_KEY
@@ -799,9 +813,11 @@ services:
         sync: false
       - key: WEMA_REMITA_STATUS_LEGEND
         sync: false
-      # ALAT's face-biometric web app. The default is their DEV verifier, which
-      # answers happily and proves nothing — wema_preflight FAILS go-live until this
-      # points at the production host Wema gives you.
+      # ALAT's face-biometric web app. There is deliberately NO default: unset, the
+      # face rail reports itself unavailable and the flow falls back to SMS OTP or
+      # the document rail. wema_preflight FAILS go-live while this points at any
+      # non-production verifier (-dev, -pilot, -uat, ...), which answer happily and
+      # prove nothing about a real person.
       - key: WEMA_FACE_VERIFY_URL
         sync: false
       # Customer alerts. wallet.alerts sends on a post_save SIGNAL, so this cron

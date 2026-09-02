@@ -1502,8 +1502,16 @@ def _face_callback_url(state: str) -> str:
     one customer once and reject every one after. `/webhooks/wema/face` is the same
     string forever; only `?s=` moves. The old path form is still routed for sessions
     opened before this shipped.
+
+    Under the "profiled" callback mode even `?s=` is dropped, and what comes back is
+    the bare registered URL — byte for byte the string handed to the bank, since an
+    exact-match whitelist may not tolerate a query string either. That mode buys its
+    compatibility by giving up the per-session handle; wallet.wema_callbacks explains
+    what is left holding the door.
     """
     base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
+    if wema.face_cb_mode() == "profiled":
+        return f"{base}/webhooks/wema/face"
     return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
 
 
