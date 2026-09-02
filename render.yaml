@@ -236,12 +236,17 @@ services:
         sync: false
       # The face callback carries no shared token (its URL is shown to the customer),
       # so this allowlist IS its authentication. Unset, the face rail refuses to run.
+      # Wema gave the face app's egress on 2026-09-02 as the same two addresses as the
+      # transaction gateway: "135.236.18.76,74.178.162.156". Set on this service, which
+      # receives the callback, AND on whatsapp-worker, which will not offer the face
+      # step at all while its own copy is empty.
       - key: WEMA_FACE_CALLBACK_IPS
         sync: false
-      # How the verifier learns where to report: "cb_uri" (default) passes the
-      # callback in the customer's URL; "profiled" sends only ?bvn=&x_tk= and relies
-      # on the callback URL registered with Wema, which is the two-parameter shape
-      # their integration samples use. Profiled mode has no per-session state, so it
+      # What we put in the verifier's cb_uri. "registered" (default) sends exactly the
+      # URL whitelisted with Wema; "session" appends ?s=<state>. ALAT match the
+      # whitelist as an EXACT STRING, so "session" is refused by their page and every
+      # face check fails before it reaches us — leave this unset unless a verifier
+      # tolerates a query string. Registered mode has no per-verification state, so it
       # leans entirely on WEMA_FACE_CALLBACK_IPS above — set those first.
       - key: WEMA_FACE_CB_MODE
         sync: false

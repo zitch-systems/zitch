@@ -1496,23 +1496,27 @@ def _face_callback_url(state: str) -> str:
     The state is 32 bytes of CSPRNG, single-use and bound to one user, which is the
     right shape for a value that must appear in a URL somebody can read.
 
-    The state rides in the QUERY STRING, not the path, so the part ALAT registers is
-    constant. They whitelist cb_uri values at their end, and an exact-match whitelist
-    cannot accept a URL whose last path segment changes every session — it would admit
-    one customer once and reject every one after. `/webhooks/wema/face` is the same
-    string forever; only `?s=` moves. The old path form is still routed for sessions
-    opened before this shipped.
+    ALAT match the whitelisted cb_uri as an EXACT STRING. Not a prefix, not a path
+    with a free query — the whole thing, character for character. So under the default
+    "registered" mode this returns the bare URL that was sent for whitelisting and
+    nothing else, and the `state` argument is deliberately ignored.
 
-    Under the "profiled" callback mode even `?s=` is dropped, and what comes back is
-    the bare registered URL — byte for byte the string handed to the bank, since an
-    exact-match whitelist may not tolerate a query string either. That mode buys its
-    compatibility by giving up the per-session handle; wallet.wema_callbacks explains
-    what is left holding the door.
+    That was learned the expensive way. The state used to ride in the query string
+    (moved there from the last path segment, on the reasoning that at least the
+    registered PREFIX would then stay constant); an exact-match whitelist rejects
+    both equally, and every face verification failed inside the bank's page with a
+    generic error while our logs showed nothing at all — because nothing was ever
+    sent. `/face/<state>` and `/face?s=<state>` both stay routed, for sessions opened
+    before this and for a verifier whose whitelist does tolerate a query string.
+
+    Dropping the state costs the callback its per-session handle; wallet.wema_callbacks
+    explains what is left holding the door, and why FACE_CALLBACK_IPS stops being
+    defence in depth and becomes the authentication itself.
     """
     base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
-    if wema.face_cb_mode() == "profiled":
-        return f"{base}/webhooks/wema/face"
-    return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
+    if wema.face_cb_mode() == "session":
+        return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
+    return f"{base}/webhooks/wema/face"
 
 
 @api

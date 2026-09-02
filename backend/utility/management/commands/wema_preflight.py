@@ -251,17 +251,19 @@ class Command(BaseCommand):
                      "face callback carries no shared token, so without the allowlist it "
                      "has no authentication at all; ask Wema for the face app's egress IPs"))
         if face_verify_live():
-            # The profiled shape gives up the per-session state, leaving the IP
+            # The registered shape gives up the per-verification state, leaving the IP
             # allowlist as the only thing authenticating a callback that lifts a KYC
-            # tier. That is a deliberate trade, but it is not one to make silently on
-            # a go-live report — say which mode is running and what it costs.
+            # tier. ALAT's exact-match whitelist forces it, but a forced trade is still
+            # a trade — say which mode is running and what it costs rather than let a
+            # go-live report imply the callback is as guarded as the other four.
             checks.append((
                 True, "Face callback shape",
-                WARN if wema.face_cb_mode() == "profiled" else PASS,
-                "profiled — the bank posts to the registered URL, so the callback "
-                "carries no per-session state and the IP allowlist above is its only "
-                "authentication" if wema.face_cb_mode() == "profiled"
-                else "cb_uri — each verification carries its own single-use state"))
+                WARN if wema.face_cb_mode() == "registered" else PASS,
+                "registered — cb_uri is the exact whitelisted URL, so the callback "
+                "carries no per-verification state and the IP allowlist above is its "
+                "only authentication" if wema.face_cb_mode() == "registered"
+                else "session — each verification carries its own single-use state, "
+                     "which ALAT's exact-match whitelist will reject"))
             checks.append((
                 True, "Face biometric host",
                 FAIL if face_verify_on_nonprod_host() else PASS,
