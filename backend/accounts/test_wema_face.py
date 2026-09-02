@@ -435,3 +435,154 @@ class TheRawIdentityNeverReachesTheForensicTableTests(TestCase):
         blob = str(row.payload)
         self.assertNotIn("22222222222", blob)
         self.assertIn("sha256:", blob)
+
+
+@override_settings(
+    WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
+          "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
+          "FACE_CALLBACK_IPS": ["9.9.9.9"],
+          "KEYS": {"wallet": "k"}, "CHANNEL_ID": "CHAN-GUID", "SIMULATION": False,
+          "FACE_CB_MODE": "profiled",
+          "FACE_VERIFY_URL": "https://face-verification-pilot.example/"},
+    ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"})
+class TheProfiledCallbackShapeTests(TestCase):
+    """Wema's own sample URL carries two parameters, not three.
+
+    Their integration contact gave it twice — `?bvn=<number>&x_tk=<guid>` — said "you
+    are to pass the BVN and the x-api-key", and separately asked for the callback URL
+    to be sent for whitelisting, which is how ALAT's four other callbacks are wired:
+    registered against the channel, never passed per request. Every attempt that
+    also passed cb_uri died inside their page with a generic error and reached us not
+    at all. This mode sends the shape they describe.
+
+    The cost is stated plainly in the callback's own docstring: a URL registered once
+    can carry no per-session handle, so the identity in the payload is what finds the
+    session, and FACE_CALLBACK_IPS is then the whole of the transport authentication.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="p1", phone="08070000001",
+                                             password="Str0ng!pass1")
+        self.session = WemaFaceSession.objects.create(
+            user=self.user, state="p" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+        patch = mock.patch("utility.wema.create_wallet_with_face",
+                           return_value={"success": True})
+        patch.start()
+        self.addCleanup(patch.stop)
+        readback = mock.patch("wallet.services.attach_existing_bank_account",
+                              return_value=(None, "pending"))
+        readback.start()
+        self.addCleanup(readback.stop)
+
+    def test_the_verifier_url_carries_only_the_identity_and_the_key(self):
+        from utility import wema
+
+        url = wema.face_verification_url("bvn", "22222222222",
+                                         "https://api.zitch.ng/webhooks/wema/face")
+        self.assertNotIn("cb_uri", url)
+        self.assertIn("bvn=22222222222", url)
+        self.assertIn("x_tk=CHAN-GUID", url)
+
+    def test_the_registered_callback_url_carries_no_query_string_at_all(self):
+        """An exact-match whitelist may not tolerate `?s=` any more than a moving path
+        segment. In this mode the string we hand the bank is the string they hold."""
+        from accounts.views import _face_callback_url
+
+        self.assertEqual(_face_callback_url("ANYSTATE"),
+                         "https://api.zitch.ng/webhooks/wema/face")
+
+    def test_a_stateless_callback_verifies_the_customer_it_names(self):
+        res = self.client.post(
+            "/webhooks/wema/face",
+            {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "bvn"},
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        # Wema's hosted check proves identity ownership. It is NOT the Prembly live
+        # selfie behind Tier 2, and must never stand in for it.
+        self.assertFalse(self.user.face_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
+        self.assertEqual(self.session.correlation_id, "COR9")
+
+    def test_a_stateless_callback_for_an_identity_nobody_is_verifying_decides_nothing(self):
+        """No pending session for that number means no customer asked for this check.
+
+        With the session handle gone this is the check that stops a stray or forged
+        callback naming a BVN off a form from lifting its holder's tier.
+        """
+        res = self.client.post(
+            "/webhooks/wema/face",
+            {"success": True, "c_id": "COR9", "id": "33333333333", "id_type": "bvn"},
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.PENDING)
+
+    def test_a_stateless_callback_is_single_use(self):
+        body = {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "bvn"}
+        self.client.post("/webhooks/wema/face", body,
+                         content_type="application/json")
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
+        # The session is consumed, so a replay finds nothing PENDING to honour.
+        self.client.post("/webhooks/wema/face", body,
+                         content_type="application/json")
+        self.assertEqual(
+            WemaFaceSession.objects.filter(status=WemaFaceSession.PENDING).count(), 0)
+
+    def test_a_stateless_callback_naming_the_wrong_identity_type_decides_nothing(self):
+        res = self.client.post(
+            "/webhooks/wema/face",
+            {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "nin"},
+            content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(self.user.nin_verified)
+
+
+@override_settings(
+    WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
+          "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
+          "FACE_CALLBACK_IPS": ["9.9.9.9"],
+          "KEYS": {"wallet": "k"}, "CHANNEL_ID": "CHAN-GUID", "SIMULATION": False,
+          "FACE_VERIFY_URL": "https://face-verification-pilot.example/"},
+    ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"})
+class TheDefaultCallbackShapeIsUnchangedTests(TestCase):
+    """Profiled mode is a claim about somebody else's web app, so it is opt-in.
+
+    Until it is proven, the deployment keeps the two-factor shape: a state only we
+    minted, plus the source-IP allowlist. Nothing above may quietly relax that.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="d1", phone="08070000002",
+                                             password="Str0ng!pass1")
+        self.session = WemaFaceSession.objects.create(
+            user=self.user, state="d" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+
+    def test_the_verifier_url_still_carries_the_callback(self):
+        from accounts.views import _face_callback_url
+        from utility import wema
+
+        cb = _face_callback_url(self.session.state)
+        self.assertTrue(cb.endswith(f"/webhooks/wema/face?s={self.session.state}"))
+        self.assertIn("cb_uri", wema.face_verification_url("bvn", "22222222222", cb))
+
+    def test_a_stateless_callback_still_verifies_nobody(self):
+        self.client.post(
+            "/webhooks/wema/face",
+            {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "bvn"},
+            content_type="application/json")
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.PENDING)

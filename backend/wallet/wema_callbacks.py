@@ -702,6 +702,16 @@ def wema_face_callback(request, state=""):
       * the returned identity must hash to the one that session was opened with;
       * the session must not have expired, and is consumed either way.
 
+    UNLESS the deployment runs the "profiled" callback mode, where the bank posts to
+    one fixed registered URL and there is no state to carry — see FACE_CB_MODE. There
+    the session is found by the identity instead, which is strictly weaker: it means
+    a caller naming a BVN that happens to have a verification in flight is believed.
+    What still has to hold is that a PENDING, unexpired session exists for that exact
+    identity, that it is consumed on first use, and — carrying the weight now that
+    the handle is gone — that the call came from FACE_CALLBACK_IPS. Do not run that
+    mode without those addresses configured; `_ip_ok` refuses everything if they are
+    missing, which is the correct end of the trade.
+
     Only then is the session's BVN or NIN marked verified. This hosted Wema check is
     the ownership-proof alternative to Wallet Service SMS OTP; it is NOT the
     Prembly live-selfie check used for Tier 2, so it must never set ``face_verified``.
@@ -733,15 +743,34 @@ def wema_face_callback(request, state=""):
     # blind the forensic trail instead of protecting anything.
     if identity:
         body["id"] = _fingerprint(identity)
-    # Log key names and outcomes only — never the identity number itself.
-    log.info("wema_face_cb state=%s success=%s has_cid=%s ip=%s",
-             (state or "")[:8], claimed, bool(correlation), request.wema_ip)
+    # Log key names and outcomes only — never the identity number itself. `mode` says
+    # which shape the bank used, because "no state" is a legitimate profiled callback
+    # on one deployment and a call from nowhere on another, and the two look identical
+    # in a log that omits it.
+    log.info("wema_face_cb state=%s mode=%s success=%s has_cid=%s ip=%s",
+             (state or "")[:8], wema_provider.face_cb_mode(), claimed,
+             bool(correlation), request.wema_ip)
 
     with db_transaction.atomic():
-        session = (WemaFaceSession.objects
+        pending = (WemaFaceSession.objects
                    .select_for_update()
-                   .filter(state=state, status=WemaFaceSession.PENDING)
-                   .select_related("user").first())
+                   .filter(status=WemaFaceSession.PENDING)
+                   .select_related("user"))
+        if state:
+            session = pending.filter(state=state).first()
+        elif identity and wema_provider.face_cb_mode() == "profiled":
+            # Nothing per-session can ride in a URL registered once with the bank, so
+            # the identity is all there is to match on. Newest first: a customer who
+            # retried has more than one session open for the same BVN, and the one
+            # they are looking at is the last one we minted.
+            by_identity = pending.filter(identity_hash=hash_identifier(identity))
+            if returned_kind in (WemaFaceSession.BVN, WemaFaceSession.NIN):
+                by_identity = by_identity.filter(identity_type=returned_kind)
+            session = by_identity.order_by("-created").first()
+            if session is not None:
+                request.wema_action = "matched:by_identity"
+        else:
+            session = None
         if session is None:
             request.wema_action = "denied:unknown_session"
             return JsonResponse({"status": True}, status=200)
