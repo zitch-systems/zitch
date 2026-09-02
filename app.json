@@ -29,7 +29,9 @@
         "android.permission.INTERNET",
         "android.permission.CAMERA",
         "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "android.permission.USE_FINGERPRINT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ],
       "package": "com.zitch.app",
       "intentFilters": [
@@ -86,6 +88,12 @@
         {
           "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
           "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow Zitch to access your location for identity verification and banking services."
         }
       ],
       [
