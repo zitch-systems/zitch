@@ -306,25 +306,25 @@ class TheCallbackUrlCarriesNoSharedSecretTests(TestCase):
         from accounts.views import _face_callback_url
         with override_settings(
                 WEMA={"CALLBACK_TOKEN": "SUPERSECRETTOKENVALUE0123456789ab",
-                      "FACE_CALLBACK_IPS": ["1.2.3.4"]},
+                      "FACE_CALLBACK_IPS": ["1.2.3.4"], "FACE_CB_MODE": "session"},
                 ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"}):
             url = _face_callback_url("STATE123")
         self.assertNotIn("SUPERSECRETTOKENVALUE", url)
         self.assertTrue(url.endswith("/webhooks/wema/face?s=STATE123"))
 
-    def test_the_registered_part_of_the_url_is_the_same_every_session(self):
-        """ALAT whitelist the cb_uri, so the part they register cannot move.
+    def test_the_url_is_identical_for_every_verification(self):
+        """ALAT match the whitelisted cb_uri as an exact string, so nothing may move.
 
-        With the state in the last path segment, an exact-match whitelist would admit
-        one customer once and reject every one after — the state is fresh per session.
-        Everything up to the `?` is now constant.
+        Not the last path segment, and not the query either: `?s=<state>` was the
+        second attempt at keeping a per-session handle, and an exact-match whitelist
+        rejects it just as completely as a moving path segment did.
         """
         from accounts.views import _face_callback_url
         with override_settings(WEMA={"FACE_CALLBACK_IPS": ["1.2.3.4"]},
                                ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"}):
             first, second = _face_callback_url("AAA"), _face_callback_url("BBB")
-        self.assertEqual(first.split("?")[0], second.split("?")[0])
-        self.assertEqual(first.split("?")[0], "https://api.zitch.ng/webhooks/wema/face")
+        self.assertEqual(first, second)
+        self.assertEqual(first, "https://api.zitch.ng/webhooks/wema/face")
 
 
 @override_settings(
@@ -442,21 +442,21 @@ class TheRawIdentityNeverReachesTheForensicTableTests(TestCase):
           "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
           "FACE_CALLBACK_IPS": ["9.9.9.9"],
           "KEYS": {"wallet": "k"}, "CHANNEL_ID": "CHAN-GUID", "SIMULATION": False,
-          "FACE_CB_MODE": "profiled",
+          "FACE_CB_MODE": "registered",
           "FACE_VERIFY_URL": "https://face-verification-pilot.example/"},
     ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"})
-class TheProfiledCallbackShapeTests(TestCase):
-    """Wema's own sample URL carries two parameters, not three.
+class TheRegisteredCallbackShapeTests(TestCase):
+    """ALAT match the whitelisted cb_uri as an EXACT STRING.
 
-    Their integration contact gave it twice — `?bvn=<number>&x_tk=<guid>` — said "you
-    are to pass the BVN and the x-api-key", and separately asked for the callback URL
-    to be sent for whitelisting, which is how ALAT's four other callbacks are wired:
-    registered against the channel, never passed per request. Every attempt that
-    also passed cb_uri died inside their page with a generic error and reached us not
-    at all. This mode sends the shape they describe.
+    Confirmed by their integration contact on 2026-09-02: "let the callback match the
+    exact url sent in for whitelisting". We registered
+    `https://api.zitch.ng/webhooks/wema/face` and were sending it with `?s=<state>`
+    appended — a different string — so their page refused it, the customer met a
+    generic error, and our logs showed nothing at all, because nothing was ever sent.
+    That is every failure this rail has had.
 
-    The cost is stated plainly in the callback's own docstring: a URL registered once
-    can carry no per-session handle, so the identity in the payload is what finds the
+    The cost is stated plainly in the callback's own docstring: an exact-match URL can
+    carry no per-verification handle, so the identity in the payload is what finds the
     session, and FACE_CALLBACK_IPS is then the whole of the transport authentication.
     """
 
@@ -476,18 +476,24 @@ class TheProfiledCallbackShapeTests(TestCase):
         readback.start()
         self.addCleanup(readback.stop)
 
-    def test_the_verifier_url_carries_only_the_identity_and_the_key(self):
+    def test_the_verifier_url_still_carries_a_callback(self):
+        """Wema's samples show only bvn and x_tk, but they confirmed the page does
+        accept cb_uri — and without it the result reaches nobody. What had to change
+        was the VALUE, not whether we send one."""
+        from accounts.views import _face_callback_url
         from utility import wema
 
         url = wema.face_verification_url("bvn", "22222222222",
-                                         "https://api.zitch.ng/webhooks/wema/face")
-        self.assertNotIn("cb_uri", url)
+                                         _face_callback_url("ANYSTATE"))
+        self.assertIn("cb_uri", url)
         self.assertIn("bvn=22222222222", url)
         self.assertIn("x_tk=CHAN-GUID", url)
+        self.assertNotIn("s%3DANYSTATE", url)
+        self.assertNotIn("ANYSTATE", url)
 
-    def test_the_registered_callback_url_carries_no_query_string_at_all(self):
-        """An exact-match whitelist may not tolerate `?s=` any more than a moving path
-        segment. In this mode the string we hand the bank is the string they hold."""
+    def test_the_callback_url_is_the_whitelisted_string_and_nothing_more(self):
+        """The string we hand the bank is the string they hold, character for
+        character. The state argument is accepted and deliberately ignored."""
         from accounts.views import _face_callback_url
 
         self.assertEqual(_face_callback_url("ANYSTATE"),
@@ -546,19 +552,75 @@ class TheProfiledCallbackShapeTests(TestCase):
         self.assertFalse(self.user.bvn_verified)
         self.assertFalse(self.user.nin_verified)
 
+    def test_a_callback_two_accounts_could_claim_verifies_neither(self):
+        """A BVN is not a secret, so anyone can open a session against someone else's.
+
+        Without a state in the URL there is nothing to tell the two apart, and
+        newest-first would hand the last person to start a session the other's
+        completed check. The guards below only catch that once the victim is already
+        verified — the case where it no longer matters. So an unattributable callback
+        must verify nobody, and both parties retry.
+        """
+        rival = User.objects.create_user(username="p2", phone="08070000009",
+                                         password="Str0ng!pass1")
+        newer = WemaFaceSession.objects.create(
+            user=rival, state="r" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+
+        res = self.client.post(
+            "/webhooks/wema/face",
+            {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "bvn"},
+            content_type="application/json")
+
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        rival.refresh_from_db()
+        self.assertFalse(self.user.bvn_verified)
+        self.assertFalse(rival.bvn_verified)
+        # Neither session is consumed: this decided nothing, so both may still finish.
+        self.session.refresh_from_db()
+        newer.refresh_from_db()
+        self.assertEqual(self.session.status, WemaFaceSession.PENDING)
+        self.assertEqual(newer.status, WemaFaceSession.PENDING)
+
+    def test_one_customers_retries_still_resolve_to_their_latest_session(self):
+        """The ambiguity guard is about two PEOPLE, not two attempts.
+
+        A customer who retried has several sessions open on their own BVN; the one
+        they are looking at is the last we minted, and it must still verify.
+        """
+        latest = WemaFaceSession.objects.create(
+            user=self.user, state="q" * 40, identity_type="bvn",
+            identity_hash=hash_identifier("22222222222"),
+            expires_at=timezone.now() + timedelta(minutes=20))
+
+        self.client.post(
+            "/webhooks/wema/face",
+            {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "bvn"},
+            content_type="application/json")
+
+        self.user.refresh_from_db()
+        latest.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(latest.status, WemaFaceSession.VERIFIED)
+
 
 @override_settings(
     WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
           "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
           "FACE_CALLBACK_IPS": ["9.9.9.9"],
           "KEYS": {"wallet": "k"}, "CHANNEL_ID": "CHAN-GUID", "SIMULATION": False,
+          "FACE_CB_MODE": "session",
           "FACE_VERIFY_URL": "https://face-verification-pilot.example/"},
     ZITCH_LINKS={"API_BASE": "https://api.zitch.ng"})
-class TheDefaultCallbackShapeIsUnchangedTests(TestCase):
-    """Profiled mode is a claim about somebody else's web app, so it is opt-in.
+class TheSessionCallbackShapeStaysStrictTests(TestCase):
+    """The stronger two-factor shape survives, for a verifier that can take it.
 
-    Until it is proven, the deployment keeps the two-factor shape: a state only we
-    minted, plus the source-IP allowlist. Nothing above may quietly relax that.
+    ALAT cannot — their whitelist is exact-match — but the identity-only fallback
+    must never leak into a deployment that IS carrying a per-verification state.
+    Where a state is available it is the thing that decides, and a callback arriving
+    without one decides nothing at all.
     """
 
     def setUp(self):
@@ -569,7 +631,7 @@ class TheDefaultCallbackShapeIsUnchangedTests(TestCase):
             identity_hash=hash_identifier("22222222222"),
             expires_at=timezone.now() + timedelta(minutes=20))
 
-    def test_the_verifier_url_still_carries_the_callback(self):
+    def test_the_callback_url_carries_the_per_verification_state(self):
         from accounts.views import _face_callback_url
         from utility import wema
 
@@ -577,7 +639,7 @@ class TheDefaultCallbackShapeIsUnchangedTests(TestCase):
         self.assertTrue(cb.endswith(f"/webhooks/wema/face?s={self.session.state}"))
         self.assertIn("cb_uri", wema.face_verification_url("bvn", "22222222222", cb))
 
-    def test_a_stateless_callback_still_verifies_nobody(self):
+    def test_a_stateless_callback_verifies_nobody(self):
         self.client.post(
             "/webhooks/wema/face",
             {"success": True, "c_id": "COR9", "id": "22222222222", "id_type": "bvn"},

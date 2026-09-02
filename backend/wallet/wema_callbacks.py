@@ -702,15 +702,16 @@ def wema_face_callback(request, state=""):
       * the returned identity must hash to the one that session was opened with;
       * the session must not have expired, and is consumed either way.
 
-    UNLESS the deployment runs the "profiled" callback mode, where the bank posts to
-    one fixed registered URL and there is no state to carry — see FACE_CB_MODE. There
-    the session is found by the identity instead, which is strictly weaker: it means
-    a caller naming a BVN that happens to have a verification in flight is believed.
-    What still has to hold is that a PENDING, unexpired session exists for that exact
-    identity, that it is consumed on first use, and — carrying the weight now that
-    the handle is gone — that the call came from FACE_CALLBACK_IPS. Do not run that
-    mode without those addresses configured; `_ip_ok` refuses everything if they are
-    missing, which is the correct end of the trade.
+    UNLESS the deployment runs the default "registered" callback mode, where the URL
+    the bank holds is one exact whitelisted string and there is no state to carry —
+    see FACE_CB_MODE. There the session is found by the identity instead, which is
+    strictly weaker: a caller naming a BVN that happens to have a verification in
+    flight is believed. What still has to hold is that a PENDING, unexpired session
+    exists for that exact identity, that it is consumed on first use, and — carrying
+    the weight now that the handle is gone — that the call came from
+    FACE_CALLBACK_IPS. That allowlist is not optional in this mode: `_ip_ok` refuses
+    everything while it is empty, and face_verify_live() hides the rail rather than
+    offer a check nothing can authenticate.
 
     Only then is the session's BVN or NIN marked verified. This hosted Wema check is
     the ownership-proof alternative to Wallet Service SMS OTP; it is NOT the
@@ -744,7 +745,7 @@ def wema_face_callback(request, state=""):
     if identity:
         body["id"] = _fingerprint(identity)
     # Log key names and outcomes only — never the identity number itself. `mode` says
-    # which shape the bank used, because "no state" is a legitimate profiled callback
+    # which shape the bank used, because "no state" is a legitimate registered callback
     # on one deployment and a call from nowhere on another, and the two look identical
     # in a log that omits it.
     log.info("wema_face_cb state=%s mode=%s success=%s has_cid=%s ip=%s",
@@ -758,15 +759,31 @@ def wema_face_callback(request, state=""):
                    .select_related("user"))
         if state:
             session = pending.filter(state=state).first()
-        elif identity and wema_provider.face_cb_mode() == "profiled":
-            # Nothing per-session can ride in a URL registered once with the bank, so
+        elif identity and wema_provider.face_cb_mode() == "registered":
+            # Nothing per-verification can ride in a URL matched as an exact string, so
             # the identity is all there is to match on. Newest first: a customer who
             # retried has more than one session open for the same BVN, and the one
             # they are looking at is the last one we minted.
             by_identity = pending.filter(identity_hash=hash_identifier(identity))
             if returned_kind in (WemaFaceSession.BVN, WemaFaceSession.NIN):
                 by_identity = by_identity.filter(identity_type=returned_kind)
-            session = by_identity.order_by("-created").first()
+            candidates = list(by_identity.order_by("-created"))
+            # But "newest" is only safe while every candidate is the SAME PERSON.
+            # A BVN is not a secret, so anyone can open a session against someone
+            # else's — and if they open theirs last, newest-first would hand them the
+            # victim's completed check. The replacement guards further down catch that
+            # only once the victim is ALREADY verified, which is exactly the case
+            # where the race does not matter. So refuse an ambiguous callback outright
+            # and let both parties retry: a face check nobody can attribute must
+            # verify nobody. Impossible in "session" mode, where the state names one.
+            if len({candidate.user_id for candidate in candidates}) > 1:
+                log.warning("wema_face_ambiguous_identity accounts=%s",
+                            len({candidate.user_id for candidate in candidates}))
+                alert("Face callback matched pending sessions on two accounts",
+                      level="warning", accounts=len({c.user_id for c in candidates}))
+                request.wema_action = "denied:ambiguous_identity"
+                return JsonResponse({"status": True}, status=200)
+            session = candidates[0] if candidates else None
             if session is not None:
                 request.wema_action = "matched:by_identity"
         else:

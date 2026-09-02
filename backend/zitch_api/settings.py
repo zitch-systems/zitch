@@ -448,28 +448,29 @@ WEMA = {
     # reads the URL out of their own browser could assert their own face check.
     "FACE_CALLBACK_IPS": [ip.strip() for ip in
                           os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
-    # How the face verifier learns where to report its result.
+    # What we put in the face verifier's `cb_uri`.
     #
-    #   "cb_uri"   (default) — the URL we hand the customer carries the destination:
-    #                          ?bvn=&x_tk=&cb_uri=https://api.zitch.ng/webhooks/wema/face?s=<state>
-    #   "profiled"           — send ONLY ?bvn=&x_tk=, and let the bank POST to the
-    #                          callback URL registered against our channel, the way
-    #                          the other four ALAT callbacks are profiled.
+    #   "registered" (default) — exactly the URL whitelisted with Wema, nothing more:
+    #                            https://api.zitch.ng/webhooks/wema/face
+    #   "session"              — that URL plus a per-verification `?s=<state>`.
     #
-    # Wema's integration contact gave the sample URL twice with no cb_uri at all
-    # ("you are to pass the BVN and the x-api-key"), and asked for the callback URL
-    # to be sent for whitelisting separately — which is what profiling a callback
-    # means for every other rail here. Every attempt that included cb_uri has failed
-    # inside their page with a generic error, before anything reached us.
+    # ALAT's whitelist is an EXACT STRING MATCH — confirmed by their integration
+    # contact on 2026-09-02, "let the callback match the exact url sent in for
+    # whitelisting". A cb_uri carrying `?s=` is therefore a different string from the
+    # one registered, and their page refuses it: the customer sees a generic error
+    # and nothing ever reaches us. That is every failure this rail has had.
     #
-    # Switchable rather than simply changed because the two modes are NOT equally
-    # safe. A profiled URL is one fixed string, so nothing per-session can ride in
-    # it: the callback then names an identity number and no session handle, and
-    # identity numbers are not secrets. In that mode FACE_CALLBACK_IPS is the only
-    # transport authentication left, so do not enable it without the face app's
-    # egress addresses actually configured. See wallet.wema_callbacks.
+    # So "registered" is the default because "session" cannot work against Wema, not
+    # because it is the safer of the two. It is not. An exact-match whitelist admits
+    # ONE fixed string, so nothing per-verification can ride in it, and the callback
+    # arrives naming an identity number and no session handle — and identity numbers
+    # are not secrets. FACE_CALLBACK_IPS is then the whole of the transport
+    # authentication, which is why it must be populated before this rail is trusted;
+    # unset, _ip_ok refuses everything and face_verify_live() hides the rail outright.
+    # "session" is kept for a verifier whose whitelist tolerates a query string.
+    # See wallet.wema_callbacks for what still has to hold on the receiving end.
     "FACE_CB_MODE": (os.environ.get("WEMA_FACE_CB_MODE", "").strip().lower()
-                     or "cb_uri"),
+                     or "registered"),
 }
 
 # How long a debited-but-unresolved movement may sit before the reconcile crons
