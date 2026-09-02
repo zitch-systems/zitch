@@ -236,6 +236,10 @@ services:
         sync: false
       # The face callback carries no shared token (its URL is shown to the customer),
       # so this allowlist IS its authentication. Unset, the face rail refuses to run.
+      # Wema gave the face app's egress on 2026-09-02 as the same two addresses as the
+      # transaction gateway: "135.236.18.76,74.178.162.156". Set on this service, which
+      # receives the callback, AND on whatsapp-worker, which will not offer the face
+      # step at all while its own copy is empty.
       - key: WEMA_FACE_CALLBACK_IPS
         sync: false
       # What we put in the verifier's cb_uri. "registered" (default) sends exactly the

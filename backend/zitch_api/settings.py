@@ -441,11 +441,17 @@ WEMA = {
     # unavailable — the app falls back to the document rail, the chat hides the step
     # — which is the correct behaviour for a control we cannot perform.
     "FACE_VERIFY_URL": os.environ.get("WEMA_FACE_VERIFY_URL", ""),
-    # Source IPs the face verifier calls us back from. SEPARATE from CALLBACK_IPS:
-    # that list is ALAT's transaction gateway, and the face app is a different Azure
-    # host. The face callback carries no shared token (its URL is shown to the
-    # customer), so this allowlist IS its authentication — without it, anyone who
-    # reads the URL out of their own browser could assert their own face check.
+    # Source IPs the face verifier calls us back from. Wema gave these on 2026-09-02
+    # as 135.236.18.76 and 74.178.162.156 — the SAME two addresses as the transaction
+    # gateway's DEFAULT_CALLBACK_IPS, because the face app egresses through it.
+    #
+    # Configured separately anyway, and with no default. Not because the lists differ
+    # today but because this one is load-bearing in a way CALLBACK_IPS is not: the
+    # face callback carries no shared token (its URL is shown to the customer), so
+    # this allowlist IS its authentication rather than a second factor behind one.
+    # Defaulting it would let a deployment nobody configured accept face results —
+    # anyone who read the URL out of their own browser could assert their own check.
+    # Empty means deny, and face_verify_live() then hides the rail entirely.
     "FACE_CALLBACK_IPS": [ip.strip() for ip in
                           os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
     # What we put in the face verifier's `cb_uri`.
