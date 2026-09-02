@@ -123,6 +123,10 @@ const FaceVerifyModal = ({
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
             mediaCapturePermissionGrantType="grant"
+            // The bank's verification page also requests the device's location.
+            // Permission is requested by the caller before this sheet opens;
+            // this flag passes whatever the OS granted through to the web page.
+            geolocationEnabled
             // Android needs this for getUserMedia to be offered at all.
             javaScriptEnabled
             domStorageEnabled
@@ -153,7 +157,7 @@ const FaceVerifyModal = ({
         <View style={{ paddingHorizontal: 20, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.line }}>
           <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 11.5, lineHeight: 17, textAlign: 'center' }}>
             Your photo is captured by your bank and is never stored by Zitch.
-            {Platform.OS === 'ios' ? ' Allow camera access when asked.' : ''}
+            {Platform.OS === 'ios' ? ' Allow camera and location access when asked.' : ''}
           </Text>
         </View>
       </SafeAreaView>

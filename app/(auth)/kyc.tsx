@@ -3,6 +3,7 @@ import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Location from 'expo-location';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
@@ -342,6 +343,10 @@ const Kyc = () => {
   const verifyFaceWithBank = async (kind: 'bvn' | 'nin', identityValue: string) => {
     const raw = identityValue.trim();
     if (raw.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN or NIN.'); return; }
+    // The bank's face verification page requests device location as part of its
+    // liveness check. Ask for permission up front so the OS prompt appears here,
+    // in context, rather than interrupting the face scan mid-capture.
+    await Location.requestForegroundPermissionsAsync();
     setBusy(true);
     let started: { url: string; session: string } | null = null;
     try {
