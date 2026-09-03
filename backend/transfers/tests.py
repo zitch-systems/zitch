@@ -530,6 +530,36 @@ class NoSourceAccountTests(TestCase):
         self.assertTrue(body.get("success"))
 
 
+class PayoutSourceActivationTests(TestCase):
+    def setUp(self):
+        self.user, _ = make_user("08010000042", "activate@zitch.test", balance="50000")
+        self.bank = Bank.objects.create(code="gtb-activate", name="GTBank", bank_code="058")
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0452491368"
+        wallet.bank_name = "Wema Bank"
+        wallet.pnd_lifted = False
+        wallet.save(update_fields=["account_number", "bank_name", "pnd_lifted"])
+
+    @patch("utility.providers.payout_live", return_value=True)
+    @patch("transfers.services.wema_provider.wema_live", return_value=True)
+    @patch("transfers.services.wema_provider.lift_debit_restriction",
+           return_value={"success": False, "message": "Resource not found"})
+    def test_restricted_source_never_debits_or_calls_transfer(
+            self, _lift, _wema_live, _payout_live):
+        from .services import PayoutError, execute_payout
+
+        before = get_or_create_wallet(self.user).balance
+        with patch("transfers.services.payout_send") as send:
+            with self.assertRaises(PayoutError) as caught:
+                execute_payout(self.user, Decimal("1000"), "0123456789",
+                               self.bank, "JOHN DOE", channel="app")
+        self.assertEqual(caught.exception.kind, "source_restricted")
+        send.assert_not_called()
+        self.assertEqual(get_or_create_wallet(self.user).balance, before)
+        self.assertFalse(Transaction.objects.filter(
+            user=self.user, direction=Transaction.OUT).exists())
+
+
 class SavedBeneficiaryTests(TestCase):
     """Keeping a recipient, naming them, and removing them.
 
