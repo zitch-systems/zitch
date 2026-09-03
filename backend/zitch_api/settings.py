@@ -94,13 +94,34 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-# CORS: Expo web (Metro 8081 / web-build 19006) calls the API cross-origin.
-# In DEBUG we accept any origin so emulator, web, and LAN devices all work.
-# In prod, set CORS_ALLOWED_ORIGINS as a comma-separated env var.
+# CORS: Expo web and Wema's hosted face verifier call the API cross-origin.
+# The face verifier performs its callback from the customer's browser, so its exact
+# origin must be present or the browser stops after OPTIONS and never sends POST.
+# Derive it from WEMA_FACE_VERIFY_URL so pilot/production cannot drift. Operators
+# may add an explicit comma-separated WEMA_FACE_CALLBACK_ORIGINS during a host
+# migration; no wildcard is ever used on this KYC boundary.
+def _url_origin(value: str) -> str:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit((value or "").strip())
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else ""
+
+
+_face_callback_origins = {
+    o.rstrip("/")
+    for o in os.environ.get("WEMA_FACE_CALLBACK_ORIGINS", "").split(",")
+    if o.strip()
+}
+_derived_face_origin = _url_origin(os.environ.get("WEMA_FACE_VERIFY_URL", ""))
+if _derived_face_origin:
+    _face_callback_origins.add(_derived_face_origin)
+
 CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGINS = [
-    o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()
-]
+CORS_ALLOWED_ORIGINS = sorted({
+    *[o.strip().rstrip("/") for o in
+      os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()],
+    *_face_callback_origins,
+})
 CORS_ALLOW_CREDENTIALS = False
 
 ROOT_URLCONF = "zitch_api.urls"
@@ -461,6 +482,10 @@ WEMA = {
     # reads the URL out of their own browser could assert their own face check.
     "FACE_CALLBACK_IPS": [ip.strip() for ip in
                           os.environ.get("WEMA_FACE_CALLBACK_IPS", "").split(",") if ip.strip()],
+    # Exact browser origins allowed to transport the hosted verifier result. Origin
+    # is not authentication; browser callbacks are independently validated against
+    # Wema's authenticated without-OTP account endpoint before KYC state changes.
+    "FACE_CALLBACK_ORIGINS": sorted(_face_callback_origins),
 }
 
 # How long a debited-but-unresolved movement may sit before the reconcile crons
