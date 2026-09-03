@@ -733,6 +733,45 @@ class AdoptExistingWemaAccountTests(TestCase):
 
 
 @override_settings(PAYMENT_PROVIDER="wema")
+class AccountCreateAdoptsExistingWemaAccountTests(TestCase):
+    """/api/wallet/account/create/ is the endpoint the funding screen calls, so it
+    needs the same fetch-and-adopt recovery as /api/wallet/wema/create/. Without it
+    a customer whose NUBAN exists only at the bank sees "couldn't start account
+    creation" on every attempt and can never leave the BVN form."""
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08030000556", "adopt2@zitch.app",
+                                          identity_verified=False)
+
+    def _create(self, **payload):
+        return self.client.post(
+            "/api/wallet/account/create/",
+            data=json.dumps({**payload, "access_token": self.token}),
+            content_type="application/json")
+
+    def test_an_already_onboarded_customer_gets_the_existing_account(self):
+        existing = {"success": True, "account_number": "0123456789",
+                    "account_name": "ADA EZE", "bank_name": "Wema Bank"}
+        with patch("utility.wema.create_wallet_request",
+                   return_value={"success": False, "message": "Customer records already exist"}), \
+             patch("utility.wema.get_account_details", return_value=existing), \
+             patch("utility.wema.lift_debit_restriction", return_value={"success": True}):
+            res = self._create(bvn="22222222222")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["account_number"], "0123456789")
+        self.assertEqual(Wallet.objects.get(user=self.user).account_number, "0123456789")
+
+    def test_other_failures_are_still_reported(self):
+        with patch("utility.wema.create_wallet_request",
+                   return_value={"success": False, "message": "Service unavailable"}), \
+             patch("utility.wema.get_account_details") as fetch:
+            res = self._create(bvn="22222222222")
+        self.assertEqual(res.status_code, 502)
+        fetch.assert_not_called()
+
+
+@override_settings(PAYMENT_PROVIDER="wema")
 class ReconnectBankAccountAdminTests(TestCase):
     """The in-app recovery needs the customer to get through the setup screen. An
     operator needs the same recovery for a wallet left with no account number —
