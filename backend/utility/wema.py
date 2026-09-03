@@ -675,26 +675,34 @@ def get_account_details(phone: str, *, bvn: bool = False) -> dict:
         return _unreachable(exc)
 
 
-def lift_debit_restriction(account_number: str, *, bvn: bool = False, place: bool = False) -> dict:
-    """Lift (or place) the Post-No-Debit hold on a freshly provisioned NUBAN.
+def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
+                             place: bool = False) -> dict:
+    """Lift (or place) the Post-No-Debit hold on a provisioned NUBAN.
 
-    ALAT provisions a new Tier-1 partnership account under a PND (Post-No-Debit)
-    restriction: it can RECEIVE funds but cannot be DEBITED until the partner lifts
-    the hold. Since the per-user-balance model debits the sender's own NUBAN, a
-    payout/VAS would fail until this runs, so it is called once right after the
-    account is created. ``bvn`` selects the product the account was created under
-    (PartnerDebitRestrictionManagement lives on both wallet-creation products).
-    Best-effort: a failure leaves the NUBAN restricted and is retried later."""
+    ``bvn=True/False`` selects the known creation product.  ``None`` is used by
+    callbacks/reconciliation, where the original identity rail is no longer
+    available: try both account-creation products and accept only an authenticated
+    success. LiftPnd is idempotent, so this safely repairs accounts that were
+    previously retried against the wrong product."""
     if not wema_live():
         return {"success": not _mock_blocked(), "mock": True}
-    try:
-        product = "wallet_bvn" if bvn else "wallet_nin"
-        data = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
-                     {"pndType": "PlacePnd" if place else "LiftPnd",
-                      "accountNumber": account_number}).json()
-        return {"success": _ok(data), "message": _msg(data), "raw": data}
-    except requests.RequestException as exc:
-        return _unreachable(exc)
+
+    products = (("wallet_bvn", "wallet_nin") if bvn is None else
+                (("wallet_bvn",) if bvn else ("wallet_nin",)))
+    last = {"success": False, "message": "Request failed"}
+    for product in products:
+        try:
+            data = _post(product, "/api/CustomerAccount/PartnerDebitRestrictionManagement",
+                         {"pndType": "PlacePnd" if place else "LiftPnd",
+                          "accountNumber": account_number}).json()
+            last = {"success": _ok(data), "message": _msg(data), "raw": data,
+                    "product": product}
+            if last["success"]:
+                return last
+        except requests.RequestException as exc:
+            last = _unreachable(exc)
+            last["product"] = product
+    return last
 
 
 def get_kyc_status(account_number: str) -> dict:
@@ -989,6 +997,36 @@ def classify_transfer_status(status: str, *, envelope_ok: bool = True) -> str:
     return "pending"
 
 
+def _transfer_value(result: dict, *names, default=""):
+    """Read ALAT transfer fields despite camel/Pascal-case response drift."""
+    if not isinstance(result, dict):
+        return default
+    folded = {str(k).casefold(): v for k, v in result.items()}
+    for name in names:
+        value = folded.get(name.casefold())
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _transfer_payload(data: dict) -> dict:
+    """Find the status-bearing object in direct and nested ALAT envelopes."""
+    if not isinstance(data, dict):
+        return {}
+    queue = [data.get("result"), data.get("data"), data]
+    seen = set()
+    while queue:
+        item = queue.pop(0)
+        if not isinstance(item, dict) or id(item) in seen:
+            continue
+        seen.add(id(item))
+        keys = {str(k).casefold() for k in item}
+        if keys & {"status", "transactionstatus", "transferstatus"}:
+            return item
+        queue.extend(item.get(k) for k in ("data", "result") if isinstance(item.get(k), dict))
+    return {}
+
+
 def _transfer_result(data: dict, reference: str, result: dict, *,
                      lookup: bool = False) -> dict:
     """Normalise a transfer envelope into success / pending / failed.
@@ -1006,7 +1044,7 @@ def _transfer_result(data: dict, reference: str, result: dict, *,
     terminal status. Anything else stays PENDING for the poller, which is what this
     function's caller has always claimed to do on the transport-error path.
     """
-    status = str(result.get("status") or "").strip().upper()
+    status = str(_transfer_value(result, "status", "transactionStatus", "transferStatus")).strip().upper()
     envelope_ok = _ok(data)
     if lookup and not envelope_ok:
         outcome = "pending"
@@ -1016,16 +1054,17 @@ def _transfer_result(data: dict, reference: str, result: dict, *,
         "success": outcome == "success",
         "pending": outcome == "pending",
         "status": status,
-        "reference": result.get("transactionReference", reference),
-        "platform_reference": result.get("platformTransactionReference", ""),
-        "message": result.get("message") or _msg(data),
+        "reference": _transfer_value(result, "transactionReference", "reference",
+                                     default=reference),
+        "platform_reference": _transfer_value(
+            result, "platformTransactionReference", "platformReference"),
+        "message": _transfer_value(result, "message", "statusDescription") or _msg(data),
         "raw": data,
     }
 
 
 def _parse_transfer(data: dict, reference: str) -> dict:
-    r = data.get("result", {}) or {}
-    return _transfer_result(data, reference, r if isinstance(r, dict) else {})
+    return _transfer_result(data, reference, _transfer_payload(data))
 
 
 def transfer(amount_naira, reference: str, narration: str, *, source_account: str,
@@ -1082,11 +1121,13 @@ def confirm_transfer_status(reference: str) -> dict:
     if not wema_live():
         return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
     try:
-        data = _get("debit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}").json()
-        outer = data.get("result", {}) or {}
-        r = outer.get("data", {}) or {} if isinstance(outer, dict) else {}
-        return _transfer_result(data, reference, r if isinstance(r, dict) else {},
-                                lookup=True)
+        resp = _get("debit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}")
+        data = resp.json()
+        result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
+        if not result["status"]:
+            log.warning("wema_transfer_status_unresolved ref=%s meta=%s raw=%s",
+                        reference, _response_meta(resp, data), _trim(data))
+        return result
     except (requests.RequestException, ValueError) as exc:
         # A failed status lookup says nothing about the original transfer.  Keep
         # the debit held for the next callback/reconciliation attempt.
@@ -1127,11 +1168,13 @@ def confirm_credit_status(reference: str) -> dict:
     if not wema_live():
         return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
     try:
-        data = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}").json()
-        outer = data.get("result", {}) or {}
-        result = outer.get("data", {}) or {} if isinstance(outer, dict) else {}
-        return _transfer_result(data, reference, result if isinstance(result, dict) else {},
-                                lookup=True)
+        resp = _get("credit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}")
+        data = resp.json()
+        result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
+        if not result["status"]:
+            log.warning("wema_credit_status_unresolved ref=%s meta=%s raw=%s",
+                        reference, _response_meta(resp, data), _trim(data))
+        return result
     except (requests.RequestException, ValueError) as exc:
         # A failed status lookup cannot disprove the credit; retain PENDING and
         # reconcile again rather than issuing a duplicate FundWallet request.
