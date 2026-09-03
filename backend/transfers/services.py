@@ -367,6 +367,17 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
                          bank.bank_code, account_number, name, bank_name=bank.name,
                          source_account=sender_source)
 
+    # Wema callbacks may identify a transfer by its platform reference rather than
+    # echoing our transactionReference. Persist both identifiers immediately so a
+    # later authenticated callback can map to this exact debit.
+    provider_meta = dict(txn.meta or {})
+    provider_meta["wema_transfer"] = {
+        "platform_reference": str(result.get("platform_reference") or ""),
+        "status": str(result.get("status") or ""),
+    }
+    txn.meta = provider_meta
+    txn.save(update_fields=["meta"])
+
     if result.get("pending"):
         outcome = "pending"
     elif result.get("success"):
