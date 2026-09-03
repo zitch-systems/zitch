@@ -1562,6 +1562,11 @@ def kyc_face_start(request):
         return gate
     bvn = (request.data.get("bvn") or "").strip()
     nin = (request.data.get("nin") or "").strip()
+    if user.bvn_verified and bvn:
+        return fail(
+            "Your BVN is already verified. You do not need to enter or verify it again.",
+            status=409,
+        )
     identity_type, raw = ("bvn", bvn) if bvn else ("nin", nin)
     if not raw.isdigit() or len(raw) != 11:
         return fail("Enter your 11-digit BVN or NIN")
