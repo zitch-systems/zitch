@@ -916,19 +916,40 @@ def wema_face_callback(request, state=""):
                         recovered = None
                         log.warning("wema_face_existing_readback_failed user=%s",
                                     user.id, exc_info=True)
-                if duplicate and recovered is not None and recovered.account_number:
+
+                # The authenticated without-OTP endpoint returns this exact
+                # channel-scoped duplicate only after receiving the same identity,
+                # phone, email and Wema correlation from the completed face flow.
+                # That is sufficient to attest the face result even when the older
+                # NUBAN is not visible through GetPartnershipAccountDetails. Account
+                # recovery remains separate and must still produce a real NUBAN
+                # before funding; identity verification must not be falsely failed.
+                normalized_message = message.casefold()
+                expected_values = [
+                    str(identity or "").casefold(),
+                    str(user.phone or "").casefold(),
+                    str(user.email or f"{user.phone}@zitch.app").casefold(),
+                ]
+                exact_existing = duplicate and all(
+                    value and value in normalized_message for value in expected_values)
+                if duplicate and (
+                        (recovered is not None and recovered.account_number)
+                        or exact_existing):
                     provider_validated_account = {
                         "success": True,
                         "existing": True,
-                        "message": "Authenticated existing partnership account recovered",
+                        "message": "Authenticated existing channel identity confirmed",
                     }
-                    request.wema_action = "validated:existing_account_readback"
+                    request.wema_action = (
+                        "validated:existing_account_readback"
+                        if recovered is not None and recovered.account_number
+                        else "validated:existing_channel_identity")
                 else:
                     session.status = WemaFaceSession.FAILED
                     session.save(update_fields=["status", "updated"])
                     request.wema_action = "denied:provider_correlation_validation"
-                    log.warning("wema_face_browser_correlation_rejected user=%s kind=%s msg=%s",
-                                user.id, kind, message)
+                    log.warning("wema_face_browser_correlation_rejected user=%s kind=%s duplicate=%s",
+                                user.id, kind, duplicate)
                     return JsonResponse({"status": True}, status=200)
 
         # A successful face check may CLAIM an unverified identity, but it may not
