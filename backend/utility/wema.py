@@ -1054,7 +1054,13 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
         resp = _post("debit", "/api/Shared/ProcessClientTransfer", body)
         data = resp.json()
         out = _parse_transfer(data, reference)
-        if not out["success"]:
+        if out.get("pending"):
+            log.info(
+                "wema_transfer_pending ref=%s source=%s dest=%s bank_code=%s meta=%s raw=%s",
+                reference, _mask_account(source_account), _mask_account(destination_account),
+                destination_bank_code, _response_meta(resp, data), _trim(data),
+            )
+        elif not out["success"]:
             log.warning(
                 "wema_transfer_failed ref=%s source=%s dest=%s bank_code=%s meta=%s raw=%s",
                 reference, _mask_account(source_account), _mask_account(destination_account),
@@ -1990,4 +1996,3 @@ def wema_diagnostics() -> dict:
     out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
                    "integration guide before go-live.")
     return out
-
