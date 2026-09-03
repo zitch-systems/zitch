@@ -1,14 +1,14 @@
-"""WhatsApp Flows business logic — the secure PIN pad handler.
+"""WhatsApp Flows business logic - the secure PIN pad handler.
 
 `flows_crypto` handles the envelope; this module handles the (already decrypted)
 data-exchange request: it maps a signed `flow_token` back to the pending money
 action, verifies the PIN server-side (same brute-force lockout the chat/app use),
-and — only on a correct PIN — executes the transaction and returns a terminal
+and - only on a correct PIN - executes the transaction and returns a terminal
 success screen. The PIN is validated here, never echoed anywhere.
 
 Screen ids mirror the published Flow JSON (`flow_assets/pin_flow.json`):
-  PIN_SCREEN — masked PIN input; its submit does the data_exchange.
-  SUCCESS    — terminal screen showing the outcome.
+  PIN_SCREEN - masked PIN input; its submit does the data_exchange.
+  SUCCESS    - terminal screen showing the outcome.
 """
 import base64
 import hashlib
@@ -24,7 +24,7 @@ PIN_SCREEN = "PIN_SCREEN"
 #: The set-then-confirm second entry. Its OWN screen rather than a re-render of
 #: PIN_SCREEN: WhatsApp keeps a form's client-side state when the endpoint
 #: responds with the same screen, so "re-enter to confirm" re-rendered onto the
-#: first screen arrived with the first PIN still sitting in the box — one tap
+#: first screen arrived with the first PIN still sitting in the box - one tap
 #: "confirmed" it without a single digit retyped, which is no confirmation at
 #: all. A separate screen starts empty because it is a separate form.
 PIN_CONFIRM = "PIN_CONFIRM"
@@ -38,7 +38,7 @@ SIGNUP_PHONE_CODE = "SIGNUP_PHONE_CODE"
 #: both a flow's opening screen and the target of another screen's route: a Flow
 #: may only open on a ROOT of the routing graph ("Specified screen X is not
 #: allowed as first screen of this flow"). PIN_SCREEN and IDENTITY_SCREEN are
-#: both — sent directly to confirm a payment / collect a BVN, AND chained into
+#: both - sent directly to confirm a payment / collect a BVN, AND chained into
 #: from a form. So the chained arrival is a separate id with an identical layout;
 #: `flow_screen` on the payload records which of the pair a session is sitting on
 #: so error re-renders stay put instead of navigating.
@@ -48,7 +48,7 @@ IDENTITY_CHAIN = "IDENTITY_CHAIN"
 #: PIN_CONFIRM is one: WhatsApp keeps a form's client-side state when the
 #: endpoint answers with the same screen id, so "that number isn't valid, try
 #: again" re-rendered onto IDENTITY_SCREEN arrived with the rejected digits
-#: still in the box — one tap resubmitted the number that had just been
+#: still in the box - one tap resubmitted the number that had just been
 #: refused, and burned the next attempt on it. A separate screen starts empty.
 IDENTITY_RETRY = "IDENTITY_RETRY"
 #: The 6-digit code pages. IDENTITY_CHAIN carries a code reached IN-SESSION
@@ -57,37 +57,37 @@ IDENTITY_RETRY = "IDENTITY_RETRY"
 #: flow message; CODE_RETRY carries every
 #: wrong-code error render so the masked box never comes back holding the code
 #: that just failed. Identity number fields are 11/11 client-side and code
-#: fields 6/6 — which is why codes can no longer ride IDENTITY_SCREEN.
+#: fields 6/6 - which is why codes can no longer ride IDENTITY_SCREEN.
 CODE_SCREEN = "CODE_SCREEN"
 CODE_RETRY = "CODE_RETRY"
 #: The same problem on the money path, and worse: a wrong PIN re-rendered onto
 #: PIN_SCREEN came back with the wrong PIN still in the box, so tapping Confirm
-#: resubmitted it — spending another of the five attempts on digits already
+#: resubmitted it - spending another of the five attempts on digits already
 #: known to be wrong, and walking the customer into a lockout they did not type.
 PIN_RETRY = "PIN_RETRY"
 #: How many times a masked PIN box may be shown in one Flow session, per step.
 #: These are SCREEN budgets before they are policy budgets. Only two distinct
 #: create-PIN ids exist (the PIN_SCREEN/PIN_CHAIN root, then PIN_RETRY) and only
 #: two confirm ids (PIN_CONFIRM, PIN_CONFIRM_RETRY), so a third render would have
-#: to repeat an id it has already used — and a repeated id is exactly what leaves
+#: to repeat an id it has already used - and a repeated id is exactly what leaves
 #: the refused digits in the box. Raising either number without adding a screen
 #: puts the bug straight back; test_flow_pin_attempts pins the two together.
 _PIN_CREATE_ATTEMPTS = 2    # weak-PIN refusals per create session
 _PIN_CONFIRM_ATTEMPTS = 2   # confirm mismatches per create session
 #: And on the creation pair: a MISMATCHED confirm entry re-rendered onto
 #: PIN_CONFIRM kept the mismatched digits in its masked box, so one tap
-#: resubmitted the same mismatch forever — in a field the customer cannot even
+#: resubmitted the same mismatch forever - in a field the customer cannot even
 #: read to correct. The error render goes here instead; the clean first render
 #: stays on PIN_CONFIRM. Always legal: PIN_CONFIRM routes here, and an error on
 #: this screen re-renders it (same id).
 PIN_CONFIRM_RETRY = "PIN_CONFIRM_RETRY"
 TRANSFER_FORM = "TRANSFER_FORM"
 #: The airtime/data ladder, one Flow instead of four chat round-trips: what to
-#: buy, then the network, then the details, then the PIN — each a page of the
+#: buy, then the network, then the details, then the PIN - each a page of the
 #: SAME open session. VTU_SCREEN is the root; the other three are only ever
 #: routed into, which is what keeps the root openable (see PIN_CHAIN).
 #: Airtime and data split at the third page because their inputs genuinely
-#: differ — an amount you type versus a plan you pick from that network's list.
+#: differ - an amount you type versus a plan you pick from that network's list.
 VTU_SCREEN = "VTU_SCREEN"
 VTU_NETWORK = "VTU_NETWORK"
 VTU_AIRTIME = "VTU_AIRTIME"
@@ -100,7 +100,7 @@ SUCCESS_SCREEN = "SUCCESS"
 #: Identical in content to SUCCESS and different in exactly one way that matters:
 #: it is not terminal, so answering it leaves the panel open with the outcome on
 #: it and a Done button. A Flow that closes itself is a statement that the job is
-#: finished, and on a pending or failed payment that is the wrong thing to say —
+#: finished, and on a pending or failed payment that is the wrong thing to say -
 #: the customer was left in their own chat thread working out whether their money
 #: had moved.
 #:
@@ -120,7 +120,7 @@ FLOW_PASSWORD_STATE = "flow_password"       # ...while the app-password page is 
 #:
 #: It lives in the Flow, never in the chat, and that is the whole design. A
 #: password typed as a WhatsApp message is stored forever in the customer's own
-#: chat history, in ours, and on Meta's servers — readable by anyone who picks
+#: chat history, in ours, and on Meta's servers - readable by anyone who picks
 #: up the unlocked phone. Inside a Flow it is encrypted to this endpoint,
 #: appears in no transcript, and is hashed before it is written anywhere. Same
 #: reason the PIN and the BVN are collected here.
@@ -137,7 +137,7 @@ ACCOUNT_OTP = "account_otp"
 _AP_PREFIX = "ap"             # marks an app hand-off token (deep-link biometric approval)
 
 #: Confirm states an app hand-off may resolve in. Both mean "armed, awaiting the
-#: customer's authorisation" — which secure channel was offered first (Flow or
+#: customer's authorisation" - which secure channel was offered first (Flow or
 #: SMS code) doesn't change what approving in the app means.
 _APPROVABLE_STATES = (FLOW_PIN_STATE, "pin")
 
@@ -197,8 +197,8 @@ def sign_approve_token(pa) -> str:
     """Signed hand-off for approving a pending WhatsApp money action in the app.
 
     The signature binds action id, number AND the owning user id: the token
-    travels through a chat message and an OS deep link — surfaces we do not
-    control — so even a token lifted whole must still fail unless it is redeemed
+    travels through a chat message and an OS deep link - surfaces we do not
+    control - so even a token lifted whole must still fail unless it is redeemed
     from a session belonging to that exact user (the endpoint enforces the
     match; the binding here makes the check tamper-evident rather than
     row-lookup-dependent).
@@ -258,7 +258,7 @@ def _settled_key(token: str) -> str:
     """Keyed on the whole SIGNED token, never on the action id alone.
 
     Keying on the id was a disclosure: a forged token carries a real id with a
-    wrong signature, so anyone who guessed an id — they are sequential — could read
+    wrong signature, so anyone who guessed an id - they are sequential - could read
     back "₦3,100.00 sent to ADEYEMI WILLIAM." for somebody else's payment. Hashing
     the signed token means only the holder of the card can read its outcome, which
     is exactly the customer whose card it is.
@@ -271,7 +271,7 @@ def remember_settled(pa, outcome: str) -> None:
 
     WhatsApp cannot retract or disable a button on a message it has already
     delivered. So after a payment is approved by fingerprint, the Flow's own "Use
-    PIN instead" button is still sitting in the thread, still tappable — and
+    PIN instead" button is still sitting in the thread, still tappable - and
     tapping it used to answer "This request expired or was already completed",
     which reads as a failure on a payment that in fact succeeded.
 
@@ -282,14 +282,14 @@ def remember_settled(pa, outcome: str) -> None:
     try:
         from django.core.cache import cache
         cache.set(_settled_key(sign_flow_token(pa)), str(outcome)[:300], _SETTLED_TTL)
-    except Exception:  # noqa: BLE001 — a cache miss must never break an execution
+    except Exception:  # noqa: BLE001 - a cache miss must never break an execution
         log.warning("wa_flow_settled_not_recorded pa=%s", getattr(pa, "pk", "?"), exc_info=True)
 
 
 def settled_outcome(token: str) -> str:
     """The recorded outcome for a token whose action is gone, or "".
 
-    The token's own signature is what authorises the read — see _settled_key. A
+    The token's own signature is what authorises the read - see _settled_key. A
     forged token hashes to a key nothing was ever written under.
     """
     raw = (token or "").strip()
@@ -327,14 +327,14 @@ def resolve_flow_token(token: str):
 def _pin_screen(summary, error: str = "", screen: str = PIN_SCREEN) -> dict:
     """`summary` is either the structured {amount, recipient, details, balance,
     narration} the money flows persist, or a bare string (the signup PIN, which
-    has no payment to describe). Every declared field is always supplied — the
+    has no payment to describe). Every declared field is always supplied - the
     screen renders all of them, so a missing one is a blank line rather than an
     omission, and an omission is a contract mismatch: the endpoint must answer
     with exactly the properties the published screen declares, or WhatsApp shows
     "Couldn't load content. Try again later." on every ending of the Flow.
 
     That is also why `balance` and `narration` default to empty strings rather
-    than being left out on the paths that have neither — the signup PIN and the
+    than being left out on the paths that have neither - the signup PIN and the
     set-PIN pages share this screen and describe no payment at all.
     """
     fields = summary if isinstance(summary, dict) else {}
@@ -353,7 +353,7 @@ def _flow_screen(container, default: str) -> str:
 
     A session that opened on PIN_SCREEN and one that arrived at PIN_CHAIN from a
     form render the same thing, but returning the wrong id turns a re-render into
-    a navigation — which Meta rejects when no route exists between them.
+    a navigation - which Meta rejects when no route exists between them.
     """
     return (getattr(container, "payload", None) or {}).get("flow_screen") or default
 
@@ -367,7 +367,7 @@ def _pa_screen_fields(pa) -> dict:
 def _identity_screen(kind: str, error: str = "", summary: str = "", label: str = "",
                      screen: str = IDENTITY_SCREEN) -> dict:
     """The masked-entry screen. Defaults to the 11-digit BVN/NIN wording, but the
-    email confirmation code rides the same screen — one published masked input,
+    email confirmation code rides the same screen - one published masked input,
     so every secret the ladder collects is entered the same way."""
     which = (kind or "BVN").upper()
     return {"screen": screen,
@@ -387,11 +387,11 @@ def _email_screen(error: str = "", summary: str = "", label: str = "") -> dict:
 
 #: The heading the terminal screen closes on, per executor outcome. The Flow's
 #: last screen used to render only the outcome SENTENCE, so a settled transfer, a
-#: queued one and a refused one all looked alike at a glance — the customer had
+#: queued one and a refused one all looked alike at a glance - the customer had
 #: to read a paragraph to find out whether their money had moved. The status is
 #: the heading now and the sentence is the body.
 _STATUS_HEADINGS = {
-    "success": "✅ Successful",
+    "success": "done Successful",
     "pending": "⏳ Pending",
     "failed": "❌ Not completed",
     "done": "Done",
@@ -403,7 +403,7 @@ def result_screen_live() -> bool:
 
     The Flow JSON and this code are a contract, and the publish is a manual step
     (`manage.py publish_flow --publish`) that does not run from a deploy. So the
-    code can reach production before the screen does — and answering a screen
+    code can reach production before the screen does - and answering a screen
     Meta has never heard of is the "Couldn't load content. Try again later."
     failure, on exactly the endings this feature exists to improve.
 
@@ -418,7 +418,7 @@ def _result_screen(message: str, status: str = "") -> dict:
     """The outcome, with the panel left open. Same content as the terminal
     screen; the customer closes it by tapping Done.
 
-    Falls back to the terminal screen while RESULT is not live — the panel
+    Falls back to the terminal screen while RESULT is not live - the panel
     closes as it used to, which is worse than holding open and far better than
     an unrenderable screen.
     """
@@ -434,7 +434,7 @@ _TERMINATION_KEY = "extension_message_response"
 
 
 def _close_flow(token: str) -> dict:
-    """END the Flow from the endpoint — the panel closes, no further screen.
+    """END the Flow from the endpoint - the panel closes, no further screen.
 
     This is the documented completion response, and it is NOT the same thing as
     answering with the terminal screen:
@@ -449,7 +449,7 @@ def _close_flow(token: str) -> dict:
     WhatsApp read the reserved name, looked for the completion envelope, found a
     screen payload instead, and had nothing it could render. It is why the error
     only ever appeared on the exchange that ENDS the Flow while every ordinary
-    screen in the same session rendered — see commit "Stop ending the Flow on the
+    screen in the same session rendered - see commit "Stop ending the Flow on the
     terminal screen" for the production trace.
 
     The customer sees the panel close. What happened is in the chat: the receipt
@@ -462,12 +462,12 @@ def _close_flow(token: str) -> dict:
 def _success_screen(message: str, status: str = "") -> dict:
     """The terminal screen. `status` is one of router.Outcome's tags; anything
     else (including the default) closes on the neutral "Done" heading, which is
-    right for the non-money terminals — an expired session, a signup that ended
-    in the chat — that have no transaction outcome to report.
+    right for the non-money terminals - an expired session, a signup that ended
+    in the chat - that have no transaction outcome to report.
 
     KNOWN DEFECT, deliberately not fixed here: SUCCESS is Meta's RESERVED
     completion value, so a screen payload sent under it is read as a malformed
-    completion rather than a render — the same root cause as the payment ending
+    completion rather than a render - the same root cause as the payment ending
     that _close_flow now fixes. Every caller of this helper therefore reaches the
     customer as "Couldn't load content" instead of its sentence. Routing them all
     to RESULT is the fix and it is a wider change than the payment ending: it
@@ -475,7 +475,7 @@ def _success_screen(message: str, status: str = "") -> dict:
     """
     # SUCCESS is Meta's reserved completion value, not a renderable screen.
     # Use RESULT when it is published so signup/payment outcomes render normally.
-    return _result_screen(message or "Done ✅", status=status)
+    return _result_screen(message or "Done done", status=status)
 
 
 # --------------------------------------------------------------------------- #
@@ -486,7 +486,7 @@ def _screen_contract() -> dict:
 
     Read from the shipped flow_assets/pin_flow.json, which is the same document
     uploaded to Meta, so the contract cannot drift from the one the device is
-    holding us to. Empty on any read failure — a guard that cannot load its rules
+    holding us to. Empty on any read failure - a guard that cannot load its rules
     must not start refusing valid payments.
 
     The TYPE matters as much as the key: most properties are strings, but the
@@ -507,7 +507,7 @@ def _screen_contract() -> dict:
                 s["id"]: {k: str((v or {}).get("type") or "string")
                           for k, v in (s.get("data") or {}).items()}
                 for s in doc.get("screens", []) if s.get("id")}
-        except Exception:  # noqa: BLE001 — never block a payment to validate one
+        except Exception:  # noqa: BLE001 - never block a payment to validate one
             log.exception("could not read the Flow screen contract")
             _CONTRACT = {}
     return _CONTRACT
@@ -543,8 +543,8 @@ def _check_contract(response: dict) -> dict:
     """Force a response's data to match its screen's declaration, and log when it
     didn't.
 
-    WhatsApp renders ANY mismatch — a missing declared property, an extra
-    undeclared one, or a value that is not the declared type — as "Couldn't load
+    WhatsApp renders ANY mismatch - a missing declared property, an extra
+    undeclared one, or a value that is not the declared type - as "Couldn't load
     content. Try again later." on the device. The customer has already entered
     their PIN by then, so the sentence they read is about a payment that in fact
     went through, and the device says nothing about which screen or which key.
@@ -553,9 +553,9 @@ def _check_contract(response: dict) -> dict:
     forgot papers over the bug that produced it. That trade was wrong for a
     banking channel: papering over a missing subtitle costs a blank line, and
     NOT papering over it costs the customer the outcome of their payment. So the
-    response is now conformed to the contract — declared-but-absent keys are
+    response is now conformed to the contract - declared-but-absent keys are
     filled with "", undeclared keys are dropped, and every value is coerced to a
-    string — and the mismatch is still logged at ERROR with the exact key, so the
+    string - and the mismatch is still logged at ERROR with the exact key, so the
     underlying bug is as findable as it was before.
 
     Only the endpoint's half of the contract is enforceable here; `contract` is
@@ -572,7 +572,7 @@ def _check_contract(response: dict) -> dict:
     # The Flow-TERMINATION response is not a screen render and has no screen
     # contract to meet: it names SUCCESS but carries `extension_message_response`,
     # which is Meta's reserved envelope for closing the Flow. Conforming it would
-    # drop that key as "undeclared" and fill status/message with "" — turning a
+    # drop that key as "undeclared" and fill status/message with "" - turning a
     # valid completion into a malformed screen. See _close_flow.
     if _TERMINATION_KEY in data:
         return response
@@ -586,20 +586,20 @@ def _check_contract(response: dict) -> dict:
 
 
 def handle_flow_request(payload: dict) -> dict:
-    """Route a decrypted Flows request to its response. Never raises — any
+    """Route a decrypted Flows request to its response. Never raises - any
     unexpected shape resolves to a safe terminal screen so the endpoint always
     returns a well-formed (encryptable) reply."""
     started = time.monotonic()
     response = _check_contract(_handle_flow_request(payload))
     # One line per answered exchange. Without it the only trace of a Flow session
-    # in Render was gunicorn's access log — a 200 and a byte count — which is why
+    # in Render was gunicorn's access log - a 200 and a byte count - which is why
     # "every request succeeded" and "the customer saw an error screen" were both
     # true and neither was diagnosable. No values are logged: the payload carries
     # balances, account names and the customer's own narration.
     #
     # `ms` is here to separate two failure modes that look identical on the device.
     # Meta drops a data_exchange that takes longer than about ten seconds, and the
-    # customer sees the same "Couldn't load content" as a malformed response —
+    # customer sees the same "Couldn't load content" as a malformed response -
     # which matters because the one slow exchange is the one that executes the
     # payment. Without a duration, a timeout and a bad payload are the same log line.
     log.info("wa_flow_response screen=%s keys=%s ms=%d",
@@ -620,14 +620,14 @@ def _handle_flow_request(payload: dict) -> dict:
     data = payload.get("data", {}) or {}
     if not isinstance(data, dict):
         data = {}
-    # Client-side error report (Meta convention) — just acknowledge.
+    # Client-side error report (Meta convention) - just acknowledge.
     if data.get("error_message"):
         return {"data": {"acknowledged": True}}
 
     token = payload.get("flow_token", "")
 
     # "Done" on the outcome page. Answered before any session lookup because it is
-    # the one exchange that must work no matter what state the action is in — the
+    # the one exchange that must work no matter what state the action is in - the
     # payment is already finished by the time this page is on screen, and a
     # customer tapping Done on a resolved payment must never meet an error.
     #
@@ -652,7 +652,7 @@ def _handle_flow_request(payload: dict) -> dict:
         _onboard_to(ob, ob.step)
         if action == "data_exchange":
             # Which page submitted is the onboarding's STEP, not the shape of
-            # the posted data — same rule as the money session's dispatch.
+            # the posted data - same rule as the money session's dispatch.
             if ob.step == FLOW_SIGNUP_STATE:
                 return _submit_signup_details(ob, data)
             if ob.step == FLOW_EMAIL_CODE_STATE:
@@ -678,8 +678,8 @@ def _handle_flow_request(payload: dict) -> dict:
                 else _pin_screen(_ob_summary(ob), screen=_flow_screen(ob, PIN_SCREEN)))
 
     # A KYC identity step. Same reasoning as the PIN: a BVN or NIN typed into the
-    # chat stays in the customer's own history forever — WhatsApp has no
-    # view-once for text and lets only the sender delete — so it is collected in
+    # chat stays in the customer's own history forever - WhatsApp has no
+    # view-once for text and lets only the sender delete - so it is collected in
     # the encrypted Flow instead.
     if str(token).startswith(_ID_PREFIX):
         pa = resolve_identity_token(token)
@@ -709,7 +709,7 @@ def _handle_flow_request(payload: dict) -> dict:
         # this is the check that a re-tapped card gets: no live action, no PIN
         # pad. `resolve_flow_token` returns None for an action that is expired,
         # cancelled, mid-execution, or gone because the payment completed and the
-        # executor cleared it — every one of which should end the card rather
+        # executor cleared it - every one of which should end the card rather
         # than re-offer it.
         pa = resolve_flow_token(token)
         if pa is None:
@@ -748,7 +748,7 @@ def _open_pin_screen(pa) -> dict:
 
     Two things this does that a re-render must not.
 
-    It answers on PIN_SCREEN, always — never the `flow_screen` the session last
+    It answers on PIN_SCREEN, always - never the `flow_screen` the session last
     sat on. PIN_CHAIN and PIN_RETRY are not routing roots, and Meta refuses a
     non-root as a Flow's first screen ("Specified screen X is not allowed as
     first screen of this flow", error 131009). A customer who mistyped their PIN,
@@ -760,7 +760,7 @@ def _open_pin_screen(pa) -> dict:
     session left off.
 
     The fields are rebuilt rather than replayed, so the balance shown is the one
-    at OPEN time. Under `navigate` it was necessarily the balance at send time —
+    at OPEN time. Under `navigate` it was necessarily the balance at send time -
     which on a card tapped an hour later was simply a stale number on the screen
     the customer checks before spending.
     """
@@ -775,12 +775,12 @@ def _open_pin_screen(pa) -> dict:
 
 def _confirm_pin_screen(error: str = "") -> dict:
     """Routing is forward-only, so a mismatch cannot send the customer back to
-    PIN_SCREEN — the held first entry stays authoritative and the error says how
+    PIN_SCREEN - the held first entry stays authoritative and the error says how
     to start over instead (cancel in the chat).
 
     An ERROR render answers with the retry twin. From PIN_CONFIRM that is a
     routed navigation and the masked box arrives EMPTY. From the twin itself it
-    is a same-screen re-render, and the box does NOT arrive empty — WhatsApp
+    is a same-screen re-render, and the box does NOT arrive empty - WhatsApp
     keeps a form's client-side value on a same-id answer, so the digits that just
     failed are still in it. That second render is therefore capped by the CALLERS
     (_PIN_CONFIRM_ATTEMPTS), which is where the counting has to live: this
@@ -801,7 +801,7 @@ def _signup_screen(error: str = "") -> dict:
 
 def _submit_signup_details(ob, data: dict) -> dict:
     """The signup form: names + email in ONE private screen, then straight into
-    the PIN pair on the same open Flow — the whole signup with zero chat
+    the PIN pair on the same open Flow - the whole signup with zero chat
     round-trips. The same validation the chat path applies, because two entry
     points must not disagree on what a valid signup is. The email is only
     COLLECTED here; the OTP round-trip still verifies it afterwards.
@@ -819,8 +819,8 @@ def _submit_signup_details(ob, data: dict) -> dict:
         return _signup_screen(error="That doesn't look like an email address.")
     if User.objects.filter(email__iexact=email).exists():
         # Recovery looks accounts up by email; a duplicate would make reset
-        # codes ambiguous — refused at entry, exactly like the chat path.
-        return _signup_screen(error="That email is already on a Zitch account — use a different one.")
+        # codes ambiguous - refused at entry, exactly like the chat path.
+        return _signup_screen(error="That email is already on a Zitch account - use a different one.")
     ob.payload.update({"first_name": first, "last_name": last, "email": email})
     from .router import _onboard_to, send_onboarding_email_code
 
@@ -879,7 +879,7 @@ def _submit_signup_phone(ob, data: dict) -> dict:
     if len(digits) != 11 or not digits.startswith("0"):
         return _signup_phone_screen(error="Enter the 11-digit number, e.g. 08012345678.")
     if User.objects.filter(phone=digits).exists() or User.objects.filter(username=digits).exists():
-        return _signup_phone_screen(error="That number is already on a Zitch account — "
+        return _signup_phone_screen(error="That number is already on a Zitch account - "
                                           "open the app to link it, or use another number.")
     ob.payload["phone"] = digits
     from .router import _local_phone, _onboard_to, send_onboarding_phone_code
@@ -902,7 +902,7 @@ def signup_password_live() -> bool:
 
     Same gate, and the same hard-won reason, as result_screen_live(): the Flow
     JSON ships in this repo but is published by hand, so this code can reach
-    production before the screen does — and answering with a screen Meta has
+    production before the screen does - and answering with a screen Meta has
     never heard of is the "Couldn't load content. Try again later." failure, here
     in the middle of somebody's signup.
 
@@ -931,7 +931,7 @@ def _submit_signup_password(ob, data: dict) -> dict:
     with no way to see what they typed.
 
     What is NEVER done here: keep the password. It is validated, hashed, and only
-    the hash is written to the onboarding row — so a signup abandoned halfway,
+    the hash is written to the onboarding row - so a signup abandoned halfway,
     or a database read by anyone, yields a hash and not a credential. The raw
     string exists for the length of this function and is never logged, never put
     on a screen, and never sent to the chat.
@@ -947,7 +947,7 @@ def _submit_signup_password(ob, data: dict) -> dict:
     # than critiquing the composition of one they may have mistyped.
     if password != confirm:
         return _signup_password_screen(error="Those two passwords don't match. Try again.")
-    # The same rule the app's own endpoints apply — one function, so the two
+    # The same rule the app's own endpoints apply - one function, so the two
     # front doors cannot disagree about what a valid password is.
     rejection = password_rejection(password, _ob_user_shape(ob))
     if rejection:
@@ -962,7 +962,7 @@ def _submit_signup_password(ob, data: dict) -> dict:
 def _ob_user_shape(ob):
     """An unsaved User carrying just the signup's own details, so Django's
     similarity validator can refuse a password that IS the customer's name or
-    email. Unsaved deliberately — the real account does not exist yet, and this
+    email. Unsaved deliberately - the real account does not exist yet, and this
     must never touch the database."""
     from accounts.models import User
 
@@ -1040,7 +1040,7 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
             #
             # And only ONCE. transaction_pin_rejection is a policy check with no
             # counter of its own, so a third refusal would answer PIN_RETRY onto
-            # PIN_RETRY and retain the digits — with nothing to stop it, on a
+            # PIN_RETRY and retain the digits - with nothing to stop it, on a
             # container that lives for ONBOARD_TTL (15 minutes), which makes this
             # the most reachable instance of the retained-box trap in the module,
             # not the least.
@@ -1048,7 +1048,7 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
             if tries >= _PIN_CREATE_ATTEMPTS:
                 # Budget spent for THIS session. Reset it rather than persisting
                 # the exhaustion: the cap exists to stop a render loop inside one
-                # open form, and client-side field state dies with the session —
+                # open form, and client-side field state dies with the session -
                 # so re-tapping the card is a genuinely fresh, empty start and
                 # should get a fresh budget. Persisting the count would leave the
                 # signup row alive (below) pointing at a card that terminates on
@@ -1058,7 +1058,7 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
                 # No _clear_actions: this holds a WaOnboarding, not a
                 # PendingAction, and that is not its teardown. Left intact, the
                 # signup resumes from the card or expires on its own TTL.
-                return _success_screen("That PIN isn't one we can accept — it can't be six "
+                return _success_screen("That PIN isn't one we can accept - it can't be six "
                                        "of the same digit or a run like 123456. Tap the "
                                        "secure screen above to try again.")
             ob.payload["pin_policy_tries"] = tries
@@ -1074,7 +1074,7 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
         # Capped for the same reason as the create step: the first mismatch
         # navigates PIN_CONFIRM -> PIN_CONFIRM_RETRY and arrives empty, but a
         # second would answer PIN_CONFIRM_RETRY onto itself and hold the digits
-        # that just failed — in a field the customer cannot read to correct.
+        # that just failed - in a field the customer cannot read to correct.
         # The counting lives here because _confirm_pin_screen takes no container.
         tries = int(ob.payload.get("pin_confirm_tries", 0)) + 1
         if tries >= _PIN_CONFIRM_ATTEMPTS:
@@ -1089,13 +1089,13 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
                                    "choose your PIN again.")
         ob.payload["pin_confirm_tries"] = tries
         ob.save(update_fields=["payload"])
-        return _confirm_pin_screen(error="Those didn't match — enter the same PIN you "
+        return _confirm_pin_screen(error="Those didn't match - enter the same PIN you "
                                          "chose on the first screen, or reply \"cancel\" "
                                          "in the chat to start over.")
 
     try:
         message = finish_onboarding_from_flow(ob, pin)
-    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("onboarding flow completion failed for ob=%s", ob.id)
         return _success_screen("Something went wrong finishing your signup. Send us a message to try again.")
     return _success_screen(message)
@@ -1103,7 +1103,7 @@ def _submit_onboarding_pin(ob, data: dict) -> dict:
 
 def _submit_identity(pa, data: dict) -> dict:
     """Take a BVN/NIN from the encrypted Flow and hand it to the same verification
-    the chat path uses — one implementation, so the two entry points cannot drift
+    the chat path uses - one implementation, so the two entry points cannot drift
     on what counts as valid, what gets hashed, or what is queued for review.
 
     The number is never echoed back into a screen, and never reaches the chat.
@@ -1115,7 +1115,7 @@ def _submit_identity(pa, data: dict) -> dict:
     kind = pa.payload.get("id_kind", "bvn")
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
     if not re.fullmatch(r"\d{11}", number):
-        # The retry twin, so the masked box comes back empty — same reasoning as
+        # The retry twin, so the masked box comes back empty - same reasoning as
         # a rejected number, minus the attempt: a typo is not a verdict.
         pa.payload["flow_screen"] = IDENTITY_RETRY
         pa.save(update_fields=["payload"])
@@ -1139,22 +1139,24 @@ def _submit_identity(pa, data: dict) -> dict:
             outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
                                                in_flow=True)
             if outcome == "otp":
-                # The bank accepted the ID and sent its SMS code — collected on
+                # The bank accepted the ID and sent its SMS code - collected on
                 # the NEXT PAGE of this same session, not a second flow message.
                 pa.refresh_from_db()
                 return _account_otp_screen(pa)
+            if outcome == "face":
+                return _success_screen("Open the Wema face-check link in the chat to finish creating your account.")
             if outcome == "adopted":
-                return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
+                return _success_screen("Account found done - see the chat for the bank-upgrade step.")
             if outcome == "fail":
                 # A hard failure: the ID was refused, name-matched to a different
                 # person, or the provider was unreachable. _account_submit_identity
                 # has already cleared the pending action and sent a "⚠️ ..." line
-                # to the chat. Falling through to the shared "received ✅" screen
+                # to the chat. Falling through to the shared "received done" screen
                 # would close the secure Flow on a green success the chat is
                 # simultaneously contradicting. Unlike the KYC branch, there is no
                 # review queue here that would make "received" true.
                 return _success_screen(
-                    "We couldn't finish setting up your account — see the chat for what happened.")
+                    "We couldn't finish setting up your account - see the chat for what happened.")
         else:
             # In production the Wallet Creation product is Wema's identity
             # verification rail: it accepts BVN or NIN, sends its own OTP and
@@ -1174,7 +1176,7 @@ def _submit_identity(pa, data: dict) -> dict:
             else:
                 outcome = _kyc_submit_identity(pa, pa.user, pa.msisdn, kind, number)
             if outcome == "invalid":
-                # A wrong number is corrected by the customer, not queued — but
+                # A wrong number is corrected by the customer, not queued - but
                 # on a FRESH screen, so the refused digits are gone and the retry
                 # is a real retry rather than a resubmit of the same number.
                 pa.refresh_from_db()
@@ -1191,17 +1193,17 @@ def _submit_identity(pa, data: dict) -> dict:
                     "start again.")
             if outcome == "otp":
                 # The lookup passed and a code is on its way to the line
-                # REGISTERED AGAINST THE IDENTITY — not the account's own
+                # REGISTERED AGAINST THE IDENTITY - not the account's own
                 # number. Collected on the same open session, so the code never
                 # becomes a chat message either.
                 pa.refresh_from_db()
                 return _identity_otp_screen(pa)
-    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
-    return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
+    return _success_screen(f"{kind.upper()} received done - see the chat for what's next.")
 
 
 def _identity_otp_screen(pa, error: str = "") -> dict:
@@ -1220,7 +1222,7 @@ def _submit_identity_otp(pa, data: dict) -> dict:
 
     try:
         status, message = kyc_flow_identity_otp(pa, str(data.get("number", "")))
-    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity otp submission failed for pa=%s", pa.id)
         return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
     if status == "retry":
@@ -1238,13 +1240,13 @@ def _submit_identity_otp(pa, data: dict) -> dict:
 def _account_otp_screen(pa, error: str = "") -> dict:
     """Clean render: whichever code page this session is on (IDENTITY_CHAIN when
     chained from the BVN entry, CODE_SCREEN when opened fresh). Error render:
-    always CODE_RETRY — legal from both and from itself, and the masked box
+    always CODE_RETRY - legal from both and from itself, and the masked box
     arrives empty instead of holding the code that just failed."""
     screen = CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN)
     # This screen used to mask and show the customer's ZITCH number, on the belief
     # that ALAT texts the number supplied in the creation request. It does not.
     # ALAT validates the identity against its register and sends the consent code to
-    # the phone held on THAT record — the NIMC line for a NIN, the BVN line for a
+    # the phone held on THAT record - the NIMC line for a NIN, the BVN line for a
     # BVN. Naming the Zitch number pointed the customer at a handset that never
     # receives the code, and left the NIN step looking like it wanted a BVN code.
     #
@@ -1262,7 +1264,7 @@ def _account_otp_screen(pa, error: str = "") -> dict:
         # Keep delivery guidance in the smaller body text. The summary is a
         # TextHeading in the published Flow, so paragraphs do not fit there.
         error=error or ("Not arriving? It goes to the phone on your "
-                        f"{kind} record, so a resend can't reach another line — "
+                        f"{kind} record, so a resend can't reach another line - "
                         "use the face verification button in the chat instead."),
         label="SMS code",
         summary=f"Enter the 6-digit code Wema sent to the phone registered on your {kind}.",
@@ -1274,7 +1276,7 @@ def _submit_account_otp(pa, data: dict) -> dict:
     """The bank's SMS code, entered here rather than in the chat.
 
     It completes account creation and is what name-matches the BVN, so it is a
-    bearer credential for as long as it lives — the same reason the email code
+    bearer credential for as long as it lives - the same reason the email code
     moved off the thread. Collecting the BVN privately and then asking for the
     code that unlocks it in clear would have been half a fix.
     """
@@ -1283,7 +1285,7 @@ def _submit_account_otp(pa, data: dict) -> dict:
     code = str(data.get("number", "")).strip()
     try:
         status, message = account_flow_otp(pa, code)
-    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("account otp flow submission failed for pa=%s", pa.id)
         return _success_screen("Something went wrong. Reply 6 in the chat to try again.")
     if status == "retry":
@@ -1330,7 +1332,7 @@ def _submit_email(pa, data: dict) -> dict:
     verdict = kyc_flow_email_address if step == "address" else kyc_flow_email_code
     try:
         status, message = verdict(pa, value)
-    except Exception:  # noqa: BLE001 — never leak a stack into the Flow
+    except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("email flow submission failed for pa=%s step=%s", pa.id, step)
         return _success_screen("Something went wrong. Reply 8 in the chat to try again.")
 
@@ -1342,7 +1344,7 @@ def _submit_email(pa, data: dict) -> dict:
     # code half is the end of the email step, and the chat says what comes next.
     if step == "address":
         return _email_code_screen(pa)
-    return _success_screen("Email verified ✅ — see the chat for what's next.")
+    return _success_screen("Email verified done - see the chat for what's next.")
 
 
 #: What a narration may be before it is stored. The bank rail puts this on the
@@ -1375,7 +1377,7 @@ def _close_in_chat(msisdn: str, text: str) -> None:
     The terminal screen is not a reliable place to have told someone something.
     It renders inside Meta's panel, it is gone the moment the customer taps Done
     or swipes the sheet away, and when the data-exchange answer does not reach
-    the device at all — a timeout, a dropped connection, a contract mismatch —
+    the device at all - a timeout, a dropped connection, a contract mismatch -
     WhatsApp replaces it with "Couldn't load content. Try again later.", which
     names no outcome and is indistinguishable from every other Flow failure.
 
@@ -1384,7 +1386,7 @@ def _close_in_chat(msisdn: str, text: str) -> None:
     ones a customer is most likely to misread as "nothing happened": a wrong PIN
     that cancelled the payment, a lockout, a PIN that was never set. Those closed
     the panel and left the thread silent, so the last thing in the customer's
-    history was the confirm card — still sitting there, still looking live.
+    history was the confirm card - still sitting there, still looking live.
 
     Best-effort by design: a send that fails must not turn a settled outcome into
     an exception on the endpoint thread, where the only thing left to answer with
@@ -1394,21 +1396,21 @@ def _close_in_chat(msisdn: str, text: str) -> None:
 
     try:
         reply(msisdn, text)
-    except Exception:  # noqa: BLE001 — the screen is still the primary answer
+    except Exception:  # noqa: BLE001 - the screen is still the primary answer
         log.exception("could not mirror flow outcome to chat for %s", msisdn)
 
 
 def _hold_open(pa, summary, message: str, status: str = "failed") -> dict:
     """Show `message` WITHOUT closing the Flow.
 
-    Only a settled success may close the panel by itself. Everything else —
-    pending, failed, a spent PIN budget, a lockout — lands on RESULT, which
+    Only a settled success may close the panel by itself. Everything else -
+    pending, failed, a spent PIN budget, a lockout - lands on RESULT, which
     carries the outcome and a Done button, so the customer reads it where they
     were already looking and dismisses it when they have.
 
     RESULT rather than a re-render of the PIN page: WhatsApp keeps a form's
     client-side value on a same-id reply, so the outcome used to arrive with the
-    six rejected digits still in a box fixed at 6/6 — which then refuses new
+    six rejected digits still in a box fixed at 6/6 - which then refuses new
     keystrokes and reads as broken. RESULT has no form on it at all.
 
     `summary` is unused now and kept in the signature because the callers hold
@@ -1426,7 +1428,7 @@ def _submit_pin(token: str, data: dict) -> dict:
     pa = resolve_flow_token(token)
     if pa is None:
         # The card that armed this payment is still in the thread with its button
-        # live — WhatsApp has no way to take that back — so tapping it after the
+        # live - WhatsApp has no way to take that back - so tapping it after the
         # payment already went through is normal, not an error. Answer with what
         # actually happened rather than implying the payment was lost.
         done = settled_outcome(token)
@@ -1457,31 +1459,31 @@ def _submit_pin(token: str, data: dict) -> dict:
             # The shared message already offers a reset; here it also has to say
             # what to TYPE, on every lock rather than only the 24-hour one. The
             # Flow is closing, so the instruction points back at the thread that
-            # outlives it — and quotes rather than asterisks, since this reaches
+            # outlives it - and quotes rather than asterisks, since this reaches
             # the chat as plain text, not chat markdown.
             message += " Reply \"reset pin\" in the chat to choose a new one."
             _close_in_chat(pa.msisdn, f"🔒 {message}")
             return _result_screen(message, status="failed")
         if code == "no_pin":
-            # Unsatisfiable, and — unlike a wrong PIN — uncounted: the branch
+            # Unsatisfiable, and - unlike a wrong PIN - uncounted: the branch
             # returns before evaluate_transaction_pin's atomic block, so it never
             # touches pin_failed_attempts and can never reach the lockout that
             # ends every other failing path. Re-rendering the pad would loop on
             # one screen id until the token expired, for a PIN that does not
             # exist and that no number of retries can conjure.
             _clear_actions(pa.msisdn)
-            no_pin = ("You don't have a transaction PIN yet — reply "
+            no_pin = ("You don't have a transaction PIN yet - reply "
                       "\"set pin\" in the chat to create one.")
             _close_in_chat(pa.msisdn, f"❌ That payment was cancelled. {no_pin}")
             return _result_screen(no_pin, status="failed")
         # One retry, then cancel: the budget the chat rung already enforces
         # (PIN_FLOW_ATTEMPTS, spec §7), and a SCREEN budget as much as a policy
-        # one. Attempt 1 answers PIN_RETRY — a different id, so the pad arrives
+        # one. Attempt 1 answers PIN_RETRY - a different id, so the pad arrives
         # empty. A second wrong PIN would have to answer PIN_RETRY *onto*
         # PIN_RETRY, and WhatsApp keeps a form's client-side value whenever the
         # endpoint answers with the SAME screen id. That leaves the refused
         # digits in a box the customer cannot read, one Confirm tap from
-        # resubmitting them — and because the field is min-chars/max-chars 6/6,
+        # resubmitting them - and because the field is min-chars/max-chars 6/6,
         # a retained six-character value REFUSES new keystrokes until six
         # invisible characters are deleted. The box reads as broken, and the
         # customer burns attempts 3-5 on it into a one-hour cross-channel
@@ -1494,13 +1496,13 @@ def _submit_pin(token: str, data: dict) -> dict:
         tries = int(pa.payload.get("flow_pin_tries", 0)) + 1
         if tries >= PIN_FLOW_ATTEMPTS:
             _clear_actions(pa.msisdn)
-            cancelled = (f"{message} Cancelled for your safety — start the "
+            cancelled = (f"{message} Cancelled for your safety - start the "
                          "payment again in the chat.")
             # The one wrong-PIN ending that gets a chat line. The RETRY render
             # below deliberately does not: the pad itself is showing the error,
             # the customer is still looking at it, and a message per attempt
             # would bury the thread in duplicates of what is already on screen.
-            # This branch is different — the panel is closing and the payment is
+            # This branch is different - the panel is closing and the payment is
             # gone, which is not something to learn by noticing an absence.
             _close_in_chat(pa.msisdn, f"❌ {cancelled}")
             return _result_screen(cancelled, status="failed")
@@ -1517,7 +1519,7 @@ def _submit_pin(token: str, data: dict) -> dict:
         return _pin_screen(summary, error=message, screen=PIN_RETRY)
 
     try:
-        # Hands off to the queue in production and runs in-process in dev/test —
+        # Hands off to the queue in production and runs in-process in dev/test -
         # either way this returns fast enough for Meta's 10-second data-exchange
         # deadline, which executing a payout inline did not.
         outcome = authorise_flow_execution(pa, user)
@@ -1532,7 +1534,7 @@ def _submit_pin(token: str, data: dict) -> dict:
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
     status = getattr(outcome, "status", "")
-    # EVERY settled outcome shows its own page: ✅ Successful, ⏳ Pending or
+    # EVERY settled outcome shows its own page: done Successful, ⏳ Pending or
     # ❌ Not completed, on RESULT, with the sentence that says what happened.
     #
     # Closing the panel outright on success was correct about the mechanism and
@@ -1542,14 +1544,14 @@ def _submit_pin(token: str, data: dict) -> dict:
     # their payment had worked. A bank telling you nothing at the exact moment it
     # takes your money is worse than telling you twice.
     #
-    # The duplicate is gone a different way — RESULT's Done now ENDS the Flow
+    # The duplicate is gone a different way - RESULT's Done now ENDS the Flow
     # through the completion envelope instead of navigating to a second screen
     # that said the same thing. See _submit_close.
     return _hold_open(pa, summary, str(outcome), status=status or "pending")
 
 
 # --------------------------------------------------------------------------- #
-# airtime / data — one Flow, four pages
+# airtime / data - one Flow, four pages
 # --------------------------------------------------------------------------- #
 #: The page a VTU session is on. Kept on the payload rather than inferred from
 #: the posted field names, for the same reason the transfer form is: sniffing
@@ -1579,7 +1581,7 @@ def _vtu_airtime_screen(net_name: str, error: str = "", phone: str = "") -> dict
 
 
 def _vtu_data_screen(net: str, net_name: str, error: str = "", phone: str = "") -> dict:
-    """The plan list is the NETWORK's, fetched at render time — a plan picked
+    """The plan list is the NETWORK's, fetched at render time - a plan picked
     from another network's list is not a typo the provider can recover from.
 
     Returns the TERMINAL screen when the network has no plans. A Flow Dropdown
@@ -1677,7 +1679,7 @@ def _submit_vtu_network(pa, data: dict) -> dict:
 def _submit_vtu_details(pa, data: dict) -> dict:
     """Amount + phone (airtime) or plan + phone (data), then straight into the
     PIN page of the SAME session. Every check the chat ladder makes is made
-    here — minimum, limits, balance — because two entry points must not
+    here - minimum, limits, balance - because two entry points must not
     disagree about what a valid purchase is.
     """
     from decimal import Decimal, InvalidOperation
@@ -1728,13 +1730,13 @@ def _submit_vtu_details(pa, data: dict) -> dict:
         _clear_actions(pa.msisdn)
         return _success_screen(limit_msg, status="failed")
     if _insufficient(user, amount):
-        return refuse(f"Insufficient balance — you have {_money(get_or_create_wallet(user).balance)}.")
+        return refuse(f"Insufficient balance - you have {_money(get_or_create_wallet(user).balance)}.")
     if not user.transaction_pin:
         # Same refusal the transfer form makes: a PIN pad the customer can never
         # satisfy is worse than a clear "set one first".
         _clear_actions(pa.msisdn)
         return _success_screen(
-            "You haven't set a transaction PIN yet — it's what authorises payments here "
+            "You haven't set a transaction PIN yet - it's what authorises payments here "
             "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
             "again.", status="failed")
 
@@ -1742,7 +1744,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
                        "pin_attempts": 0,
                        "narration": clean_narration(data.get("narration")), **extra})
     # Built from the payload rather than assembled here, so the confirm screen
-    # gains the balance and the narration on this path too — an inline dict would
+    # gains the balance and the narration on this path too - an inline dict would
     # ship a response missing properties the published screen declares.
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
@@ -1754,7 +1756,7 @@ def _submit_vtu_details(pa, data: dict) -> dict:
 def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
                           hint: str = "") -> dict:
     """`hint` is the server talking back about a narrowing, which is not an error
-    and must not read like one. Both are always supplied — the screen declares
+    and must not read like one. Both are always supplied - the screen declares
     them, and a declared-but-absent property is the mismatch WhatsApp renders as
     "Couldn't load content. Try again later."."""
     from .router import _bank_items
@@ -1766,7 +1768,7 @@ def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
 
 #: The line above the form when the server has nothing more specific to say.
 #:
-#: Two fields mentioning a bank read as two different questions — "why are we
+#: Two fields mentioning a bank read as two different questions - "why are we
 #: having 2 bank" was the first reaction to them. They are one question: the
 #: finder shortens the list, the list is where you pick. Saying so once, above
 #: both, is cheaper than trying to say it inside two labels; it also states what
@@ -1777,15 +1779,15 @@ def _transfer_form_screen(error: str = "", candidates=None, query: str = "",
 #: deploy. Rewording anything inside the published document costs a manual
 #: re-publish, and a screen nobody dares edit is a screen that stays wrong.
 _DEFAULT_TRANSFER_HINT = (
-    "Bank is optional — we'll try to identify it from the account number. "
+    "Bank is optional - we'll try to identify it from the account number. "
     "If needed, type the bank name in the Bank field."
 )
 
 
 def _submit_transfer_form(token: str, data: dict) -> dict:
     """The transfer form: amount + account + (optional) bank in one private
-    screen. The server verifies everything the chat interrogation verified —
-    minimum, limits, balance, and the name enquiry — then chains into the PIN
+    screen. The server verifies everything the chat interrogation verified -
+    minimum, limits, balance, and the name enquiry - then chains into the PIN
     screen on the same session, showing WHO the money is going to.
 
     Bank auto-detect is deliberately a suggestion: the NUBAN checksum narrows
@@ -1815,14 +1817,14 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     #
     # The rule is `bank_search` set AND `bank` empty. Once a bank is picked the
     # search text is ignored, so leftover text can never trap someone in a loop
-    # of narrowing instead of paying — which is the failure mode of treating the
+    # of narrowing instead of paying - which is the failure mode of treating the
     # search as a mode rather than as a state.
     #
     # Re-rendering the SAME screen id is what makes this usable: WhatsApp keeps a
     # form's client-side values on a same-screen answer, so the amount and account
     # number the customer already typed survive the narrowing. That retention is
-    # a nuisance on the PIN pages — it is why PIN_RETRY exists as a separate
-    # screen — and here it is exactly the behaviour wanted.
+    # a nuisance on the PIN pages - it is why PIN_RETRY exists as a separate
+    # screen - and here it is exactly the behaviour wanted.
     search = " ".join(str(data.get("bank_search", "") or "").split())[:40]
     if search and not str(data.get("bank", "")).strip():
         from .router import _bank_items
@@ -1830,7 +1832,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
         shown = _bank_items(query=search)
         full = _bank_items()
         if len(shown) == len(full):
-            hint = (f'No bank name contains "{search}" — showing all of them. '
+            hint = (f'No bank name contains "{search}" - showing all of them. '
                     "Check the spelling, or just pick from the list.")
         else:
             hint = (f'Showing {len(shown)} bank{"" if len(shown) == 1 else "s"} '
@@ -1851,7 +1853,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
         return _transfer_form_screen(error=limit_msg)
     if _insufficient(user, amount):
         balance = get_or_create_wallet(user).balance
-        return _transfer_form_screen(error=f"Insufficient balance — you have NGN {balance:,.2f}.")
+        return _transfer_form_screen(error=f"Insufficient balance - you have NGN {balance:,.2f}.")
 
     # One bank field serves both search and selection. New Flow clients submit
     # a human bank name ("Wema", "Kuda", "GTBank"); an already-open legacy Flow
@@ -1886,13 +1888,13 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
             bank = candidates[0]
         elif candidates:
             if legacy_picker:
-                message = (f"This account number matches {len(candidates)} banks — "
+                message = (f"This account number matches {len(candidates)} banks - "
                            "pick yours from the top of the list.")
             else:
                 names = ", ".join(b.name for b in candidates[:4])
                 more = " and others" if len(candidates) > 4 else ""
                 message = (f"This account number matches {len(candidates)} banks "
-                           f"({names}{more}) — type your bank name.")
+                           f"({names}{more}) - type your bank name.")
             return _transfer_form_screen(error=message, candidates=candidates)
         else:
             message = ("Pick the bank from the list." if legacy_picker
@@ -1902,16 +1904,16 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
     res = payout_resolve_account(account, bank.bank_code)
     if not res.get("success"):
         return _transfer_form_screen(
-            error=f"Couldn't verify that account at {bank.name} — check the number.")
+            error=f"Couldn't verify that account at {bank.name} - check the number.")
     name = (res.get("name") or "").strip() or "Bank recipient"
 
     # The chat path routes through _arm_confirm, which refuses to raise a PIN pad
-    # for an account that has no PIN — a screen the customer can never satisfy.
+    # for an account that has no PIN - a screen the customer can never satisfy.
     # The form chains straight to PIN_SCREEN, so it must make the same refusal.
     if not user.transaction_pin:
         _clear_actions(pa.msisdn)
         return _success_screen(
-            "You haven't set a transaction PIN yet — it's what authorises payments here "
+            "You haven't set a transaction PIN yet - it's what authorises payments here "
             "and in the Zitch app. Close this and reply \"set pin\" in the chat, then try "
             "the transfer again.")
 
@@ -1921,7 +1923,7 @@ def _submit_transfer_form(token: str, data: dict) -> dict:
                        "narration": clean_narration(data.get("narration"))})
     fields = _flow_fields(pa)
     pa.payload["flow_fields"] = fields
-    # The form routes to PIN_CHAIN, not PIN_SCREEN — see the PIN_CHAIN comment.
+    # The form routes to PIN_CHAIN, not PIN_SCREEN - see the PIN_CHAIN comment.
     pa.payload["flow_screen"] = PIN_CHAIN
     _touch(pa, state=FLOW_PIN_STATE, payload=pa.payload)
     return _pin_screen(fields, screen=PIN_CHAIN)
@@ -1945,7 +1947,7 @@ def _submit_pin_reset_code(pa, user, code: str) -> dict:
 
     digits = "".join(ch for ch in str(code) if ch.isdigit())
     if len(digits) != 6:
-        return _pin_reset_code_screen(pa, error="The code is exactly 6 digits — check the SMS.")
+        return _pin_reset_code_screen(pa, error="The code is exactly 6 digits - check the SMS.")
     exp = pa.payload.get("pin_reset_otp_exp", "")
     if exp and timezone.now() > timezone.datetime.fromisoformat(exp):
         _clear_actions(pa.msisdn)
@@ -1956,7 +1958,7 @@ def _submit_pin_reset_code(pa, user, code: str) -> dict:
         pa.save(update_fields=["payload"])
         if attempts >= 3:
             _clear_actions(pa.msisdn)
-            return _success_screen("That's 3 incorrect codes — the PIN reset was cancelled. "
+            return _success_screen("That's 3 incorrect codes - the PIN reset was cancelled. "
                                    "Reply *reset pin* in the chat to start again.")
         return _pin_reset_code_screen(pa, error=f"That code isn't right. {3 - attempts} attempt(s) left.")
     # Possession proven: the create/confirm pair arrives on the SAME session's
@@ -1987,7 +1989,7 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     new PIN is typed into the encrypted Flow and never becomes a chat message.
     The first submit holds only a hash; the second must match it.
 
-    Mirrors the signup PIN deliberately — one shape for "choose a PIN", whether
+    Mirrors the signup PIN deliberately - one shape for "choose a PIN", whether
     it is the first one or a replacement.
     """
     from accounts.models import transaction_pin_rejection
@@ -1999,14 +2001,14 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     if not held:
         rejected = transaction_pin_rejection(pin)
         if rejected:
-            # Empty twin rather than a same-id re-render — see the matching
+            # Empty twin rather than a same-id re-render - see the matching
             # branch in _submit_onboarding_pin for why the refused digits would
             # otherwise stay in the masked box and be one tap from resubmission,
             # and why there is only one such twin to spend.
             tries = int(pa.payload.get("pin_policy_tries", 0)) + 1
             pa.payload["pin_policy_tries"] = tries
             if tries >= _PIN_CREATE_ATTEMPTS:
-                # A PendingAction, so _clear_actions IS the teardown here —
+                # A PendingAction, so _clear_actions IS the teardown here -
                 # matching the reset-code branch above.
                 _clear_actions(pa.msisdn)
                 return _success_screen("That PIN isn't one we can accept. Reply "
@@ -2024,7 +2026,7 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     from django.contrib.auth.hashers import check_password
     if not check_password(pin, held):
         # Routing is forward-only, so the customer cannot be sent back to the
-        # create screen — the held first entry stays authoritative and the error
+        # create screen - the held first entry stays authoritative and the error
         # names the way out (cancel in the chat). Capped at one error render, as
         # in _submit_onboarding_pin: the second would re-render
         # PIN_CONFIRM_RETRY onto itself and keep the mismatched digits.
@@ -2035,17 +2037,17 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
             _clear_actions(pa.msisdn)
             return _success_screen("Those didn't match. Reply \"set pin\" in the chat "
                                    "to start again.")
-        return _confirm_pin_screen(error="Those didn't match — enter the same PIN you "
+        return _confirm_pin_screen(error="Those didn't match - enter the same PIN you "
                                          "chose on the first screen, or reply \"cancel\" "
                                          "in the chat to start over.")
 
-    # Also clears pin_reset_required AND the lockout — this reset is the
+    # Also clears pin_reset_required AND the lockout - this reset is the
     # documented way out of the 24-hour lock, so it has to actually let the
     # customer pay afterwards. Omitting the lockout fields here left them locked
     # with a PIN they had just chosen.
     user.set_transaction_pin(pin)
     user.save(update_fields=list(user.PIN_UPDATE_FIELDS))
     _clear_actions(pa.msisdn)
-    reply(pa.msisdn, "✅ *Your new 6-digit PIN is set.* Use it to authorise payments here "
-                     "and in the Zitch app — it's one PIN for both.")
-    return _success_screen("PIN set ✅ — see the chat.")
+    reply(pa.msisdn, "done *Your new 6-digit PIN is set.* Use it to authorise payments here "
+                     "and in the Zitch app - it's one PIN for both.")
+    return _success_screen("PIN set done - see the chat.")
