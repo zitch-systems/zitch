@@ -293,9 +293,18 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
     # otherwise every attempt debits, fails at the rail and refunds, leaving a trail
     # of reversals and a user watching money leave and come back.
     from utility.providers import payout_live
-    from wallet.services import is_demo_account
+    from wallet.services import get_or_create_wallet, is_demo_account
 
-    wallet = getattr(user, "wallet", None)
+    # Read the wallet from the DB rather than off `user`. The reverse one-to-one
+    # accessor serves a cache pinned to this `user` INSTANCE, and any caller that
+    # already touched the wallet earlier in the same request — provisioning the
+    # NUBAN, lifting its PND, crediting it — holds a different Python object, so
+    # the cached copy still shows the pre-mutation state. Every check below is a
+    # source-account safety gate reading exactly the fields such a caller has just
+    # written: a NUBAN that now exists still reads as missing, and a hold that has
+    # just been lifted still reads as placed. The PND branch then also SAVES this
+    # object, which would write the stale copy back over the fresh row.
+    wallet = get_or_create_wallet(user)
     if payout_live() and wallet is not None and is_demo_account(wallet):
         raise PayoutError(
             "source_unusable",

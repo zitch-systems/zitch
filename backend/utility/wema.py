@@ -605,14 +605,49 @@ def face_verify_live() -> bool:
     return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
 
 
-def face_verify_on_dev_host() -> bool:
-    """True while the face app points at ALAT's DEV verifier.
+#: Hostname labels that mark a verifier as non-production. Matched as WHOLE
+#: dot/dash-separated labels, never as substrings: the production host is
+#: ``face-verification.azurewebsites.net``, and a substring rule broad enough to
+#: be useful is one "test" away from condemning it — a gate that can never go
+#: green gets deleted, which is worse than one that is slightly narrow.
+_NONPROD_HOST_LABELS = frozenset({
+    "dev", "development", "devtest", "qa", "uat", "sit", "test", "testing",
+    "sandbox", "staging", "stage", "pilot", "demo", "preprod", "preproduction",
+    "nonprod", "beta",
+})
 
-    Separate from face_verify_live() because the dev host answers happily — it just
-    does not prove anything about a real person, which makes it exactly the kind of
-    thing that survives to production unnoticed.
+
+def face_verify_on_nonprod_host() -> bool:
+    """True while the face app points at one of ALAT's non-production verifiers.
+
+    Separate from face_verify_live() because these hosts answer happily — they
+    just do not prove anything about a real person, which makes them exactly the
+    kind of thing that survives to production unnoticed. This is a go-live gate:
+    a tier lifted by a verifier that decides nothing is a tier lifted on nothing.
+
+    Replaces an earlier check that looked for ``-dev.`` alone. When Wema moved us
+    to ``face-verification-pilot`` that rule stopped applying — a different
+    hostname, the identical problem — and the preflight reported "live verifier"
+    on a verifier that was nothing of the kind. Matching the whole family is the
+    fix; matching by LABEL rather than substring is what keeps the real host able
+    to pass.
+
+    A URL with no scheme still gets classified rather than waved through:
+    ``urlparse`` puts a bare host in ``path``, and a missing ``https://`` in an
+    env var is precisely the config slip this gate should survive.
     """
-    return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
+    from urllib.parse import urlparse
+
+    raw = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").strip().lower()
+    if not raw:
+        # Nothing configured is not a non-production host — the face rail simply
+        # is not live, which the preflight reports on its own separate line.
+        return False
+    parsed = urlparse(raw)
+    host = parsed.hostname or parsed.path.split("/", 1)[0].split(":", 1)[0]
+    labels = {part for chunk in host.split(".") for part in chunk.split("-") if part}
+    return bool(labels & _NONPROD_HOST_LABELS)
+
 
 
 def face_verify_on_nonprod_host() -> bool:

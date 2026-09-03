@@ -1343,17 +1343,23 @@ class ChatOnboardedUpgradeTests(TestCase):
         res = self.client.post(path, data=json.dumps(payload), content_type="application/json")
         return res, res.json()
 
-    def test_kyc_is_closed_until_the_email_is_confirmed(self):
-        res, body = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
-        self.assertEqual(res.status_code, 403)
-        self.assertIn("email", body["message"].lower())
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.bvn_verified)
+    def test_kyc_is_not_gated_on_the_email_round_trip(self):
+        """The email gate on KYC was retired deliberately (cb4c5e3).
 
-    def test_kyc_status_names_the_gate(self):
+        Identity ownership is proved by the Wema-registered SMS OTP or the Wema
+        face biometric; email is an account-recovery control, not a Wema KYC
+        factor, so it must never block BVN/NIN/face/address verification. This
+        test used to assert the opposite — it is kept, inverted, so the decision
+        is pinned rather than silently re-reversed by the next refactor.
+        """
+        res, _ = self.post("/api/kyc/bvn/start/", {"bvn": "12345678901"})
+        self.assertNotEqual(res.status_code, 403)
+
+    def test_kyc_status_no_longer_reports_an_email_gate(self):
+        """The flag stays in the payload (the app reads it) but reads False now."""
         res, body = self.post("/api/kyc/status/", {})
-        self.assertTrue(body["email_verification_required"])
-        self.assertEqual(body["email"], "chidi@zitch.test")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(body["email_verification_required"])
 
     def test_email_round_trip_opens_the_ladder(self):
         with patch("accounts.views._otp_code", return_value="424242"):

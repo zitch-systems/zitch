@@ -335,12 +335,18 @@ class BvnMethodChoiceTests(TestCase):
         self.assertIn(("bvn_sms", "SMS OTP"), offered)
         self.assertIn(("bvn_face", "Face verification"), offered)
 
+    # These two assert on the IN-MEMORY payload, deliberately, and must not go
+    # back to refresh_from_db(). Persisting it is _send_identity_flow's job — it
+    # calls _touch as its first act, so the token it signs resolves — and these
+    # tests mock that collaborator out. Reading back from the DB therefore asserts
+    # against a row the mock never wrote, which is what made them fail with
+    # KeyError: 'id_method' rather than catching anything real. What _advance_kyc
+    # itself owns is the payload it hands to the flow, so that is what is checked.
     def test_face_choice_collects_bvn_for_the_face_rail(self):
         self.pa.state = router.BVN_METHOD_STATE
         self.pa.save(update_fields=["state"])
         with patch.object(router, "_send_identity_flow", return_value=True) as flow:
             router._advance_kyc(self.pa, self.user, MSISDN, "bvn_face")
-        self.pa.refresh_from_db()
         self.assertEqual(self.pa.payload["id_method"], "wema_face")
         self.assertEqual(self.pa.payload["id_purpose"], "face")
         flow.assert_called_once_with(self.pa, "bvn", fallback_state=router.FACE_ID_STATE)
@@ -348,10 +354,13 @@ class BvnMethodChoiceTests(TestCase):
     def test_sms_choice_keeps_face_as_an_optional_fallback(self):
         self.pa.state = router.BVN_METHOD_STATE
         self.pa.save(update_fields=["state"])
+        self.pa.payload["id_purpose"] = "face"   # a prior face choice being switched away from
         with patch.object(router, "_send_identity_flow", return_value=True) as flow:
             router._advance_kyc(self.pa, self.user, MSISDN, "bvn_sms")
-        self.pa.refresh_from_db()
         self.assertEqual(self.pa.payload["id_method"], "sms_otp")
+        # Cleared, not merely absent: picking SMS after face must not leave the
+        # session pointed at the face rail. Seeding it above is what makes this
+        # assertion mean something.
         self.assertNotIn("id_purpose", self.pa.payload)
         flow.assert_called_once_with(self.pa, "bvn", fallback_state="bvn")
 

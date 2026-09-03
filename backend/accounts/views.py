@@ -342,7 +342,7 @@ def password_forgot(request):
         # proven — one typo from being someone else's inbox. Until the in-app
         # round-trip verifies it, the reset code goes to the phone alone, which
         # is the identity these accounts actually authenticated with.
-        reset_email = "" if _email_verification_required(user) else (user.email or "")
+        reset_email = "" if _email_unproven_for_recovery(user) else (user.email or "")
         send_email(reset_email, "Your Zitch password reset code", message,
                    html=_branded_email("Reset your password",
                                        "Use this code to reset your Zitch password.",
@@ -871,7 +871,35 @@ def _email_verification_required(user) -> bool:
     # KYC ownership is proved by the Wema-registered SMS OTP or Wema face
     # biometric.  Email is an account-recovery control, not a Wema KYC factor;
     # never block BVN/NIN/face/address verification on an email code.
+    #
+    # This answers ONE question — "may the KYC ladder open?" — and the answer is
+    # now always yes. It used to answer a second, unrelated one as well (see
+    # _email_unproven_for_recovery), and collapsing it to False silently took that
+    # protection with it. Keep the two apart: they are the same fact serving
+    # different purposes, and only one of them was meant to be retired.
     return False
+
+
+def _email_unproven_for_recovery(user) -> bool:
+    """Whether this address is too unproven to be a PASSWORD-RECOVERY channel.
+
+    Deliberately NOT the same question as _email_verification_required. That one
+    asks whether to block KYC, and the answer is now always no. This one asks
+    whether to send a reset code to the inbox — and for a chat-onboarded account
+    it is still yes-it-is-unproven, for the reason that has not changed: the
+    address was typed into a WhatsApp conversation and nobody has ever proved
+    control of it. One typo and the reset code for a money account lands in a
+    stranger's inbox.
+
+    Both used to read the same predicate. When that predicate was hardcoded to
+    False to open the KYC ladder, this suppression went with it and reset codes
+    began going to unverified chat-typed addresses. Splitting them is what lets
+    the KYC decision stand without giving that away.
+
+    The phone still gets the code either way, and it is the identity these
+    accounts actually authenticated with — so nobody is locked out by this.
+    """
+    return bool(getattr(user, "onboarded_via_whatsapp", False) and not user.email_verified)
 
 
 def _email_gate(user):
@@ -890,7 +918,7 @@ def email_verify_start(request):
     delivering it to the phone would verify nothing."""
     user = request.user_obj
     if user.email_verified:
-        return ok(message="Email already verified", **_kyc_state(user))
+        return ok(success=True, message="Email already verified", **_kyc_state(user))
     # While unverified, the address may be set or corrected — an account with a
     # blank or mistyped email would otherwise be locked out of Tier 1 for good.
     new_email = (request.data.get("email") or "").strip().lower()
@@ -912,7 +940,13 @@ def email_verify_start(request):
                                        "Enter this code in the Zitch app to confirm your email address.",
                                        code=code,
                                        note="If you didn't request this, you can ignore this email."))
-    return ok(message=f"We sent a code to {user.email}")
+    # success=True is load-bearing, not decoration: the app advances to the code
+    # screen on this flag, and ok() deliberately does not default it (a queued
+    # transfer answers 200 with success LEFT OUT so it reads as "processing").
+    # Dropping it here strands the customer on the email step with a 200 that the
+    # app reads as a failure — and email is a Tier 1 requirement, so the whole
+    # ladder stops. It has been dropped once already; leave it explicit.
+    return ok(success=True, message=f"We sent a code to {user.email}")
 
 
 @ratelimit("otp_verify", limit=20, window=60)
@@ -940,7 +974,7 @@ def email_verify_confirm(request):
     user.email_verified = True
     user.recompute_tier()  # Tier 1 requires the verified email; it may be the last piece
     user.save(update_fields=["email_verified", "tier"])
-    return ok(message="Email verified", **_kyc_state(user))
+    return ok(success=True, message="Email verified", **_kyc_state(user))
 
 
 def _repair_unbacked_wema_identity_flags(user) -> None:
