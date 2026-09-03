@@ -130,7 +130,11 @@ class Command(BaseCommand):
             cutoff = timezone.now() - timedelta(minutes=max(0, options["payout_older_than_minutes"]))
             for txn in pending_bank_payouts(cutoff):
                 payouts_seen += 1
-                st = wema.confirm_transfer_status(txn.reference)
+                transfer_meta = (txn.meta or {}).get("wema_transfer") or {}
+                platform_reference = str(
+                    transfer_meta.get("platform_reference") or "")
+                st = wema.confirm_transfer_status(
+                    txn.reference, platform_reference=platform_reference)
                 status = (st.get("status") or "").upper()
                 outcome = wema.classify_transfer_status(status, envelope_ok=True)
                 if st.get("success") and outcome == "success":
@@ -193,5 +197,5 @@ class Command(BaseCommand):
         self.stdout.write(
             f"Wema reconcile: {credited} credit(s) / {scanned} wallet(s); "
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
-            f"payouts settled {settled}, reversed {reversed_}; "
+            f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
             f"WhatsApp alerts retried {whatsapp_alerts}")
