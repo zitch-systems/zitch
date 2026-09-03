@@ -565,55 +565,26 @@ def face_verify_live() -> bool:
     return bool(settings.WEMA.get("FACE_CALLBACK_IPS"))
 
 
-#: Host markers that mean "this verifier is not ALAT's production one".
-#:
-#: `-dev.` was the only one here, which made the check silently stop applying the
-#: moment we were pointed at face-verification-pilot: a different hostname, the same
-#: problem. The list is deliberately broad — every name ALAT is likely to use for a
-#: non-production instance — because the cost of a false FAIL is someone reading a
-#: preflight line, and the cost of a false PASS is real KYC tiers lifted on a check
-#: that proves nothing.
-_NONPROD_FACE_HOSTS = ("-dev.", "-pilot.", "-uat.", "-test.", "-sandbox.", "-staging.")
+def face_verify_on_dev_host() -> bool:
+    """True while the face app points at ALAT's DEV verifier.
 
-
-def face_verify_on_nonprod_host() -> bool:
-    """True while the face app points at a NON-PRODUCTION ALAT verifier.
-
-    Separate from face_verify_live() because these hosts answer happily — they just
-    do not prove anything about a real person, which makes this exactly the kind of
+    Separate from face_verify_live() because the dev host answers happily — it just
+    does not prove anything about a real person, which makes it exactly the kind of
     thing that survives to production unnoticed.
     """
-    url = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
-    return any(marker in url for marker in _NONPROD_FACE_HOSTS)
-
-
-def face_cb_mode() -> str:
-    """What goes in the face verifier's `cb_uri`.
-
-    "registered" sends exactly the URL whitelisted with ALAT; "session" appends a
-    per-verification `?s=<state>`. ALAT match the whitelist as an exact string, so
-    "session" does not work against them — see WEMA["FACE_CB_MODE"] for why the
-    default is nonetheless the weaker of the two, and what carries the weight there.
-    """
-    mode = (settings.WEMA.get("FACE_CB_MODE", "") or "").strip().lower()
-    return "session" if mode == "session" else "registered"
+    return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
 
 
 def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
     """Build the customer-facing URL for ALAT's face-biometric web app.
 
-    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}&cb_uri={callback}`. On
-    success the page reports {success, c_id, id, id_type} to `cb_uri`.
+    Query shape is the bank's: `?{bvn|nin}={value}&x_tk={key}&cb_uri={callback}`.
+    On success it POSTs {success, c_id, id, id_type} to `cb_uri`.
 
-    Wema's own sample URLs show only the first two parameters, but their integration
-    contact confirmed the page does accept cb_uri. What it will not accept is a
-    cb_uri that differs from the whitelisted string by so much as a query parameter
-    — see face_cb_mode(), which builds the callback either way.
-
-    We never pass rd_uri. A redirect hands the result to whatever opened the page —
-    for WhatsApp onboarding a browser we do not control, for the app a WebView whose
-    navigation a determined user can drive by hand. The server callback is the only
-    variant where the bank tells US the outcome directly.
+    We pass cb_uri, never rd_uri. A redirect hands the result to whatever opened the
+    page — which for WhatsApp onboarding is a browser we do not control, and for the
+    app is a WebView whose navigation a determined user can drive by hand. The server
+    callback is the only variant where the bank tells US the outcome directly.
 
     SECURITY: `x_tk` is the channel id (see _face_key), and the bank's design puts it
     in a URL the customer's browser loads — so treat the channel id as public. It is
@@ -625,9 +596,10 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
     kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
     params = {kind: identity_value, "x_tk": _face_key()}
-    if callback_url:
+    if settings.WEMA.get("FACE_INCLUDE_CALLBACK", True):
         params["cb_uri"] = callback_url
-    return f"{base}/?{urlencode(params, quote_via=quote)}"
+    query = urlencode(params, quote_via=quote)
+    return f"{base}/?{query}"
 
 
 def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
@@ -2014,3 +1986,4 @@ def wema_diagnostics() -> dict:
     out["hint"] = ("Keys present. Confirm the live host and tx-status legend against Wema's "
                    "integration guide before go-live.")
     return out
+
