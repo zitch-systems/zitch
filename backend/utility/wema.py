@@ -574,6 +574,10 @@ def face_verify_on_dev_host() -> bool:
     """
     return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
 
+def face_cb_mode() -> str:
+    """Return the configured pilot callback mode used by the URL builder."""
+    return "session" if settings.WEMA.get("FACE_INCLUDE_CALLBACK", True) else "none"
+
 
 def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
     """Build the customer-facing URL for ALAT's face-biometric web app.
