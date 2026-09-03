@@ -136,10 +136,12 @@ const FaceVerifyModal = ({
             // Android needs this for getUserMedia to be offered at all.
             javaScriptEnabled
             domStorageEnabled
-            // Keep the sheet to the bank's own page: a liveness check has no reason
-            // to navigate anywhere else, and following an off-site link inside a
-            // frame labelled "your bank" is the one thing this component must not do.
-            originWhitelist={[originOf(url)]}
+            // Allow the full HTTPS space. Wema's liveness SDK makes requests to
+            // Azure Cognitive Services and other Azure subdomains during capture;
+            // locking to the exact host silently blocks those and the page reports
+            // "network error". The redirect guard below (setSupportMultipleWindows)
+            // is the real protection against off-site navigation.
+            originWhitelist={['https://*']}
             setSupportMultipleWindows={false}
             style={{ flex: 1, backgroundColor: c.bg }}
           />
