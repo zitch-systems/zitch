@@ -476,6 +476,26 @@ class ChannelTests(TestCase):
         self.assertEqual(PendingAction.objects.get(
             msisdn=MSISDN, action_type="add_account").state, "id_type")
 
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    @patch("whatsapp.router.attach_existing_bank_account",
+           return_value=(None, "provider returned no account"))
+    @patch("utility.alerts.alert")
+    def test_verified_bvn_without_nuban_is_escalated(
+            self, alerted, _readback, _enabled):
+        self.link()
+        router.cache.delete(f"wema-missing-nuban:{self.user.pk}")
+
+        self.inbound("6", "am-missing-nuban")
+
+        reply = self.last_reply()
+        self.assertIn("BVN is verified", reply)
+        self.assertIn("support has been notified", reply)
+        self.assertNotIn("being linked", reply)
+        self.assertFalse(PendingAction.objects.filter(
+            msisdn=MSISDN, action_type="add_account").exists())
+        alerted.assert_called_once()
+        self.assertEqual(alerted.call_args.kwargs["user_id"], self.user.pk)
+
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=False)
     def test_add_money_is_unavailable_when_funding_is_off(self, _enabled):
         self.link()
