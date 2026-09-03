@@ -245,6 +245,10 @@ const AddMoney = () => {
       notify('SMS already sent', 'Enter the Wema code already sent to finish creating your account.');
       return;
     }
+    if (bvnVerified) {
+      notify('Already verified', 'Your BVN is already verified. You do not need to enter or verify it again.');
+      return;
+    }
     if (bvn.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN.'); return; }
     setCreating(true);
     let started: { url: string; session: string } | null = null;
@@ -386,10 +390,10 @@ const AddMoney = () => {
       setOtp('');
       return;
     }
-    if (bvn.length !== 11) return;
+    if (!bvnVerified && bvn.length !== 11) return;
     setCreating(true);
     try {
-      const r = await apiJson('/api/wallet/account/create/', { bvn });
+      const r = await apiJson('/api/wallet/account/create/', bvnVerified ? {} : { bvn });
       const pending = rememberAccountState(r);
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
@@ -640,32 +644,36 @@ const AddMoney = () => {
                 Opened in your name · {holderName}
               </Text>
             ) : null}
-            <View style={{ height: 14 }} />
-            <Field
-              label="Bank Verification Number (BVN)"
-              value={bvn}
-              onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))}
-              keyboardType="number-pad"
-              placeholder="Enter your 11-digit BVN"
-            />
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8 }}>
-              <ZIcon name="lock" size={13} color={c.ink3} />
-              <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
-                Dial *565*0# on your registered line to get your BVN.
-              </Text>
-            </View>
+            {!bvnVerified ? (
+              <>
+                <View style={{ height: 14 }} />
+                <Field
+                  label="Bank Verification Number (BVN)"
+                  value={bvn}
+                  onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))}
+                  keyboardType="number-pad"
+                  placeholder="Enter your 11-digit BVN"
+                />
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8 }}>
+                  <ZIcon name="lock" size={13} color={c.ink3} />
+                  <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
+                    Dial *565*0# on your registered line to get your BVN.
+                  </Text>
+                </View>
+              </>
+            ) : null}
             <View style={{ height: 16 }} />
             <Btn
               label={pendingAttempt ? 'Enter Wema SMS code' : creating ? 'Creating your account...' : bvnVerified ? 'Continue account setup' : 'Get my account'}
               icon="bank"
-              disabled={creating || (!pendingAttempt && bvn.length !== 11)}
+              disabled={creating || (!bvnVerified && !pendingAttempt && bvn.length !== 11)}
               onPress={createAccount}
             />
             {/* The bank's own alternative to the SMS code, offered up front as well
                 as on the code step - the customers who need it are exactly the ones
                 whose BVN is registered to a line they no longer carry, and they have
                 no way to know that until the code fails to arrive. */}
-            {faceAvailable && !pendingAttempt ? (
+            {faceAvailable && !bvnVerified && !pendingAttempt ? (
               <>
                 <View style={{ height: 10 }} />
                 <Btn
