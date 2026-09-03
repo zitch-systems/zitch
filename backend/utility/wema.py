@@ -747,22 +747,68 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
         return _unreachable(exc)
 
 
+def _ci_get(mapping, *names, default=""):
+    if not isinstance(mapping, dict):
+        return default
+    lowered = {str(k).casefold(): v for k, v in mapping.items()}
+    for name in names:
+        value = lowered.get(str(name).casefold())
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _find_account_payload(value):
+    if isinstance(value, dict):
+        number = _ci_get(value, "accountNumber", "account_number", "nuban",
+                         "walletAccountNumber", "accountNo", "account")
+        if number:
+            return value
+        for key in ("data", "result", "response", "customer", "account", "accounts"):
+            found = _find_account_payload(value.get(key))
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_account_payload(item)
+            if found:
+                return found
+    return {}
+
+
 def get_account_details(phone: str, *, bvn: bool = False) -> dict:
     """Step 3 — fetch the created account (poll until accountNumber is populated)."""
     if not wema_live():
         if _mock_blocked():
             return {"success": False, "message": "Bank account creation is not configured"}
         return _mock_account(f"phone:{phone}", "")
+    product = "wallet_bvn" if bvn else "wallet_nin"
     try:
-        product = "wallet_bvn" if bvn else "wallet_nin"
-        data = _get(product, "/api/CustomerAccount/GetPartnershipAccountDetails",
-                    {"phoneNumber": phone}).json()
-        d = data.get("data", {}) or {}
-        num = d.get("accountNumber", "")
-        name = " ".join(x for x in (d.get("firstName", ""), d.get("lastName", "")) if x).strip()
-        return {"success": _ok(data) and bool(num), "account_number": num,
-                "account_name": name, "bank_name": "Wema Bank",
-                "email": d.get("email", ""), "message": _msg(data), "raw": data}
+        resp = _get(product, "/api/CustomerAccount/GetPartnershipAccountDetails",
+                    {"phoneNumber": phone})
+        try:
+            data = resp.json()
+        except ValueError:
+            log.warning("wema_account_details_bad_json product=%s status=%s",
+                        product, resp.status_code)
+            return {"success": False, "message": "Invalid bank response"}
+        d = _find_account_payload(data)
+        num = str(_ci_get(d, "accountNumber", "account_number", "nuban",
+                          "walletAccountNumber", "accountNo", "account") or "").strip()
+        account_name = str(_ci_get(d, "accountName", "account_name", "nubanName") or "").strip()
+        if not account_name:
+            account_name = " ".join(str(x).strip() for x in (
+                _ci_get(d, "firstName", "firstname"),
+                _ci_get(d, "lastName", "lastname"),
+            ) if str(x or "").strip()).strip()
+        envelope_ok = _ok(data) or bool(_ci_get(data, "successful", "success"))
+        log.info("wema_account_details_read product=%s status=%s envelope_keys=%s has_account=%s",
+                 product, resp.status_code,
+                 sorted(str(k) for k in data.keys()) if isinstance(data, dict) else type(data).__name__,
+                 bool(num))
+        return {"success": envelope_ok and bool(num), "account_number": num,
+                "account_name": account_name, "bank_name": "Wema Bank",
+                "email": _ci_get(d, "email", "emailAddress"), "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
