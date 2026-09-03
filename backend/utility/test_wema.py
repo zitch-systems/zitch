@@ -358,6 +358,18 @@ class WemaLiveTests(SimpleTestCase):
         self.assertTrue(result["pending"])
 
     @patch("utility.wema.requests.get")
+    def test_status_requery_accepts_direct_result_shape(self, mock_get):
+        mock_get.return_value = _resp(
+            {"result": {"transactionStatus": "Successful",
+                        "transactionReference": "REF-DIRECT"},
+             "hasError": False}
+        )
+        result = wema.confirm_transfer_status("REF-DIRECT")
+        self.assertTrue(result["success"])
+        self.assertFalse(result["pending"])
+        self.assertEqual(result["status"], "SUCCESSFUL")
+
+    @patch("utility.wema.requests.get")
     def test_status_requery_pending_is_not_delivery_success(self, mock_get):
         mock_get.return_value = _resp(
             {"result": {"data": {"status": "PENDING",
@@ -744,6 +756,19 @@ class WemaAccountLifecycleTests(SimpleTestCase):
         self.assertEqual(body["accountNumber"], "0155500011")
         self.assertTrue(mock_post.call_args[0][0].endswith(
             "/account-creation/api/CustomerAccount/PartnerDebitRestrictionManagement"))
+
+    @patch("utility.wema.requests.post")
+    def test_lift_debit_restriction_unknown_rail_falls_back_to_nin(self, mock_post):
+        mock_post.side_effect = [
+            _resp({"status": False, "message": "Resource not found"}),
+            _resp({"status": True, "message": "PND lifted"}),
+        ]
+        result = wema.lift_debit_restriction("0155500011")
+        self.assertTrue(result["success"])
+        self.assertEqual(result["product"], "wallet_nin")
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn("/account-creation/", mock_post.call_args_list[0][0][0])
+        self.assertIn("/wallet-creation/", mock_post.call_args_list[1][0][0])
 
     @patch("utility.wema.requests.get")
     def test_get_kyc_status(self, mock_get):
