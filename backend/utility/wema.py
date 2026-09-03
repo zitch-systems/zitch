@@ -575,8 +575,11 @@ def face_verify_on_dev_host() -> bool:
     return "-dev." in (settings.WEMA.get("FACE_VERIFY_URL", "") or "").lower()
 
 def face_cb_mode() -> str:
-    """Return the configured pilot callback mode used by the URL builder."""
-    return "session" if settings.WEMA.get("FACE_INCLUDE_CALLBACK", True) else "none"
+    """Return registered, session, or none for the hosted verifier callback."""
+    mode = str(settings.WEMA.get("FACE_CB_MODE") or "").strip().lower()
+    if mode in {"registered", "session", "none"}:
+        return mode
+    return "registered" if settings.WEMA.get("FACE_INCLUDE_CALLBACK", True) else "none"
 
 
 def face_verification_url(identity_type: str, identity_value: str, callback_url: str) -> str:
@@ -600,7 +603,7 @@ def face_verification_url(identity_type: str, identity_value: str, callback_url:
     base = (settings.WEMA.get("FACE_VERIFY_URL", "") or "").rstrip("/")
     kind = "bvn" if str(identity_type).lower() == "bvn" else "nin"
     params = {kind: identity_value, "x_tk": _face_key()}
-    if settings.WEMA.get("FACE_INCLUDE_CALLBACK", True):
+    if face_cb_mode() != "none":
         params["cb_uri"] = callback_url
     query = urlencode(params, quote_via=quote)
     return f"{base}/?{query}"
