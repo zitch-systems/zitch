@@ -883,28 +883,45 @@ def wema_face_callback(request, state=""):
         # not accepted because they do not prove Wema evaluated this correlation.
         if (getattr(request, "wema_face_browser_origin", "")
                 and not getattr(request, "wema_face_server_trusted", False)):
-            from .services import get_or_create_wallet
+            from .services import attach_existing_bank_account, get_or_create_wallet
             existing_wallet = get_or_create_wallet(user)
-            if existing_wallet.account_number:
-                session.status = WemaFaceSession.FAILED
-                session.save(update_fields=["status", "updated"])
-                request.wema_action = "denied:browser_callback_existing_account"
-                log.warning("wema_face_browser_unverifiable_existing_account user=%s",
-                            user.id)
-                return JsonResponse({"status": True}, status=200)
             provider_validated_account = wema_provider.create_wallet_with_face(
                 user.phone or "", user.email or f"{user.phone}@zitch.app",
                 identity_type=kind, identity_value=identity,
                 correlation_id=correlation,
             )
             if not provider_validated_account.get("success"):
-                session.status = WemaFaceSession.FAILED
-                session.save(update_fields=["status", "updated"])
-                request.wema_action = "denied:provider_correlation_validation"
-                log.warning("wema_face_browser_correlation_rejected user=%s kind=%s msg=%s",
-                            user.id, kind,
-                            provider_validated_account.get("message", ""))
-                return JsonResponse({"status": True}, status=200)
+                message = str(provider_validated_account.get("message") or "")
+                # Wema returns HTTP 400 after a valid face check when the same
+                # BVN/email/phone already has a partnership account on this channel.
+                # Recover that account through the authenticated account-details API.
+                # A generic "already exists" string is not enough: the read-back must
+                # return and safely attach the NUBAN for this user's own phone.
+                duplicate = ("already exist" in message.lower()
+                             and "for this channel" in message.lower())
+                recovered = existing_wallet if existing_wallet.account_number else None
+                if duplicate and recovered is None:
+                    try:
+                        recovered, _detail = attach_existing_bank_account(
+                            user, using_bvn=kind == "bvn")
+                    except Exception:  # noqa: BLE001 — deny safely below
+                        recovered = None
+                        log.warning("wema_face_existing_readback_failed user=%s",
+                                    user.id, exc_info=True)
+                if duplicate and recovered is not None and recovered.account_number:
+                    provider_validated_account = {
+                        "success": True,
+                        "existing": True,
+                        "message": "Authenticated existing partnership account recovered",
+                    }
+                    request.wema_action = "validated:existing_account_readback"
+                else:
+                    session.status = WemaFaceSession.FAILED
+                    session.save(update_fields=["status", "updated"])
+                    request.wema_action = "denied:provider_correlation_validation"
+                    log.warning("wema_face_browser_correlation_rejected user=%s kind=%s msg=%s",
+                                user.id, kind, message)
+                    return JsonResponse({"status": True}, status=200)
 
         # A successful face check may CLAIM an unverified identity, but it may not
         # replace a different identity this account has already proven. The global
