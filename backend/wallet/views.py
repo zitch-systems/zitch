@@ -213,15 +213,31 @@ def wallet_account_create(request):
                     bvn_verified=True, nin_verified=user.nin_verified,
                     message="Your verified bank account has been reconnected."))
             state = _account_setup_state(user, wallet)
+            if state.get("account_setup_state") == "otp_pending":
+                resend = wema_provider.resend_wallet_otp(
+                    user.phone or "",
+                    str(state.get("tracking_id") or ""),
+                    bvn=bool(state.get("using_bvn")),
+                )
+                state["otp_resent"] = bool(resend.get("success"))
+                message = (
+                    "Your BVN is already verified. Wema sent the existing account "
+                    "setup code again; enter it to finish issuing your account number."
+                    if resend.get("success") else
+                    "Your BVN is already verified. Enter the existing Wema account "
+                    "setup code to finish issuing your account number."
+                )
+            else:
+                message = (
+                    "Your BVN is already verified. We are syncing your Wema account "
+                    "number; you will not be asked to enter the BVN again."
+                )
             return ok(
                 **state,
                 bvn_verified=True,
                 nin_verified=user.nin_verified,
                 holder_name=(user.get_full_name() or "").strip(),
-                message=(
-                    "Your BVN is already verified. We are syncing your Wema account "
-                    "number; you will not be asked to enter the BVN again."
-                ),
+                message=message,
             )
         return fail("Enter your 11-digit BVN or NIN")
     using_bvn = len(bvn) == 11
