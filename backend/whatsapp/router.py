@@ -3434,11 +3434,32 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
                 + ("Wema sent the existing setup code again. " if resend.get("success")
                    else "Use the existing Wema setup code. ")
                 + "Enter it to finish issuing your account number.")
+        # This is not an in-progress state: there is no NUBAN and no resumable
+        # OTP request. Page it once per user/hour so the provider-side incomplete
+        # customer record cannot sit silently behind a reassuring chat message.
+        alert_key = f"wema-missing-nuban:{user.pk}"
+        if cache.add(alert_key, True, timeout=60 * 60):
+            try:
+                from utility.alerts import alert
+                alert(
+                    "Wema identity verified but no funding account can be recovered",
+                    level="error",
+                    user_id=user.pk,
+                    channel="whatsapp",
+                    recovery_detail=str(_detail or "")[:160],
+                )
+            except Exception:
+                log.exception("wema_missing_nuban_alert_failed user=%s", user.pk)
+        log.error(
+            "wema_missing_nuban user=%s channel=whatsapp detail=%s",
+            user.pk, str(_detail or "")[:160],
+        )
         return reply(
             msisdn,
-            "✅ Your BVN is already verified, so we will not ask you to enter it "
-            "again. Your Wema account number is still being linked; please contact "
-            "support if it does not appear shortly.")
+            "Your BVN is verified and will not be requested again. Wema has not "
+            "returned an account number for this verified identity, and there is "
+            "no OTP request to resume. Zitch support has been notified to have "
+            "Wema repair the incomplete account record.")
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="add_account", state="id_type",
         payload={}, expires_at=_flow_deadline("id_type"),
