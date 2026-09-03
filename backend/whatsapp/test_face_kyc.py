@@ -305,3 +305,56 @@ class TheKycRailAlsoOffersFaceBesideItsCodeTests(TestCase):
                                                   "bvn", VERIFIED_BVN)
         self.assertEqual(outcome, "otp")
         cta.assert_not_called()
+
+@override_settings(WEMA=FACE_ON)
+class BvnMethodChoiceTests(TestCase):
+    """BVN verification exposes SMS and face before either rail is started."""
+
+    def setUp(self):
+        self.user = _user()
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
+        self.pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc", state="idle",
+            payload={"attempted": ["bvn"]}, expires_at=router._flow_deadline("idle"))
+
+    def test_bvn_step_shows_both_methods(self):
+        self.pa.payload["attempted"] = []
+        self.pa.save(update_fields=["payload"])
+        with patch.object(router, "reply_buttons") as buttons:
+            router._kyc_next(self.pa, self.user, MSISDN)
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.state, router.BVN_METHOD_STATE)
+        offered = buttons.call_args.args[2]
+        self.assertIn(("bvn_sms", "SMS OTP"), offered)
+        self.assertIn(("bvn_face", "Face verification"), offered)
+
+    def test_face_choice_collects_bvn_for_the_face_rail(self):
+        self.pa.state = router.BVN_METHOD_STATE
+        self.pa.save(update_fields=["state"])
+        with patch.object(router, "_send_identity_flow", return_value=True) as flow:
+            router._advance_kyc(self.pa, self.user, MSISDN, "bvn_face")
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.payload["id_method"], "wema_face")
+        self.assertEqual(self.pa.payload["id_purpose"], "face")
+        flow.assert_called_once_with(self.pa, "bvn", fallback_state=router.FACE_ID_STATE)
+
+    def test_sms_choice_keeps_face_as_an_optional_fallback(self):
+        self.pa.state = router.BVN_METHOD_STATE
+        self.pa.save(update_fields=["state"])
+        with patch.object(router, "_send_identity_flow", return_value=True) as flow:
+            router._advance_kyc(self.pa, self.user, MSISDN, "bvn_sms")
+        self.pa.refresh_from_db()
+        self.assertEqual(self.pa.payload["id_method"], "sms_otp")
+        self.assertNotIn("id_purpose", self.pa.payload)
+        flow.assert_called_once_with(self.pa, "bvn", fallback_state="bvn")
+
+    def test_unknown_choice_repeats_the_two_buttons(self):
+        self.pa.state = router.BVN_METHOD_STATE
+        self.pa.save(update_fields=["state"])
+        with patch.object(router, "reply_buttons") as buttons:
+            router._advance_kyc(self.pa, self.user, MSISDN, "something else")
+        offered = buttons.call_args.args[2]
+        self.assertEqual(offered, [
+            ("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")])
+
