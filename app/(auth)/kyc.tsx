@@ -186,6 +186,10 @@ const Kyc = () => {
     try {
       const res = await apiJson('/api/wallet/wema/create/', { bvn });
       if (res.success && res.tracking_id) {
+        if ((res.otp_destination_kind || 'bvn').toLowerCase() !== 'bvn') {
+          notify('Verification mismatch', 'Wema returned a non-BVN challenge. Please start again.');
+          return;
+        }
         setBvnTrackingId(String(res.tracking_id));
         setBvnDelivery(res.otp_destination || '');
         setBvnSent(true);
@@ -208,6 +212,10 @@ const Kyc = () => {
     try {
       const res = await apiJson('/api/wallet/wema/create/', { nin });
       if (res.success && res.tracking_id) {
+        if ((res.otp_destination_kind || 'nin').toLowerCase() !== 'nin') {
+          notify('Verification mismatch', 'Wema returned a non-NIN challenge. Please start again.');
+          return;
+        }
         setNinTrackingId(String(res.tracking_id));
         setNinDelivery(res.otp_destination || '');
         setNinSent(true);
@@ -634,7 +642,9 @@ const Kyc = () => {
 </>
           ) : (
             <>
-              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Enter Wema OTP</Text>
+              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>
+                Enter {isBvn ? 'BVN' : 'NIN'} verification code
+              </Text>
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
                 {/* `delivery` is only ever a number the BANK returned. Falling back to
                     "your registered phone" read as the Zitch number and was the whole
@@ -644,9 +654,14 @@ const Kyc = () => {
                   ? delivery
                   : `the phone number registered on your ${isBvn ? 'BVN' : 'NIN'}`}.
               </Text>
-              <Field value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
+              <Field
+                value={otp}
+                onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))}
+                keyboardType="number-pad"
+                placeholder={`6-digit ${isBvn ? 'BVN' : 'NIN'} code`}
+              />
               <View style={{ height: 14 }} />
-              <Btn label="Confirm with Wema" size="md" disabled={busy || otp.length !== 6 || !sent} onPress={confirm} />
+              <Btn label={`Confirm ${isBvn ? 'BVN' : 'NIN'} with Wema`} size="md" disabled={busy || otp.length !== 6 || !sent} onPress={confirm} />
               <Text onPress={() => resendWemaOtp(identityFlow)} style={{ textAlign: 'center', marginTop: 14, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
 
               <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
