@@ -735,10 +735,13 @@ def pending_bank_payouts(cutoff):
     debited forever. reconcile_wema polls confirm_transfer_status for these and
     settles/reverses them. The mirror of pending_vtu_purchases (which EXCLUDES
     bank payouts)."""
+    # The bank marker is the durable discriminator. Older payout rows predate the
+    # reconcile flag, and filtering on it strands exactly those customer debits
+    # forever. Include every pending outbound bank payout; terminal rows remain
+    # excluded and the provider lookup/state transition are idempotent.
     return Transaction.objects.filter(
         transaction_status=Transaction.PENDING,
         direction=Transaction.OUT,
-        meta__reconcile=True,
         meta__has_key="bank",
         created__lte=cutoff,
     )
