@@ -164,6 +164,19 @@ def wallet_account_create(request):
     if identity_error:
         return fail(identity_error, status=409)
     if not res.get("success"):
+        # The bank already holds a customer record for this person, so there is
+        # nothing left to create and every retry is refused for the same reason —
+        # the account has to be READ BACK instead. Without this the funding screen
+        # loops forever for anyone whose identity is verified but whose NUBAN never
+        # reached us. Same recovery /api/wallet/wema/create/ already does.
+        recovered = _adopt_existing_wema_account(user, using_bvn=using_bvn,
+                                                 reason=res.get("message", ""))
+        if recovered is not None:
+            wallet = get_or_create_wallet(user)
+            return ok(**_account_payload(
+                wallet, already=True, tier=user.tier,
+                bvn_verified=user.bvn_verified, nin_verified=user.nin_verified,
+                message="Your bank account was already set up — we've reconnected it."))
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
               otp_destination=res.get("otp_destination", user.phone or ""),

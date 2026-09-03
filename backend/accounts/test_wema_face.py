@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from accounts.models import IdentityProof, User, hash_identifier
 from wallet.models import WemaFaceSession
+from wallet.services import get_or_create_wallet
 
 # No token segment: this URL is handed to the customer, so it carries the
 # per-session state alone. See accounts.views._face_callback_url.
@@ -351,10 +352,44 @@ class FaceSessionIdentityBindingTests(TestCase):
                                 {"access_token": self.token, **body},
                                 content_type="application/json")
 
-    def test_the_proven_identity_is_not_reopened(self):
+    def test_the_proven_identity_is_not_reopened_once_the_account_exists(self):
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0123456789"
+        wallet.save(update_fields=["account_number"])
         res = self._start(bvn="22222222222")
         self.assertEqual(res.status_code, 200)
         self.assertTrue(res.json()["already"])
+        self.assertEqual(res.json()["account_number"], "0123456789")
+        self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 0)
+
+    def test_a_verified_identity_without_an_account_can_still_open_a_session(self):
+        # The verified flag with no NUBAN is the dead end: the funding screen has no
+        # account to show, so it asks for the BVN again, and answering "already
+        # verified" here left the customer with no way forward. Re-proving the SAME
+        # identity is what mints the account in the callback.
+        with mock.patch("accounts.views.attach_existing_bank_account",
+                        return_value=(None, "no account")):
+            res = self._start(bvn="22222222222")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["url"])
+        session = WemaFaceSession.objects.get(user=self.user)
+        self.assertEqual(session.identity_hash, hash_identifier("22222222222"))
+
+    def test_a_reconnected_account_is_returned_instead_of_a_face_check(self):
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = ""
+        wallet.save(update_fields=["account_number"])
+
+        def _attach(user, using_bvn=None):
+            w = get_or_create_wallet(user)
+            w.account_number = "0999888777"
+            w.save(update_fields=["account_number"])
+            return w, "recovered"
+
+        with mock.patch("accounts.views.attach_existing_bank_account", side_effect=_attach):
+            res = self._start(bvn="22222222222")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["account_number"], "0999888777")
         self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 0)
 
     def test_a_different_identity_is_refused(self):

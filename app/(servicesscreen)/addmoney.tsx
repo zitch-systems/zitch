@@ -224,6 +224,17 @@ const AddMoney = () => {
     let started: { url: string; session: string } | null = null;
     try {
       const r = await apiJson('/api/kyc/face/start/', { bvn });
+      // Already verified AND the account exists (or was just reconnected): there is
+      // nothing to check again — show the account instead of sending the customer
+      // back to the BVN field they just filled in.
+      if (r?.success && r.account_number) {
+        setBvn('');
+        setOtpFlow(null);
+        setOtp('');
+        loadAccount();
+        notify('Verified', r.message || 'Your account is ready.');
+        return;
+      }
       if (!r?.success || !r.url) {
         notify('Not available', r?.message || 'Face verification is unavailable right now.');
         return;
