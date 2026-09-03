@@ -476,6 +476,27 @@ class AccountOtpScreenNamesTheIdentityRecordTests(TestCase):
                 self.assertNotIn(digits[-4:], data["summary"])
                 self.assertNotIn(digits[:4], data["summary"])
 
+    def test_tracking_record_overrides_a_stale_bvn_label_for_nin(self):
+        from wallet.models import WemaProvisioningAttempt
+        from whatsapp.flows import _account_otp_screen
+
+        attempt = WemaProvisioningAttempt.objects.create(
+            user=self.user,
+            tracking_id="nin-track-1",
+            identity_type=WemaProvisioningAttempt.NIN,
+            identity_hash=hash_identifier("33333333333"),
+            identity_last4="3333",
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        pa = self._pa({
+            "tracking_id": attempt.tracking_id,
+            "using_bvn": True,
+            "id_type": "bvn",
+        })
+        data = _account_otp_screen(pa)["data"]
+        self.assertIn("registered on your NIN", data["summary"])
+        self.assertNotIn("registered on your BVN", data["summary"])
+
     def test_the_hint_sends_an_unreachable_customer_to_face_not_resend(self):
         """A resend goes back to the same registered line, so offering it as the
         remedy is a loop. The face route is the one that can actually finish."""
