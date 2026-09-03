@@ -358,9 +358,21 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     if wallet.account_number:
         return wallet, "This wallet already has an account number."
     products = (True, False) if using_bvn is None else (using_bvn,)
+    raw_phone = str(user.phone or "").strip()
+    digits = "".join(ch for ch in raw_phone if ch.isdigit())
+    last10 = digits[-10:] if len(digits) >= 10 else ""
+    phones = []
+    for candidate in (raw_phone, digits, f"0{last10}" if last10 else "",
+                      f"234{last10}" if last10 else "", f"+234{last10}" if last10 else ""):
+        candidate = str(candidate or "").strip()
+        if candidate and candidate not in phones:
+            phones.append(candidate)
     acct, product = {}, True
     for product in products:
-        acct = wema_provider.get_account_details(user.phone or "", bvn=product)
+        for phone in phones:
+            acct = wema_provider.get_account_details(phone, bvn=product)
+            if acct.get("success") and str(acct.get("account_number") or "").strip():
+                break
         if acct.get("success") and str(acct.get("account_number") or "").strip():
             break
     number = str(acct.get("account_number") or "").strip()
