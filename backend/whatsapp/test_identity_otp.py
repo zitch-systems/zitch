@@ -438,3 +438,51 @@ class CodeChallengeDeadlineTests(TestCase):
         # No code in the payload -> the ordinary armed-PIN window applies again.
         deadline = _flow_deadline("flow_pin", {})
         self.assertLessEqual(deadline, timezone.now() + PIN_TTL + timedelta(seconds=5))
+
+
+@override_settings(TESTING=False, DEBUG=False)
+class AccountOtpScreenNamesTheIdentityRecordTests(TestCase):
+    """The bank's code goes to the phone on the BVN/NIN record, not the Zitch line.
+
+    This screen used to mask and display the customer's OWN number, on the belief
+    that ALAT texts the phoneNumber supplied at creation. It does not — it validates
+    the identity against its register and sends the consent code to the line held
+    there. Showing the Zitch number sent people to a silent handset and made the NIN
+    step read as though it wanted a BVN code, which is exactly how it was reported.
+    """
+
+    def setUp(self):
+        self.user = _make_user()
+
+    def _pa(self, payload):
+        from whatsapp.router import _flow_deadline
+        return PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="add_account",
+            state=FLOW_ID_STATE, payload=payload,
+            expires_at=_flow_deadline("otp"))
+
+    def _screen(self, payload):
+        from whatsapp.flows import _account_otp_screen
+        return _account_otp_screen(self._pa(payload))["data"]
+
+    def test_it_names_the_record_and_never_the_customers_own_number(self):
+        digits = "".join(ch for ch in str(self.user.phone or "") if ch.isdigit())
+        for payload, kind in (({"using_bvn": False}, "NIN"), ({"using_bvn": True}, "BVN")):
+            with self.subTest(kind=kind):
+                data = self._screen(payload)
+                self.assertIn(f"registered on your {kind}", data["summary"])
+                # Not even the masked head/tail the old screen showed: any slice of
+                # the account's own number is a pointer to the wrong handset.
+                self.assertNotIn(digits[-4:], data["summary"])
+                self.assertNotIn(digits[:4], data["summary"])
+
+    def test_the_hint_sends_an_unreachable_customer_to_face_not_resend(self):
+        """A resend goes back to the same registered line, so offering it as the
+        remedy is a loop. The face route is the one that can actually finish."""
+        data = self._screen({"using_bvn": False})
+        self.assertIn("face", data["error"].lower())
+        self.assertNotIn("RESEND", data["error"])
+
+    def test_it_falls_back_to_the_menu_choice_when_the_rail_is_not_recorded_yet(self):
+        self.assertIn("BVN", self._screen({"id_type": "bvn"})["summary"])
+        self.assertIn("NIN", self._screen({"id_type": "nin"})["summary"])

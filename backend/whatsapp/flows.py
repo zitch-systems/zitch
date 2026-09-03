@@ -1241,24 +1241,31 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     always CODE_RETRY — legal from both and from itself, and the masked box
     arrives empty instead of holding the code that just failed."""
     screen = CODE_RETRY if error else _flow_screen(pa, CODE_SCREEN)
-    # Wema's wallet-creation OTP is sent to the phone number supplied when the
-    # request was opened (the customer's Zitch number). Showing the whole number
-    # would unnecessarily disclose PII, but saying only "your phone" leaves a
-    # customer unable to tell which line should receive the SMS.
-    digits = "".join(ch for ch in str(pa.user.phone or "") if ch.isdigit())
-    if len(digits) >= 8:
-        destination = f"{digits[:4]}•••{digits[-4:]}"
-    elif len(digits) >= 4:
-        destination = f"••••{digits[-4:]}"
-    else:
-        destination = "your registered phone"
+    # This screen used to mask and show the customer's ZITCH number, on the belief
+    # that ALAT texts the number supplied in the creation request. It does not.
+    # ALAT validates the identity against its register and sends the consent code to
+    # the phone held on THAT record — the NIMC line for a NIN, the BVN line for a
+    # BVN. Naming the Zitch number pointed the customer at a handset that never
+    # receives the code, and left the NIN step looking like it wanted a BVN code.
+    #
+    # There is no number to show instead: ALAT does not return one. Naming the
+    # RECORD is both true and more useful than any masked digits would have been.
+    # `using_bvn` is written when the attempt is opened and is the authoritative
+    # record of which rail this tracking id belongs to; `id_type` is the earlier
+    # menu choice and covers a payload written before that point.
+    using_bvn = pa.payload.get("using_bvn")
+    if using_bvn is None:
+        using_bvn = pa.payload.get("id_type") == "bvn"
+    kind = "BVN" if using_bvn else "NIN"
     return _identity_screen(
         ACCOUNT_OTP,
         # Keep delivery guidance in the smaller body text. The summary is a
         # TextHeading in the published Flow, so paragraphs do not fit there.
-        error=error or "Didn't receive it? Reply RESEND in the chat to send another code.",
+        error=error or ("Not arriving? It goes to the phone on your "
+                        f"{kind} record, so a resend can't reach another line — "
+                        "use the face verification button in the chat instead."),
         label="SMS code",
-        summary=f"Enter the 6-digit code sent to {destination}.",
+        summary=f"Enter the 6-digit code Wema sent to the phone registered on your {kind}.",
         screen=screen,
     )
 

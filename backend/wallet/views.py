@@ -166,9 +166,9 @@ def wallet_account_create(request):
     if not res.get("success"):
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
-              otp_destination=res.get("otp_destination", user.phone or ""),
+              **_otp_delivery(res, using_bvn=using_bvn),
               using_bvn=using_bvn, mock=res.get("mock", False),
-              message="Enter the OTP sent to your phone")
+              message=_otp_prompt(using_bvn))
 
 
 # ------------------- WEMA / ALAT wallet provisioning (OTP) -------------------
@@ -179,6 +179,39 @@ def wallet_account_create(request):
 def _wema_funding_enabled() -> bool:
     return (payment_provider() == "wema"
             or wema_provider.wema_live() or wema_provider.wema_simulation())
+
+
+# --- Where the bank's code actually goes -----------------------------------
+#
+# ALAT validates the identity against its issuing register and then SMSes the
+# consent code to the phone number ON THAT RECORD: the NIMC line for a NIN, the
+# BVN line for a BVN. Not the number the customer registered with Zitch, and not
+# the same line for both identities.
+#
+# Telling them otherwise is not a cosmetic slip. The customer stares at a handset
+# that will never buzz, taps Resend (which re-sends to the same unreachable line),
+# and concludes the NIN step is asking for a BVN code. The face route below is the
+# real answer for an unreachable line — but only if the screen says so.
+#
+# So: describe the destination by IDENTITY, and quote a number only when ALAT
+# itself returned one.
+def _otp_prompt(using_bvn: bool) -> str:
+    kind = "BVN" if using_bvn else "NIN"
+    return (f"Wema checked your {kind} and sent a code by SMS to the phone number "
+            "registered on it. Enter that code to finish.")
+
+
+def _otp_delivery(res: dict | None, *, using_bvn: bool) -> dict:
+    """The destination fields every OTP-issuing response returns.
+
+    ``otp_destination`` stays empty unless the bank named a number, so a client
+    rendering `otp_destination || "your phone"` can no longer be handed the wrong
+    phone. ``otp_destination_kind`` is what clients should render from.
+    """
+    return {
+        "otp_destination": str((res or {}).get("otp_destination") or ""),
+        "otp_destination_kind": "bvn" if using_bvn else "nin",
+    }
 
 
 def _identity_for_attempt(bvn: str, nin: str) -> tuple[str, str]:
@@ -282,12 +315,12 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             wallet,
             otp_required=True,
             tracking_id=pending.tracking_id,
-            otp_destination=user.phone or "",
+            **_otp_delivery(None, using_bvn=identity_type == WemaProvisioningAttempt.BVN),
             using_bvn=identity_type == WemaProvisioningAttempt.BVN,
             tier=user.tier,
             bvn_verified=user.bvn_verified,
             nin_verified=user.nin_verified,
-            message="Enter the OTP sent to your phone",
+            message=_otp_prompt(identity_type == WemaProvisioningAttempt.BVN),
         ), 200
 
     return {
@@ -404,9 +437,16 @@ def wema_wallet_create(request):
             return fail("Wema says these details already exist in Wallet Service. Contact Zitch support so we can review your account setup.", status=409)
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     return ok(success=True, tracking_id=res.get("tracking_id", ""),
-              otp_destination=res.get("otp_destination", user.phone or ""),
+              **_otp_delivery(res, using_bvn=using_bvn),
               using_bvn=using_bvn, mock=res.get("mock", False),
-              message=res.get("message", "Enter the OTP sent to your phone"))
+              # The bank's own success wording is dropped here on purpose. It is
+              # free text from a Wallet Service that fronts both identity rails, so
+              # it is not guaranteed to name the identity the customer actually
+              # entered — and on this screen the identity IS the instruction, since
+              # it is the only thing that tells them which handset to pick up. Our
+              # wording is derived from the attempt, so it cannot disagree with it.
+              # Failure paths still surface the gateway's message unchanged.
+              message=_otp_prompt(using_bvn))
 
 
 def complete_wema_provisioning(user, otp: str, tracking_id: str,
@@ -690,7 +730,11 @@ def wema_wallet_resend_otp(request):
     res = wema_provider.resend_wallet_otp(user.phone or "", tracking_id, bvn=using_bvn)
     if not res.get("success"):
         return fail(res.get("message", "Couldn't resend the OTP"), status=502)
-    return ok(success=True, message=res.get("message", "OTP resent"))
+    # A resend cannot move the code to a different handset — it goes back to the
+    # same registered line. Say so, so the customer stops retrying a rail that
+    # cannot reach them and takes the face route instead.
+    return ok(success=True, **_otp_delivery(res, using_bvn=using_bvn),
+              message=_otp_prompt(using_bvn))
 
 
 @api

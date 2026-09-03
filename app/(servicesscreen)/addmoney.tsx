@@ -333,10 +333,15 @@ const AddMoney = () => {
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
       } else if (r?.success && r.otp_required) {
-        // Wema flow: an OTP was sent to the user's phone — collect it next.
+        // Wema flow: the bank validated the BVN and SMSed a consent code to the phone
+        // number ON THE BVN RECORD — not to the number this account uses. `destination`
+        // is therefore only ever a number the bank itself named; empty means "we don't
+        // know it", which must not be papered over with "your phone".
         setOtpFlow({ trackingId: String(r.tracking_id || ''), destination: String(r.otp_destination || '') });
         setOtp('');
-        notify('OTP sent', `Enter the code we sent to ${r.otp_destination || 'your phone'}`);
+        notify('OTP sent', r.otp_destination
+          ? `Enter the code Wema sent to ${r.otp_destination}`
+          : 'Enter the code Wema sent to the phone number registered on your BVN');
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -406,7 +411,7 @@ const AddMoney = () => {
             Enter the OTP
           </Text>
           <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
-            We sent a one-time code to {otpFlow.destination || 'your phone'} to confirm your account.
+            Wema sent a one-time code to {otpFlow.destination || 'the phone number registered on your BVN'} to confirm your account.
           </Text>
         </View>
 
