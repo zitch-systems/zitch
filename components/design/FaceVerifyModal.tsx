@@ -128,7 +128,7 @@ const FaceVerifyModal = ({
             // the page asked for (camera, microphone). Without this the WebView silently
             // refuses getUserMedia and the liveness capture fails with a "network error"
             // inside the bank's page.
-            onPermissionRequest={(request) => request.grant(request.resources)}
+            onPermissionRequest={(request: { grant: (r: string[]) => void; resources: string[] }) => request.grant(request.resources)}
             // The bank's verification page also requests the device's location.
             // Permission is requested by the caller before this sheet opens;
             // this flag passes whatever the OS granted through to the web page.
@@ -173,14 +173,5 @@ const FaceVerifyModal = ({
   );
 };
 
-/** `https://host/path?x=1` -> `https://host/*`, for the navigation whitelist. */
-function originOf(url: string): string {
-  const m = /^(https:\/\/[^/?#]+)/i.exec(url || '');
-  // A pattern that matches NOTHING, not an empty string. react-native-webview
-  // treats an empty entry as "no restriction", so the previous '' failed OPEN — the
-  // inverse of what its comment claimed. https only: this sheet is labelled with
-  // the bank's name and must never render a plaintext page under it.
-  return m ? `${m[1]}/*` : 'about:blank';
-}
 
 export default FaceVerifyModal;
