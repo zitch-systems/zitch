@@ -444,6 +444,15 @@ WEMA = {
     # Pilot diagnostic only: Wema's pilot page currently fails when cb_uri is
     # supplied. Keep enabled for the real flow; disable only to isolate the
     # hosted verifier before Wema confirms its callback contract.
+    # "registered" sends the exact URL Wema whitelisted; "session" appends
+    # per-verification state for verifier deployments that support prefix matching;
+    # "none" is diagnostic only because no result can reach us.
+    "FACE_CB_MODE": (
+        os.environ.get("WEMA_FACE_CB_MODE", "").strip().lower()
+        or ("registered" if env_bool("WEMA_FACE_INCLUDE_CALLBACK", True) else "none")
+    ),
+    # Legacy compatibility for older environments; face_cb_mode() prefers the
+    # explicit mode above.
     "FACE_INCLUDE_CALLBACK": env_bool("WEMA_FACE_INCLUDE_CALLBACK", True),
     # Source IPs the face verifier calls us back from. SEPARATE from CALLBACK_IPS:
     # that list is ALAT's transaction gateway, and the face app is a different Azure
