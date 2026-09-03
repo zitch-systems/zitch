@@ -27,6 +27,10 @@ class Wallet(models.Model):
     # 0 = not yet known: we have never read it back, so no bank cap is applied and
     # behaviour is unchanged. Synced from partner-account-kyc-status.
     bank_tier = models.PositiveSmallIntegerField(default=0)
+    # False means the bank has not yet confirmed removal of the Post-No-Debit
+    # restriction. The reconcile job retries these accounts until confirmation;
+    # without durable state, one transient provider failure strands outgoing funds.
+    pnd_lifted = models.BooleanField(default=False, db_index=True)
     created = models.DateTimeField(auto_now_add=True)
     updated = models.DateTimeField(auto_now=True)
 
