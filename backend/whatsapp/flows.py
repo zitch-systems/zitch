@@ -1255,9 +1255,21 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     # `using_bvn` is written when the attempt is opened and is the authoritative
     # record of which rail this tracking id belongs to; `id_type` is the earlier
     # menu choice and covers a payload written before that point.
-    using_bvn = pa.payload.get("using_bvn")
-    if using_bvn is None:
-        using_bvn = pa.payload.get("id_type") == "bvn"
+    # Resolve the label from the server-bound tracking record. Cached Flow
+    # payloads can outlive a previous screen; the tracking record is the authority
+    # used by OTP validation and prevents a NIN challenge being labelled as BVN.
+    from wallet.models import WemaProvisioningAttempt
+
+    attempt = WemaProvisioningAttempt.objects.filter(
+        user=pa.user,
+        tracking_id=str(pa.payload.get("tracking_id") or ""),
+    ).only("identity_type").first()
+    if attempt is not None:
+        using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
+    else:
+        using_bvn = pa.payload.get("using_bvn")
+        if using_bvn is None:
+            using_bvn = pa.payload.get("id_type") == "bvn"
     kind = "BVN" if using_bvn else "NIN"
     return _identity_screen(
         ACCOUNT_OTP,
