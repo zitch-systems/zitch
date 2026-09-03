@@ -792,8 +792,25 @@ const Kyc = () => {
         ) : null}
       </KycRow>
 
-      <KycRow icon="user" title="NIN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.nin_verified}>
-        <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
+      <KycRow
+        icon="user"
+        title="NIN"
+        sub={
+          status?.nin_verified
+            ? 'Verified once and locked to this account'
+            : status?.bvn_verified && !status?.has_wema_account
+              ? 'Your Wema account number must be recovered before the NIN bank upgrade'
+              : status?.has_wema_account
+                ? 'Wema verifies NIN in the combined Tier 2 upgrade, not with a separate OTP'
+                : 'Wema will send an SMS code when NIN is used to create the account'
+        }
+        done={!!status?.nin_verified}
+      >
+        {!status?.nin_verified && !status?.bvn_verified ? (
+          <Btn label={ninSent ? 'Enter NIN OTP' : 'Verify NIN'} size="md" disabled={busy} onPress={() => openIdentityFlow('nin')} />
+        ) : !status?.nin_verified && !status?.has_wema_account ? (
+          <Btn label="Waiting for account number" size="md" disabled />
+        ) : null}
       </KycRow>
 
       <KycRow icon="faceid" title="Tier 2 Face ID"
