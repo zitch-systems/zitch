@@ -769,8 +769,12 @@ const Kyc = () => {
         </KycRow>
       ) : null}
 
-        <KycRow icon="bank" title="BVN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.bvn_verified}>
-        <Btn label={bvnSent ? 'Enter BVN OTP' : 'Verify BVN'} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
+      <KycRow icon="bank" title="BVN"
+        sub={status?.bvn_verified ? "Verified once and locked to this account" : "Wema will send a code to verify it"}
+        done={!!status?.bvn_verified}>
+        {!status?.bvn_verified ? (
+          <Btn label={bvnSent ? 'Enter BVN OTP' : 'Verify BVN'} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
+        ) : null}
       </KycRow>
 
       <KycRow icon="user" title="NIN" sub={status?.has_wema_account ? "Complete the bank upgrade with BVN, NIN and selfie" : "Wema will send a code to verify it"} done={!!status?.nin_verified}>
@@ -780,11 +784,18 @@ const Kyc = () => {
       <KycRow icon="faceid" title="Tier 2 Face ID"
         sub="Prembly liveness + Wema account upgrade" done={!!status?.face_verified}>
         <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 10, fontFamily: font.regular, lineHeight: 19 }}>
-          This is separate from Wema&apos;s BVN/NIN face fallback. Prembly Face ID checks that your selfie is live, then Wema receives it with both identities for the Tier 2 upgrade.
+          {status?.bvn_verified
+            ? 'Your BVN is already verified and will not be requested again. The bank upgrade will become available when Wema supports verified-identity reuse.'
+            : 'Prembly Face ID checks that your selfie is live, then Wema receives it with both identities for the Tier 2 upgrade.'}
         </Text>
-        <Btn label="Start Tier 2 upgrade" icon="faceid" size="md" variant="outline"
-          disabled={busy || !status?.has_wema_account}
-          onPress={() => { setBankUpgradeStep('bvn'); setBankUpgradeOpen(true); }} />
+        <Btn
+          label={status?.bvn_verified ? 'BVN already verified' : 'Start Tier 2 upgrade'}
+          icon="faceid"
+          size="md"
+          variant="outline"
+          disabled={busy || !status?.has_wema_account || !!status?.bvn_verified}
+          onPress={() => { setBankUpgradeStep('bvn'); setBankUpgradeOpen(true); }}
+        />
       </KycRow>
 
       <KycRow icon="home"
