@@ -217,7 +217,7 @@ def wallet_account_create(request):
                 **state,
                 bvn_verified=True,
                 nin_verified=user.nin_verified,
-                holder_name=user.full_name or "",
+                holder_name=(user.get_full_name() or "").strip(),
                 message=(
                     "Your BVN is already verified. We are syncing your Wema account "
                     "number; you will not be asked to enter the BVN again."
