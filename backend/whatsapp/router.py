@@ -3410,6 +3410,8 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
         attempt = wallet_views._active_wema_attempt(
             user, identity_type="bvn")
         if attempt is not None:
+            resend = wema_provider.resend_wallet_otp(
+                user.phone or "", attempt.tracking_id, bvn=True)
             pa = PendingAction.objects.create(
                 user=user, msisdn=msisdn, action_type="add_account", state="otp",
                 payload={
@@ -3422,12 +3424,16 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
             if _send_account_otp_flow(pa):
                 return reply(
                     msisdn,
-                    "📲 Your BVN is already verified. Enter the Wema SMS code on "
-                    "the secure form to finish issuing your account number.")
+                    "📲 Your BVN is already verified. "
+                    + ("Wema sent the existing setup code again. " if resend.get("success")
+                       else "Use the existing Wema setup code. ")
+                    + "Enter it on the secure form to finish issuing your account number.")
             return reply(
                 msisdn,
-                "📲 Your BVN is already verified. Enter the Wema SMS code already "
-                "sent to finish issuing your account number.")
+                "📲 Your BVN is already verified. "
+                + ("Wema sent the existing setup code again. " if resend.get("success")
+                   else "Use the existing Wema setup code. ")
+                + "Enter it to finish issuing your account number.")
         return reply(
             msisdn,
             "✅ Your BVN is already verified, so we will not ask you to enter it "
