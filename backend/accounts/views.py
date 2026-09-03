@@ -1502,7 +1502,10 @@ def _face_callback_url(state: str) -> str:
     opened before this shipped.
     """
     base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
-    return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
+    callback = f"{base}/webhooks/wema/face"
+    if wema.face_cb_mode() == "registered":
+        return callback
+    return f"{callback}?{urlencode({'s': state})}"
 
 
 @api
