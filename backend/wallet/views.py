@@ -90,10 +90,13 @@ def wallet_account(request):
         bank_name=wallet.bank_name,
         bank_accounts=wallet.bank_accounts or [],
         bank_tier=wallet.bank_tier,
+        bvn_verified=user.bvn_verified,
+        nin_verified=user.nin_verified,
         # The customer's registered legal name, so the Add-money screen can always
         # show whose account this is — even before it's provisioned, or on the rare
         # provider response that omits the holder name (account_name is blank).
         holder_name=(user.get_full_name() or "").strip(),
+        **_account_setup_state(user, wallet),
     )
 
 
@@ -108,6 +111,50 @@ def _account_payload(wallet, **extra) -> dict:
         bank_tier=wallet.bank_tier,
         **extra,
     )
+
+
+def _active_wema_attempt(user, *, identity_type: str | None = None,
+                         identity_hash: str | None = None):
+    qs = WemaProvisioningAttempt.objects.filter(
+        user=user,
+        status=WemaProvisioningAttempt.PENDING,
+        expires_at__gt=timezone.now(),
+    )
+    if identity_type:
+        qs = qs.filter(identity_type=identity_type)
+    if identity_hash:
+        qs = qs.filter(identity_hash=identity_hash)
+    return qs.order_by("-created").first()
+
+
+def _account_setup_state(user, wallet) -> dict:
+    if wallet.account_number:
+        return {
+            "account_setup_state": "ready",
+            "otp_required": False,
+            "identity_verified": bool(user.bvn_verified or user.nin_verified),
+        }
+    attempt = _active_wema_attempt(user)
+    if attempt is not None:
+        return {
+            "account_setup_state": "otp_pending",
+            "otp_required": True,
+            "tracking_id": attempt.tracking_id,
+            "using_bvn": attempt.identity_type == WemaProvisioningAttempt.BVN,
+            "otp_destination": user.phone or "",
+            "identity_verified": bool(user.bvn_verified or user.nin_verified),
+        }
+    if user.bvn_verified or user.nin_verified:
+        return {
+            "account_setup_state": "identity_verified",
+            "otp_required": False,
+            "identity_verified": True,
+        }
+    return {
+        "account_setup_state": "identity_required",
+        "otp_required": False,
+        "identity_verified": False,
+    }
 
 
 @api
