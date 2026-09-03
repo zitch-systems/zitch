@@ -183,6 +183,19 @@ def _callback_source_ip(request) -> str:
         return "unknown"
 
 
+def _face_browser_origin(request) -> str:
+    """Return an exact allowed hosted-verifier origin, or an empty string.
+
+    Origin is only a transport signal. It is trivial to spoof outside a browser, so
+    the face handler must validate the returned correlation ID with Wema's
+    authenticated API before changing KYC state.
+    """
+    origin = (request.META.get("HTTP_ORIGIN", "") or "").strip().rstrip("/")
+    allowed = {str(value).strip().rstrip("/")
+               for value in (_conf("FACE_CALLBACK_ORIGINS") or ()) if str(value).strip()}
+    return origin if origin and origin in allowed else ""
+
+
 def _ip_ok(request, kind: str = "") -> tuple:
     """(allowed, ip). The address is resolved by _callback_source_ip — see there for
     why a fixed trusted-proxy hop count cannot work for this comparison.
@@ -192,13 +205,12 @@ def _ip_ok(request, kind: str = "") -> tuple:
     if getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False):
         return True, ip
     if kind == "face":
-        # The face callback has no shared token — its URL is handed to the customer
-        # — so this allowlist is the whole of its authentication. It is therefore
-        # enforced unconditionally, including under WEMA_SIMULATION: a simulated
-        # deploy that accepted a forged face result would still be lifting real KYC
-        # tiers on real accounts. An empty list allows nothing, and face_verify_live()
-        # refuses to offer the rail at all in that state.
-        return (ip in set(_conf("FACE_CALLBACK_IPS") or ())), ip
+        # Wema may deliver this callback server-to-server from its published IPs or
+        # from the hosted verifier running in the customer's browser. Browser origin
+        # permits transport only; the handler independently proves its correlation
+        # against Wema before it grants identity verification.
+        server_ip = ip in set(_conf("FACE_CALLBACK_IPS") or ())
+        return (server_ip or bool(_face_browser_origin(request))), ip
     if wema_provider.wema_simulation() or not _conf("CALLBACK_ENFORCE_IPS", False):
         return True, ip
     allowed = set(_conf("CALLBACK_IPS") or DEFAULT_CALLBACK_IPS)
@@ -236,6 +248,11 @@ def wema_callback(kind: str, token_required: bool = True):
                                http_status=403, remote_ip=refused_from)
                 return JsonResponse({"message": "Forbidden"}, status=403)
             allowed, ip = _ip_ok(request, kind)
+            if kind == "face":
+                request.wema_face_server_trusted = (
+                    ip in set(_conf("FACE_CALLBACK_IPS") or ())
+                )
+                request.wema_face_browser_origin = _face_browser_origin(request)
             if not allowed:
                 log.warning("wema_cb_bad_ip kind=%s ip=%s", kind, ip)
                 alert("Wema callback from unexpected source IP", level="warning",
@@ -774,9 +791,15 @@ def wema_face_callback(request, state=""):
     # which shape the bank used, because "no state" is a legitimate registered callback
     # on one deployment and a call from nowhere on another, and the two look identical
     # in a log that omits it.
-    log.info("wema_face_cb state=%s mode=%s success=%s has_cid=%s ip=%s",
+    log.info("wema_face_cb state=%s mode=%s success=%s has_cid=%s ip=%s browser=%s",
              (state or "")[:8], wema_provider.face_cb_mode(), claimed,
-             bool(correlation), request.wema_ip)
+             bool(correlation), request.wema_ip,
+             bool(getattr(request, "wema_face_browser_origin", "")))
+
+    # Set only when a browser-delivered result has been proven by Wema's
+    # authenticated API. Reused after commit so account creation is not submitted
+    # twice for the same correlation.
+    provider_validated_account = None
 
     with db_transaction.atomic():
         pending = (WemaFaceSession.objects
@@ -854,6 +877,35 @@ def wema_face_callback(request, state=""):
         hash_field = f"{kind}_hash"
         last4_field = f"{kind}_last4"
 
+        # A browser Origin is not proof: non-browser clients can spoof it. Validate
+        # the correlation through Wema's authenticated without-OTP endpoint before
+        # persisting any identity proof. Existing-account responses are deliberately
+        # not accepted because they do not prove Wema evaluated this correlation.
+        if (getattr(request, "wema_face_browser_origin", "")
+                and not getattr(request, "wema_face_server_trusted", False)):
+            from .services import get_or_create_wallet
+            existing_wallet = get_or_create_wallet(user)
+            if existing_wallet.account_number:
+                session.status = WemaFaceSession.FAILED
+                session.save(update_fields=["status", "updated"])
+                request.wema_action = "denied:browser_callback_existing_account"
+                log.warning("wema_face_browser_unverifiable_existing_account user=%s",
+                            user.id)
+                return JsonResponse({"status": True}, status=200)
+            provider_validated_account = wema_provider.create_wallet_with_face(
+                user.phone or "", user.email or f"{user.phone}@zitch.app",
+                identity_type=kind, identity_value=identity,
+                correlation_id=correlation,
+            )
+            if not provider_validated_account.get("success"):
+                session.status = WemaFaceSession.FAILED
+                session.save(update_fields=["status", "updated"])
+                request.wema_action = "denied:provider_correlation_validation"
+                log.warning("wema_face_browser_correlation_rejected user=%s kind=%s msg=%s",
+                            user.id, kind,
+                            provider_validated_account.get("message", ""))
+                return JsonResponse({"status": True}, status=200)
+
         # A successful face check may CLAIM an unverified identity, but it may not
         # replace a different identity this account has already proven. The global
         # uniqueness check closes the race with another customer claiming the same
@@ -906,7 +958,7 @@ def wema_face_callback(request, state=""):
     from .services import attach_existing_bank_account, get_or_create_wallet
     wallet = get_or_create_wallet(user)
     if not wallet.account_number:
-        account = wema_provider.create_wallet_with_face(
+        account = provider_validated_account or wema_provider.create_wallet_with_face(
             user.phone or "", user.email or f"{user.phone}@zitch.app",
             identity_type=kind, identity_value=identity,
             correlation_id=correlation,
