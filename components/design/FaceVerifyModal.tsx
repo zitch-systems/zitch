@@ -173,14 +173,5 @@ const FaceVerifyModal = ({
   );
 };
 
-/** `https://host/path?x=1` -> `https://host/*`, for the navigation whitelist. */
-function originOf(url: string): string {
-  const m = /^(https:\/\/[^/?#]+)/i.exec(url || '');
-  // A pattern that matches NOTHING, not an empty string. react-native-webview
-  // treats an empty entry as "no restriction", so the previous '' failed OPEN — the
-  // inverse of what its comment claimed. https only: this sheet is labelled with
-  // the bank's name and must never render a plaintext page under it.
-  return m ? `${m[1]}/*` : 'about:blank';
-}
 
 export default FaceVerifyModal;
