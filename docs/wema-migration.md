@@ -205,7 +205,7 @@ new Remita / pay-with-bank / BNPL products). Summary:
 
 | Rail | Verdict | Notes |
 |------|---------|-------|
-| Wallet creation (NIN + BVN + OTP) | ✅ paths/fields correct | `trackingId` lives at `data.otpTrackingID` on the live envelope; ResendOtp is **200 No-Content** (now handled). |
+| Wallet creation (NIN + BVN + OTP) | ✅ paths/fields correct | `trackingId` lives at `data.otpTrackingID` on the live envelope; ResendOtp is **200 No-Content** (now handled). The OTP goes to the phone on the **identity record** (NIMC/BVN line), not the supplied `phoneNumber` — see note 4. |
 | Balance + transaction history | ✅ correct | `status` now honored — see funding guard below. |
 | Debit wallet / transfer (payout) | ✅ correct | `ClientTransferRequestDto` is a perfect field match. `GetNIPCharges` is unused (optional). |
 | Credit wallet / FundWallet | ✅ correct | Status poll is bound to the `debit` suffix; a credit-rail poll is optional. |
@@ -344,13 +344,28 @@ The follow-up rails from the bundle are wired (mock-first, fail-closed):
    `transactionStatus` the VAS/bills `CheckTransactionStatus` returns (enum 1..11) — the code
    reads it but leaves such a purchase PENDING until the code→meaning map is confirmed. Confirm
    both with Wema.
-4. **Wallet-creation OTP response shape.** The create endpoints return
+4. **Where the wallet-creation OTP is delivered — RESOLVED (was mis-stated in code).**
+   ALAT's wallet-creation (NIN) and account-creation (BVN) rails both *validate the identity
+   against its issuing register on the bank's side* and then SMS a **consent** code to the phone
+   number carried **on that identity record** — the NIMC line for a NIN, the BVN line for a BVN.
+   It is never sent to the `phoneNumber` the partner supplies in the request. Two places assumed
+   otherwise and told the customer to watch their Zitch handset: `create_wallet_request` defaulted
+   `otp_destination` to the caller's phone (ALAT documents no `otpDestination` field, so the
+   fallback always won), and the WhatsApp `_account_otp_screen` masked and displayed the user's
+   own number. Both now name the **record** instead, and `otp_destination` stays empty unless the
+   bank itself returns a number. Reported symptom this fixes: a customer who entered a NIN was
+   asked for an SMS code that never arrived and read the screen as asking for a BVN code.
+   *There is no OTP-free variant of these two rails* — the documented no-OTP route is the separate
+   face-biometric product (`/create-account-face` → `tier1-{bvn,nin}-withoutOtp-v2`, already wired
+   as `create_wallet_with_face`), which substitutes a `correlationId` from ALAT's hosted face app
+   for the SMS. It is now offered on the identity-entry screen, not only after the SMS fails.
+5. **Wallet-creation OTP response shape.** The create endpoints return
    `{message, status, code, statusCode, errors}` with **no** tracking id per the spec, yet the
    OTP validate step requires `trackingId`; `create_wallet_request` hunts for it at the top
    level and under `data`/`result` (the live envelope is reported to carry it at
    `data.otpTrackingID`). `ResendOtp` is a **200 No-Content** endpoint — now handled (a bare
    `.json()` on the empty body used to raise on a genuine success). Confirm the live shape.
-5. **Inbound-credit detection — reversal double-credit now GUARDED (was audit OPEN, High).**
+6. **Inbound-credit detection — reversal double-credit now GUARDED (was audit OPEN, High).**
    The funding sweep (Phase 1) credits `creditType == "Credit"` history rows, while the payout
    phase (Phase 2) independently reverses a FAILED payout via `reverse_transfer`. A
    reversed/bounced payout landing back in the sender's own NUBAN was previously counted

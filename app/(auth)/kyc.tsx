@@ -79,12 +79,18 @@ const Kyc = () => {
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
   const [bvnTrackingId, setBvnTrackingId] = useState('');
-  const [bvnDelivery, setBvnDelivery] = useState('your registered phone');
+  // Only ever a number the BANK named. Empty is the normal case — ALAT does not
+  // document an otpDestination field — and empty must render as "the phone
+  // registered on your BVN", never as the number the customer uses with Zitch.
+  // The code goes to the line on the BVN record; naming any other number sends
+  // the customer to a handset that will never ring.
+  const [bvnDelivery, setBvnDelivery] = useState('');
   const [nin, setNin] = useState('');
   const [ninOtp, setNinOtp] = useState('');
   const [ninSent, setNinSent] = useState(false);
   const [ninTrackingId, setNinTrackingId] = useState('');
-  const [ninDelivery, setNinDelivery] = useState('your registered phone');
+  // Same rule as bvnDelivery, against the NIMC line held on the NIN.
+  const [ninDelivery, setNinDelivery] = useState('');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [stateName, setStateName] = useState('');
@@ -181,10 +187,10 @@ const Kyc = () => {
       const res = await apiJson('/api/wallet/wema/create/', { bvn });
       if (res.success && res.tracking_id) {
         setBvnTrackingId(String(res.tracking_id));
-        setBvnDelivery(res.otp_destination || 'your registered phone');
+        setBvnDelivery(res.otp_destination || '');
         setBvnSent(true);
         setIdentityStep('otp');
-        notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
+        notify('Wema OTP sent', res.message || 'Enter the code Wema sent to the phone registered on your BVN.');
       } else if (res.success) {
         await load();
         if (res.bvn_verified || res.upgraded) {
@@ -203,10 +209,10 @@ const Kyc = () => {
       const res = await apiJson('/api/wallet/wema/create/', { nin });
       if (res.success && res.tracking_id) {
         setNinTrackingId(String(res.tracking_id));
-        setNinDelivery(res.otp_destination || 'your registered phone');
+        setNinDelivery(res.otp_destination || '');
         setNinSent(true);
         setIdentityStep('otp');
-        notify('Wema OTP sent', res.message || 'Enter the code sent by Wema.');
+        notify('Wema OTP sent', res.message || 'Enter the code Wema sent to the phone registered on your NIN.');
       } else if (res.success) {
         await load();
         if (res.nin_verified || res.upgraded) {
@@ -261,10 +267,14 @@ const Kyc = () => {
     try {
       const res = await apiJson('/api/wallet/wema/resend-otp/', { tracking_id: trackingId });
       if (res.success) {
-        const destination = res.otp_destination || 'your registered phone';
+        const destination = res.otp_destination || '';
         if (kind === 'bvn') setBvnDelivery(destination);
         else setNinDelivery(destination);
-        notify('Wema OTP resent', res.message || `We sent a new code to ${destination}.`);
+        // A resend goes back to the SAME registered line — it cannot be redirected
+        // to the phone in the customer's hand. Promising "a new code to your phone"
+        // is what keeps someone tapping resend instead of taking the face route.
+        notify('Wema OTP resent', res.message
+          || `Wema sent a new code to the phone registered on your ${kind.toUpperCase()}.`);
       } else notify('Error', res.message || 'Could not resend the Wema code');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
@@ -560,7 +570,7 @@ const Kyc = () => {
 
     return (
       <Screen>
-        <Header title={title} sub="Verify by SMS, with a secure face-check fallback" onBack={closeIdentityFlow} />
+        <Header title={title} sub={`Code to your ${isBvn ? 'BVN' : 'NIN'} phone, or a face check instead`} onBack={closeIdentityFlow} />
 
         <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
           <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
@@ -571,17 +581,50 @@ const Kyc = () => {
             <>
               <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{title}</Text>
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Wema will send a code to the phone number registered on that identity. Zitch does not store the raw number.
+                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Wema checks it against{' '}
+                {isBvn ? 'the BVN register' : 'NIMC'} and then sends a consent code by SMS to the
+                phone number registered on {isBvn ? 'that BVN' : 'that NIN'} — which may not be the
+                number you use with Zitch. Zitch does not store the raw number.
               </Text>
               <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
               <View style={{ height: 14 }} />
-              <Btn label="Send SMS OTP" size="md" disabled={busy || value.length !== 11} onPress={start} />
+              <Btn label={`Send code to my ${isBvn ? 'BVN' : 'NIN'} phone`} size="md" disabled={busy || value.length !== 11} onPress={start} />
+
+              {/* Offered BEFORE the code is requested, not only after it fails to
+                  arrive. The SMS lands on the register's line, and for a NIN that
+                  is an enrolment-era number often enough that making people fail
+                  first is a design choice, not a necessity. Wema's own face check
+                  is a documented no-OTP route to the same Tier 1 — it matches the
+                  customer against the photo on the record instead of texting a
+                  number they may no longer hold. */}
+              {status?.identity_face_available ? (
+                <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
+                  <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
+                    No longer using that number?
+                  </Text>
+                  <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
+                    Verify with a face check instead — no SMS code at all. Wema matches you
+                    against the photo on your {isBvn ? 'BVN' : 'NIN'} record. Your face is never
+                    sent to or stored by Zitch.
+                  </Text>
+                  <Btn label={facePolling ? 'Waiting for Wema…' : 'Verify with face instead'}
+                    icon="faceid" variant="outline" size="md"
+                    disabled={busy || facePolling || value.length !== 11}
+                    onPress={() => verifyFaceWithBank(identityFlow, value)} />
+                </View>
+              ) : null}
 </>
           ) : (
             <>
               <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Enter Wema OTP</Text>
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Enter the code Wema sent to {delivery || 'your registered phone'}.
+                {/* `delivery` is only ever a number the BANK returned. Falling back to
+                    "your registered phone" read as the Zitch number and was the whole
+                    complaint: a NIN step that looks like it is asking for a code sent
+                    somewhere the customer never sees. Name the RECORD instead. */}
+                Enter the code Wema sent to {delivery
+                  ? delivery
+                  : `the phone number registered on your ${isBvn ? 'BVN' : 'NIN'}`}.
               </Text>
               <Field value={otp} onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code" />
               <View style={{ height: 14 }} />
@@ -602,10 +645,10 @@ const Kyc = () => {
                     Can&apos;t receive the SMS?
                   </Text>
                   <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
-                    The SMS goes to the phone registered on your {isBvn ? 'BVN' : 'NIN'} — not
-                    always the one you carry. Verify on Wema&apos;s secure face page instead:
-                    they match you against the photo on that record. Your face is never sent
-                    to or stored by Zitch.
+                    Resending will not help — the code goes back to the phone registered on your{' '}
+                    {isBvn ? 'BVN' : 'NIN'}, not the one you carry. Verify on Wema&apos;s secure
+                    face page instead: they match you against the photo on that record, with no
+                    SMS code. Your face is never sent to or stored by Zitch.
                   </Text>
                   <Btn label={facePolling ? 'Waiting for Wema…' : 'Open Wema face verification'}
                     icon="faceid" variant="outline" size="md"

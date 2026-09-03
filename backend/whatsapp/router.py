@@ -3485,14 +3485,19 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
         pa.payload["id_kind"] = ACCOUNT_OTP
         pa.payload["flow_screen"] = IDENTITY_CHAIN
         _touch(pa, state=FLOW_ID_STATE, payload=pa.payload)
-        reply(msisdn, "📲 We sent a code to your phone by SMS — enter it on the next page "
-                      "of the secure form. (Reply *resend* if it doesn't arrive.)")
+        reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the phone "
+                      f"registered on it — enter that code on the next page of the secure form. "
+                      "(If it doesn't arrive, use the face verification button above rather "
+                      "than *resend*: a resend goes back to the same registered line.)")
         return "otp"
     if _send_account_otp_flow(pa):
-        return reply(msisdn, "📲 We sent a code to your phone by SMS. Enter it on the secure form "
-                             "above to finish. (Reply *resend* if it doesn't arrive.)")
-    reply(msisdn, "📲 We just sent a code to your phone by SMS. Enter it here to finish. "
-                  "(Reply *resend* if it doesn't arrive.)")
+        return reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the "
+                             "phone registered on it. Enter that code on the secure form above "
+                             "to finish. (If it doesn't arrive, use the face verification button "
+                             "above rather than *resend*.)")
+    reply(msisdn, f"📲 Wema checked your {kind.upper()} and sent a code by SMS to the phone "
+                  "registered on it. Enter that code here to finish. (If it doesn't arrive, use "
+                  "the face verification button above rather than *resend*.)")
 
 
 def _send_account_otp_flow(pa: PendingAction) -> bool:
@@ -3508,7 +3513,8 @@ def _send_account_otp_flow(pa: PendingAction) -> bool:
         pa.msisdn, sign_identity_token(pa),
         header="Finish your account", body="Enter the code privately — it never appears in this chat.",
         screen=CODE_SCREEN,
-        screen_data={"summary": "Enter the code we sent to your phone",
+        screen_data={"summary": ("Enter the code Wema sent to the phone registered on your "
+                                 + ("BVN" if pa.payload.get("using_bvn") else "NIN")),
                      "label": "SMS code", "error": ""},
         cta="Enter securely",
     )
@@ -3555,9 +3561,10 @@ def _send_identity_face_option(pa: PendingAction, user, msisdn: str,
         kind, digits, _face_callback_url(session.state))
     result = send_cta_url(
         msisdn,
-        "🤳 *Can't receive the SMS?*\n\nYou can complete the same "
-        f"{kind.upper()} check on Wema's secure face page instead of entering "
-        "the SMS code. Use either option — not both.",
+        "🤳 *Can't receive the SMS?*\n\nThe code goes to the phone number registered "
+        f"on your {kind.upper()}, which may not be the line you're using now — so a "
+        "resend won't help. You can complete the same check on Wema's secure face "
+        "page instead, with no SMS code at all. Use either option — not both.",
         url,
         cta="Open face verification",
         footer="Secured by your bank",

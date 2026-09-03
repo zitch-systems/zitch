@@ -65,9 +65,12 @@ log = logging.getLogger("zitch")
 # distinct Azure APIM path; the mounts below are confirmed against the ALAT OpenAPI
 # specs (Wema API bundle).
 _PATH = {
-    "wallet_nin": "/wallet-creation",        # create wallet with NIN (OTP)
-    "wallet_bvn": "/account-creation",       # create wallet with BVN (OTP)
-    "face_account": "/create-account-face",  # create Tier-1 wallet with Wema face correlation
+    # Each identity has its OWN product, endpoints and OTP. The code ALAT sends goes
+    # to the line held on THAT identity's register (NIMC for a NIN, the BVN record
+    # for a BVN) — never to the number the customer typed into Zitch.
+    "wallet_nin": "/wallet-creation",        # NIN: validate + OTP to the NIN's registered phone
+    "wallet_bvn": "/account-creation",       # BVN: validate + OTP to the BVN's registered phone
+    "face_account": "/create-account-face",  # the documented NO-OTP route: face correlation instead
     "acct_mgt": "/ws-acct-mgt",              # balance + transaction history
     "upgrade": "/account-upgrade",           # tier upgrade + KYC/PND status read
     "credit": "/credit-wallet",              # fund a wallet from the channel account
@@ -433,15 +436,35 @@ def _mock_account(reference: str, name: str) -> dict:
 
 
 def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "") -> dict:
-    """Step 1 — request wallet creation; Wema sends an OTP to the customer's phone.
+    """Step 1 — request wallet creation; the bank validates the ID and sends its OTP.
 
-    Returns {success, tracking_id, otp_destination, message}. Use BVN or NIN.
+    What ALAT actually does (developer portal, wallet-creation + account-creation
+    products): it checks the NIN (or BVN) against the issuing register on its own
+    side, and then sends an SMS OTP **to the phone number carried on that identity
+    record** — the NIMC line for a NIN, the BVN line for a BVN — to capture the
+    customer's consent. It is NOT a code sent to the number the customer typed into
+    Zitch, and the NIN rail's code is a NIN code: the two identities have separate
+    endpoints, separate tracking ids and separate registered lines.
+
+    That distinction is the whole reason `otp_destination` is not defaulted to
+    `phone` here any more. ALAT does not document an `otpDestination` field, so the
+    fallback was inventing one — and every caller then told the customer to watch a
+    handset that, by design, receives nothing. An empty destination means "we do not
+    know the number"; say where the code went by IDENTITY (`otp_destination_kind`),
+    not by guessing a number.
+
+    Returns {success, tracking_id, otp_destination, otp_destination_kind, message}.
+    Use BVN or NIN.
     """
+    kind = "bvn" if bvn else "nin"
     if not wema_live():
         if _mock_blocked():
             return {"success": False, "message": "Bank account creation is not configured"}
+        # No SMS leaves the building in a demo, so naming a destination would be a
+        # lie in the one mode where the tester cannot check it against a handset.
         return {"success": True, "mock": True, "tracking_id": "WEMA-SIM-" + secrets.token_hex(6),
-                "otp_destination": phone, "message": "OTP sent (demo)"}
+                "otp_destination": "", "otp_destination_kind": kind,
+                "message": "OTP sent (demo)"}
     try:
         if bvn:
             resp = _post("wallet_bvn", "/api/CustomerAccount/PostPartnershipAccountCreationWithBvn",
@@ -459,7 +482,9 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
             d = {}
         tracking = (d.get("trackingId") or d.get("otpTrackingID")
                     or data.get("trackingId") or data.get("otpTrackingID") or "")
-        dest = d.get("otpDestination") or data.get("otpDestination") or phone
+        # Only ever the bank's own answer. Undocumented today, so expect "" — see
+        # the docstring for why that is better than substituting the Zitch number.
+        dest = d.get("otpDestination") or data.get("otpDestination") or ""
         # The gateway can answer status=True with NO data envelope and no tracking id —
         # observed against sandbox 2026-07-27 for an identity already registered with
         # the partner bank, which provisions nothing and replies with a message telling
@@ -471,16 +496,24 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
         # original for support.
         if _ok(data) and not tracking:
             return {"success": False, "tracking_id": "", "otp_destination": dest,
+                    "otp_destination_kind": kind,
                     "message": "We couldn't complete your account setup. "
                                "Please contact support.", "raw": data}
         return {"success": _ok(data), "tracking_id": tracking,
-                "otp_destination": dest, "message": _msg(data), "raw": data}
+                "otp_destination": dest, "otp_destination_kind": kind,
+                "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
 
 
 def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = False) -> dict:
-    """Step 2 — validate the OTP and enqueue account creation."""
+    """Step 2 — validate the OTP and enqueue account creation.
+
+    ``bvn`` picks the product, and the two are not interchangeable: a NIN attempt
+    validated against the BVN path is a different tracking-id namespace on a
+    different APIM subscription, so it fails no matter how good the code is. The
+    caller must take it from the stored attempt, never from a client claim.
+    """
     if not wema_live():
         if _mock_blocked():
             return {"success": False, "message": "Bank account creation is not configured"}
@@ -496,6 +529,13 @@ def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = F
 
 
 def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dict:
+    """Ask the bank to re-send the same identity's code to the same registered line.
+
+    Worth stating because it is the step customers reach for when nothing arrives:
+    a resend cannot redirect the code to the handset they are holding. It goes back
+    to the number on the NIN/BVN record. When that line is unreachable the answer is
+    the face route (``create_wallet_with_face``), not another resend.
+    """
     if not wema_live():
         return {"success": not _mock_blocked(), "mock": True, "message": "OTP resent (demo)"}
     try:

@@ -45,6 +45,47 @@ class WemaWalletProvisioningTests(TestCase):
         return self.client.post(path, data=json.dumps({**payload, "access_token": self.token}),
                                 content_type="application/json")
 
+    def test_the_otp_is_never_attributed_to_the_users_own_phone(self):
+        """The reported NIN bug: the code goes to the phone on the IDENTITY record.
+
+        ALAT validates the NIN against NIMC (the BVN against the BVN register) and
+        SMSes its consent code to the line held there — never to the number the
+        customer registered with Zitch. The old response defaulted
+        ``otp_destination`` to ``user.phone``, so every client dutifully told the
+        customer to watch a handset that by design receives nothing, and the NIN
+        step read as though it were asking for a BVN code.
+
+        So: never the account phone, and the identity is named explicitly.
+        """
+        for field, digits, kind in (("nin", "12345678901", "nin"),
+                                    ("bvn", "22222222222", "bvn")):
+            with self.subTest(identity=kind):
+                user, token = make_user(f"0803000{digits[:4]}", f"{kind}@zitch.app",
+                                        identity_verified=False)
+                body = self.client.post(
+                    "/api/wallet/wema/create/",
+                    data=json.dumps({field: digits, "access_token": token}),
+                    content_type="application/json").json()
+                self.assertTrue(body["success"])
+                self.assertNotEqual(body["otp_destination"], user.phone)
+                self.assertEqual(body["otp_destination"], "")
+                self.assertEqual(body["otp_destination_kind"], kind)
+                self.assertIn(kind.upper(), body["message"])
+                self.assertIn("registered on it", body["message"])
+
+    def test_resend_says_the_code_returns_to_the_same_registered_line(self):
+        """A resend cannot redirect the code, so it must not promise a fresh one
+        'to your phone' — that is what keeps a customer retrying a rail that
+        cannot reach them instead of taking the face route."""
+        tracking = self._post("/api/wallet/wema/create/",
+                              {"nin": "12345678901"}).json()["tracking_id"]
+        body = self._post("/api/wallet/wema/resend-otp/",
+                          {"tracking_id": tracking}).json()
+        self.assertTrue(body["success"])
+        self.assertEqual(body["otp_destination_kind"], "nin")
+        self.assertNotIn(self.user.phone, body["message"])
+        self.assertIn("NIN", body["message"])
+
     def test_otp_flow_provisions_wema_account(self):
         r1 = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
         self.assertEqual(r1.status_code, 200)

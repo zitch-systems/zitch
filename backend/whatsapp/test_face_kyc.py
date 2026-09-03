@@ -95,7 +95,13 @@ class FaceLinkTests(TestCase):
         self.assertTrue(offered)
         self.assertEqual(WemaFaceSession.objects.filter(user=self.user).count(), 1)
         body, url = str(cta.call_args.args[1]), str(cta.call_args.args[2])
-        self.assertIn("instead of entering the SMS code", body)
+        # It must read as a REPLACEMENT for the code, not a second thing to also do.
+        self.assertIn("instead", body)
+        self.assertIn("no SMS code at all", body)
+        # And it must say WHY the SMS may never arrive: ALAT sends it to the phone on
+        # the identity record, so "resend" is not the remedy this customer needs.
+        self.assertIn("registered", body)
+        self.assertIn("BVN", body)
         self.assertNotIn(VERIFIED_BVN, body)
         self.assertIn("face.example", url)
 
