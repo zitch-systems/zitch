@@ -597,9 +597,12 @@ def _callback_dict(value):
 
 _TRANSACTION_REFERENCE_KEYS = (
     "transactionReference",
+    "transactionReferenceId",
     "transactionRef",
+    "clientTransactionReference",
     "customTransactionReference",
     "reference",
+    "referenceId",
 )
 _TRANSACTION_ENVELOPE_KEYS = ("data", "request", "result", "transaction", "payload")
 
