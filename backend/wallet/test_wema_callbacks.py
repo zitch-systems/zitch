@@ -392,6 +392,33 @@ class WemaTransactionCallbackTests(TestCase):
         self._post(payload)
         mock_status.assert_called_once_with(txn.reference)
 
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_live_request_payload_envelope(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        payload = {
+            "requestType": 3,
+            "isBulkTransfer": False,
+            "request": {
+                "payload": {
+                    "customTransactionReference": txn.reference,
+                    "status": "Pending",
+                },
+            },
+        }
+        self._post(payload)
+        mock_status.assert_called_once_with(txn.reference)
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_transaction_callback_accepts_case_variant_reference(self, mock_status):
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        self._post({"requestType": 3, "data": {
+            "TransactionReference": txn.reference,
+            "status": "Pending",
+        }})
+        mock_status.assert_called_once_with(txn.reference)
+
     @patch("utility.wema.confirm_transfer_status",
            return_value={"success": True, "pending": False})
     def test_stamps_bank_identifiers_under_a_namespaced_key(self, _s):
