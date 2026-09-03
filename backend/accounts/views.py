@@ -32,7 +32,7 @@ from utility.providers import (
     sms_live,
     verify_bvn, verify_nin,
 )
-from wallet.models import Wallet, WemaFaceSession
+from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import (attach_existing_bank_account, get_or_create_wallet,
                              wema_account_reference)
 
@@ -1568,36 +1568,50 @@ def kyc_face_start(request):
     if _identity_owned_by_another_user(user, identity_type, raw):
         return fail(_IDENTITY_CONFLICT_MESSAGE, status=409)
     stored_hash = getattr(user, f"{identity_type}_hash", "") or ""
+    identity_hash = hash_identifier(raw)
     if (getattr(user, f"{identity_type}_verified", False)
-            and hmac.compare_digest(hash_identifier(raw), stored_hash)):
+            and hmac.compare_digest(identity_hash, stored_hash)):
         # Verified identity, but the NUBAN it was supposed to mint never landed
         # (a provisioning callback we missed, a cleared test account, a half-finished
-        # setup). Answering "already verified" here is what dead-ended those users:
-        # the funding screen has no account to show, so it asks for the BVN again,
-        # and every route out of that screen ends on this same line.
+        # setup). Answering only "already verified" here dead-ends funding screens.
         wallet = get_or_create_wallet(user)
-        if not wallet.account_number:
-            try:
-                recovered, _detail = attach_existing_bank_account(
-                    user, using_bvn=identity_type == "bvn")
-            except Exception:  # noqa: BLE001 — fall through to a fresh face check
-                recovered = None
-                log.warning("face_start_readback_failed user=%s", user.id, exc_info=True)
-            if recovered is not None and recovered.account_number:
-                return ok(success=True, status="verified", already=True,
-                          account_number=recovered.account_number,
-                          account_name=recovered.account_name,
-                          bank_name=recovered.bank_name,
-                          message="Your bank account was already set up — we've reconnected it.",
-                          **_kyc_state(user))
-            # Nothing to reconnect: open a real face session. The callback re-proves
-            # the SAME identity (a different one is still refused there) and creates
-            # the account, which is the only way this user gets one.
-        else:
+        if wallet.account_number:
             return ok(success=True, status="verified", already=True,
                       account_number=wallet.account_number,
                       message=f"{identity_type.upper()} is already verified",
                       **_kyc_state(user))
+        pending = WemaProvisioningAttempt.objects.filter(
+            user=user,
+            identity_type=identity_type,
+            identity_hash=identity_hash,
+            status=WemaProvisioningAttempt.PENDING,
+            expires_at__gt=timezone.now(),
+        ).order_by("-created").first()
+        if pending is not None:
+            return ok(success=True, status="account_otp_pending", already=True,
+                      otp_required=True, tracking_id=pending.tracking_id,
+                      using_bvn=identity_type == "bvn",
+                      otp_destination=user.phone or "",
+                      account_setup_state="otp_pending",
+                      message=(f"{identity_type.upper()} is verified. Enter the Wema SMS code "
+                               "already sent to finish creating your account."),
+                      **_kyc_state(user))
+        try:
+            recovered, _detail = attach_existing_bank_account(
+                user, using_bvn=identity_type == "bvn")
+        except Exception:  # noqa: BLE001 — fall through to a fresh face check
+            recovered = None
+            log.warning("face_start_readback_failed user=%s", user.id, exc_info=True)
+        if recovered is not None and recovered.account_number:
+            return ok(success=True, status="verified", already=True,
+                      account_number=recovered.account_number,
+                      account_name=recovered.account_name,
+                      bank_name=recovered.bank_name,
+                      message="Your bank account was already set up — we've reconnected it.",
+                      **_kyc_state(user))
+        # Nothing to reconnect: open a real face session. The callback re-proves
+        # the SAME identity (a different one is still refused there) and creates
+        # the account, which is the only way this user gets one.
     binding = face_identity_error(user, identity_type, raw)
     if binding:
         return fail(binding, status=400)
