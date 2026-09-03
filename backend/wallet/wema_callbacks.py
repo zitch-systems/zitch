@@ -674,6 +674,11 @@ def wema_transaction_callback(request):
 
     txn = Transaction.objects.filter(reference=ref, direction=Transaction.OUT).first()
     if txn is None:
+        txn = Transaction.objects.filter(
+            direction=Transaction.OUT,
+            meta__wema_transfer__platform_reference=ref,
+        ).first()
+    if txn is None:
         log.warning("wema_txn_cb_unknown ref=%s ip=%s", ref, request.wema_ip)
         alert("Wema transaction callback for an unknown reference", level="warning",
               reference=ref, payload_status=payload_status)
