@@ -65,6 +65,8 @@ class Command(BaseCommand):
         scanned = 0
         credited = 0
         fetch_failures = 0
+        pnd_lifted = 0
+        pnd_failures = 0
         # date_from/date_to are sent in the format the spec EXAMPLES show, never
         # confirmed against a live response: apply_wema_credit matches rows by
         # referenceId, not by date, so nothing here has ever needed to read a date
@@ -77,6 +79,20 @@ class Command(BaseCommand):
         shape_logged = False
         for wallet in wema_provisioned_wallets():
             scanned += 1
+            # Account creation and PND lifting are separate bank calls. A transient
+            # failure in the second must not permanently strand outgoing funds.
+            if not wallet.pnd_lifted:
+                pnd = wema.lift_debit_restriction(wallet.account_number)
+                if pnd.get("success"):
+                    wallet.pnd_lifted = True
+                    wallet.save(update_fields=["pnd_lifted", "updated"])
+                    pnd_lifted += 1
+                else:
+                    pnd_failures += 1
+                    self.stderr.write(
+                        f"wema_pnd_lift_retry_failed account={wallet.account_number} "
+                        f"message={pnd.get('message', '')}"
+                    )
             res = wema.get_transactions(wallet.account_number, date_from, date_to)
             if not res.get("success"):
                 fetch_failures += 1
@@ -131,7 +147,8 @@ class Command(BaseCommand):
         record_audit("recon.wema_run", actor_type="system",
                      after={"wallets": scanned, "credited": credited,
                             "payouts_settled": settled, "payouts_reversed": reversed_,
-                            "fetch_failures": fetch_failures, "status_failures": status_failures})
+                            "fetch_failures": fetch_failures, "status_failures": status_failures,
+                            "pnd_lifted": pnd_lifted, "pnd_failures": pnd_failures})
 
         # Systemic-outage signal: individual transient failures are expected and
         # left PENDING for the next run, but when there was work to do and EVERY
@@ -175,5 +192,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"Wema reconcile: {credited} credit(s) / {scanned} wallet(s); "
+            f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts settled {settled}, reversed {reversed_}; "
             f"WhatsApp alerts retried {whatsapp_alerts}")
