@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from django.db.models import F
 
+from utility import wema as wema_provider
 from utility.providers import payout_send
 from utility.wema import classify_transfer_status
 from wallet.models import Transaction
@@ -317,6 +318,24 @@ def execute_payout(user, amount: Decimal, account_number: str, bank, name: str,
             "source_missing",
             "Your Zitch account number isn't set up yet, so there's nothing to send from. "
             "Finish account setup, then try again — your balance is safe.")
+
+    # A freshly issued partnership NUBAN can receive before Wema has removed its
+    # Post-No-Debit hold. Never create a ledger debit until that source account is
+    # confirmed debit-ready. This also repairs accounts whose earlier background
+    # retry used the wrong BVN/NIN product route.
+    if (wema_provider.wema_live() and wallet is not None
+            and getattr(wallet, "account_number", "") and not wallet.pnd_lifted):
+        pnd = wema_provider.lift_debit_restriction(wallet.account_number)
+        if not pnd.get("success"):
+            log.warning("payout_source_pnd_not_lifted user=%s account=%s message=%s",
+                        getattr(user, "id", "?"), wallet.account_number[-4:],
+                        pnd.get("message", ""))
+            raise PayoutError(
+                "source_restricted",
+                "Your Zitch account is still being activated for transfers. "
+                "Please try again shortly — your balance has not been debited.")
+        wallet.pnd_lifted = True
+        wallet.save(update_fields=["pnd_lifted", "updated"])
 
     narration = " ".join(str(note or "").split())[:60] or f"Transfer to {name}"
 
