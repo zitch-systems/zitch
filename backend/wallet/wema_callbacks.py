@@ -393,7 +393,10 @@ def wema_account_callback(request):
             log.exception("wema_pnd_lift_error_cb user=%s account=%s",
                           user.id, mask_pii(nuban))
             lifted = False
-        if not lifted:
+        if lifted:
+            wallet.pnd_lifted = True
+            wallet.save(update_fields=["pnd_lifted", "updated"])
+        else:
             log.warning("wema_pnd_lift_failed_cb user=%s account=%s",
                         user.id, mask_pii(nuban))
 
