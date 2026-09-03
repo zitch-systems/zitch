@@ -73,6 +73,8 @@ EXECUTION_TTL = timedelta(minutes=30)
 #: asked of the customer.
 EXECUTING_STATE = "executing"
 PIN_FLOW_ATTEMPTS = 2                   # 1 retry then cancel (spec §7)
+#: Chat state for choosing the BVN ownership proof before collecting the BVN.
+BVN_METHOD_STATE = "bvn_method"
 
 def _links() -> dict:
     return getattr(settings, "ZITCH_LINKS", {}) or {}
@@ -2614,6 +2616,19 @@ def _face_step_available() -> bool:
     return wema_provider.face_verify_live()
 
 
+def _offer_bvn_verification_method(pa: PendingAction, msisdn: str) -> None:
+    """Present both BVN proof methods before the secure BVN entry screen."""
+    pa.payload["id_kind"] = "bvn"
+    pa.payload.pop("id_purpose", None)
+    _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
+    reply_buttons(
+        msisdn,
+        "🪪 *How would you like to verify your BVN?*\n\n"
+        "Choose SMS OTP or complete a live face check on Wema\'s secure page.",
+        [("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")],
+    )
+
+
 def _kyc_test_code(user) -> str:
     """The fixed TEST_OTP code, but ONLY for the one nominated test number.
 
@@ -2700,6 +2715,8 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_send_email_code(pa, user, msisdn)
     if step == "face":
         return _kyc_start_face_step(pa, user, msisdn)
+    if step == "bvn" and _face_step_available():
+        return _offer_bvn_verification_method(pa, msisdn)
     if _send_identity_flow(pa, step):
         return None
     if flows_live():
@@ -2952,6 +2969,29 @@ def _advance_kyc(pa: PendingAction, user, msisdn: str, text: str) -> None:
     val = text.strip()
     low = val.lower()
     state = pa.state
+
+    if state == BVN_METHOD_STATE:
+        if low in ("bvn_sms", "sms", "sms otp", "1"):
+            pa.payload["id_method"] = "sms_otp"
+            pa.payload.pop("id_purpose", None)
+            if _send_identity_flow(pa, "bvn", fallback_state="bvn"):
+                return None
+            _touch(pa, state="bvn", payload=pa.payload)
+            return reply(msisdn, "Enter your 11-digit BVN, or reply \"cancel\".")
+        if low in ("bvn_face", "face", "face verification", "2"):
+            pa.payload["id_method"] = "wema_face"
+            pa.payload["id_purpose"] = "face"
+            if _send_identity_flow(pa, "bvn", fallback_state=FACE_ID_STATE):
+                return None
+            pa.payload.pop("id_purpose", None)
+            _touch(pa, state=BVN_METHOD_STATE, payload=pa.payload)
+            return reply(msisdn, "⚠️ The secure BVN screen did not open. Please try again "
+                                 "shortly or complete face verification in the Zitch app.")
+        return reply_buttons(
+            msisdn,
+            "Choose how to verify your BVN:",
+            [("bvn_sms", "SMS OTP"), ("bvn_face", "Face verification")],
+        )
 
     if state == "phone":
         if low == "resend":
