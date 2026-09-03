@@ -182,6 +182,11 @@ def wallet_account_create(request):
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
 
+    # A verified BVN is final. We retain only its keyed hash, so no later feature
+    # may train customers to disclose the raw number again.
+    if user.bvn_verified and bvn:
+        return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
+
     if wallet.account_number:
         if len(bvn) == 11:
             payload, status = _verify_existing_wema_identity(
@@ -200,6 +205,24 @@ def wallet_account_create(request):
             wallet, tier=user.tier, bvn_verified=user.bvn_verified, nin_verified=user.nin_verified))
 
     if len(bvn) != 11 and len(nin) != 11:
+        if user.bvn_verified:
+            recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
+            if recovered is not None and recovered.account_number:
+                return ok(**_account_payload(
+                    recovered, already=True, tier=user.tier,
+                    bvn_verified=True, nin_verified=user.nin_verified,
+                    message="Your verified bank account has been reconnected."))
+            state = _account_setup_state(user, wallet)
+            return ok(
+                **state,
+                bvn_verified=True,
+                nin_verified=user.nin_verified,
+                holder_name=user.full_name or "",
+                message=(
+                    "Your BVN is already verified. We are syncing your Wema account "
+                    "number; you will not be asked to enter the BVN again."
+                ),
+            )
         return fail("Enter your 11-digit BVN or NIN")
     using_bvn = len(bvn) == 11
 
@@ -445,6 +468,8 @@ def wema_wallet_create(request):
     wallet = get_or_create_wallet(user)
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
+    if user.bvn_verified and bvn:
+        return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if len(bvn) == 11:
         using_bvn = True
         identity_type = WemaProvisioningAttempt.BVN
@@ -683,6 +708,12 @@ def wema_wallet_upgrade_tier2(request):
     bvn = "".join(ch for ch in (request.data.get("bvn") or "") if ch.isdigit())
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     live_image = (request.data.get("live_image") or request.data.get("selfie") or "").strip()
+    if user.bvn_verified:
+        return fail(
+            "Your BVN is already verified and cannot be entered again. "
+            "This bank upgrade route is unavailable until Wema supports reuse of verified identity.",
+            status=409,
+        )
     if len(bvn) != 11:
         return fail("Enter your 11-digit BVN")
     if len(nin) != 11:
