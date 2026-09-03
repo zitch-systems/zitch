@@ -1265,23 +1265,66 @@ def transfer(amount_naira, reference: str, narration: str, *, source_account: st
         return _unreachable(exc, pending=True)
 
 
-def confirm_transfer_status(reference: str) -> dict:
-    """Poll terminal status of a transfer by our transactionReference (no webhook)."""
-    if not wema_live():
-        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS", "reference": reference}
-    try:
-        resp = _get("debit", f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{reference}")
-        data = resp.json()
-        result = _transfer_result(data, reference, _transfer_payload(data), lookup=True)
-        if not result["status"]:
-            log.warning("wema_transfer_status_unresolved ref=%s meta=%s raw=%s",
-                        reference, _response_meta(resp, data), _trim(data))
-        return result
-    except (requests.RequestException, ValueError) as exc:
-        # A failed status lookup says nothing about the original transfer.  Keep
-        # the debit held for the next callback/reconciliation attempt.
-        return _unreachable(exc, pending=True)
+def confirm_transfer_status(reference: str, *, platform_reference: str = "") -> dict:
+    """Poll terminal transfer status using both references returned by ALAT.
 
+    ProcessClientTransfer returns our transactionReference and Wema's
+    platformTransactionReference. In production ALAT has indexed some payouts
+    under only one of them. Query the client reference first, then the platform
+    reference when available; a terminal result from either is authoritative.
+    Unknown or unreachable lookups remain PENDING and are never refunded.
+    """
+    if not wema_live():
+        return {"success": not _mock_blocked(), "mock": True, "status": "SUCCESS",
+                "reference": reference}
+
+    candidates = []
+    for value in (reference, platform_reference):
+        value = str(value or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    first_result = None
+    for lookup_reference in candidates:
+        try:
+            resp = _get(
+                "debit",
+                f"/api/IntraBankTransfer/ConfirmClientTransferStatus/{lookup_reference}",
+            )
+            data = resp.json()
+            result = _transfer_result(
+                data, reference, _transfer_payload(data), lookup=True)
+            result["lookup_reference"] = lookup_reference
+            if first_result is None:
+                first_result = result
+            # A named terminal status from either reference settles or reverses.
+            if result.get("success") or (
+                    result.get("status")
+                    and classify_transfer_status(
+                        result["status"], envelope_ok=True) == "failed"):
+                return result
+        except (requests.RequestException, ValueError) as exc:
+            result = _unreachable(exc, pending=True)
+            result.update({"reference": reference,
+                           "lookup_reference": lookup_reference})
+            if first_result is None:
+                first_result = result
+
+    result = first_result or {
+        "success": False,
+        "pending": True,
+        "status": "",
+        "reference": reference,
+        "message": "Transfer status is not available yet",
+    }
+    log.warning(
+        "wema_transfer_status_unresolved ref=%s platform_ref=%s "
+        "lookup_ref=%s status=%s",
+        reference, _fingerprint(str(platform_reference or "")),
+        _fingerprint(str(result.get("lookup_reference") or "")),
+        result.get("status", ""),
+    )
+    return result
 
 def credit_wallet(amount_naira, reference: str, narration: str, *, destination_account: str) -> dict:
     """FundWallet — push a credit into a wallet from the channel funding account.
