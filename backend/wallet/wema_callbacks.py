@@ -691,7 +691,11 @@ def wema_transaction_callback(request):
             # are normal here, and the poller still sweeps anything left pending.
             outcome = "requery_cooled"
         elif is_bank_payout(txn):
-            result = wema_provider.confirm_transfer_status(ref)
+            transfer_meta = (txn.meta or {}).get("wema_transfer") or {}
+            platform_reference = str(
+                transfer_meta.get("platform_reference") or "")
+            result = wema_provider.confirm_transfer_status(
+                txn.reference, platform_reference=platform_reference)
             outcome = settle_or_refund(txn, result)
         else:
             from utility import providers
