@@ -349,8 +349,26 @@ class WemaReconcileTests(TestCase):
 
     def _run(self, txns):
         with patch("utility.wema.get_transactions",
-                   return_value={"success": True, "transactions": txns}):
+                   return_value={"success": True, "transactions": txns}), \
+             patch("utility.wema.lift_debit_restriction",
+                   return_value={"success": True}):
             call_command("reconcile_wema")
+
+    def test_retries_pnd_lift_until_the_bank_confirms(self):
+        self.wallet.pnd_lifted = False
+        self.wallet.save(update_fields=["pnd_lifted"])
+        with patch("utility.wema.get_transactions",
+                   return_value={"success": True, "transactions": []}), \
+             patch("utility.wema.lift_debit_restriction",
+                   side_effect=[{"success": False, "message": "temporary"},
+                                {"success": True}]) as lift:
+            call_command("reconcile_wema")
+            self.wallet.refresh_from_db()
+            self.assertFalse(self.wallet.pnd_lifted)
+            call_command("reconcile_wema")
+        self.wallet.refresh_from_db()
+        self.assertTrue(self.wallet.pnd_lifted)
+        self.assertEqual(lift.call_count, 2)
 
     def test_credits_inbound_deposit_once(self):
         self._run([_tx("WEMA-DEP-1", 2500)])
