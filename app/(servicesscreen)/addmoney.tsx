@@ -169,12 +169,10 @@ const AddMoney = () => {
   const [otp, setOtp] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [bvnVerified, setBvnVerified] = useState(false);
-  const [accountSetupState, setAccountSetupState] = useState('identity_required');
   const [pendingAttempt, setPendingAttempt] = useState<{ trackingId: string; destination: string } | null>(null);
 
   const rememberAccountState = (r: any) => {
     setBvnVerified(!!r?.bvn_verified);
-    setAccountSetupState(String(r?.account_setup_state || (r?.account_number ? 'ready' : 'identity_required')));
     if (r?.otp_required && r?.tracking_id) {
       const next = { trackingId: String(r.tracking_id), destination: String(r.otp_destination || '') };
       setPendingAttempt(next);
