@@ -380,6 +380,26 @@ class WemaLiveTests(SimpleTestCase):
         self.assertFalse(result["success"])
         self.assertTrue(result["pending"])
 
+    @patch("utility.wema.requests.get")
+    def test_status_requery_falls_back_to_platform_reference(self, mock_get):
+        mock_get.side_effect = [
+            _resp({"result": None, "hasError": True,
+                   "errorMessage": "Transaction not found"}),
+            _resp({"result": {"status": "Successful",
+                              "transactionReference": "PLATFORM-123"},
+                   "hasError": False}),
+        ]
+
+        result = wema.confirm_transfer_status(
+            "CLIENT-123", platform_reference="PLATFORM-123")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["status"], "SUCCESSFUL")
+        self.assertEqual(result["lookup_reference"], "PLATFORM-123")
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertTrue(mock_get.call_args_list[0].args[0].endswith("/CLIENT-123"))
+        self.assertTrue(mock_get.call_args_list[1].args[0].endswith("/PLATFORM-123"))
+
 
 @override_settings(WEMA=WEMA_LIVE)
 class TransferAmbiguityTests(SimpleTestCase):
