@@ -42,6 +42,7 @@ from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
     LimitExceeded,
+    attach_existing_bank_account,
     get_or_create_wallet,
     run_provider_purchase,
 )
@@ -3397,6 +3398,41 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
     if not wallet_views._wema_funding_enabled():
         return reply(msisdn, "🏦 Account setup isn't available right now - please try again later.")
     _clear_actions(msisdn)
+    wallet = get_or_create_wallet(user)
+    if wallet.account_number:
+        return _send_account_details(
+            msisdn, wallet, intro="✅ *Your Zitch account number is already set up*")
+    if user.bvn_verified:
+        recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
+        if recovered is not None and recovered.account_number:
+            return _send_account_details(
+                msisdn, recovered, intro="✅ *Your verified bank account has been reconnected*")
+        attempt = wallet_views._active_wema_attempt(
+            user, identity_type="bvn")
+        if attempt is not None:
+            pa = PendingAction.objects.create(
+                user=user, msisdn=msisdn, action_type="add_account", state="otp",
+                payload={
+                    "tracking_id": attempt.tracking_id,
+                    "using_bvn": True,
+                    "id_type": "bvn",
+                },
+                expires_at=_flow_deadline("otp"),
+            )
+            if _send_account_otp_flow(pa):
+                return reply(
+                    msisdn,
+                    "📲 Your BVN is already verified. Enter the Wema SMS code on "
+                    "the secure form to finish issuing your account number.")
+            return reply(
+                msisdn,
+                "📲 Your BVN is already verified. Enter the Wema SMS code already "
+                "sent to finish issuing your account number.")
+        return reply(
+            msisdn,
+            "✅ Your BVN is already verified, so we will not ask you to enter it "
+            "again. Your Wema account number is still being linked; please contact "
+            "support if it does not appear shortly.")
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="add_account", state="id_type",
         payload={}, expires_at=_flow_deadline("id_type"),
@@ -3429,6 +3465,12 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     """
     kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
     using_bvn = kind == "bvn"
+    if using_bvn and user.bvn_verified:
+        _clear_actions(msisdn)
+        reply(
+            msisdn,
+            "✅ Your BVN is already verified. You do not need to enter or verify it again.")
+        return "adopted"
     wallet = get_or_create_wallet(user)
     if wallet.account_number:
         _clear_actions(msisdn)
@@ -3659,6 +3701,12 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
     if pa.state == "id_type":
         low = val.lower()
         if low in ("1", "bvn"):
+            if user.bvn_verified:
+                _clear_actions(msisdn)
+                return reply(
+                    msisdn,
+                    "✅ Your BVN is already verified. You do not need to enter it again; "
+                    "reply *6* to check your funding-account status.")
             pa.payload["id_type"] = "bvn"
         elif low in ("2", "nin"):
             pa.payload["id_type"] = "nin"
@@ -3695,6 +3743,11 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
                              "account.\n\n_Delete your message afterwards (press and hold -> Delete -> "
                              "Delete for everyone) - WhatsApp only lets the sender do this._")
     if pa.state == "bvn":
+        if pa.payload.get("id_type") == "bvn" and user.bvn_verified:
+            _clear_actions(msisdn)
+            return reply(
+                msisdn,
+                "✅ Your BVN is already verified. You do not need to enter it again.")
         digits = "".join(ch for ch in val if ch.isdigit())
         if len(digits) != 11:
             return reply(msisdn, f"That should be exactly 11 digits. Enter your {pa.payload.get('id_type', 'BVN').upper()} again, or reply \"cancel\".")
