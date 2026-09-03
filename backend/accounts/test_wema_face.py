@@ -514,6 +514,24 @@ class TheRegisteredCallbackShapeTests(TestCase):
         self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
         self.assertEqual(self.session.correlation_id, "COR9")
 
+    def test_existing_channel_identity_still_completes_face_verification(self):
+        duplicate = (
+            "22222222222 || 08070000001@zitch.app || 08070000001 "
+            "provided already exist for this channel."
+        )
+        with mock.patch("utility.wema.create_wallet_with_face",
+                        return_value={"success": False, "message": duplicate}):
+            res = self.client.post(
+                "/webhooks/wema/face",
+                {"success": True, "c_id": "COR-EXISTING",
+                 "id": "22222222222", "id_type": "bvn"},
+                content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+        self.user.refresh_from_db()
+        self.session.refresh_from_db()
+        self.assertTrue(self.user.bvn_verified)
+        self.assertEqual(self.session.status, WemaFaceSession.VERIFIED)
+
     def test_a_stateless_callback_for_an_identity_nobody_is_verifying_decides_nothing(self):
         """No pending session for that number means no customer asked for this check.
 
