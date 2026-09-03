@@ -6,7 +6,7 @@ import re
 import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.cache import cache
@@ -867,7 +867,10 @@ def _email_verification_required(user) -> bool:
     case rather than the exception: the signup Flow sends the code, and it also
     sets an app password, so these customers sign in directly instead of
     arriving through the OTP password reset this gate once leaned on."""
-    return bool(user.onboarded_via_whatsapp and not user.email_verified)
+    # KYC ownership is proved by the Wema-registered SMS OTP or Wema face
+    # biometric.  Email is an account-recovery control, not a Wema KYC factor;
+    # never block BVN/NIN/face/address verification on an email code.
+    return False
 
 
 def _email_gate(user):
@@ -886,7 +889,7 @@ def email_verify_start(request):
     delivering it to the phone would verify nothing."""
     user = request.user_obj
     if user.email_verified:
-        return ok(success=True, message="Email already verified", **_kyc_state(user))
+        return ok(message="Email already verified", **_kyc_state(user))
     # While unverified, the address may be set or corrected — an account with a
     # blank or mistyped email would otherwise be locked out of Tier 1 for good.
     new_email = (request.data.get("email") or "").strip().lower()
@@ -908,12 +911,7 @@ def email_verify_start(request):
                                        "Enter this code in the Zitch app to confirm your email address.",
                                        code=code,
                                        note="If you didn't request this, you can ignore this email."))
-    # success=True is load-bearing, not decoration: the app advances to the code
-    # entry on `res.success`. Without it this endpoint sent the email and then told
-    # the customer it had failed — rendering THIS message inside an error, because
-    # the screen falls back to res.message. Email gates Tier 1, so that was the
-    # whole ladder, for every app customer.
-    return ok(success=True, message=f"We sent a code to {user.email}")
+    return ok(message=f"We sent a code to {user.email}")
 
 
 @ratelimit("otp_verify", limit=20, window=60)
@@ -941,7 +939,7 @@ def email_verify_confirm(request):
     user.email_verified = True
     user.recompute_tier()  # Tier 1 requires the verified email; it may be the last piece
     user.save(update_fields=["email_verified", "tier"])
-    return ok(success=True, message="Email verified", **_kyc_state(user))
+    return ok(message="Email verified", **_kyc_state(user))
 
 
 def _repair_unbacked_wema_identity_flags(user) -> None:
@@ -1496,27 +1494,15 @@ def _face_callback_url(state: str) -> str:
     The state is 32 bytes of CSPRNG, single-use and bound to one user, which is the
     right shape for a value that must appear in a URL somebody can read.
 
-    ALAT match the whitelisted cb_uri as an EXACT STRING. Not a prefix, not a path
-    with a free query — the whole thing, character for character. So under the default
-    "registered" mode this returns the bare URL that was sent for whitelisting and
-    nothing else, and the `state` argument is deliberately ignored.
-
-    That was learned the expensive way. The state used to ride in the query string
-    (moved there from the last path segment, on the reasoning that at least the
-    registered PREFIX would then stay constant); an exact-match whitelist rejects
-    both equally, and every face verification failed inside the bank's page with a
-    generic error while our logs showed nothing at all — because nothing was ever
-    sent. `/face/<state>` and `/face?s=<state>` both stay routed, for sessions opened
-    before this and for a verifier whose whitelist does tolerate a query string.
-
-    Dropping the state costs the callback its per-session handle; wallet.wema_callbacks
-    explains what is left holding the door, and why FACE_CALLBACK_IPS stops being
-    defence in depth and becomes the authentication itself.
+    The state rides in the QUERY STRING, not the path, so the part ALAT registers is
+    constant. They whitelist cb_uri values at their end, and an exact-match whitelist
+    cannot accept a URL whose last path segment changes every session — it would admit
+    one customer once and reject every one after. `/webhooks/wema/face` is the same
+    string forever; only `?s=` moves. The old path form is still routed for sessions
+    opened before this shipped.
     """
     base = (settings.ZITCH_LINKS.get("API_BASE", "") or "").rstrip("/")
-    if wema.face_cb_mode() == "session":
-        return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
-    return f"{base}/webhooks/wema/face"
+    return f"{base}/webhooks/wema/face?{urlencode({'s': state})}"
 
 
 @api
@@ -1567,16 +1553,7 @@ def kyc_face_start(request):
         expires_at=timezone.now() + timedelta(minutes=FACE_SESSION_TTL_MINUTES),
     )
     url = wema.face_verification_url(identity_type, raw, _face_callback_url(session.state))
-    # Log the verifier HOST and the callback we hand it. Neither is a secret — the
-    # customer's own browser loads both — and without them a failure inside the
-    # bank's page is undiagnosable from here: the page renders its own error, the
-    # callback never fires, and the logs show only that a session opened. Which host
-    # we sent them to, and which cb_uri that host was given, are exactly the two
-    # facts every round of this has turned on. The BVN is NOT logged: it rides in
-    # the URL's query string, so the host is parsed out rather than printed raw.
-    log.info("wema_face_start user=%s type=%s session=%s verifier=%s cb=%s",
-             user.id, identity_type, session.state[:8],
-             urlparse(url).hostname or "unset", _face_callback_url(""))
+    log.info("wema_face_start user=%s type=%s session=%s", user.id, identity_type, session.state[:8])
     return ok(success=True, url=url, session=session.state,
               expires_in=FACE_SESSION_TTL_MINUTES * 60,
               message="Complete the face check to continue.")
