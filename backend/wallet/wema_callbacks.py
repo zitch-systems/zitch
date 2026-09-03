@@ -575,30 +575,53 @@ def _callback_dict(value):
     return {}
 
 
+_TRANSACTION_REFERENCE_KEYS = (
+    "transactionReference",
+    "transactionRef",
+    "customTransactionReference",
+    "reference",
+)
+_TRANSACTION_ENVELOPE_KEYS = ("data", "request", "result", "transaction", "payload")
+
+
 def _transaction_callback_data(body: dict) -> dict:
     """Return the nested object that carries Wema's transaction reference.
 
-    Production callbacks have arrived with ``data`` present but not directly
-    addressable as a dict, so accept the documented envelope plus JSON-string and
-    common nested variants. This endpoint still treats the callback as a trigger:
-    the reference only decides which transaction to requery over APIM.
+    ALAT has sent this callback in several shapes: objects and JSON strings under
+    ``data`` or ``request``, sometimes with another envelope inside. Walk only
+    those known envelope keys, with a small depth bound, and accept the reference
+    spellings used by ALAT's other endpoints. This is deliberately not a generic
+    recursive walk of attacker-controlled JSON.
+
+    The endpoint still treats the callback as a trigger: the extracted reference
+    only identifies an existing outgoing transaction to requery over APIM.
     """
-    candidates = [
-        body.get("data"),
-        body.get("request"),
-        body.get("result"),
-        body,
-    ]
-    for candidate in candidates:
+    queue = [(body, 0)]
+    seen = set()
+    while queue:
+        candidate, depth = queue.pop(0)
         data = _callback_dict(candidate)
-        if not data:
+        if not data or id(data) in seen:
             continue
-        if data.get("transactionReference"):
-            return data
-        for nested_key in ("data", "request", "result"):
-            nested = _callback_dict(data.get(nested_key))
-            if nested.get("transactionReference"):
-                return nested
+        seen.add(id(data))
+
+        # Preserve the provider's object so status/STAN metadata is taken from the
+        # same envelope as the reference. Match key spelling case-insensitively:
+        # .NET serializers have changed the initial capital in live integrations.
+        keys = {str(key).casefold(): key for key in data}
+        for name in _TRANSACTION_REFERENCE_KEYS:
+            actual = keys.get(name.casefold())
+            if actual is not None and str(data.get(actual) or "").strip():
+                normalized = dict(data)
+                normalized["transactionReference"] = str(data[actual]).strip()
+                return normalized
+
+        if depth >= 4:
+            continue
+        for name in _TRANSACTION_ENVELOPE_KEYS:
+            actual = keys.get(name.casefold())
+            if actual is not None:
+                queue.append((data.get(actual), depth + 1))
     return {}
 
 
