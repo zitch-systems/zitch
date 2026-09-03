@@ -702,6 +702,17 @@ def lift_debit_restriction(account_number: str, *, bvn: bool | None = None,
         except requests.RequestException as exc:
             last = _unreachable(exc)
             last["product"] = product
+
+    # The live gateway returns "Resource not found" when this account has no PND
+    # record to mutate. Distinguish that benign absence from a nonexistent NUBAN
+    # using the separately authenticated account-maintenance product. Only a bank-
+    # confirmed account read can turn this into success.
+    if (not place and "resource not found" in str(last.get("message") or "").casefold()):
+        account = get_balance(account_number)
+        if account.get("success"):
+            return {"success": True, "already_clear": True,
+                    "message": "No debit restriction is registered",
+                    "product": last.get("product", ""), "raw": last.get("raw")}
     return last
 
 
