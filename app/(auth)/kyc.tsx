@@ -28,7 +28,7 @@ type Status = {
   bank_upgrade_required?: boolean;
   bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
   // Which rail each step runs on. The server decides, because it is the only side
-  // that knows which bank products are actually keyed on this deploy — a screen
+  // that knows which bank products are actually keyed on this deploy - a screen
   // that hardcoded "bank" would show a button that 503s, and one that hardcoded
   // "document" would ask for a utility bill nobody reads.
   face_rail?: 'wema' | 'document';
@@ -45,7 +45,7 @@ const FACE_SESSION_MAX_MS = 20 * 60 * 1000;
 // How long the poll keeps going after the customer closes the bank's sheet.
 //
 // Not zero, because they may have passed the check a second before closing and the
-// bank's callback can still be in flight — cancelling instantly would lose it. Not
+// bank's callback can still be in flight - cancelling instantly would lose it. Not
 // the full session either: when the bank's page fails (it renders its own error card
 // inside the sheet, which we cannot read from out here), closing it is the only
 // signal we get, and twenty more minutes of silent polling leaves the retry button
@@ -79,8 +79,8 @@ const Kyc = () => {
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
   const [bvnTrackingId, setBvnTrackingId] = useState('');
-  // Only ever a number the BANK named. Empty is the normal case — ALAT does not
-  // document an otpDestination field — and empty must render as "the phone
+  // Only ever a number the BANK named. Empty is the normal case - ALAT does not
+  // document an otpDestination field - and empty must render as "the phone
   // registered on your BVN", never as the number the customer uses with Zitch.
   // The code goes to the line on the BVN record; naming any other number sends
   // the customer to a handset that will never ring.
@@ -131,8 +131,8 @@ const Kyc = () => {
     finally { setLoaded(true); }
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
-  // Leaving the screen stops the loop. Without this it keeps polling — and calling
-  // setState — against a component nobody is looking at any more.
+  // Leaving the screen stops the loop. Without this it keeps polling - and calling
+  // setState - against a component nobody is looking at any more.
   useEffect(() => () => { faceSession.current = ''; }, []);
 
   const submit = async (path: string, body: object, label: string) => {
@@ -270,7 +270,7 @@ const Kyc = () => {
         const destination = res.otp_destination || '';
         if (kind === 'bvn') setBvnDelivery(destination);
         else setNinDelivery(destination);
-        // A resend goes back to the SAME registered line — it cannot be redirected
+        // A resend goes back to the SAME registered line - it cannot be redirected
         // to the phone in the customer's hand. Promising "a new code to your phone"
         // is what keeps someone tapping resend instead of taking the face route.
         notify('Wema OTP resent', res.message
@@ -284,8 +284,8 @@ const Kyc = () => {
   //
   // `crop` is opt-IN. It used to be forced on for every document, and the crop UI
   // imposes an aspect ratio: on a full-page utility bill that means the customer
-  // trims their own proof of address, and the line the verifier is looking for —
-  // the address — is one of the things most easily trimmed off. Nothing here
+  // trims their own proof of address, and the line the verifier is looking for -
+  // the address - is one of the things most easily trimmed off. Nothing here
   // needs a squared-off image, so nothing here asks for one by default.
   const pickImage = async (set: (b64: string) => void, crop = false) => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -306,7 +306,7 @@ const Kyc = () => {
   // --- PDF picker (proof of address) ---
   //
   // A bank statement or utility bill arrives as a PDF far more often than as a
-  // photo — it is emailed, not photographed — and the photo picker cannot see one.
+  // photo - it is emailed, not photographed - and the photo picker cannot see one.
   //
   // Kept SEPARATE from the image path rather than merged into one file browser,
   // because the two need different handling: ImagePicker re-encodes a photo at
@@ -343,7 +343,7 @@ const Kyc = () => {
   // --- Face check, bank rail: the BANK runs liveness in its own hosted verifier.
   //
   // We open it, and that is all we do. The result never comes back through the
-  // browser — the bank POSTs it to our server, which is the only version an app
+  // browser - the bank POSTs it to our server, which is the only version an app
   // cannot fake by driving its own WebView. So the flow is: start (server mints a
   // one-time session), open, then poll our own API until the server says verified.
   //
@@ -361,10 +361,28 @@ const Kyc = () => {
     let started: { url: string; session: string } | null = null;
     try {
       const res = await apiJson('/api/kyc/face/start/', kind === 'bvn' ? { bvn: raw } : { nin: raw });
+      if (res.success && res.status === 'account_otp_pending' && res.tracking_id) {
+        if (kind === 'bvn') {
+          setBvnTrackingId(String(res.tracking_id));
+          setBvnDelivery(res.otp_destination || '');
+          setBvnSent(true);
+        } else {
+          setNinTrackingId(String(res.tracking_id));
+          setNinDelivery(res.otp_destination || '');
+          setNinSent(true);
+        }
+        setIdentityStep('otp');
+        notify('SMS already sent', res.message || 'Enter the Wema SMS code already sent to finish creating your account.');
+        return;
+      }
       if (res.success && res.status === 'verified') {
         setStatus(res);
-        closeIdentityFlow();
-        notify('Already verified', `${kind.toUpperCase()} is already verified.`);
+        if (res.account_number || res.has_wema_account) {
+          closeIdentityFlow();
+          notify('Already verified', `${kind.toUpperCase()} is already verified.`);
+        } else {
+          notify('Identity verified', res.message || 'Your identity is verified. Continue account setup to get your account number.');
+        }
         return;
       }
       if (!res.success || !res.url) {
@@ -387,7 +405,7 @@ const Kyc = () => {
     faceSession.current = started.session;
     setFaceUrl(started.url);
     // Polled alongside the sheet, never in place of it. The result arrives on our
-    // server from the bank, so nothing the page does tells us the answer — and the
+    // server from the bank, so nothing the page does tells us the answer - and the
     // customer closing the sheet proves nothing either way.
     pollFace(started.session);
   };
@@ -403,14 +421,14 @@ const Kyc = () => {
    *
    * The sheet comes down, but the POLL KEEPS RUNNING: they may well have finished
    * the check a second before closing, and the bank's callback can still be in
-   * flight. Cancelling on close and reading the status once would race it — and
-   * lose, often enough — leaving somebody who passed looking at an unverified
+   * flight. Cancelling on close and reading the status once would race it - and
+   * lose, often enough - leaving somebody who passed looking at an unverified
    * screen.
    *
    * It no longer runs to the full session deadline, though. Closing the sheet is
-   * also what someone does when the BANK'S page failed — it shows its own error card
-   * in there, which we cannot see from out here — and for them every extra minute of
-   * polling is a minute the retry button stays disabled reading "Waiting for Wema…".
+   * also what someone does when the BANK'S page failed - it shows its own error card
+   * in there, which we cannot see from out here - and for them every extra minute of
+   * polling is a minute the retry button stays disabled reading "Waiting for Wema...".
    * So the poll gets a grace window from here and then says what happened.
    */
   const dismissFace = () => {
@@ -422,7 +440,7 @@ const Kyc = () => {
   /** No verdict is coming: stop, release the button, and say what to do next.
    *
    * The important part is the second sentence. This lands when the bank never
-   * answered at all, and "nothing happened" reads as the app being broken — while
+   * answered at all, and "nothing happened" reads as the app being broken - while
    * the SMS code sitting on the screen behind it is still perfectly good.
    */
   const faceGaveNoResult = useCallback(() => {
@@ -436,7 +454,7 @@ const Kyc = () => {
   const pollFace = async (session: string) => {
     setFacePolling(true);
     // Poll for as long as the SERVER's session can still be completed. The first
-    // version gave up after a minute and then closed the sheet — which pulled the
+    // version gave up after a minute and then closed the sheet - which pulled the
     // bank's page away mid-capture, because reading the instructions, granting the
     // camera and positioning a face takes longer than sixty seconds. Nothing here
     // may close the sheet on a timer; only a verdict or the customer does that.
@@ -446,7 +464,7 @@ const Kyc = () => {
       while (faceSession.current === session && Date.now() < deadline) {
         // Tight at first, then slow down. A flat 3s for twenty minutes is 400
         // requests against a 120-per-600s limit, so the poll would start getting
-        // 429s — which this loop cannot tell apart from "not verified yet", and
+        // 429s - which this loop cannot tell apart from "not verified yet", and
         // would sit through in silence. The check itself takes a minute or two, so
         // the fast window is where it actually pays.
         const elapsed = Date.now() - startedAt;
@@ -483,7 +501,7 @@ const Kyc = () => {
           return faceGaveNoResult();
         }
       }
-      // Fell out of the loop on the session deadline with no verdict — the bank
+      // Fell out of the loop on the session deadline with no verdict - the bank
       // never answered. This used to end in silence, leaving the customer looking
       // at an unverified screen with nothing to act on.
       if (faceSession.current === session) faceGaveNoResult();
@@ -493,9 +511,9 @@ const Kyc = () => {
   };
 
   // --- Tier-2 selfie: a real captured image for Prembly liveness (NOT device
-  // Face ID — KYC must match a face, which the device unlock can't prove).
+  // Face ID - KYC must match a face, which the device unlock can't prove).
   // Captured through FaceLivenessModal's live camera + face guide, not a
-  // gallery-style picker — the on-device face check there is UX only, the
+  // gallery-style picker - the on-device face check there is UX only, the
   // actual liveness verdict is still Prembly's, decided on this same photo. ---
   const [faceCaptureOpen, setFaceCaptureOpen] = useState(false);
 
@@ -583,7 +601,7 @@ const Kyc = () => {
               <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
                 Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Wema checks it against{' '}
                 {isBvn ? 'the BVN register' : 'NIMC'} and then sends a consent code by SMS to the
-                phone number registered on {isBvn ? 'that BVN' : 'that NIN'} — which may not be the
+                phone number registered on {isBvn ? 'that BVN' : 'that NIN'} - which may not be the
                 number you use with Zitch. Zitch does not store the raw number.
               </Text>
               <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
@@ -594,7 +612,7 @@ const Kyc = () => {
                   arrive. The SMS lands on the register's line, and for a NIN that
                   is an enrolment-era number often enough that making people fail
                   first is a design choice, not a necessity. Wema's own face check
-                  is a documented no-OTP route to the same Tier 1 — it matches the
+                  is a documented no-OTP route to the same Tier 1 - it matches the
                   customer against the photo on the record instead of texting a
                   number they may no longer hold. */}
               {status?.identity_face_available ? (
@@ -603,11 +621,11 @@ const Kyc = () => {
                     No longer using that number?
                   </Text>
                   <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
-                    Verify with a face check instead — no SMS code at all. Wema matches you
+                    Verify with a face check instead - no SMS code at all. Wema matches you
                     against the photo on your {isBvn ? 'BVN' : 'NIN'} record. Your face is never
                     sent to or stored by Zitch.
                   </Text>
-                  <Btn label={facePolling ? 'Waiting for Wema…' : 'Verify with face instead'}
+                  <Btn label={facePolling ? 'Waiting for Wema...' : 'Verify with face instead'}
                     icon="faceid" variant="outline" size="md"
                     disabled={busy || facePolling || value.length !== 11}
                     onPress={() => verifyFaceWithBank(identityFlow, value)} />
@@ -631,31 +649,14 @@ const Kyc = () => {
               <Btn label="Confirm with Wema" size="md" disabled={busy || otp.length !== 6 || !sent} onPress={confirm} />
               <Text onPress={() => resendWemaOtp(identityFlow)} style={{ textAlign: 'center', marginTop: 14, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
 
-              {/* The same face option the previous screen offers, repeated HERE —
-                  which is where it is actually needed. Choosing between SMS and face
-                  up front asks the customer to predict whether a code will arrive;
-                  they only find out it will not once they are on this screen, and
-                  until now that was a dead end. Resend does not help them either:
-                  the code goes to the phone on the identity record, not the one in
-                  their hand. Nothing is cancelled by tapping it — whichever proof
-                  the bank returns first completes the same step. */}
-              {status?.identity_face_available ? (
-                <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
-                  <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
-                    Can&apos;t receive the SMS?
-                  </Text>
-                  <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
-                    Resending will not help — the code goes back to the phone registered on your{' '}
-                    {isBvn ? 'BVN' : 'NIN'}, not the one you carry. Verify on Wema&apos;s secure
-                    face page instead: they match you against the photo on that record, with no
-                    SMS code. Your face is never sent to or stored by Zitch.
-                  </Text>
-                  <Btn label={facePolling ? 'Waiting for Wema…' : 'Open Wema face verification'}
-                    icon="faceid" variant="outline" size="md"
-                    disabled={busy || facePolling || value.length !== 11}
-                    onPress={() => verifyFaceWithBank(identityFlow, value)} />
-                </View>
-              ) : null}
+              <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
+                <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
+                  Already started by SMS
+                </Text>
+                <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4 }}>
+                  Finish this code step to create the Wema account. Face verification is available before SMS is requested, but it cannot replace an account request that Wema already opened.
+                </Text>
+              </View>
 
               <Text onPress={() => resetIdentityFlow(identityFlow)} style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Use a different {isBvn ? 'BVN' : 'NIN'}</Text>
             </>
@@ -674,7 +675,7 @@ const Kyc = () => {
       <Header title="Verify identity" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
 
       {!status && !loaded ? (
-        // Every card and row below reads `status?.…`, so before the first fetch
+        // Every card and row below reads `status?....`, so before the first fetch
         // resolves this screen would otherwise render as a near-empty page (the
         // two summary cards are gated on `status` entirely, and every KycRow
         // would flash "not verified" for steps that are actually done) and then
@@ -731,8 +732,8 @@ const Kyc = () => {
       {status && !status.email_verified ? (
         <KycRow icon="mail" title="Confirm your email"
           sub={status.email
-            ? `We'll send a code to ${status.email} — ${status.email_verification_required ? 'required before identity verification' : 'required to reach Tier 1'}`
-            : 'Add and confirm an email — required to reach Tier 1'}
+            ? `We'll send a code to ${status.email} - ${status.email_verification_required ? 'required before identity verification' : 'required to reach Tier 1'}`
+            : 'Add and confirm an email - required to reach Tier 1'}
           done={false}>
           {/* Tier 1 requires a verified email for every account. For chat-onboarded
               accounts the identity steps below are additionally closed server-side
@@ -788,8 +789,8 @@ const Kyc = () => {
 
       <KycRow icon="home"
         title="Residential address"
-        sub={bankAddress ? 'Verified by your bank — unlocks Tier 2'
-                         : 'Address + proof of address — unlocks Tier 2'}
+        sub={bankAddress ? 'Verified by your bank - unlocks Tier 2'
+                         : 'Address + proof of address - unlocks Tier 2'}
         done={!!status?.address_verified}>
         <Field value={address} onChangeText={setAddress} placeholder="Street address" />
         <View style={{ height: 10 }} />
@@ -797,8 +798,8 @@ const Kyc = () => {
           <View style={{ flex: 1 }}><Field value={city} onChangeText={setCity} placeholder="City / LGA" /></View>
           {/* A closed list, not free text. "Lagos", "lagos", "Lagos State" and
               "LAG" all used to arrive as different values for one place, and
-              every reader downstream — address verification, the compliance
-              export, anything grouping by region — had to guess which meant the
+              every reader downstream - address verification, the compliance
+              export, anything grouping by region - had to guess which meant the
               same thing. The sheet is searchable, so 37 entries stay a list you
               type at rather than one you scroll. */}
           <View style={{ flex: 1 }}>
@@ -817,17 +818,17 @@ const Kyc = () => {
           onPick={setStateName}
         />
         <View style={{ height: 10 }} />
-        {/* On the bank rail the document section is not merely optional — it is
+        {/* On the bank rail the document section is not merely optional - it is
             absent. Wema verifies the address itself and lifts the NUBAN to its
             Tier 3 on that; asking for a utility bill nobody reads would be
             theatre, and a slow, 2 MB one at that. */}
         {bankAddress ? (
           <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular, lineHeight: 19 }}>
-            Your bank verifies this address directly — no document upload needed.
+            Your bank verifies this address directly - no document upload needed.
           </Text>
         ) : (
         <>
-        {/* Named so the user knows what counts before opening the picker — the
+        {/* Named so the user knows what counts before opening the picker - the
             server refuses this step without a document, and a rejection after
             the fact is a worse way to learn the requirement. */}
         <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>
@@ -856,7 +857,7 @@ const Kyc = () => {
           onPress={() => submit('/api/kyc/address/', { address, city, state: canonicalState(stateName) || stateName, document: addressDoc }, 'Address')} />
       </KycRow>
 
-      <KycRow icon="shield" title="Government ID" sub="Passport, driver's licence or voter's card — unlocks Tier 3" done={!!status?.id_document_verified}>
+      <KycRow icon="shield" title="Government ID" sub="Passport, driver's licence or voter's card - unlocks Tier 3" done={!!status?.id_document_verified}>
         <Btn label={idImage ? 'ID added ✓' : 'Upload your government ID'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => pickImage(setIdImage)} />
         <View style={{ height: 10 }} />
         <Btn label="Verify ID document" size="md" disabled={busy || !idImage}
@@ -874,7 +875,7 @@ const Kyc = () => {
 
 // Post-login screen living in the unguarded (auth) group: gate it explicitly
 // so a deep link can't render it without a valid, unlocked session (the API
-// would 401 anyway — this keeps the surface consistent with the other groups).
+// would 401 anyway - this keeps the surface consistent with the other groups).
 const GuardedKyc = () => (
   <AuthGuard>
     <Kyc />
