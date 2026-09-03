@@ -123,6 +123,12 @@ const FaceVerifyModal = ({
             allowsInlineMediaPlayback
             mediaPlaybackRequiresUserAction={false}
             mediaCapturePermissionGrantType="grant"
+            // Android does not honour mediaCapturePermissionGrantType — it requires
+            // the host to handle onPermissionRequest and explicitly grant the resources
+            // the page asked for (camera, microphone). Without this the WebView silently
+            // refuses getUserMedia and the liveness capture fails with a "network error"
+            // inside the bank's page.
+            onPermissionRequest={(request) => request.grant(request.resources)}
             // The bank's verification page also requests the device's location.
             // Permission is requested by the caller before this sheet opens;
             // this flag passes whatever the OS granted through to the web page.
