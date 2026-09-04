@@ -1112,7 +1112,11 @@ def _submit_identity(pa, data: dict) -> dict:
 
     from .router import _MAX_ID_ATTEMPTS, _account_submit_identity, _kyc_submit_identity
 
-    kind = pa.payload.get("id_kind", "bvn")
+    # For account setup, the WhatsApp menu stores the selected rail as id_type;
+    # do not let a default/old id_kind turn a NIN submission into BVN.
+    kind = pa.payload.get("id_kind") or pa.payload.get("id_type") or "bvn"
+    if pa.action_type == "add_account" and pa.payload.get("id_type") in ("bvn", "nin"):
+        kind = pa.payload["id_type"]
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
     if not re.fullmatch(r"\d{11}", number):
         # The retry twin, so the masked box comes back empty - same reasoning as
@@ -1136,6 +1140,10 @@ def _submit_identity(pa, data: dict) -> dict:
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
+            # Persist the selected BVN/NIN rail before provisioning and OTP.
+            if kind in ("bvn", "nin"):
+                pa.payload["id_type"] = kind
+                pa.save(update_fields=["payload"])
             outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
                                                in_flow=True)
             if outcome == "otp":
@@ -1210,22 +1218,32 @@ def _identity_otp_screen(pa, error: str = "") -> dict:
     """The identity challenge code. Always the chained twin: this is only ever
     reached from IDENTITY_SCREEN inside one session, never opened on.
 
-    NEVER DEFAULT THE IDENTITY TO BVN. This line used to read
-    `(pa.payload.get("id_otp_kind") or "bvn").upper()`, so any session that
-    reached this screen without id_otp_kind written - the SMS challenge returning
-    early, a payload rewritten between screens, a retry re-rendered after a
-    refresh - labelled the box "BVN code" and told the customer a BVN code was
-    wanted. On a NIN verification that is not a cosmetic slip: it names the wrong
-    identity document, and the customer goes looking for a code on the wrong
-    phone. It is the exact defect reported against the NIN flow, surviving in a
-    second code path after the first was fixed.
+    NEVER DEFAULT THE IDENTITY TO BVN, AND NEVER TAKE A NON-IDENTITY AS ONE.
+    This screen labelled itself from `(id_otp_kind or "bvn")`, so any session
+    arriving without that key said "BVN code" - on a NIN verification that names
+    the wrong document and sends the customer looking on the wrong handset.
 
-    When the identity genuinely is not known here, say something true and
-    unqualified instead of guessing. A generic "verification code" costs nothing;
-    naming the wrong document costs the customer the attempt.
+    Adding id_kind as a fallback narrows it but does not close it: id_kind is
+    overloaded. It carries an identity in some places, but also "email" and
+    ACCOUNT_OTP ("account_otp") elsewhere, and neither of those is "nin", so a
+    `"nin" if kind == "nin" else "BVN"` test relabels exactly the sessions the
+    fallback was added to rescue. Each candidate is therefore checked for BEING
+    an identity, and when none is, the screen says something true and
+    unqualified rather than guessing. A generic label costs nothing; the wrong
+    one costs the customer the attempt.
+
+    The code on THIS screen is Zitch's own (secrets.randbelow, sent through
+    send_sms), not the bank's - so it says "we sent", and names the masked line
+    it actually went to when we have it. Attributing it to Wema here would be
+    inaccurate; that wording belongs on _account_otp_screen, which really does
+    render the bank's code.
     """
-    raw = pa.payload.get("id_otp_kind") or pa.payload.get("id_type") or ""
-    kind = str(raw).upper() if str(raw).lower() in ("bvn", "nin") else ""
+    kind = ""
+    for key in ("id_otp_kind", "id_kind", "id_type"):
+        candidate = str(pa.payload.get(key) or "").lower()
+        if candidate in ("bvn", "nin"):
+            kind = candidate.upper()
+            break
     label = f"{kind} code" if kind else "Verification code"
     sent_to = pa.payload.get("id_otp_to")
     where = sent_to or (f"the phone registered on your {kind}" if kind else "your phone")
@@ -1278,12 +1296,15 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     # used by OTP validation and prevents a NIN challenge being labelled as BVN.
     from wallet.models import WemaProvisioningAttempt
 
-    # A BLANK tracking id must not be used as a lookup key. Wema does not always
-    # return one, and `filter(tracking_id="")` then matches whatever other
-    # attempt row for this user happens to carry an empty tracking id - for a
-    # customer who already has a verified BVN that is very likely the BVN row,
-    # which is how a NIN challenge ends up labelled BVN. Fall through to the
-    # payload, which the caller wrote from the identity actually submitted.
+    # The server-side attempt is the exact rail Wema opened and the same record
+    # OTP validation uses. It must override every client/cached Flow field. Only
+    # fall back to this session's menu choice before a tracking record exists.
+    #
+    # A BLANK tracking id is not a lookup key. Wema does not always return one,
+    # and `filter(tracking_id="")` then matches whatever other attempt row for
+    # this user carries an empty tracking id - for a customer with a verified
+    # BVN that is very likely the BVN row, so the "authoritative" record would
+    # be one with nothing to do with this challenge. No id, no lookup.
     tracking_id = str(pa.payload.get("tracking_id") or "").strip()
     attempt = (
         WemaProvisioningAttempt.objects.filter(user=pa.user, tracking_id=tracking_id)
@@ -1293,9 +1314,9 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     if attempt is not None:
         using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     else:
-        using_bvn = pa.payload.get("using_bvn")
-        if using_bvn is None:
-            using_bvn = pa.payload.get("id_type") == "bvn"
+        selected = str(pa.payload.get("id_type") or pa.payload.get("id_kind") or "").lower()
+        using_bvn = (selected == "bvn" if selected in ("bvn", "nin")
+                     else bool(pa.payload.get("using_bvn")))
     kind = "BVN" if using_bvn else "NIN"
     return _identity_screen(
         ACCOUNT_OTP,

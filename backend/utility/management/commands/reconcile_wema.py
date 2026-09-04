@@ -26,9 +26,11 @@ from django.utils import timezone
 
 from utility import wema
 from utility.providers import payout_provider
+from wallet.models import Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import (
-    apply_wema_credit, pending_bank_payouts, reverse_transfer, self_payout_references,
-    settle_payout, wema_provisioned_wallets,
+    apply_wema_credit, attach_existing_bank_account, pending_bank_payouts,
+    reverse_transfer, self_payout_references, settle_payout,
+    wema_provisioned_wallets,
 )
 
 class Command(BaseCommand):
@@ -42,6 +44,10 @@ class Command(BaseCommand):
         parser.add_argument(
             "--payout-older-than-minutes", type=int, default=2,
             help="Only settle payouts at least this old (default: 2).",
+        )
+        parser.add_argument(
+            "--account-recovery-limit", type=int, default=20,
+            help="Maximum recent async account creations to recover per run (default: 20).",
         )
 
     def handle(self, *args, **options):
@@ -60,6 +66,66 @@ class Command(BaseCommand):
         today = timezone.now().date()
         date_to = today.strftime("%Y-%m-%d")
         date_from = (today - timedelta(days=max(0, options["lookback_days"]))).strftime("%Y-%m-%d")
+
+        # Phase 0 — recover NUBANs whose asynchronous Account Creation callback
+        # was delayed or missed. Wema's OTP and face endpoints can return PENDING:
+        # account generation completes later, and the documented callback is the
+        # normal delivery path. A lost callback must not leave a verified customer
+        # permanently numberless or make them disclose their BVN again.
+        #
+        # Only sessions that prove an account-creation attempt are eligible. This
+        # avoids probing every verified customer forever, bounds gateway traffic,
+        # and never needs the raw BVN/NIN (which we deliberately do not retain).
+        recovery_limit = max(0, min(int(options["account_recovery_limit"]), 100))
+        recovery_since = timezone.now() - timedelta(
+            days=max(1, int(getattr(settings, "WEMA_ACCOUNT_RECOVERY_DAYS", 7) or 7)))
+        candidates = []
+        candidate_users = set()
+
+        def add_candidate(row):
+            if len(candidates) >= recovery_limit or row.user_id in candidate_users:
+                return
+            wallet = Wallet.objects.filter(user_id=row.user_id).only("account_number").first()
+            if wallet is not None and wallet.account_number:
+                return
+            candidate_users.add(row.user_id)
+            candidates.append((row.user, row.identity_type, type(row).__name__))
+
+        for session in (WemaFaceSession.objects
+                        .filter(status=WemaFaceSession.VERIFIED,
+                                updated__gte=recovery_since)
+                        .select_related("user").order_by("-updated")[:recovery_limit]):
+            add_candidate(session)
+        remaining = max(0, recovery_limit - len(candidates))
+        if remaining:
+            for attempt in (WemaProvisioningAttempt.objects
+                            .filter(status=WemaProvisioningAttempt.PENDING,
+                                    updated__gte=recovery_since)
+                            .select_related("user").order_by("-updated")[:remaining]):
+                add_candidate(attempt)
+
+        recovery_checked = 0
+        recovered_accounts = 0
+        recovery_failures = 0
+        for user, identity_type, source in candidates:
+            recovery_checked += 1
+            recovered, detail = attach_existing_bank_account(
+                user, using_bvn=identity_type == WemaProvisioningAttempt.BVN)
+            if recovered is not None and recovered.account_number:
+                recovered_accounts += 1
+                # This is operational completion of the account-creation request,
+                # not a new KYC assertion. User BVN/NIN flags are untouched.
+                WemaProvisioningAttempt.objects.filter(
+                    user=user, identity_type=identity_type,
+                    status=WemaProvisioningAttempt.PENDING,
+                ).update(status=WemaProvisioningAttempt.VERIFIED)
+                self.stdout.write(
+                    f"wema_account_recovered user={user.id} source={source}")
+            else:
+                recovery_failures += 1
+                self.stderr.write(
+                    f"wema_account_recovery_pending user={user.id} source={source} "
+                    f"detail={detail}")
 
         # Phase 1 â€” inbound funding credits.
         scanned = 0
@@ -150,6 +216,9 @@ class Command(BaseCommand):
         from whatsapp.ops import record_audit
         record_audit("recon.wema_run", actor_type="system",
                      after={"wallets": scanned, "credited": credited,
+                            "accounts_recovery_checked": recovery_checked,
+                            "accounts_recovered": recovered_accounts,
+                            "account_recovery_pending": recovery_failures,
                             "payouts_settled": settled, "payouts_reversed": reversed_,
                             "fetch_failures": fetch_failures, "status_failures": status_failures,
                             "pnd_lifted": pnd_lifted, "pnd_failures": pnd_failures})
@@ -195,7 +264,9 @@ class Command(BaseCommand):
         )
 
         self.stdout.write(
-            f"Wema reconcile: {credited} credit(s) / {scanned} wallet(s); "
+            f"Wema reconcile: accounts recovered {recovered_accounts}/"
+            f"{recovery_checked} checked ({recovery_failures} still pending); "
+            f"{credited} credit(s) / {scanned} wallet(s); "
             f"PND lifted {pnd_lifted}, retry failures {pnd_failures}; "
             f"payouts checked {payouts_seen}, settled {settled}, reversed {reversed_}; "
             f"WhatsApp alerts retried {whatsapp_alerts}")

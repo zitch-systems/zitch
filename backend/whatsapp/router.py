@@ -3792,6 +3792,10 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         else:
             return reply(msisdn, "Reply *1* to use your BVN or *2* to use your NIN.")
         kind = pa.payload["id_type"]
+        # Keep both legacy and current Flow keys in sync. The secure Flow may
+        # be opened from this PendingAction after a prior BVN session; without
+        # this explicit write, that stale id_kind can relabel a NIN challenge.
+        pa.payload["id_kind"] = kind
         pa.state = "verification_method"
         pa.expires_at = _flow_deadline(pa.state)
         pa.save(update_fields=["payload", "state", "expires_at"])
@@ -6382,6 +6386,15 @@ def authorise_flow_execution(pa: PendingAction, user) -> str:
     # would only race it.
     if not getattr(settings, "TESTING", False):
         drain_in_background()
+    # Unlock is an authentication result, not a money movement. There is no
+    # transaction row for _await_settlement to find, so sending it through the
+    # payment-status fallback mislabeled every successful unlock as "Pending".
+    # The requested account/details command still runs on the durable worker;
+    # report only what is already true here: identity was confirmed.
+    if pa.action_type == "unlock":
+        return Outcome("Identity confirmed - your requested details will appear "
+                       "in the chat.", "done")
+
     # Give the rail a moment to answer before closing the Flow. Without this,
     # "Successful" was unreachable in production: every money Flow closed on
     # "Pending" because the endpoint replied the instant the job was queued, so
