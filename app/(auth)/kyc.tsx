@@ -10,7 +10,7 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money, NText, SelectRow, PickerSheet } from '@/components/design/ui';
-import { Loading, LoadingMark } from '@/components/design/Loading';
+import { Loading } from '@/components/design/Loading';
 import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
