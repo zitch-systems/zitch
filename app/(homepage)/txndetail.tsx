@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';

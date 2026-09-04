@@ -109,7 +109,12 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
   // exact moment the memo is supposed to help — and re-render all four tabs
   // instead of only the two whose `on` actually flipped.
   const nav = React.useRef({ routes: state.routes, activeName });
-  nav.current = { routes: state.routes, activeName };
+  // Refreshed in an effect rather than assigned during render: writing to a ref
+  // mid-render is what react-hooks/refs forbids, and the value is only ever read
+  // from a press handler, which always runs after the effect has committed.
+  React.useEffect(() => {
+    nav.current = { routes: state.routes, activeName };
+  });
 
   const press = React.useCallback((name: string) => {
     const { routes, activeName: current } = nav.current;

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AccessibilityInfo, Animated, Easing, View, ViewStyle, StyleProp } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '@/lib/theme';
@@ -55,7 +55,11 @@ type SkeletonProps = {
 export const Skeleton = ({ width = '100%', height = 14, radius = 8, style }: SkeletonProps) => {
   const { c, theme } = useTheme();
   const reduceMotion = useReduceMotion();
-  const shimmer = useRef(new Animated.Value(0)).current;
+  // useState with a lazy initialiser, not useRef().current — an Animated.Value
+  // IS read during render (interpolate below), and reading a ref there is what
+  // react-hooks/refs forbids. Lazy state gives the same construct-once semantics
+  // without the lint violation, and is the pattern Loading.tsx already uses.
+  const [shimmer] = useState(() => new Animated.Value(0));
   // The band is translated in PIXELS, so a percentage width has to be measured
   // before it can move. Until then the block renders flat, which is also exactly
   // what the first frame should look like.
