@@ -44,10 +44,14 @@ const openWhatsApp = () => {
  * Hoisted and memoized, a press now re-renders only the two tabs whose `on`
  * actually changed.
  */
-const Tab = React.memo(({ it, on, onPress, brand, ink3 }: {
+const Tab = React.memo(({ it, on, onSelect, brand, ink3 }: {
   it: { name: string; icon: string; label: string };
   on: boolean;
-  onPress: () => void;
+  /** Takes the route name, so ONE stable function serves every tab. A
+   *  zero-arg `onPress` would have to be built per tab in the parent's render,
+   *  which is a new prop identity each time and silently defeats the memo
+   *  above — the closure is built in here instead, where it is not a prop. */
+  onSelect: (name: string) => void;
   brand: string;
   ink3: string;
 }) => {
@@ -57,7 +61,7 @@ const Tab = React.memo(({ it, on, onPress, brand, ink3 }: {
   const c = { brand, ink3 };
   return (
     <Pressable
-      onPress={onPress}
+      onPress={() => onSelect(it.name)}
       accessibilityRole="tab"
       accessibilityLabel={it.label}
       accessibilityState={{ selected: on }}
@@ -95,20 +99,31 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
   const insets = useSafeAreaInsets();
   const activeName = state.routes[state.index]?.name;
 
-  // Stable per-tab press handlers. Rebuilding these inline on every render would
-  // hand React.memo a new prop each time and defeat the memoization above.
+  // ONE stable handler for all four tabs, taking the route name. It is passed
+  // through as-is: wrapping it per tab (`onPress={() => press(it.name)}`) would
+  // mint a new function on every render and make the React.memo above a no-op.
+  //
+  // The navigation state it needs is read through a ref rather than closed over,
+  // so its identity does not change when the active tab does. Listing
+  // `activeName` as a dependency would rebuild this on every navigation — the
+  // exact moment the memo is supposed to help — and re-render all four tabs
+  // instead of only the two whose `on` actually flipped.
+  const nav = React.useRef({ routes: state.routes, activeName });
+  nav.current = { routes: state.routes, activeName };
+
   const press = React.useCallback((name: string) => {
-    const route = state.routes.find((candidate) => candidate.name === name);
+    const { routes, activeName: current } = nav.current;
+    const route = routes.find((candidate) => candidate.name === name);
     const event = navigation.emit({ type: 'tabPress', target: route?.key, canPreventDefault: true });
-    if (activeName !== name && !event.defaultPrevented) navigation.navigate(name as never);
-  }, [state.routes, navigation, activeName]);
+    if (current !== name && !event.defaultPrevented) navigation.navigate(name as never);
+  }, [navigation]);
 
   const renderTab = (it: { name: string; icon: string; label: string }) => (
     <Tab
       key={it.name}
       it={it}
       on={activeName === it.name}
-      onPress={() => press(it.name)}
+      onSelect={press}
       brand={c.brand}
       ink3={c.ink3}
     />
