@@ -472,7 +472,11 @@ def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | No
         return {
             "success": True,
             "tracking_id": existing.tracking_id,
-            "otp_destination": user.phone or "",
+            # Wema sends this code to the phone held on the selected identity
+            # record, not necessarily the Zitch account phone. Never invent a
+            # destination when reusing an attempt.
+            "otp_destination": "",
+            "otp_destination_kind": identity_type,
             "reused": True,
         }, None
     email = user.email or f"{user.phone}@zitch.app"
