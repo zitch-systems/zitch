@@ -1209,11 +1209,20 @@ def _submit_identity(pa, data: dict) -> dict:
 def _identity_otp_screen(pa, error: str = "") -> dict:
     """The identity challenge code. Always the chained twin: this is only ever
     reached from IDENTITY_SCREEN inside one session, never opened on."""
-    kind = (pa.payload.get("id_otp_kind") or "bvn").upper()
-    return _identity_screen(kind, error=error, label=f"{kind} code",
-                            summary=f"Enter the 6-digit code we sent to "
-                                    f"{pa.payload.get('id_otp_to', 'your phone')}",
-                            screen=CODE_RETRY if error else IDENTITY_CHAIN)
+    # Bind the screen to the server-side identity rail. Older pending actions
+    # may not have id_otp_kind yet, so fall back to id_kind instead of silently
+    # presenting a NIN challenge as a BVN code.
+    raw_kind = pa.payload.get("id_otp_kind") or pa.payload.get("id_kind") or "bvn"
+    kind = str(raw_kind).lower()
+    kind_label = "NIN" if kind == "nin" else "BVN"
+    record = "your NIN" if kind_label == "NIN" else "your BVN"
+    return _identity_screen(
+        kind_label,
+        error=error,
+        label=f"{kind_label} code",
+        summary=f"Enter the 6-digit code Wema sent to the phone registered on {record}.",
+        screen=CODE_RETRY if error else IDENTITY_CHAIN,
+    )
 
 
 def _submit_identity_otp(pa, data: dict) -> dict:
