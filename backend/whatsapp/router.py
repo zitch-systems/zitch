@@ -3740,6 +3740,10 @@ def _advance_add_account(pa: PendingAction, user, msisdn: str, text: str) -> Non
         else:
             return reply(msisdn, "Reply *1* to use your BVN or *2* to use your NIN.")
         kind = pa.payload["id_type"]
+        # Keep both legacy and current Flow keys in sync. The secure Flow may
+        # be opened from this PendingAction after a prior BVN session; without
+        # this explicit write, that stale id_kind can relabel a NIN challenge.
+        pa.payload["id_kind"] = kind
         pa.state = "verification_method"
         pa.expires_at = _flow_deadline(pa.state)
         pa.save(update_fields=["payload", "state", "expires_at"])
