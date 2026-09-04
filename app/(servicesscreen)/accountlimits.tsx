@@ -4,6 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
 import { Screen, Header, Card, Progress, money, NText } from '@/components/design/ui';
+import { Loading } from '@/components/design/Loading';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -64,6 +65,20 @@ const AccountLimits = () => {
   const linkedId = status
     ? [status.bvn_verified && 'BVN', status.nin_verified && 'NIN'].filter(Boolean).join(' & ') || 'Not linked'
     : '—';
+
+  // This screen exists to answer "what is my tier and what can I send". Until
+  // the status call lands, `tier ?? 1` and `limit ?? 0` answer it WRONG — a
+  // Tier 3 customer opens their limits page and reads "Tier 1, ₦0". Hold the
+  // brand loader for the first fetch instead of publishing a placeholder answer
+  // to the only question the screen is for.
+  if (!status) {
+    return (
+      <Screen>
+        <Header title="Account Limits" onBack={() => router.back()} />
+        <Loading label="Checking your limits…" />
+      </Screen>
+    );
+  }
 
   return (
     <Screen>

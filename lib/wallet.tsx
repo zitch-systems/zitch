@@ -73,6 +73,16 @@ type WalletValue = {
   bankName: string;
   txns: Txn[];
   loading: boolean;
+  /** True once the first load ATTEMPT has finished, success or not.
+   *
+   *  Distinct from `loading`, and the distinction is the whole point: `loading`
+   *  goes true again on every focus refresh, so a screen that drew skeletons
+   *  from it would flash placeholders over content the customer is already
+   *  reading every time they navigated back. `hydrated` latches once and stays
+   *  true, which is what "show the skeleton only before there has ever been
+   *  data" actually needs. Refreshes after that are the pull-to-refresh
+   *  spinner's job, not the skeleton's. */
+  hydrated: boolean;
   showBal: boolean;
   setShowBal: (v: boolean) => void;
   reload: () => Promise<void>;
@@ -90,6 +100,7 @@ const WalletContext = createContext<WalletValue>({
   bankName: '',
   txns: [],
   loading: true,
+  hydrated: false,
   showBal: true,
   setShowBal: () => {},
   reload: () => Promise.resolve(),
@@ -107,6 +118,7 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [bankName, setBankName] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
   const [showBal, setShowBal] = useState(true);
   const [linked, setLinked] = useState<LinkedAccount[]>([]);
 
@@ -174,6 +186,10 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
         // Keep last-known values visible through transient network failures.
       } finally {
         setLoading(false);
+        // Latched on the attempt, not on success: a first load that fails
+        // offline must stop showing skeletons and fall through to the real
+        // empty/error state, not shimmer indefinitely at someone with no signal.
+        setHydrated(true);
       }
     })();
 
@@ -196,8 +212,8 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
   const value = useMemo(
-    () => ({ balance, firstName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, showBal, setShowBal, reload: load, linked, reloadLinked }),
-    [balance, firstName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, showBal, load, linked, reloadLinked],
+    () => ({ balance, firstName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
+    [balance, firstName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, hydrated, showBal, load, linked, reloadLinked],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

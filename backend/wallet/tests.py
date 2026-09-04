@@ -78,6 +78,62 @@ def make_transaction_at(user, *, created, amount, service, direction=Transaction
         field.auto_now_add = auto_now_add
 
 
+class TransactionStatusLookupTests(TestCase):
+    """The live single-transaction read the detail screen polls.
+
+    Exists because that screen used to render entirely from the route params
+    captured when the row was tapped, so a PENDING transfer stayed "Pending" on
+    screen forever even after the reconciler settled it. A payment that never
+    stops saying Pending is indistinguishable, to the person who sent it, from
+    money that has gone missing.
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.user, self.token = make_user("08010000601", "txnstatus@zitch.test")
+
+    def _post(self, payload):
+        res = self.client.post(
+            "/api/transaction/status/",
+            data=json.dumps({**payload, "access_token": self.token}),
+            content_type="application/json",
+        )
+        return res, res.json()
+
+    def test_it_returns_the_current_status_not_the_one_at_send_time(self):
+        txn = Transaction.objects.create(
+            user=self.user, service="Transfer", amount=Decimal("1000"),
+            direction=Transaction.OUT, transaction_status=Transaction.PENDING,
+            reference="REF-LIVE-1", meta={},
+        )
+        res, body = self._post({"reference": "REF-LIVE-1"})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(body["transaction"]["transaction_status"], Transaction.PENDING)
+
+        # The reconciler settles it the way the cron would.
+        txn.transaction_status = Transaction.SUCCESS
+        txn.save(update_fields=["transaction_status"])
+
+        _res, body = self._post({"reference": "REF-LIVE-1"})
+        self.assertEqual(body["transaction"]["transaction_status"], Transaction.SUCCESS)
+
+    def test_another_users_reference_is_not_readable(self):
+        """Scoped to the caller's own rows, so this is not a lookup oracle for
+        other people's payment references."""
+        other, _token = make_user("08010000602", "other@zitch.test")
+        Transaction.objects.create(
+            user=other, service="Transfer", amount=Decimal("500"),
+            direction=Transaction.OUT, transaction_status=Transaction.SUCCESS,
+            reference="REF-SOMEONE-ELSE", meta={},
+        )
+        res, _body = self._post({"reference": "REF-SOMEONE-ELSE"})
+        self.assertEqual(res.status_code, 404)
+
+    def test_a_missing_reference_is_refused(self):
+        res, _body = self._post({"reference": ""})
+        self.assertEqual(res.status_code, 400)
+
+
 class FxLimitTests(TestCase):
     """Currency conversion must enforce the same KYC tier / large-transfer face
     gate as every other money-out flow (regression for the FX limit bypass)."""
