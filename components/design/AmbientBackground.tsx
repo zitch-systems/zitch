@@ -47,4 +47,8 @@ const AmbientBackground = () => {
   );
 };
 
-export default AmbientBackground;
+// Screen shells re-render whenever their children update (typing, polling, list
+// refreshes). The ambient SVG has no props, so rebuilding three full-screen radial
+// gradients on each of those renders wastes UI-thread work without changing a
+// pixel. Context changes (theme/rotation) still invalidate this memo normally.
+export default React.memo(AmbientBackground);
