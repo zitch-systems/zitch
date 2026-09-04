@@ -371,7 +371,7 @@ class WemaTransactionCallbackTests(TestCase):
         mock_status.return_value = {"success": False, "pending": True}
         txn = self._pending_payout()
         self._post(self._payload(txn.reference, status="Successful"))
-        mock_status.assert_called_once_with(txn.reference)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
         txn.refresh_from_db()
         self.assertEqual(txn.transaction_status, Transaction.PENDING)
 
@@ -382,7 +382,7 @@ class WemaTransactionCallbackTests(TestCase):
         payload = self._payload(txn.reference)
         payload["data"] = json.dumps(payload["data"])
         self._post(payload)
-        mock_status.assert_called_once_with(txn.reference)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
 
     @patch("utility.wema.confirm_transfer_status")
     def test_transaction_callback_accepts_nested_request_envelope(self, mock_status):
@@ -390,7 +390,7 @@ class WemaTransactionCallbackTests(TestCase):
         txn = self._pending_payout()
         payload = {"requestType": 3, "request": {"data": self._payload(txn.reference)["data"]}}
         self._post(payload)
-        mock_status.assert_called_once_with(txn.reference)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
 
     @patch("utility.wema.confirm_transfer_status")
     def test_transaction_callback_accepts_live_request_payload_envelope(self, mock_status):
@@ -407,7 +407,7 @@ class WemaTransactionCallbackTests(TestCase):
             },
         }
         self._post(payload)
-        mock_status.assert_called_once_with(txn.reference)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
 
     @patch("utility.wema.confirm_transfer_status")
     def test_transaction_callback_accepts_case_variant_reference(self, mock_status):
@@ -417,7 +417,43 @@ class WemaTransactionCallbackTests(TestCase):
             "TransactionReference": txn.reference,
             "status": "Pending",
         }})
-        mock_status.assert_called_once_with(txn.reference)
+        mock_status.assert_called_once_with(txn.reference, platform_reference="")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_the_requery_uses_the_platform_reference_we_stored_ourselves(self, mock_status):
+        """The second reference ALAT indexes payouts under is forwarded — from OUR
+        record of the transfer, which is the only trustworthy source for it."""
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        meta = dict(txn.meta or {})
+        meta["wema_transfer"] = {"platform_reference": "WEMA-STORED-7"}
+        txn.meta = meta
+        txn.save(update_fields=["meta"])
+        self._post(self._payload(txn.reference))
+        mock_status.assert_called_once_with(txn.reference,
+                                            platform_reference="WEMA-STORED-7")
+
+    @patch("utility.wema.confirm_transfer_status")
+    def test_the_platform_reference_in_the_payload_is_never_trusted(self, mock_status):
+        """A caller-supplied platform reference must not steer the re-query.
+
+        This endpoint is reachable by anyone who can hit it from an allowlisted
+        IP, and the whole settlement design assumes the payload may be forged —
+        it settles from an authenticated re-query, never from what it was told.
+        Feeding the payload's platformTransactionReference into that re-query
+        would hand a forger the missing half: point it at somebody else's
+        SUCCESSFUL payout and this pending one settles on that answer. So the
+        payload's copy is stamped into meta for support, and goes no further.
+
+        The fixture payload carries platformTransactionReference "WEMA-9"; the
+        stored transfer meta has none, and empty is what must be forwarded.
+        """
+        mock_status.return_value = {"success": False, "pending": True}
+        txn = self._pending_payout()
+        self._post(self._payload(txn.reference))
+        _args, kwargs = mock_status.call_args
+        self.assertEqual(kwargs.get("platform_reference"), "")
+        self.assertNotIn("WEMA-9", str(mock_status.call_args))
 
     @patch("utility.wema.confirm_transfer_status",
            return_value={"success": True, "pending": False})

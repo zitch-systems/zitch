@@ -2140,6 +2140,7 @@ class ChatAccountSetupTests(TestCase):
         start.return_value = ({"success": True, "tracking_id": "trk-1"}, None)
         m = self.start_flow(m="2349090000023")
         self.inbound("2", f"t1-{m}", msisdn=m)          # NIN
+        self.inbound("1", f"t1m-{m}", msisdn=m)   # SMS OTP route
         self.assertIn("NIN", self.last_reply(m))
         self.inbound("12345678901", f"t2-{m}", msisdn=m)
         start.assert_called_once()
@@ -2171,6 +2172,7 @@ class ChatAccountSetupTests(TestCase):
         start.return_value = ({"success": True, "tracking_id": "trk-2"}, None)
         m = self.start_flow(m="2349090000024")
         self.inbound("1", f"d1-{m}", msisdn=m)
+        self.inbound("1", f"d1m-{m}", msisdn=m)   # SMS OTP route
         self.inbound("12345678901", f"d2-{m}", msisdn=m)
 
         def provision(user, otp, tracking_id, echoed_identity=""):
@@ -2197,6 +2199,7 @@ class ChatAccountSetupTests(TestCase):
         start.return_value = ({"success": True, "tracking_id": "trk-bvn"}, None)
         m = self.start_flow(m="2349090000124")
         self.inbound("1", f"b1-{m}", msisdn=m)          # BVN
+        self.inbound("1", f"b1m-{m}", msisdn=m)   # SMS OTP route
         self.inbound("12345678901", f"b2-{m}", msisdn=m)
 
         def provision(user, otp, tracking_id, echoed_identity=""):
@@ -2232,6 +2235,7 @@ class ChatAccountSetupTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": True}) as sent:
             self.inbound("1", f"f1-{m}", msisdn=m)      # BVN
+            self.inbound("1", f"f1m-{m}", msisdn=m)   # SMS OTP route
         sent.assert_called_once()
         pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
         self.assertEqual(pa.state, FLOW_ID_STATE)
@@ -2264,6 +2268,7 @@ class ChatAccountSetupTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": True}):
             self.inbound("1", f"o1-{m}", msisdn=m)
+            self.inbound("1", f"o1m-{m}", msisdn=m)   # SMS OTP route
             pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
             handle_flow_request({"action": "data_exchange",
                                  "flow_token": sign_identity_token(pa),
@@ -2299,6 +2304,7 @@ class ChatAccountSetupTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": True}):
             self.inbound("1", f"w1-{m}", msisdn=m)
+            self.inbound("1", f"w1m-{m}", msisdn=m)   # SMS OTP route
             pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
             handle_flow_request({"action": "data_exchange", "flow_token": sign_identity_token(pa),
                                  "data": {"number": "12345678901"}})
@@ -2318,6 +2324,7 @@ class ChatAccountSetupTests(TestCase):
         with patch("whatsapp.router.flows_live", return_value=True), \
              patch("whatsapp.router.send_flow", return_value={"success": True}):
             self.inbound("2", f"g1-{m}", msisdn=m)      # NIN
+            self.inbound("1", f"g1m-{m}", msisdn=m)   # SMS OTP route
         pa = PendingAction.objects.get(msisdn=m, action_type="add_account")
         resp = handle_flow_request({"action": "data_exchange",
                                     "flow_token": sign_identity_token(pa),
@@ -2344,6 +2351,7 @@ class ChatAccountSetupTests(TestCase):
         start.return_value = ({"success": True, "tracking_id": "trk-2"}, None)
         m = self.start_flow(m="2349090000024")
         self.inbound("1", f"u1-{m}", msisdn=m)
+        self.inbound("1", f"u1m-{m}", msisdn=m)   # SMS OTP route
         self.inbound("11111111111", f"u2-{m}", msisdn=m)
         complete.return_value = ({"success": False, "message": "OTP verification failed"}, 502)
         self.inbound("00000", f"u3-{m}", msisdn=m)      # wrong code: flow survives
@@ -4345,6 +4353,17 @@ class FailedAccountSetupDoesNotCloseTheFlowGreenTests(TestCase):
         from whatsapp.flows import FLOW_ID_STATE
 
         self.user, _ = make_user()
+        # make_user() models an APP-linked customer, whose BVN is already
+        # verified. _account_submit_identity now short-circuits on exactly that
+        # ("your BVN is already verified, you do not need to enter it again"),
+        # which is correct behaviour and the whole point of the one-time-BVN
+        # work — but it means a BVN-verified fixture never reaches the bank at
+        # all, so every failure path below became unreachable and these tests
+        # passed vacuously on an "adopted" screen. Someone still opening their
+        # funding account has NOT had a BVN verified yet: that is the state this
+        # class is about.
+        self.user.bvn_verified = False
+        self.user.save(update_fields=["bvn_verified"])
         WhatsAppLink.objects.create(user=self.user, wa_msisdn=MSISDN, status=WhatsAppLink.ACTIVE)
         self.pa = PendingAction.objects.create(
             user=self.user, msisdn=MSISDN, action_type="add_account", state=FLOW_ID_STATE,

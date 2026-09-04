@@ -1562,11 +1562,23 @@ def kyc_face_start(request):
         return gate
     bvn = (request.data.get("bvn") or "").strip()
     nin = (request.data.get("nin") or "").strip()
-    if user.bvn_verified and bvn:
-        return fail(
-            "Your BVN is already verified. You do not need to enter or verify it again.",
-            status=409,
-        )
+    # NO blanket "BVN already verified -> 409" here, deliberately.
+    #
+    # A guard like that reads as obviously right and is not: it made every branch
+    # below unreachable for a BVN. Those branches are what answer the case that
+    # actually matters — an identity that IS verified but whose NUBAN never
+    # landed (a provisioning callback we missed, a cleared test account, a
+    # half-finished setup). They hand back the existing account, or the pending
+    # OTP attempt, or reconnect the account from the bank, and only open a fresh
+    # face session when there is genuinely nothing to recover. Short-circuiting
+    # to 409 put those customers back in the dead end that work was done to
+    # remove, and left the face route — the ONLY way such a user gets an account
+    # — permanently closed to them.
+    #
+    # Repeated face checks are still refused, just further down and with a useful
+    # answer: a verified identity with an account returns 200 `already=True`
+    # without opening a session, and a DIFFERENT identity is refused outright by
+    # face_identity_error.
     identity_type, raw = ("bvn", bvn) if bvn else ("nin", nin)
     if not raw.isdigit() or len(raw) != 11:
         return fail("Enter your 11-digit BVN or NIN")
