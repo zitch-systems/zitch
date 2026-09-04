@@ -891,25 +891,60 @@ def transaction_history(request):
     txns = user.transactions.all()[:100]
     return ok(
         status=True,
-        all_site_transactions=[
-            {
-                "service": t.service,
-                "amount": str(t.amount),
-                "transaction_status": t.transaction_status,
-                "date": t.created.strftime("%Y-%m-%d %H:%M"),
-                "reference": t.reference,
-                "direction": t.direction,
-                # The customer's own note. `note` is what a bank transfer stores
-                # (execute_payout) and `narration` what a bill or top-up stores
-                # (run_provider_purchase) — two keys for one idea, named
-                # differently long before there was a field to fill either, and
-                # wallet.alerts._narration_line already reads both the same way.
-                "narration": str((t.meta or {}).get("note")
-                                 or (t.meta or {}).get("narration") or "")[:120],
-            }
-            for t in txns
-        ],
+        all_site_transactions=[_txn_row(t) for t in txns],
     )
+
+
+def _txn_row(t) -> dict:
+    """One transaction, in the shape the app's history list already expects.
+
+    Extracted so the single-transaction lookup below cannot drift from the list:
+    two hand-written copies of the same row is how a detail screen ends up
+    disagreeing with the list it was opened from.
+    """
+    return {
+        "service": t.service,
+        "amount": str(t.amount),
+        "transaction_status": t.transaction_status,
+        "date": t.created.strftime("%Y-%m-%d %H:%M"),
+        "reference": t.reference,
+        "direction": t.direction,
+        # The customer's own note. `note` is what a bank transfer stores
+        # (execute_payout) and `narration` what a bill or top-up stores
+        # (run_provider_purchase) — two keys for one idea, named differently long
+        # before there was a field to fill either, and wallet.alerts._narration_line
+        # already reads both the same way.
+        "narration": str((t.meta or {}).get("note")
+                         or (t.meta or {}).get("narration") or "")[:120],
+    }
+
+
+@api
+@ratelimit("transaction_status", limit=120, window=60)
+@require_user
+def transaction_status(request):
+    """POST /api/transaction/status/ {access_token, reference}
+    -> {success, transaction: {...}}
+
+    One transaction, read live. The detail screen was built entirely from the
+    route params handed to it when the row was tapped, so a PENDING transfer
+    displayed there stayed "Pending" forever — the reconciler settles the row
+    minutes later, but nothing on that screen ever asked again. Customers
+    reasonably read a permanently-pending transfer as lost money, which is the
+    single worst thing a payments screen can imply.
+
+    Scoped to the caller's OWN transactions: `user.transactions` is the filter,
+    so a reference belonging to somebody else is a 404 here rather than a lookup
+    oracle for other people's payment references.
+    """
+    user = request.user_obj
+    reference = str(request.data.get("reference") or "").strip()
+    if not reference:
+        return fail("Missing transaction reference")
+    txn = user.transactions.filter(reference=reference).first()
+    if txn is None:
+        return fail("Transaction not found", status=404)
+    return ok(success=True, transaction=_txn_row(txn))
 
 
 # ----------------------- WALLET FUNDING (Wema) -----------------------

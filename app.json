@@ -80,13 +80,14 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check)."
+          "cameraPermission": "Allow Zitch to use the camera to verify your identity and scan payment codes.",
+          "photosPermission": "Allow Zitch to access your photos so you can upload your ID and proof of address."
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
+          "cameraPermission": "Allow Zitch to use the camera to verify your identity and scan payment codes.",
           "recordAudioAndroid": false
         }
       ],

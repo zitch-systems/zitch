@@ -6,6 +6,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { notify } from '@/components/design/Notify';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, TxnRow, money, NText } from '@/components/design/ui';
+import { SkeletonRow } from '@/components/design/Skeleton';
 import { SectionLabel } from '@/components/design/widgets';
 import { ConnectedAccounts } from '@/components/design/banklink';
 import { useTheme, font } from '@/lib/theme';
@@ -13,10 +14,22 @@ import { useWallet } from '@/lib/wallet';
 
 const Wallet = () => {
   const { c } = useTheme();
-  const { balance, accountNumber, bankName, txns, showBal, setShowBal, reload, reloadLinked } = useWallet();
+  const { balance, accountNumber, bankName, txns, hydrated, showBal, setShowBal, reload, reloadLinked } = useWallet();
 
   // Keep balance, transactions & linked banks fresh each time the tab opens.
   useFocusEffect(useCallback(() => { reload(); reloadLinked(); }, [reload, reloadLinked]));
+
+  // One stable handler for the whole list rather than a fresh arrow per row:
+  // TxnRow is memoized, and a new function per render would defeat that on every
+  // state change (balance arriving, pull-to-refresh, a filter toggle).
+  const openTxn = useCallback((x: any) => {
+    router.push({ pathname: '/txndetail', params: {
+      type: x.type, amount: String(x.amount), status: x.status, dir: x.dir,
+      detail: x.detail, reference: x.reference, icon: x.icon,
+      narration: x.narration ?? '',
+    } });
+  }, []);
+
 
   const copyAccount = async () => {
     if (!accountNumber) return;
@@ -92,7 +105,13 @@ const Wallet = () => {
       {/* recent activity */}
       <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
-        {txns.length === 0 ? (
+        {!hydrated && txns.length === 0 ? (
+          <View accessible accessibilityLabel="Loading recent activity">
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        ) : txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
         ) : (
           txns.slice(0, 5).map((x, i) => (
@@ -100,7 +119,7 @@ const Wallet = () => {
               key={x.id}
               txn={x}
               last={i === Math.min(4, txns.length - 1)}
-              onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+              onSelect={openTxn}
             />
           ))
         )}

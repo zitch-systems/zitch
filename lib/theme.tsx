@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Appearance } from 'react-native';
 import {
   Inter_400Regular,
   Inter_500Medium,
@@ -197,18 +198,55 @@ const ThemeContext = createContext<ThemeContextValue>({
 
 const STORAGE_KEY = 'z-theme';
 
+/**
+ * The stored preference, read at MODULE LOAD rather than on mount.
+ *
+ * ThemeProvider only mounts once the root layout is `ready`, which is after the
+ * splash has waited on fonts. Reading storage in its useEffect therefore landed
+ * a frame or two AFTER first paint: the whole app painted light, then flipped to
+ * dark. Every dark-mode customer saw that white flash on every single cold
+ * start, with no network involved.
+ *
+ * Starting the read here means it is issued as soon as the bundle evaluates —
+ * far earlier than the font wait — so by the time the provider mounts the value
+ * is almost always already in hand and the first paint is simply correct.
+ *
+ * It is a cache, never a gate: if the read has not landed we fall through to the
+ * OS setting below and correct on arrival. Nothing about the theme is worth
+ * delaying the app for, which is the same rule lib/boot applies to fonts.
+ */
+let storedTheme: ThemeName | null = null;
+const storedThemeRead = AsyncStorage.getItem(STORAGE_KEY)
+  .then((v) => { if (v === 'light' || v === 'dark') storedTheme = v; })
+  .catch(() => { /* no preference readable — the OS setting stands */ });
+
+/** Best guess at the right theme for the very first frame. */
+const initialTheme = (): ThemeName => {
+  if (storedTheme) return storedTheme;
+  // No stored choice yet: honour the phone. Opening a light app on a phone set
+  // to dark is its own small jolt, and defaulting to the OS is what a customer
+  // who has never touched our toggle actually expects.
+  return Appearance.getColorScheme() === 'dark' ? 'dark' : 'light';
+};
+
 export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
-  const [theme, setThemeState] = useState<ThemeName>('light');
+  const [theme, setThemeState] = useState<ThemeName>(initialTheme);
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY).then((v) => {
-      if (v === 'light' || v === 'dark') setThemeState(v);
+    let alive = true;
+    // Covers the case where the module-scope read had not resolved before mount.
+    void storedThemeRead.then(() => {
+      if (alive && storedTheme) setThemeState(storedTheme);
     });
+    return () => { alive = false; };
   }, []);
 
   const setTheme = (t: ThemeName) => {
     setThemeState(t);
-    AsyncStorage.setItem(STORAGE_KEY, t);
+    // Keep the module cache in step so the next cold start paints this choice
+    // on the first frame rather than re-reading its way to it.
+    storedTheme = t;
+    AsyncStorage.setItem(STORAGE_KEY, t).catch(() => {});
   };
   const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 

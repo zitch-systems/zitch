@@ -830,6 +830,11 @@ WHATSAPP["ALLOW_CHAT_SIGNUP"] = env_bool("WHATSAPP_ALLOW_CHAT_SIGNUP", True)
 # guarantees. Costs webhook latency (the reply is sent before Meta gets its 200);
 # acceptable at chat volumes, and Meta tolerates slow acks far better than lost ones.
 WHATSAPP_PROCESS_INLINE = env_bool("WHATSAPP_PROCESS_INLINE", not _PROD)
+# How many inbound WhatsApp messages the worker processes at once. Different
+# SENDERS only — per-sender order is enforced in whatsapp.jobs._claim_inbound —
+# so this is what stops one customer's voice note or bank-rail wait from holding
+# up everybody else's reply. Raise it only alongside the DB connection pool.
+WHATSAPP_WORKER_CONCURRENCY = int(os.environ.get("WHATSAPP_WORKER_CONCURRENCY", "4") or 4)
 # The web service also drains the inbound queue in a bounded background thread
 # after acknowledging a webhook, so a stopped/crashed/never-created worker service
 # cannot silently swallow every reply. Rows are claimed with SELECT FOR UPDATE, so

@@ -1119,17 +1119,36 @@ export type Txn = {
   ts?: number;
 };
 
-export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPress?: () => void }) => {
+/**
+ * A transaction row. Memoized because it is the single most-repeated component
+ * in the app — Home, Wallet and History all render lists of these, and History
+ * renders every row of every month group at once. Without memo, any state change
+ * on those screens (a filter toggle, a pull-to-refresh, the balance arriving)
+ * re-renders every row's icon, tint lookup and money formatting.
+ *
+ * Note for callers: this only pays off if `onPress` is STABLE. An inline arrow
+ * is a new function every render and defeats the comparison — wrap row handlers
+ * in useCallback, or hoist them.
+ */
+export const TxnRow = React.memo((
+  { txn, last, onPress, onSelect }:
+  { txn: Txn; last?: boolean; onPress?: () => void; onSelect?: (txn: Txn) => void },
+) => {
   const { c, theme } = useTheme();
+  // `onSelect` is the memo-friendly door: callers hand over ONE stable function
+  // for the whole list and this closes over the row's own txn internally, where
+  // a fresh closure per render costs nothing because it is not a prop. `onPress`
+  // stays for callers that need something bespoke per row.
+  const handlePress = onPress ?? (onSelect ? () => onSelect(txn) : undefined);
   const inflow = txn.dir === 'in';
   // Credits stay green; debits take their service's accent colour (airtime
   // teal, data blue, …) so transaction lists read colourful instead of flat
   // grey. Unmapped icons fall back to the neutral ink tone.
   const accent = inflow ? c.lime : (ICON_COLORS[txn.icon] ?? c.ink2);
   const tint = inflow ? 'rgba(0,181,29,.12)' : (ICON_COLORS[txn.icon] ? iconTint(ICON_COLORS[txn.icon], theme === 'dark') : c.surface3);
-  const Wrap: any = onPress ? Pressable : View;
+  const Wrap: any = handlePress ? Pressable : View;
   return (
-    <Wrap onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
+    <Wrap onPress={handlePress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
       {/* A disc, not the rounded square used for service TILES: a tile is a
           thing you tap to start something, a transaction is a thing that already
           happened, and the two should not read as the same affordance. */}
@@ -1148,4 +1167,5 @@ export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPre
       </View>
     </Wrap>
   );
-};
+});
+TxnRow.displayName = 'TxnRow';
