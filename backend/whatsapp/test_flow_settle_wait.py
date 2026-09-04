@@ -119,6 +119,22 @@ class SettleWaitTests(TestCase):
             outcome = router.authorise_flow_execution(pa, self.user)
         self.assertEqual(outcome.status, router.OUTCOME_SUCCESS)
 
+    @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=2)
+    def test_identity_unlock_is_done_not_a_pending_payment(self):
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="unlock",
+            state="flow_pin", payload={"resume": "7", "pin_attempts": 0},
+            expires_at=timezone.now() + timedelta(minutes=5))
+        with override_settings(WHATSAPP_PROCESS_INLINE=False), \
+             patch("whatsapp.jobs.enqueue_flow_execution") as queued, \
+             patch("whatsapp.jobs.drain_in_background"), \
+             patch.object(router, "_await_settlement") as waited:
+            outcome = router.authorise_flow_execution(pa, self.user)
+        queued.assert_called_once()
+        waited.assert_not_called()
+        self.assertEqual(outcome.status, "done")
+        self.assertIn("Identity confirmed", outcome)
+
     @override_settings(WHATSAPP_FLOW_SETTLE_WAIT=0.5)
     def test_the_queued_path_still_falls_back_to_pending(self):
         pa = _action(self.user)
