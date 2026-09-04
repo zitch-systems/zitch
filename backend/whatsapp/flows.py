@@ -1273,12 +1273,15 @@ def _account_otp_screen(pa, error: str = "") -> dict:
         user=pa.user,
         tracking_id=str(pa.payload.get("tracking_id") or ""),
     ).only("identity_type").first()
-    if attempt is not None:
+    # Prefer the identity selected in this session. A stale provisioning row can
+    # belong to an earlier BVN attempt while the current Flow is NIN.
+    selected = str(pa.payload.get("id_type") or pa.payload.get("id_kind") or "").lower()
+    if selected in ("bvn", "nin"):
+        using_bvn = selected == "bvn"
+    elif attempt is not None:
         using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     else:
-        using_bvn = pa.payload.get("using_bvn")
-        if using_bvn is None:
-            using_bvn = pa.payload.get("id_type") == "bvn"
+        using_bvn = bool(pa.payload.get("using_bvn"))
     kind = "BVN" if using_bvn else "NIN"
     return _identity_screen(
         ACCOUNT_OTP,
