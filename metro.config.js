@@ -8,6 +8,11 @@ const { getDefaultConfig } = require('expo/metro-config');
 // the vulnerable parsers entirely until Expo/Metro publishes a patched release.
 // scripts/check-npm-audit.mjs keeps the temporary advisory exception narrow and
 // expires it; a future unrelated high/critical advisory still fails CI.
+//
+// THIS LINE IS LOAD-BEARING AND VERIFIED. That script loads this file and then
+// asks image-size directly whether each of the four parsers is refused, so
+// removing, commenting out or shortening this call fails CI immediately — it is
+// the entire basis on which two high-severity advisories are accepted.
 disableTypes(['icns', 'heif', 'jxl', 'jxl-stream']);
 
 const config = getDefaultConfig(__dirname);
