@@ -127,23 +127,21 @@ jobs:
       # mitigated, expiring build-parser advisories; every other high/critical
       # finding still fails. Lockfile-only auditing hits npm's retired quick
       # endpoint and can reject an otherwise valid dependency tree.
+      #
+      # The retry lives INSIDE the wrapper now, wrapped around the one network
+      # call rather than around the whole step. The step used to re-run the
+      # entire script and tell a service outage from a real finding by grepping
+      # its stderr — which meant it also re-ran the local invariant checks, and
+      # rested the whole distinction on wording nobody would think to keep
+      # stable. The script decides directly (a report either parsed or it did
+      # not) and reports the two cases as different exit codes.
       - name: npm audit (production high + critical)
         run: |
           audit_status=0
-          for attempt in 1 2 3; do
-            if audit_output="$(npm run audit:security 2>&1)"; then
-              printf '%s\n' "$audit_output"
-              exit 0
-            else
-              audit_status=$?
-            fi
-            printf '%s\n' "$audit_output"
-            if ! printf '%s\n' "$audit_output" | grep -Eq 'audit endpoint returned an error|invalid json response body|400 Bad Request'; then
-              exit "$audit_status"
-            fi
-            [ "$attempt" -eq 3 ] || sleep 5
-          done
-          echo "ERROR: npm advisory service unavailable after 3 attempts; failing closed."
+          npm run --silent audit:security || audit_status=$?
+          if [ "$audit_status" -eq 75 ]; then
+            echo "::error title=npm advisory service unavailable::Could not obtain an npm audit report; failing closed rather than shipping an unknown dependency-vulnerability state."
+          fi
           exit "$audit_status"
       - name: Lint
         run: npm run lint
@@ -173,10 +171,16 @@ jobs:
       # They still FAIL the job — a drifted SDK is worth knowing about, and this
       # is not continue-on-error. They just no longer decide whether the checks
       # on our own code get to run at all.
+      #
+      # Both go through ci-retry.sh, which re-runs them ONLY on a network or
+      # upstream-service error. A genuine drift report ("react@19.1.0 - expected
+      # version: 19.1.1") still fails on the first try: retrying a real answer
+      # would only delay it, and would teach everyone reading the log that a red
+      # dependency check is something that sometimes clears on its own.
       - name: Expo dependency compatibility
-        run: npx expo install --check
+        run: scripts/ci-retry.sh npx expo install --check
       - name: Expo project health
-        run: npx expo-doctor
+        run: scripts/ci-retry.sh npx expo-doctor
 
   meta-connector:
     name: Meta connector (MCP + OAuth)
