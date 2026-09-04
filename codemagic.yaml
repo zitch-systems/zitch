@@ -30,10 +30,24 @@ definitions:
     - &audit
       name: Audit production dependencies
       # Block actual critical advisories. Retry registry transport/parser faults;
-      # after three recognized service failures, warn and preserve the build log.
+      # after the retries are spent, warn and preserve the build log.
+      #
+      # UNLIKE CI, THIS STEP DOES NOT FAIL on a service outage — it warns and
+      # lets the build continue. That is deliberate and stays that way: CI is
+      # the blocking dependency gate, and a mobile release build should not be
+      # unbuildable because npm is having a bad minute. What was wrong was the
+      # window, not the policy: three attempts five seconds apart tolerated
+      # about ten seconds, against outages that run in minutes, so the warning
+      # fired almost every time npm wobbled and "no advisory result" became
+      # ordinary log noise instead of a real signal.
+      #
+      # Now five attempts with linear backoff (15+30+45+60s = ~2m30s), and the transient
+      # patterns cover the transport errors npm actually emits rather than only
+      # the three phrases its parser-level failures use.
       script: |
         audit_status=0
-        for attempt in 1 2 3; do
+        attempts=5
+        for attempt in $(seq 1 "$attempts"); do
           if audit_output="$(npm audit --omit=dev --audit-level=critical 2>&1)"; then
             printf '%s\n' "$audit_output"
             exit 0
@@ -41,17 +55,26 @@ definitions:
             audit_status=$?
           fi
           printf '%s\n' "$audit_output"
-          if ! printf '%s\n' "$audit_output" | grep -Eq 'audit endpoint returned an error|invalid json response body|400 Bad Request'; then
+          if ! printf '%s\n' "$audit_output" | grep -Eqi 'audit endpoint returned an error|invalid json response body|400 Bad Request|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|request to .* failed|npm ERR! network|Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error|Too Many Requests'; then
             exit "$audit_status"
           fi
-          [ "$attempt" -eq 3 ] || sleep 5
+          if [ "$attempt" -lt "$attempts" ]; then
+            wait_s=$(( 15 * attempt ))
+            echo "npm advisory service unreachable (attempt ${attempt}/${attempts}); retrying in ${wait_s}s…"
+            sleep "$wait_s"
+          fi
         done
-        echo "WARNING: npm advisory service unavailable after 3 attempts; no advisory result was returned."
+        echo "WARNING: npm advisory service unavailable after ${attempts} attempts over ~2m30s; no advisory result was returned. CI's audit gate is the blocking one — check it before releasing this build."
     - &validate_expo
       name: Validate Expo project
+      # doctor and install --check both ask Expo's servers what the SDK expects,
+      # so they can fail with nothing in this repository having changed. Both go
+      # through ci-retry.sh, which retries ONLY on network/upstream-service
+      # wording — a genuine drift report still fails on the first attempt, so a
+      # real answer is never delayed. `expo config` is local and needs no wrapper.
       script: |
-        npm run doctor
-        npx expo install --check
+        scripts/ci-retry.sh npm run doctor
+        scripts/ci-retry.sh npx expo install --check
         npx expo config --type public
     - &prebuild
       name: Expo prebuild (generate the native android/ project)
