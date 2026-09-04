@@ -1112,7 +1112,11 @@ def _submit_identity(pa, data: dict) -> dict:
 
     from .router import _MAX_ID_ATTEMPTS, _account_submit_identity, _kyc_submit_identity
 
-    kind = pa.payload.get("id_kind", "bvn")
+    # For account setup, the WhatsApp menu stores the selected rail as id_type;
+    # do not let a default/old id_kind turn a NIN submission into BVN.
+    kind = pa.payload.get("id_kind") or pa.payload.get("id_type") or "bvn"
+    if pa.action_type == "add_account" and pa.payload.get("id_type") in ("bvn", "nin"):
+        kind = pa.payload["id_type"]
     number = "".join(ch for ch in str(data.get("number", "")) if ch.isdigit())
     if not re.fullmatch(r"\d{11}", number):
         # The retry twin, so the masked box comes back empty - same reasoning as
