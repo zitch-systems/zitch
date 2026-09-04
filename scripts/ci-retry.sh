@@ -12,6 +12,15 @@
 # patterns below are an allow-list: a failure is retried only if it says, in so
 # many words, that it never reached the far end.
 #
+# Some of the patterns do not look like network errors at all. `expo-doctor`
+# swallows a failed remote fetch and reports it in its own vocabulary — a
+# blocked host comes out as "Directory check failed with unexpected server
+# response", with the underlying cause nowhere in the text. Without those two
+# phrases the wrapper reads a genuine outage as a real finding and refuses to
+# retry it, which is the exact failure it exists to prevent. Both are safe to
+# treat as transient: neither can be produced by a local problem, only by a
+# remote returning something unusable.
+#
 # The patterns are deliberately anchored on wording rather than bare numbers.
 # `expo install --check` reports drift as lines like "react@19.1.0 - expected
 # version: 19.1.1"; matching a loose "503" against output full of version
@@ -30,9 +39,12 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-transient='ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|ERR_SOCKET|socket hang up|fetch failed|request to .* failed|getaddrinfo|network (error|timeout|is unreachable)|npm ERR! network|Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error|Too Many Requests|(status|statusCode|HTTP)[^0-9]{0,12}(429|5[0-9][0-9])|Unable to (reach|connect)|Connection (reset|timed out|refused)|TLS connection|read ECONN'
+transient='ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|ERR_SOCKET|socket hang up|fetch failed|request to .* failed|getaddrinfo|network (error|timeout|is unreachable)|npm ERR! network|Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error|Too Many Requests|(status|statusCode|HTTP)[^0-9]{0,12}(429|5[0-9][0-9])|Unable to (reach|connect)|Connection (reset|timed out|refused)|TLS connection|read ECONN|unexpected server response|Directory check failed|Host not allowed|ERR_NETWORK|ENETDOWN|EHOSTDOWN'
 
-log="$(mktemp)"
+# An explicit template, because this also runs on Codemagic's macOS builders:
+# BSD mktemp rejects a bare `mktemp` ("usage: mktemp ... template") where GNU
+# accepts it, so the portable form is the only one that works in both places.
+log="$(mktemp "${TMPDIR:-/tmp}/ci-retry.XXXXXX")"
 trap 'rm -f "$log"' EXIT
 cmd_desc="$*"
 
