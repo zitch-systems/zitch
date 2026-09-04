@@ -136,7 +136,7 @@ const FaceVerifyModal = ({
                 // Let the WebView handle malformed/transient navigation values.
               }
               return true;
-            }
+            }}
             // Liveness needs the camera INSIDE the web page. Both platforms already
             // declare the permission at the app level (app.json); these hand it
             // through to the WebView so the customer is asked once, by the OS,

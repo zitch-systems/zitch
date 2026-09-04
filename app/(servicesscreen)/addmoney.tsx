@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Pressable, Share, Linking } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
@@ -171,7 +171,11 @@ const AddMoney = () => {
   const [bvnVerified, setBvnVerified] = useState(false);
   const [pendingAttempt, setPendingAttempt] = useState<{ trackingId: string; destination: string } | null>(null);
 
-  const rememberAccountState = (r: any) => {
+  // useCallback so loadAccount below can be stable too — the mount effect needs
+  // to list it as a dependency (react-hooks/exhaustive-deps) without that turning
+  // a once-on-mount fetch into a fetch on every render. Only state setters are
+  // closed over, and those are stable, so [] is honest here.
+  const rememberAccountState = useCallback((r: any) => {
     setBvnVerified(!!r?.bvn_verified);
     if (r?.otp_required && r?.tracking_id) {
       const next = { trackingId: String(r.tracking_id), destination: String(r.otp_destination || '') };
@@ -180,7 +184,7 @@ const AddMoney = () => {
     }
     setPendingAttempt(null);
     return null;
-  };
+  }, []);
 
   // Wema's hosted face check - the bank's own documented alternative to that OTP.
   // It matters most on THIS screen: the code goes to the line registered against the
@@ -194,7 +198,7 @@ const AddMoney = () => {
   const faceSession = useRef('');
   useEffect(() => () => { faceSession.current = ''; }, []);
 
-  const loadAccount = () => {
+  const loadAccount = useCallback(() => {
     let alive = true;
     setLoading(true);
     setLoadFailed(false);
@@ -212,13 +216,13 @@ const AddMoney = () => {
       .catch(() => { if (alive) setLoadFailed(true); })
       .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
     return () => { alive = false; clearTimeout(guard); };
-  };
+  }, [rememberAccountState]);
 
   useEffect(() => {
     let cleanup: undefined | (() => void);
     const timer = setTimeout(() => { cleanup = loadAccount(); }, 0);
     return () => { clearTimeout(timer); cleanup?.(); };
-  }, []);
+  }, [loadAccount]);
 
   // The server owns this: only it knows whether the bank's verifier is keyed and
   // its callback allowlist configured. Offering the button otherwise would just
