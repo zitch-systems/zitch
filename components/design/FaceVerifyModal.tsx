@@ -116,6 +116,27 @@ const FaceVerifyModal = ({
             onLoadEnd={() => setLoading(false)}
             onError={() => { setLoading(false); setFailed(true); }}
             onHttpError={() => { setLoading(false); setFailed(true); }}
+            // Some versions of Wema's hosted page navigate the WebView to the
+            // profiled callback URL after a completed capture. Do not leave the
+            // customer staring at our callback's JSON response: close the bank
+            // sheet immediately and reveal the KYC screen while the parent keeps
+            // polling the authenticated server result.
+            onShouldStartLoadWithRequest={(request) => {
+              try {
+                const target = new URL(request.url);
+                if (
+                  target.protocol === 'https:'
+                  && target.hostname === 'api.zitch.ng'
+                  && target.pathname.startsWith('/webhooks/wema/face')
+                ) {
+                  close();
+                  return false;
+                }
+              } catch {
+                // Let the WebView handle malformed/transient navigation values.
+              }
+              return true;
+            }
             // Liveness needs the camera INSIDE the web page. Both platforms already
             // declare the permission at the app level (app.json); these hand it
             // through to the WebView so the customer is asked once, by the OS,
