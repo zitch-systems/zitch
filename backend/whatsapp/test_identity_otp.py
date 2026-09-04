@@ -497,6 +497,26 @@ class AccountOtpScreenNamesTheIdentityRecordTests(TestCase):
         self.assertIn("registered on your NIN", data["summary"])
         self.assertNotIn("registered on your BVN", data["summary"])
 
+    def test_a_blank_tracking_id_does_not_borrow_another_attempts_identity(self):
+        """Wema does not always return a tracking id, and `filter(tracking_id="")`
+        then matches whatever other row for this user carries an empty one. For a
+        customer with a verified BVN that is very likely the BVN row - which is
+        how a NIN challenge came to be labelled BVN on a live account."""
+        from wallet.models import WemaProvisioningAttempt
+        from whatsapp.flows import _account_otp_screen
+
+        WemaProvisioningAttempt.objects.create(
+            user=self.user,
+            tracking_id="",                       # the row a blank key would match
+            identity_type=WemaProvisioningAttempt.BVN,
+            identity_hash=hash_identifier("22222222222"),
+            identity_last4="2222",
+            expires_at=timezone.now() + timedelta(minutes=10),
+        )
+        data = _account_otp_screen(self._pa({"tracking_id": "", "using_bvn": False}))["data"]
+        self.assertIn("registered on your NIN", data["summary"])
+        self.assertNotIn("registered on your BVN", data["summary"])
+
     def test_the_hint_sends_an_unreachable_customer_to_face_not_resend(self):
         """A resend goes back to the same registered line, so offering it as the
         remedy is a loop. The face route is the one that can actually finish."""
@@ -507,3 +527,57 @@ class AccountOtpScreenNamesTheIdentityRecordTests(TestCase):
     def test_it_falls_back_to_the_menu_choice_when_the_rail_is_not_recorded_yet(self):
         self.assertIn("BVN", self._screen({"id_type": "bvn"})["summary"])
         self.assertIn("NIN", self._screen({"id_type": "nin"})["summary"])
+
+
+@override_settings(TESTING=False, DEBUG=False)
+class IdentityOtpScreenNeverGuessesBvnTests(TestCase):
+    """The KYC identity challenge must not label itself BVN by default.
+
+    `_identity_otp_screen` derived its label from
+    `(payload.get("id_otp_kind") or "bvn").upper()`, so any session reaching this
+    screen without that key rendered "BVN code" and told the customer a BVN code
+    had been sent. On a NIN verification that names the wrong document and points
+    at the wrong phone. It is the same defect that was fixed on the account-
+    creation screen, still live on this second code path.
+    """
+
+    def setUp(self):
+        self.user = _make_user()
+
+    def _screen(self, payload, error=""):
+        from whatsapp.flows import _identity_otp_screen
+        from whatsapp.router import _flow_deadline
+        pa = PendingAction.objects.create(
+            user=self.user, msisdn=MSISDN, action_type="kyc",
+            state=FLOW_ID_STATE, payload=payload,
+            expires_at=_flow_deadline("otp"))
+        return _identity_otp_screen(pa, error=error)["data"]
+
+    def test_a_nin_challenge_is_labelled_nin(self):
+        data = self._screen({"id_otp_kind": "nin", "id_otp_to": "•••••6789"})
+        self.assertEqual(data["label"], "NIN code")
+        self.assertNotIn("BVN", data["summary"])
+
+    def test_a_bvn_challenge_is_still_labelled_bvn(self):
+        data = self._screen({"id_otp_kind": "bvn", "id_otp_to": "•••••6789"})
+        self.assertEqual(data["label"], "BVN code")
+
+    def test_an_unknown_identity_is_never_called_bvn(self):
+        """The whole bug in one assertion: with nothing in the payload saying
+        which document this is, the old code asserted BVN."""
+        data = self._screen({})
+        self.assertNotIn("BVN", data["label"])
+        self.assertNotIn("BVN", data["summary"])
+        self.assertEqual(data["label"], "Verification code")
+
+    def test_it_falls_back_to_the_menu_choice_before_giving_up(self):
+        """id_type is written when the customer picks the rail, so it is a
+        truthful answer when the challenge key is missing."""
+        data = self._screen({"id_type": "nin"})
+        self.assertEqual(data["label"], "NIN code")
+        self.assertIn("NIN", data["summary"])
+
+    def test_a_junk_identity_value_is_not_echoed_into_the_screen(self):
+        data = self._screen({"id_otp_kind": "passport"})
+        self.assertEqual(data["label"], "Verification code")
+        self.assertNotIn("PASSPORT", data["summary"])

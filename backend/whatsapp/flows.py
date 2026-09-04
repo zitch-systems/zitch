@@ -1208,11 +1208,29 @@ def _submit_identity(pa, data: dict) -> dict:
 
 def _identity_otp_screen(pa, error: str = "") -> dict:
     """The identity challenge code. Always the chained twin: this is only ever
-    reached from IDENTITY_SCREEN inside one session, never opened on."""
-    kind = (pa.payload.get("id_otp_kind") or "bvn").upper()
-    return _identity_screen(kind, error=error, label=f"{kind} code",
-                            summary=f"Enter the 6-digit code we sent to "
-                                    f"{pa.payload.get('id_otp_to', 'your phone')}",
+    reached from IDENTITY_SCREEN inside one session, never opened on.
+
+    NEVER DEFAULT THE IDENTITY TO BVN. This line used to read
+    `(pa.payload.get("id_otp_kind") or "bvn").upper()`, so any session that
+    reached this screen without id_otp_kind written - the SMS challenge returning
+    early, a payload rewritten between screens, a retry re-rendered after a
+    refresh - labelled the box "BVN code" and told the customer a BVN code was
+    wanted. On a NIN verification that is not a cosmetic slip: it names the wrong
+    identity document, and the customer goes looking for a code on the wrong
+    phone. It is the exact defect reported against the NIN flow, surviving in a
+    second code path after the first was fixed.
+
+    When the identity genuinely is not known here, say something true and
+    unqualified instead of guessing. A generic "verification code" costs nothing;
+    naming the wrong document costs the customer the attempt.
+    """
+    raw = pa.payload.get("id_otp_kind") or pa.payload.get("id_type") or ""
+    kind = str(raw).upper() if str(raw).lower() in ("bvn", "nin") else ""
+    label = f"{kind} code" if kind else "Verification code"
+    sent_to = pa.payload.get("id_otp_to")
+    where = sent_to or (f"the phone registered on your {kind}" if kind else "your phone")
+    return _identity_screen(kind or "identity", error=error, label=label,
+                            summary=f"Enter the 6-digit code we sent to {where}",
                             screen=CODE_RETRY if error else IDENTITY_CHAIN)
 
 
@@ -1260,10 +1278,18 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     # used by OTP validation and prevents a NIN challenge being labelled as BVN.
     from wallet.models import WemaProvisioningAttempt
 
-    attempt = WemaProvisioningAttempt.objects.filter(
-        user=pa.user,
-        tracking_id=str(pa.payload.get("tracking_id") or ""),
-    ).only("identity_type").first()
+    # A BLANK tracking id must not be used as a lookup key. Wema does not always
+    # return one, and `filter(tracking_id="")` then matches whatever other
+    # attempt row for this user happens to carry an empty tracking id - for a
+    # customer who already has a verified BVN that is very likely the BVN row,
+    # which is how a NIN challenge ends up labelled BVN. Fall through to the
+    # payload, which the caller wrote from the identity actually submitted.
+    tracking_id = str(pa.payload.get("tracking_id") or "").strip()
+    attempt = (
+        WemaProvisioningAttempt.objects.filter(user=pa.user, tracking_id=tracking_id)
+        .only("identity_type").first()
+        if tracking_id else None
+    )
     if attempt is not None:
         using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     else:
