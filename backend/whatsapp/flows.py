@@ -1140,6 +1140,10 @@ def _submit_identity(pa, data: dict) -> dict:
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
+            # Persist the selected BVN/NIN rail before provisioning and OTP.
+            if kind in ("bvn", "nin"):
+                pa.payload["id_type"] = kind
+                pa.save(update_fields=["payload"])
             outcome = _account_submit_identity(pa, pa.user, pa.msisdn, number,
                                                in_flow=True)
             if outcome == "otp":
