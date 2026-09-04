@@ -391,7 +391,7 @@ def _email_screen(error: str = "", summary: str = "", label: str = "") -> dict:
 #: to read a paragraph to find out whether their money had moved. The status is
 #: the heading now and the sentence is the body.
 _STATUS_HEADINGS = {
-    "success": "done Successful",
+    "success": "✅ Successful",
     "pending": "⏳ Pending",
     "failed": "❌ Not completed",
     "done": "Done",
@@ -475,7 +475,7 @@ def _success_screen(message: str, status: str = "") -> dict:
     """
     # SUCCESS is Meta's reserved completion value, not a renderable screen.
     # Use RESULT when it is published so signup/payment outcomes render normally.
-    return _result_screen(message or "Done done", status=status)
+    return _result_screen(message or "Done ✅", status=status)
 
 
 # --------------------------------------------------------------------------- #
@@ -1146,12 +1146,12 @@ def _submit_identity(pa, data: dict) -> dict:
             if outcome == "face":
                 return _success_screen("Open the Wema face-check link in the chat to finish creating your account.")
             if outcome == "adopted":
-                return _success_screen("Account found done - see the chat for the bank-upgrade step.")
+                return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
             if outcome == "fail":
                 # A hard failure: the ID was refused, name-matched to a different
                 # person, or the provider was unreachable. _account_submit_identity
                 # has already cleared the pending action and sent a "⚠️ ..." line
-                # to the chat. Falling through to the shared "received done" screen
+                # to the chat. Falling through to the shared "received ✅" screen
                 # would close the secure Flow on a green success the chat is
                 # simultaneously contradicting. Unlike the KYC branch, there is no
                 # review queue here that would make "received" true.
@@ -1203,7 +1203,7 @@ def _submit_identity(pa, data: dict) -> dict:
         return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
-    return _success_screen(f"{kind.upper()} received done - see the chat for what's next.")
+    return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
 
 
 def _identity_otp_screen(pa, error: str = "") -> dict:
@@ -1356,7 +1356,7 @@ def _submit_email(pa, data: dict) -> dict:
     # code half is the end of the email step, and the chat says what comes next.
     if step == "address":
         return _email_code_screen(pa)
-    return _success_screen("Email verified done - see the chat for what's next.")
+    return _success_screen("Email verified ✅ — see the chat for what's next.")
 
 
 #: What a narration may be before it is stored. The bank rail puts this on the
@@ -1546,7 +1546,7 @@ def _submit_pin(token: str, data: dict) -> dict:
     # executor that has not been tagged yet still closes on the neutral heading
     # rather than claiming an outcome nobody established.
     status = getattr(outcome, "status", "")
-    # EVERY settled outcome shows its own page: done Successful, ⏳ Pending or
+    # EVERY settled outcome shows its own page: ✅ Successful, ⏳ Pending or
     # ❌ Not completed, on RESULT, with the sentence that says what happened.
     #
     # Closing the panel outright on success was correct about the mechanism and
@@ -2060,6 +2060,6 @@ def _submit_new_pin(pa, user, pin: str) -> dict:
     user.set_transaction_pin(pin)
     user.save(update_fields=list(user.PIN_UPDATE_FIELDS))
     _clear_actions(pa.msisdn)
-    reply(pa.msisdn, "done *Your new 6-digit PIN is set.* Use it to authorise payments here "
+    reply(pa.msisdn, "✅ *Your new 6-digit PIN is set.* Use it to authorise payments here "
                      "and in the Zitch app - it's one PIN for both.")
-    return _success_screen("PIN set done - see the chat.")
+    return _success_screen("PIN set ✅ — see the chat.")

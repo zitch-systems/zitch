@@ -367,6 +367,35 @@ def _response_meta(resp: requests.Response, data) -> dict:
     }
 
 
+def _fingerprint(value: str) -> str:
+    """A short, non-reversible stand-in for a value too sensitive to log raw.
+
+    KEYED, not a bare digest, and the difference matters here. One caller
+    fingerprints the GATEWAY'S OWN ERROR MESSAGE — free text that has been
+    observed to quote back the identifier it just rejected. An 11-digit BVN or
+    NIN behind an unkeyed SHA-256 is a few CPU-hours from being recovered, so an
+    unkeyed digest would leave the logs exactly as sensitive as the raw value it
+    was meant to protect. Keying with the deployment secret makes the digest
+    useless to anyone holding only the logs.
+
+    Stable within a deployment, so support can still tell "the same failure
+    again" from "a new one" — which is the entire reason to log anything here.
+
+    Empty in, empty out: an absent value should read as absent, not as the
+    perfectly stable fingerprint of the empty string.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    secret = (getattr(settings, "SECRET_KEY", "") or "").encode()
+    if not secret:
+        # No key material to key with. Still never log the value itself; a short
+        # digest is a weaker correlator and a smaller target than a full one.
+        return hashlib.sha256(text.encode()).hexdigest()[:8]
+    return hmac.new(secret, b"zitch:wema:fingerprint:" + text.encode(),
+                    hashlib.sha256).hexdigest()[:12]
+
+
 def _mask_account(value: str) -> str:
     """Keep enough account-number shape for support without logging the full NUBAN."""
     s = re.sub(r"\D", "", str(value or ""))

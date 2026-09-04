@@ -213,8 +213,27 @@ class WalletTests(TestCase):
         self.assertEqual(res.status_code, 400)
 
     def test_account_create_requires_valid_id(self):
-        res, _ = self.post("/api/wallet/account/create/", {"access_token": self.token, "bvn": "123"})
+        """A malformed BVN is refused as malformed.
+
+        Uses a customer who has NOT verified a BVN yet, because that is the only
+        state in which "enter a valid BVN" is the meaningful answer — the default
+        fixture is already verified, and for those the endpoint deliberately
+        answers 409 before it ever looks at the digits (see the test below).
+        """
+        _fresh, token = make_user("08020000901", "unverified@zitch.test",
+                                  identity_verified=False)
+        res, _ = self.post("/api/wallet/account/create/", {"access_token": token, "bvn": "123"})
         self.assertEqual(res.status_code, 400)
+
+    def test_account_create_refuses_a_bvn_that_is_already_verified(self):
+        """The one-time-BVN rule: a verified BVN is final and is never asked for
+        again, so this is refused before the digits are even considered. Only its
+        keyed hash is retained, and no later feature may train customers to
+        disclose the raw number a second time."""
+        res, body = self.post("/api/wallet/account/create/",
+                              {"access_token": self.token, "bvn": "22222222222"})
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("already verified", body["message"].lower())
 
     # --- transfer ---
     def test_transfer_moves_funds_atomically(self):

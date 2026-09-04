@@ -806,7 +806,7 @@ class ReconnectBankAccountAdminTests(TestCase):
 
     def test_falls_back_to_the_nin_product_when_bvn_holds_nothing(self):
         # Either product could have created the account and an operator cannot know
-        # which, so both are tried.
+        # which, so both are tried — BVN first, then NIN.
         calls = []
 
         def by_product(phone, *, bvn=False):
@@ -819,7 +819,15 @@ class ReconnectBankAccountAdminTests(TestCase):
         with patch("utility.wema.get_account_details", side_effect=by_product), \
              patch("utility.wema.lift_debit_restriction", return_value={"success": True}):
             wallet = self._run()
-        self.assertEqual(calls, [True, False])
+        # Asserted as an ORDERING, not an exact call list. The reconnect also tries
+        # each phone normalisation the bank might hold the customer under, so the
+        # BVN product is legitimately asked more than once before NIN is reached —
+        # pinning the exact sequence made this test fail on a change that only
+        # widened the search.
+        self.assertIn(True, calls)                    # the BVN product was tried
+        self.assertIn(False, calls)                   # and NIN was reached
+        self.assertLess(calls.index(True), calls.index(False))   # BVN first
+        self.assertIs(calls[-1], False)               # stopped on the NIN success
         self.assertEqual(wallet.account_number, "0123456789")
 
     def test_never_replaces_an_account_it_already_has(self):
