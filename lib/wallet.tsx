@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { getToken, saveDisplayName } from '@/lib/secureStore';
 import { apiPost, apiJson } from '@/lib/api';
 import type { Txn } from '@/components/design/ui';
@@ -133,44 +133,55 @@ export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
     }
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const token = await getToken();
-      if (!token) {
-        setLoading(false);
-        return;
-      }
-      const [balRes, txRes] = await Promise.allSettled([
-        apiPost('/api/wallet_balance/').then((r) => r.json()),
-        apiPost('/api/user-transaction-history/').then((r) => r.json()),
-      ]);
+  // Several tab focus effects can fire during the same navigation transition.
+  // Coalesce them into one balance/history request pair so the API, JSON parser and
+  // React tree do the work once rather than two or three times in parallel.
+  const loadInFlight = useRef<Promise<void> | null>(null);
 
-      if (balRes.status === 'fulfilled' && balRes.value?.success) {
-        setBalance(Number(balRes.value.wallet ?? 0));
-        // `||`, not `??`: the API returns "" for a missing name, which `??` keeps.
-        // Fall back through last name, then the email local-part, so the app
-        // never greets a signed-in customer as "there".
-        const v = balRes.value;
-        const named = String(v.user_first_name || v.user_last_name
-          || String(v.user_email || '').split('@')[0] || '');
-        setFirstName(named);
-        void saveDisplayName(named);
-        setAvatar(String(balRes.value.user_avatar ?? ''));
-        setAccountNumber(String(balRes.value.account_number ?? ''));
-        setPhoneNumber(String(balRes.value.user_phone_number ?? ''));
-        setAccountName(String(balRes.value.account_name ?? ''));
-        setBankName(String(balRes.value.bank_name ?? ''));
+  const load = useCallback((): Promise<void> => {
+    if (loadInFlight.current) return loadInFlight.current;
+
+    const run = (async () => {
+      setLoading(true);
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const [balRes, txRes] = await Promise.allSettled([
+          apiPost('/api/wallet_balance/').then((response) => response.json()),
+          apiPost('/api/user-transaction-history/').then((response) => response.json()),
+        ]);
+
+        if (balRes.status === 'fulfilled' && balRes.value?.success) {
+          const value = balRes.value;
+          setBalance(Number(value.wallet ?? 0));
+          const named = String(value.user_first_name || value.user_last_name
+            || String(value.user_email || '').split('@')[0] || '');
+          setFirstName(named);
+          void saveDisplayName(named);
+          setAvatar(String(value.user_avatar ?? ''));
+          setAccountNumber(String(value.account_number ?? ''));
+          setPhoneNumber(String(value.user_phone_number ?? ''));
+          setAccountName(String(value.account_name ?? ''));
+          setBankName(String(value.bank_name ?? ''));
+        }
+        if (txRes.status === 'fulfilled' && txRes.value?.status) {
+          const list = Array.isArray(txRes.value.all_site_transactions)
+            ? txRes.value.all_site_transactions
+            : [];
+          setTxns(list.map(mapTxn));
+        }
+      } catch {
+        // Keep last-known values visible through transient network failures.
+      } finally {
+        setLoading(false);
       }
-      if (txRes.status === 'fulfilled' && txRes.value?.status) {
-        const list = Array.isArray(txRes.value.all_site_transactions) ? txRes.value.all_site_transactions : [];
-        setTxns(list.map(mapTxn));
-      }
-    } catch {
-      // surfaced to the user elsewhere; keep the dashboard usable on failure
-    } finally {
-      setLoading(false);
-    }
+    })();
+
+    loadInFlight.current = run;
+    void run.finally(() => {
+      if (loadInFlight.current === run) loadInFlight.current = null;
+    });
+    return run;
   }, []);
 
   useEffect(() => {
