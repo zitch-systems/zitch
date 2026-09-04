@@ -473,6 +473,11 @@ def create_wallet_request(phone: str, email: str, *, bvn: str = "", nin: str = "
             resp = _post("wallet_nin", "/api/CustomerAccount/GenerateWalletAccountForPartnerships/Request",
                          {"phoneNumber": phone, "email": email, "nin": nin})
         data = resp.json()
+        log.info(
+            "wema_wallet_otp_request kind=%s status=%s success=%s response_keys=%s",
+            kind, resp.status_code, _ok(data),
+            sorted(str(key) for key in data.keys()) if isinstance(data, dict) else [],
+        )
         # The documented ResponseModel has no `data` envelope, but the live gateway
         # returns the OTP tracking id (schemas B2BOTPResponseModel/B2BOnboardingResponse)
         # — look for it at the top level and under data/result so we don't depend on
@@ -522,7 +527,14 @@ def validate_wallet_otp(phone: str, otp: str, tracking_id: str, *, bvn: bool = F
         path = ("/api/CustomerAccount/ValidateBVNandEnqueueAccountCreation" if bvn
                 else "/api/CustomerAccount/GenerateWalletAccountForPartnershipsV2/Otp")
         product = "wallet_bvn" if bvn else "wallet_nin"
-        data = _post(product, path, {"phoneNumber": phone, "otp": otp, "trackingId": tracking_id}).json()
+        resp = _post(product, path, {
+            "phoneNumber": phone, "otp": otp, "trackingId": tracking_id,
+        })
+        data = resp.json()
+        log.info(
+            "wema_wallet_otp_validate kind=%s status=%s success=%s has_tracking=%s",
+            "bvn" if bvn else "nin", resp.status_code, _ok(data), bool(tracking_id),
+        )
         return {"success": _ok(data), "message": _msg(data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -546,11 +558,19 @@ def resend_wallet_otp(phone: str, tracking_id: str, *, bvn: bool = False) -> dic
         # body raises ValueError (not a RequestException) and would crash a genuine
         # success. Treat any 2xx with an empty/non-JSON body as resent.
         if resp.status_code < 300 and not (resp.content or b"").strip():
+            log.info(
+                "wema_wallet_otp_resend kind=%s status=%s success=True empty_body=True",
+                "bvn" if bvn else "nin", resp.status_code,
+            )
             return {"success": True, "message": "OTP resent"}
         try:
             data = resp.json()
         except ValueError:
             return {"success": resp.status_code < 300, "message": "OTP resent"}
+        log.info(
+            "wema_wallet_otp_resend kind=%s status=%s success=%s empty_body=False",
+            "bvn" if bvn else "nin", resp.status_code, _ok(data),
+        )
         return {"success": _ok(data), "message": _msg(data)}
     except requests.RequestException as exc:
         return _unreachable(exc)
@@ -734,8 +754,10 @@ def create_wallet_with_face(phone: str, email: str, *, identity_type: str,
         ok = _ok(data)
         message = _msg(data)
         if not ok:
-            log.warning("wema_face_account_failed status=%s msg=%s",
-                        resp.status_code, message)
+            log.warning(
+                "wema_face_account_failed status=%s message_fingerprint=%s",
+                resp.status_code, _fingerprint(message),
+            )
         return {
             "success": ok,
             "message": message,
