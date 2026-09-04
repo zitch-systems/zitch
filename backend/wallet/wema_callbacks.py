@@ -1029,8 +1029,11 @@ def wema_face_callback(request, state=""):
             log.warning("wema_face_account_readback_failed user=%s", user.id,
                         exc_info=True)
         if account_failed:
-            log.warning("wema_face_account_start_failed user=%s kind=%s msg=%s",
-                        user.id, kind, account.get("message", ""))
+            log.warning(
+                "wema_face_account_start_failed user=%s kind=%s message_fingerprint=%s",
+                user.id, kind,
+                _fingerprint(str(account.get("message") or "")),
+            )
             alert("Wema face identity passed but account creation did not start",
                   level="error", user_id=user.id, identity_type=kind)
     wallet.refresh_from_db(fields=["account_number"])
