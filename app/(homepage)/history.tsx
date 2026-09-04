@@ -4,6 +4,7 @@ import { router, useFocusEffect } from 'expo-router';
 import {
   Screen, Header, TxnRow, HeaderLink, SelectRow, PickerSheet, Card, NText, money, txnState,
 } from '@/components/design/ui';
+import { SkeletonRow } from '@/components/design/Skeleton';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
@@ -41,7 +42,7 @@ const inCategory = (t: { dir: string; icon: string }, cat: string) => {
 
 const History = () => {
   const { c } = useTheme();
-  const { txns, reload } = useWallet();
+  const { txns, hydrated, reload } = useWallet();
   const [cat, setCat] = useState('all');
   const [status, setStatus] = useState('all');
   const [picker, setPicker] = useState<null | 'cat' | 'status'>(null);
@@ -52,6 +53,18 @@ const History = () => {
   // cached when the wallet last loaded (a transfer made elsewhere wouldn't appear
   // until some other screen happened to refresh).
   useFocusEffect(useCallback(() => { reload(); }, [reload]));
+
+  // One stable handler for the whole list rather than a fresh arrow per row:
+  // TxnRow is memoized, and a new function per render would defeat that on every
+  // state change (balance arriving, pull-to-refresh, a filter toggle).
+  const openTxn = useCallback((x: any) => {
+    router.push({ pathname: '/txndetail', params: {
+      type: x.type, amount: String(x.amount), status: x.status, dir: x.dir,
+      detail: x.detail, reference: x.reference, icon: x.icon,
+      narration: x.narration ?? '',
+    } });
+  }, []);
+
 
   // Pull-to-refresh: re-fetch the ledger while waiting on a pending transfer to
   // settle, instead of leaving/re-entering the screen to force a reload.
@@ -106,7 +119,20 @@ const History = () => {
         <SelectRow compact value={statusLabel} onPress={() => setPicker('status')} />
       </View>
 
-      {groups.length === 0 ? (
+      {!hydrated && txns.length === 0 ? (
+        // Before the first fetch returns there is nothing to say about this
+        // account yet. "Nothing to show" is an answer, and showing it to someone
+        // whose history is still in flight answers a question nobody asked.
+        <Card style={{ paddingVertical: 6 }} pad={16}>
+          <View accessible accessibilityLabel="Loading transactions">
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        </Card>
+      ) : groups.length === 0 ? (
         <Card style={{ alignItems: 'center', paddingVertical: 42 }}>
           <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
             <ZIcon name="history" size={26} color={c.ink3} />
@@ -163,7 +189,7 @@ const History = () => {
                       key={x.id}
                       txn={{ ...x, detail: x.ts ? txnDate(x.ts) : x.detail }}
                       last={i === g.rows.length - 1}
-                      onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon, narration: x.narration ?? '' } })}
+                      onSelect={openTxn}
                     />
                   ))}
                 </View>

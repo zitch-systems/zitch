@@ -1,12 +1,13 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Btn, money } from '@/components/design/ui';
 import { Monogram } from '@/components/design/flowkit';
 import ReceiptExport, { ExportAction } from '@/components/design/ReceiptExport';
 import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
 import { ReceiptRow, receiptHtml, senderRows } from '@/lib/receipt';
+import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -40,7 +41,15 @@ const TxnDetail = () => {
   // Status badge reflects the real status — not always "success". The exported
   // file carries the same status: a failed transaction must never leave this
   // screen as a document stamped Successful.
-  const status = p.status || 'Successful';
+  //
+  // LIVE STATUS. Everything on this screen used to come from the route params
+  // captured when the row was tapped, so a transfer that was Pending at that
+  // moment stayed Pending on screen forever — the reconciler settles it minutes
+  // later and nothing here ever asked again. A payment that reads "Pending"
+  // permanently is indistinguishable, to the person who sent it, from money that
+  // vanished. So: ask the server on focus, and keep asking while it is pending.
+  const [liveStatus, setLiveStatus] = useState<string | null>(null);
+  const status = liveStatus || p.status || 'Successful';
   const sl = status.toLowerCase();
   const statusColor = sl === 'failed' ? c.red : sl === 'pending' ? c.amber : c.lime;
   const statusIcon = sl === 'failed' ? 'x' : sl === 'pending' ? 'history' : 'check';
@@ -50,7 +59,62 @@ const TxnDetail = () => {
   // depending on which door you entered through is two different documents.
   // On an inflow the wallet is the party receiving, so the lines would be
   // actively wrong; they are only printed for money leaving.
-  const { accountName, firstName, accountNumber, bankName } = useWallet();
+  const { accountName, firstName, accountNumber, bankName, reload } = useWallet();
+
+  // Poll only while the transaction is unresolved, and only for a bounded time:
+  // a settled row has nothing left to say, and an indefinite timer on a screen
+  // someone leaves open is a battery cost with no payoff. ~2 minutes covers the
+  // ordinary settle; anything slower is the reconciler's job, and History will
+  // show it on the next pull-to-refresh.
+  const POLL_MS = 12_000;
+  const MAX_POLLS = 10;
+  const polls = useRef(0);
+
+  const refreshStatus = useCallback(async (): Promise<string | null> => {
+    const reference = p.reference;
+    if (!reference) return null;
+    try {
+      const res = await apiJson<{ success?: boolean; transaction?: { transaction_status?: string } }>(
+        '/api/transaction/status/', { reference },
+      );
+      const next = res?.success ? String(res.transaction?.transaction_status || '') : '';
+      if (next) {
+        setLiveStatus(next);
+        return next;
+      }
+    } catch {
+      // Offline or a transient failure: keep showing the last known status
+      // rather than blanking a receipt the customer may be reading right now.
+    }
+    return null;
+  }, [p.reference]);
+
+  useFocusEffect(useCallback(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    polls.current = 0;
+
+    const tick = async () => {
+      const next = await refreshStatus();
+      if (!alive) return;
+      if (next != null && next.toLowerCase() !== 'pending') {
+        // Settled. The list this screen was opened from is stale now too, so
+        // refresh it — backing out should not show the old Pending row.
+        void reload();
+        return;
+      }
+      // Still pending, or the request failed (next === null). A failed poll is
+      // deliberately retried rather than treated as terminal: the usual cause is
+      // a dropped connection, and giving up on the first one would strand the
+      // screen on exactly the status we are trying to move off.
+      if (polls.current >= MAX_POLLS) return;
+      polls.current += 1;
+      timer = setTimeout(tick, POLL_MS);
+    };
+    void tick();
+
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [refreshStatus, reload]));
   const from = inflow ? [] : senderRows({
     name: accountName || firstName,
     account: accountNumber,
@@ -89,6 +153,25 @@ const TxnDetail = () => {
             <ZIcon name={statusIcon} size={13} color={statusColor} />
             <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: statusColor }}>{status}</Text>
           </View>
+          {/* A Pending badge on its own says nothing about whether anyone is
+              still working on it. This line says the screen is actively watching
+              — which is the difference between "processing" and "abandoned" —
+              and gives a tap to check now for someone who does not want to wait
+              out the poll. */}
+          {sl === 'pending' ? (
+            <View style={{ alignItems: 'center', marginTop: 10, gap: 8 }}>
+              <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, textAlign: 'center', paddingHorizontal: 24, lineHeight: 18 }}>
+                Still with the bank. This updates by itself — your money has not left your balance twice.
+              </Text>
+              <Text
+                onPress={() => { void refreshStatus(); }}
+                accessibilityRole="button"
+                style={{ fontSize: 13, color: c.brand, fontFamily: font.semibold }}
+              >
+                Check now
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={{ marginTop: 22, marginBottom: 4, borderRadius: 18, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, paddingHorizontal: 16, paddingBottom: 8 }}>

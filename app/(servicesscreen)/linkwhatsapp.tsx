@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Linking, ActivityIndicator, AppState } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import * as Location from 'expo-location';
 import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
@@ -209,10 +208,15 @@ const LinkWhatsApp = () => {
             <Step n={3} text="You're linked. This screen updates on its own." />
           </Card>
           <View style={{ height: 18 }} />
-          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary" onPress={async () => {
-            await Location.requestForegroundPermissionsAsync();
-            setPinOpen(true);
-          }} disabled={busy} />
+          {/* No location request here. This screen generates a link code and
+              hands off to WhatsApp — it reads no location, and nothing it opens
+              does either. The call was copied from the KYC screen, where the
+              bank's hosted liveness page genuinely needs it. Asking for a
+              customer's location immediately before a PIN prompt, with no
+              visible reason, is the kind of thing that costs trust and gets
+              flagged in store review. */}
+          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary"
+            onPress={() => setPinOpen(true)} disabled={busy} />
         </>
       )}
 

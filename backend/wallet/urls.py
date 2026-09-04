@@ -12,6 +12,9 @@ urlpatterns = [
     path("wallet/wema/verify-otp/", views.wema_wallet_verify_otp),
     path("wallet/wema/resend-otp/", views.wema_wallet_resend_otp),
     path("user-transaction-history/", views.transaction_history),
+    # One transaction, read live — so a Pending row on the detail screen can
+    # actually resolve instead of being frozen at whatever it was when tapped.
+    path("transaction/status/", views.transaction_status),
     path("fund/initialize/", views.fund_initialize),
     path("fund/verify/", views.fund_verify),
     # TEST-ONLY: credit a mock deposit (WEMA_SIMULATION + SIMULATE_DEPOSIT_TOKEN only).

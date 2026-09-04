@@ -29,56 +29,95 @@ const openWhatsApp = () => {
   );
 };
 
+/**
+ * One tab. Declared at MODULE level, not inside BottomNav.
+ *
+ * It used to live in BottomNav's body, which made it a brand-new component type
+ * on every render. React identifies components by reference, so a new type is
+ * not a re-render — it is a full unmount and remount. Every tab press changes
+ * `state`, so all four tabs were being torn down and rebuilt on every single
+ * navigation, throwing away each Pressable's internal press state and doing far
+ * more work than diffing four sets of props. This bar is mounted on every screen
+ * in the (homepage) group, so it was on the critical path of most taps in the
+ * app.
+ *
+ * Hoisted and memoized, a press now re-renders only the two tabs whose `on`
+ * actually changed.
+ */
+const Tab = React.memo(({ it, on, onPress, brand, ink3 }: {
+  it: { name: string; icon: string; label: string };
+  on: boolean;
+  onPress: () => void;
+  brand: string;
+  ink3: string;
+}) => {
+  // Only the two tokens this component actually paints with, passed as plain
+  // strings rather than the theme object: memoization compares props by
+  // identity, and the context object is a new reference on every theme render.
+  const c = { brand, ink3 };
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="tab"
+      accessibilityLabel={it.label}
+      accessibilityState={{ selected: on }}
+      // Tactile 3D press: the tab scales down + dims on touch.
+      style={({ pressed }) => ({
+        flex: 1,
+        alignItems: 'center',
+        gap: 5,
+        paddingVertical: 2,
+        transform: [{ scale: pressed ? 0.88 : 1 }],
+        opacity: pressed ? 0.85 : 1,
+      })}
+    >
+      {/* Active tab "lights up" with a highlighted pill behind the icon. */}
+      <View
+        style={{
+          paddingHorizontal: 15,
+          paddingVertical: 6,
+          borderRadius: 15,
+          backgroundColor: on ? 'rgba(15,162,149,.14)' : 'transparent',
+        }}
+      >
+        <ZIcon name={it.icon} size={26} color={on ? c.brand : c.ink3} stroke={on ? 2.2 : 1.8} />
+      </View>
+      <Text style={{ fontSize: 11.5, fontFamily: on ? font.semibold : font.medium, color: on ? c.brand : c.ink3 }}>
+        {it.label}
+      </Text>
+    </Pressable>
+  );
+});
+Tab.displayName = 'BottomNavTab';
+
 const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
   const { c } = useTheme();
   const insets = useSafeAreaInsets();
   const activeName = state.routes[state.index]?.name;
 
-  const Tab = ({ it }: { it: { name: string; icon: string; label: string } }) => {
-    const on = activeName === it.name;
-    const route = state.routes.find((candidate) => candidate.name === it.name);
-    return (
-      <Pressable
-        key={it.name}
-        onPress={() => {
-          const event = navigation.emit({ type: 'tabPress', target: route?.key, canPreventDefault: true });
-          if (!on && !event.defaultPrevented) navigation.navigate(it.name as never);
-        }}
-        accessibilityRole="tab"
-        accessibilityLabel={it.label}
-        accessibilityState={{ selected: on }}
-        // Tactile 3D press: the tab scales down + dims on touch.
-        style={({ pressed }) => ({
-          flex: 1,
-          alignItems: 'center',
-          gap: 5,
-          paddingVertical: 2,
-          transform: [{ scale: pressed ? 0.88 : 1 }],
-          opacity: pressed ? 0.85 : 1,
-        })}
-      >
-        {/* Active tab "lights up" with a highlighted pill behind the icon. */}
-        <View
-          style={{
-            paddingHorizontal: 15,
-            paddingVertical: 6,
-            borderRadius: 15,
-            backgroundColor: on ? 'rgba(15,162,149,.14)' : 'transparent',
-          }}
-        >
-          <ZIcon name={it.icon} size={26} color={on ? c.brand : c.ink3} stroke={on ? 2.2 : 1.8} />
-        </View>
-        <Text style={{ fontSize: 11.5, fontFamily: on ? font.semibold : font.medium, color: on ? c.brand : c.ink3 }}>
-          {it.label}
-        </Text>
-      </Pressable>
-    );
-  };
+  // Stable per-tab press handlers. Rebuilding these inline on every render would
+  // hand React.memo a new prop each time and defeat the memoization above.
+  const press = React.useCallback((name: string) => {
+    const route = state.routes.find((candidate) => candidate.name === name);
+    const event = navigation.emit({ type: 'tabPress', target: route?.key, canPreventDefault: true });
+    if (activeName !== name && !event.defaultPrevented) navigation.navigate(name as never);
+  }, [state.routes, navigation, activeName]);
+
+  const renderTab = (it: { name: string; icon: string; label: string }) => (
+    <Tab
+      key={it.name}
+      it={it}
+      on={activeName === it.name}
+      onPress={() => press(it.name)}
+      brand={c.brand}
+      ink3={c.ink3}
+    />
+  );
 
   return (
     <View style={{ backgroundColor: c.surface, borderTopWidth: 1, borderTopColor: c.line }}>
       <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-around', paddingTop: 10, paddingBottom: Math.max(8, insets.bottom), paddingHorizontal: 8 }}>
-        {LEFT.map((it) => <Tab key={it.name} it={it} />)}
+        {LEFT.map(renderTab)}
 
         {/* Raised WhatsApp button — the channel's hero action, dead centre. */}
         <Pressable
@@ -121,7 +160,7 @@ const BottomNav = ({ state, navigation }: BottomTabBarProps) => {
           <Text style={{ fontSize: 10, marginTop: -2, fontFamily: font.semibold, color: '#0FA295', textAlign: 'center', lineHeight: 11 }}>WhatsApp{'\n'}banking</Text>
         </Pressable>
 
-        {RIGHT.map((it) => <Tab key={it.name} it={it} />)}
+        {RIGHT.map(renderTab)}
       </View>
     </View>
   );

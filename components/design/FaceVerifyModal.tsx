@@ -5,6 +5,24 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
+import apiBaseUrl from '@/components/configFiles/apiConfig';
+
+/**
+ * The host our Wema face callback lands on, for THIS build.
+ *
+ * Derived once from the configured API base rather than written out, so the
+ * "close the sheet when the bank navigates to our callback" check below works on
+ * every environment instead of only the production domain. Falls back to an
+ * empty string, which simply matches nothing — a hostname we cannot parse must
+ * not accidentally match some other page and close the sheet mid-capture.
+ */
+const callbackHost = (() => {
+  try {
+    return new URL(apiBaseUrl).hostname;
+  } catch {
+    return '';
+  }
+})();
 
 /**
  * The bank's face check, hosted inside the app.
@@ -124,9 +142,16 @@ const FaceVerifyModal = ({
             onShouldStartLoadWithRequest={(request) => {
               try {
                 const target = new URL(request.url);
+                // Matched against the API base this build actually talks to, not
+                // a literal host. Hardcoding api.zitch.ng meant the sheet only
+                // closed itself in production: on staging, a review build, or any
+                // custom EXPO_PUBLIC_API_URL the check silently never fired and
+                // the customer was left reading the callback's raw JSON — the
+                // exact failure this handler exists to prevent, in every
+                // environment where it is hardest to notice.
                 if (
                   target.protocol === 'https:'
-                  && target.hostname === 'api.zitch.ng'
+                  && target.hostname === callbackHost
                   && target.pathname.startsWith('/webhooks/wema/face')
                 ) {
                   close();
@@ -136,7 +161,7 @@ const FaceVerifyModal = ({
                 // Let the WebView handle malformed/transient navigation values.
               }
               return true;
-            }
+            }}
             // Liveness needs the camera INSIDE the web page. Both platforms already
             // declare the permission at the app level (app.json); these hand it
             // through to the WebView so the customer is asked once, by the OS,

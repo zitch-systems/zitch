@@ -6,8 +6,14 @@ import { useTheme, font } from '@/lib/theme';
 // independent of path-alias handling — the loader's mark must never be missing.
 const LOGO = require('../../assets/images/zitch-mark.png');
 
-/** One turn of the mark. Slow enough to read as the logo rather than a blur. */
-const SPIN_MS = 1800;
+/** One turn of the mark.
+ *
+ *  Fast enough to read as "working on it", slow enough to still read as the
+ *  logo rather than a blur. This was 1800ms, which is a deliberate, premium
+ *  cadence in isolation but the wrong one here: a loader is the thing people
+ *  stare at while they wait, and a slow rotation makes the wait itself feel
+ *  slower. Perceived speed is what this component is actually for. */
+const SPIN_MS = 1150;
 
 /**
  * ZSpin — the Zitch mark rotating about its own vertical axis, like a coin on a

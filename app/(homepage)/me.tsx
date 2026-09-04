@@ -7,6 +7,7 @@ import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { Screen, Card, ZItem, Toggle, money, NText, PinSheet } from '@/components/design/ui';
+import { Skeleton } from '@/components/design/Skeleton';
 import { Hero } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -70,11 +71,15 @@ const Group = ({ items }: { items: Row[] }) => {
 
 const Me = () => {
   const { c, theme, setTheme } = useTheme();
-  const { balance, firstName, avatar, showBal, setShowBal, reload: reloadWallet } = useWallet();
+  const { balance, firstName, avatar, hydrated, showBal, setShowBal, reload: reloadWallet } = useWallet();
   const [biometrics, setBiometrics] = useState(false);
   const [bioTxn, setBioTxn] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
-  const [tier, setTier] = useState(1);
+  // null until the KYC status call answers. Seeding this to 1 asserted a KYC
+  // level before asking: a Tier 3 customer opened this screen, read "Tier 1",
+  // and watched it correct itself — which on a screen about limits and identity
+  // is exactly the number they came to check.
+  const [tier, setTier] = useState<number | null>(null);
 
   useEffect(() => {
     isBiometricEnabled().then(setBiometrics);
@@ -222,13 +227,19 @@ const Me = () => {
       >
         <Avatar size={50} ring={c.brand} surface={c.surface} uri={avatar} />
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
+          {hydrated ? (
+            <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1 }}>Hi, {firstName || 'there'}</Text>
+          ) : (
+            <Skeleton width={150} height={17} radius={7} />
+          )}
           {/* Tier pill sits on the screen bg (no surface). The amber tint goes
               dark over the near-black dark bg, so a dark-brown ink is only
               legible in light mode — use the bright amber token in dark. */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 4, paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(245,166,35,.16)', alignSelf: 'flex-start' }}>
             <ZIcon name="check" size={11} color={theme === 'dark' ? c.amber : '#B27400'} stroke={2.6} />
-            <Text style={{ color: theme === 'dark' ? c.amber : '#B27400', fontSize: 11.5, fontFamily: font.bold }}>Tier {tier}</Text>
+            <Text style={{ color: theme === 'dark' ? c.amber : '#B27400', fontSize: 11.5, fontFamily: font.bold }}>
+              {tier == null ? 'Tier …' : `Tier ${tier}`}
+            </Text>
           </View>
         </View>
         <View style={{ width: 40, height: 40, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}>
@@ -242,9 +253,13 @@ const Me = () => {
           <Text style={{ color: c.ink3, fontSize: 13, fontFamily: font.regular }}>Total balance</Text>
           <ZIcon name={showBal ? 'eye' : 'eyeoff'} size={15} color={c.ink3} />
         </Pressable>
-        <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
-          {showBal ? money(balance) : '₦ ••••••'}
-        </NText>
+        {hydrated ? (
+          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 2, fontVariant: ['tabular-nums'] }}>
+            {showBal ? money(balance) : '₦ ••••••'}
+          </NText>
+        ) : (
+          <Skeleton width={175} height={26} radius={8} style={{ marginTop: 4 }} />
+        )}
       </View>
 
       {/* safety tips */}

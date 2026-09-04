@@ -8,6 +8,7 @@ import { Screen, Sheet, TxnRow, money, NText } from '@/components/design/ui';
 import { Hero, SectionLabel, ServiceTile } from '@/components/design/widgets';
 import SmartPaste from '@/components/design/SmartPaste';
 import WhatsAppBankingPromo from '@/components/design/whatsapp-banking-promo';
+import { Skeleton, SkeletonRow } from '@/components/design/Skeleton';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -63,7 +64,7 @@ const initialsOf = (full: string, fallback: string) => {
 
 const Home = () => {
   const { c } = useTheme();
-  const { balance, firstName, accountName, accountNumber, bankName, txns, showBal, setShowBal, reload } = useWallet();
+  const { balance, firstName, accountName, accountNumber, bankName, txns, hydrated, showBal, setShowBal, reload } = useWallet();
   const [more, setMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -78,6 +79,17 @@ const Home = () => {
     setRefreshing(true);
     try { await reload(); } finally { setRefreshing(false); }
   }, [reload]);
+
+  // One stable handler for the whole list rather than a fresh arrow per row:
+  // TxnRow is memoized, and a new function per render would defeat that on every
+  // state change (balance arriving, pull-to-refresh, a filter toggle).
+  const openTxn = useCallback((x: any) => {
+    router.push({ pathname: '/txndetail', params: {
+      type: x.type, amount: String(x.amount), status: x.status, dir: x.dir,
+      detail: x.detail, reference: x.reference, icon: x.icon,
+      narration: x.narration ?? '',
+    } });
+  }, []);
 
   const copyAccount = async () => {
     if (!accountNumber) return;
@@ -118,9 +130,16 @@ const Home = () => {
         </Pressable>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text style={{ fontSize: 13, fontFamily: font.regular, color: c.ink3 }}>{greeting()} 👋</Text>
-          <Text numberOfLines={1} style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginTop: 1 }}>
-            {name}
-          </Text>
+          {hydrated ? (
+            <Text numberOfLines={1} style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginTop: 1 }}>
+              {name}
+            </Text>
+          ) : (
+            // Never the fallback "there" during load: greeting a customer by a
+            // placeholder is a worse first impression than greeting them a
+            // moment later by their actual name.
+            <Skeleton width={140} height={17} radius={7} style={{ marginTop: 4 }} />
+          )}
         </View>
         <Pressable
           onPress={() => router.push('/scan')}
@@ -177,15 +196,27 @@ const Home = () => {
           </View>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 8 }}>
-          <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ color: '#fff', fontSize: 28, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
-            {showBal ? whole : '₦ ••••••'}
-          </NText>
-          {showBal && kobo ? (
-            <NText style={{ color: 'rgba(255,255,255,.7)', fontSize: 16, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
-              {kobo}
-            </NText>
-          ) : null}
+        <View style={{ flexDirection: 'row', alignItems: 'baseline', marginTop: 8, minHeight: 34 }}>
+          {!hydrated ? (
+            // THE reason this whole skeleton pass exists. Before it, a cold open
+            // painted "₦0.00" in 28pt for as long as the balance call took. A
+            // blank space reads as loading; a rendered zero reads as a fact, and
+            // "your money is gone" is not a thing to say by accident.
+            <View style={{ paddingVertical: 3 }}>
+              <Skeleton width={190} height={28} radius={9} />
+            </View>
+          ) : (
+            <>
+              <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ color: '#fff', fontSize: 28, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+                {showBal ? whole : '₦ ••••••'}
+              </NText>
+              {showBal && kobo ? (
+                <NText style={{ color: 'rgba(255,255,255,.7)', fontSize: 16, fontFamily: font.extrabold, fontVariant: ['tabular-nums'] }}>
+                  {kobo}
+                </NText>
+              ) : null}
+            </>
+          )}
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, gap: 10 }}>
@@ -266,7 +297,16 @@ const Home = () => {
       {/* recent */}
       <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
         <SectionLabel action="See all" onAction={() => router.push('/history')}>Recent activity</SectionLabel>
-        {txns.length === 0 ? (
+        {!hydrated && txns.length === 0 ? (
+          // "No transactions yet" is a CLAIM about the account. Making it before
+          // the history call has returned tells a customer with a full statement
+          // that they have never transacted — briefly, but they see it.
+          <View accessible accessibilityLabel="Loading recent activity">
+            <SkeletonRow />
+            <SkeletonRow />
+            <SkeletonRow />
+          </View>
+        ) : txns.length === 0 ? (
           <Text style={{ color: c.ink3, fontFamily: font.regular, paddingVertical: 8 }}>No transactions yet</Text>
         ) : (
           txns.slice(0, 4).map((x, i) => (
@@ -274,7 +314,7 @@ const Home = () => {
               key={x.id}
               txn={x}
               last={i === Math.min(3, txns.length - 1)}
-              onPress={() => router.push({ pathname: '/txndetail', params: { type: x.type, amount: String(x.amount), status: x.status, dir: x.dir, detail: x.detail, reference: x.reference, icon: x.icon } })}
+              onSelect={openTxn}
             />
           ))
         )}

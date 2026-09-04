@@ -14,7 +14,7 @@ from datetime import timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
 from django.conf import settings
-from django.db import IntegrityError, transaction as db_transaction
+from django.db import IntegrityError, connections, transaction as db_transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -287,6 +287,27 @@ def process_inbound_message(pk: int, *, raise_errors=False) -> str:
     return "processed"
 
 
+def _inbound_concurrency() -> int:
+    """How many inbound messages to process at once.
+
+    Bounded and configurable rather than unlimited: every worker thread can hold
+    a DB connection and an outbound HTTP socket, so the ceiling here is really a
+    statement about the database connection pool. Defaults to 4, which is enough
+    that one slow media message stops blocking everyone without meaningfully
+    changing the connection footprint.
+
+    Forced to 1 under TESTING so the suite keeps its deterministic, serial
+    ordering — concurrency here would make assertions about processing order
+    flaky for no benefit in a test.
+    """
+    if getattr(settings, "TESTING", False):
+        return 1
+    try:
+        return max(1, min(16, int(getattr(settings, "WHATSAPP_WORKER_CONCURRENCY", 4))))
+    except (TypeError, ValueError):
+        return 4
+
+
 def process_inbound_batch(limit=20) -> int:
     now = timezone.now()
     stale = now - INBOUND_LEASE
@@ -312,10 +333,44 @@ def process_inbound_batch(limit=20) -> int:
             Q(processing_started_at__isnull=True) | Q(processing_started_at__lte=stale),
         ).order_by("created").values_list("pk", flat=True)[:limit]
     )
-    processed = 0
-    for pk in ids:
-        processed += int(process_inbound_message(pk) in {"processed", "dead_letter"})
-    return processed
+    if not ids:
+        return 0
+    workers = _inbound_concurrency()
+    if workers <= 1 or len(ids) == 1:
+        processed = 0
+        for pk in ids:
+            processed += int(process_inbound_message(pk) in {"processed", "dead_letter"})
+        return processed
+
+    # Process different senders at the same time.
+    #
+    # This loop used to be strictly serial, which made the slowest message in the
+    # queue everybody's problem: a voice note (media download + transcription can
+    # run to ~50s) or a chat-PIN transfer waiting on the bank rail (up to 30s)
+    # held the single worker, and every other customer's reply sat behind it. That
+    # is the whole shape of the "sometimes slow" report — the bot is instant until
+    # someone ahead of you sends a photo.
+    #
+    # Safe because ordering is already enforced per SENDER, not globally:
+    # _claim_inbound refuses a row while an earlier unprocessed row from the same
+    # msisdn exists ("sender_busy"), so one customer's messages can never be
+    # reordered by this. A skipped row is simply picked up on the next poll,
+    # exactly as it already is when several worker processes race the queue.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run(pk: int) -> bool:
+        try:
+            return process_inbound_message(pk) in {"processed", "dead_letter"}
+        finally:
+            # Each thread opens its own DB connection. Django only cleans those up
+            # on request boundaries, which a worker thread never crosses, so
+            # without this the pool leaks a connection per thread per batch until
+            # Postgres refuses new ones.
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=workers,
+                            thread_name_prefix="wa-inbound") as pool:
+        return sum(int(done) for done in pool.map(_run, ids))
 
 
 def _claim_outbound(pk: int):
