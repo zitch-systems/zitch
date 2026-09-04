@@ -1281,15 +1281,15 @@ def _account_otp_screen(pa, error: str = "") -> dict:
         user=pa.user,
         tracking_id=str(pa.payload.get("tracking_id") or ""),
     ).only("identity_type").first()
-    # Prefer the identity selected in this session. A stale provisioning row can
-    # belong to an earlier BVN attempt while the current Flow is NIN.
-    selected = str(pa.payload.get("id_type") or pa.payload.get("id_kind") or "").lower()
-    if selected in ("bvn", "nin"):
-        using_bvn = selected == "bvn"
-    elif attempt is not None:
+    # The server-side attempt is the exact rail Wema opened and the same record
+    # OTP validation uses. It must override every client/cached Flow field. Only
+    # fall back to this session's menu choice before a tracking record exists.
+    if attempt is not None:
         using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     else:
-        using_bvn = bool(pa.payload.get("using_bvn"))
+        selected = str(pa.payload.get("id_type") or pa.payload.get("id_kind") or "").lower()
+        using_bvn = (selected == "bvn" if selected in ("bvn", "nin")
+                     else bool(pa.payload.get("using_bvn")))
     kind = "BVN" if using_bvn else "NIN"
     return _identity_screen(
         ACCOUNT_OTP,
