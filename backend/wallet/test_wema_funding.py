@@ -16,7 +16,7 @@ from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import hash_identifier
-from wallet.models import Transaction, Wallet, WemaProvisioningAttempt
+from wallet.models import Transaction, Wallet, WemaFaceSession, WemaProvisioningAttempt
 from wallet.services import apply_wema_credit, wema_account_reference
 from wallet.tests import make_user
 
@@ -85,6 +85,14 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertEqual(body["otp_destination_kind"], "nin")
         self.assertNotIn(self.user.phone, body["message"])
         self.assertIn("NIN", body["message"])
+
+    def test_reused_nin_attempt_never_claims_the_zitch_phone(self):
+        first = self._post("/api/wallet/wema/create/", {"nin": "12345678901"}).json()
+        second = self._post("/api/wallet/wema/create/", {"nin": "12345678901"}).json()
+        self.assertEqual(second["tracking_id"], first["tracking_id"])
+        self.assertEqual(second["otp_destination"], "")
+        self.assertEqual(second["otp_destination_kind"], "nin")
+        self.assertNotIn(self.user.phone, second["message"])
 
     def test_otp_flow_provisions_wema_account(self):
         r1 = self._post("/api/wallet/wema/create/", {"bvn": "22222222222"})
@@ -377,6 +385,57 @@ class WemaAlatFundingTests(TestCase):
     def test_statement_needs_account(self):
         r = self._post("/api/wallet/statement/", {})
         self.assertEqual(r.status_code, 404)
+
+
+@override_settings(PAYMENT_PROVIDER="wema")
+class WemaAsyncAccountRecoveryTests(TestCase):
+    """A delayed/missed bank callback must not strand a completed verification."""
+
+    def _run(self, account):
+        with patch("utility.wema.get_account_details", return_value=account), \
+             patch("utility.wema.lift_debit_restriction",
+                   return_value={"success": True}), \
+             patch("utility.wema.get_transactions",
+                   return_value={"success": True, "transactions": []}):
+            call_command("reconcile_wema", "--account-recovery-limit=20")
+
+    def test_recovers_account_after_successful_face_session(self):
+        user, _ = make_user("08030000881", "face-recover@zitch.app")
+        WemaFaceSession.objects.create(
+            user=user, state="face-recovery-1", identity_type=WemaFaceSession.BVN,
+            identity_hash=hash_identifier("22222222222"),
+            correlation_id="COR-RECOVER-1", status=WemaFaceSession.VERIFIED,
+            expires_at=timezone.now() + timedelta(minutes=10))
+        self._run({"success": True, "account_number": "0123456701",
+                   "account_name": "ADA EZE", "bank_name": "Wema Bank"})
+        self.assertEqual(Wallet.objects.get(user=user).account_number, "0123456701")
+
+    def test_recovers_account_after_accepted_otp_returned_pending(self):
+        user, _ = make_user("08030000882", "otp-recover@zitch.app",
+                            identity_verified=False)
+        attempt = WemaProvisioningAttempt.objects.create(
+            user=user, tracking_id="otp-recovery-1",
+            identity_type=WemaProvisioningAttempt.NIN,
+            identity_hash=hash_identifier("12345678901"), identity_last4="8901",
+            expires_at=timezone.now() + timedelta(minutes=10))
+        self._run({"success": True, "account_number": "0123456702",
+                   "account_name": "ADA EZE", "bank_name": "Wema Bank"})
+        self.assertEqual(Wallet.objects.get(user=user).account_number, "0123456702")
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, WemaProvisioningAttempt.VERIFIED)
+
+    def test_keeps_recovery_retryable_while_wema_is_still_pending(self):
+        user, _ = make_user("08030000883", "still-pending@zitch.app",
+                            identity_verified=False)
+        attempt = WemaProvisioningAttempt.objects.create(
+            user=user, tracking_id="otp-recovery-2",
+            identity_type=WemaProvisioningAttempt.NIN,
+            identity_hash=hash_identifier("12345678902"), identity_last4="8902",
+            expires_at=timezone.now() + timedelta(minutes=10))
+        self._run({"success": False, "message": "Account details not found"})
+        self.assertEqual(Wallet.objects.get(user=user).account_number, "")
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.status, WemaProvisioningAttempt.PENDING)
 
 
 class WemaReconcileTests(TestCase):
