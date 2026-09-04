@@ -10,7 +10,7 @@ import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiJson } from '@/lib/api';
 import ZIcon from '@/components/design/ZIcon';
 import { Screen, Header, Field, Btn, money, NText, SelectRow, PickerSheet } from '@/components/design/ui';
-import { LoadingMark } from '@/components/design/Loading';
+import { Loading, LoadingMark } from '@/components/design/Loading';
 import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
 import { useTheme, font } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
@@ -699,7 +699,7 @@ const Kyc = () => {
         // without a token/session, `status` stays null forever and this must
         // fall through to the real content below rather than spin forever.
         <View style={{ alignItems: 'center', paddingTop: 60 }}>
-          <LoadingMark size={28} />
+          <Loading full={false} label="Loading your verification status…" />
         </View>
       ) : (
       <>
