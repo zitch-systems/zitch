@@ -175,6 +175,14 @@ class User(AbstractUser):
     bvn_hash = models.CharField(max_length=64, blank=True, default="")
     bvn_last4 = models.CharField(max_length=4, blank=True, default="")
     bvn_verified = models.BooleanField(default=False)
+    # Consent captured on the WhatsApp signup Flow's privacy notice. Recorded,
+    # not just displayed: under the Nigeria Data Protection Act the obligation
+    # is to be able to DEMONSTRATE that consent was given, so a notice whose
+    # acceptance leaves no trace is decorative. The version pins WHICH wording
+    # was accepted, because the policy will change and "they agreed" is not an
+    # answer to "to what".
+    privacy_consent_at = models.DateTimeField(null=True, blank=True)
+    privacy_consent_version = models.CharField(max_length=32, blank=True, default="")
     nin_hash = models.CharField(max_length=64, blank=True, default="")
     nin_last4 = models.CharField(max_length=4, blank=True, default="")
     nin_verified = models.BooleanField(default=False)
