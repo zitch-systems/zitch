@@ -1681,3 +1681,99 @@ class ScreenContractTests(TestCase):
         resp = captured["response"]
         self.assertEqual(set(resp["data"].keys()), self.declared()[resp["screen"]])
         self.assertIn("status", resp["data"])
+
+
+@override_settings(TESTING=False, DEBUG=False)
+class PrivacyNoticeTests(TestCase):
+    """Consent is asked BEFORE anything is collected, and it is recorded.
+
+    A notice that only displays is decorative: under the Nigeria Data Protection
+    Act the obligation is to be able to DEMONSTRATE consent, so the acceptance
+    has to leave a trace against the account it belongs to.
+    """
+
+    def _ob(self, step=None):
+        from datetime import timedelta as td
+
+        from .flows import FLOW_PRIVACY_STATE
+        from .models import WaOnboarding
+
+        return WaOnboarding.objects.create(
+            msisdn="2348099990007", step=step or FLOW_PRIVACY_STATE, payload={},
+            expires_at=timezone.now() + td(minutes=15))
+
+    def _exchange(self, ob, **data):
+        from .flows import handle_flow_request, sign_onboarding_token
+
+        return handle_flow_request({"action": "data_exchange",
+                                    "flow_token": sign_onboarding_token(ob),
+                                    "data": data})
+
+    def test_the_notice_renders_the_configured_policy_links(self):
+        from .flows import PRIVACY_NOTICE, handle_flow_request, sign_onboarding_token
+
+        resp = handle_flow_request({"action": "INIT",
+                                    "flow_token": sign_onboarding_token(self._ob())})
+        self.assertEqual(resp["screen"], PRIVACY_NOTICE)
+        self.assertTrue(resp["data"]["privacy_url"].startswith("http"))
+        self.assertTrue(resp["data"]["terms_url"].startswith("http"))
+
+    def test_consenting_records_the_version_then_opens_the_form_twin(self):
+        """The form arrives as SIGNUP_CHAIN, not SIGNUP_SCREEN. Meta opens a Flow
+        only on a routing ROOT, so routing the notice straight into SIGNUP_SCREEN
+        would give the root an incoming route and silently disqualify it as an
+        opening screen — breaking the ungated path this whole gate exists to
+        preserve. Same twin trick, same reason, as PIN_CHAIN."""
+        from .flows import PRIVACY_NOTICE_VERSION, SIGNUP_CHAIN
+
+        ob = self._ob()
+        resp = self._exchange(ob, consent="true")
+        self.assertEqual(resp["screen"], SIGNUP_CHAIN)
+        ob.refresh_from_db()
+        self.assertTrue(ob.payload.get("privacy_consent_at"))
+        self.assertEqual(ob.payload.get("privacy_consent_version"), PRIVACY_NOTICE_VERSION)
+
+    def test_a_form_error_after_consent_stays_on_the_twin(self):
+        """Answering with SIGNUP_SCREEN here would be a navigation, and there is
+        no route from the twin back to the root — Meta rejects it."""
+        from .flows import SIGNUP_CHAIN
+
+        ob = self._ob()
+        self._exchange(ob, consent="true")
+        resp = self._exchange(ob, first_name="A", last_name="B", email="nope")
+        self.assertEqual(resp["screen"], SIGNUP_CHAIN)
+        self.assertTrue(resp["data"]["error"])
+
+    def test_the_consent_lands_on_the_account_that_gets_created(self):
+        """Stamped on the onboarding row because no User exists yet — an
+        abandoned signup must leave no consent claim behind."""
+        from .flows import PRIVACY_NOTICE_VERSION
+        from .router import _finish_onboarding
+
+        ob = self._ob()
+        self._exchange(ob, consent="true")
+        ob.refresh_from_db()
+        ob.payload.update({"first_name": "Ngozi", "last_name": "Ade",
+                           "email": "consent@example.com"})
+        ob.save(update_fields=["payload"])
+
+        self.assertTrue(_finish_onboarding(ob, ob.msisdn, "123456"))
+        user = User.objects.get(email="consent@example.com")
+        self.assertIsNotNone(user.privacy_consent_at)
+        self.assertEqual(user.privacy_consent_version, PRIVACY_NOTICE_VERSION)
+
+    def test_an_account_made_without_the_notice_claims_no_consent(self):
+        """Nullable rather than defaulted to "now": a consent timestamp nobody
+        actually gave is worse than none at all."""
+        from .flows import FLOW_SIGNUP_STATE
+        from .router import _finish_onboarding
+
+        ob = self._ob(step=FLOW_SIGNUP_STATE)
+        ob.payload.update({"first_name": "Uche", "last_name": "Obi",
+                           "email": "noconsent@example.com"})
+        ob.save(update_fields=["payload"])
+
+        self.assertTrue(_finish_onboarding(ob, ob.msisdn, "123456"))
+        user = User.objects.get(email="noconsent@example.com")
+        self.assertIsNone(user.privacy_consent_at)
+        self.assertEqual(user.privacy_consent_version, "")

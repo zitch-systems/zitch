@@ -17,6 +17,7 @@ import logging
 import time
 
 from django.conf import settings
+from django.utils import timezone
 
 log = logging.getLogger("whatsapp")
 
@@ -28,7 +29,14 @@ PIN_SCREEN = "PIN_SCREEN"
 #: "confirmed" it without a single digit retyped, which is no confirmation at
 #: all. A separate screen starts empty because it is a separate form.
 PIN_CONFIRM = "PIN_CONFIRM"
+PRIVACY_NOTICE = "PRIVACY_NOTICE"
 SIGNUP_SCREEN = "SIGNUP_SCREEN"
+#: SIGNUP_SCREEN's twin, for a signup that arrived from the privacy notice.
+#: Meta opens a Flow only on a routing ROOT — a screen with no incoming route —
+#: so routing PRIVACY_NOTICE straight into SIGNUP_SCREEN would silently
+#: disqualify it as an opening screen and break the ungated path the privacy
+#: gate exists to preserve. Same trick, same reason, as PIN_CHAIN.
+SIGNUP_CHAIN = "SIGNUP_CHAIN"
 #: The signup ladder's middle pages: the email code (sent when the details are
 #: accepted, entered on the SAME open session) and the account phone number.
 SIGNUP_EMAIL_CODE = "SIGNUP_EMAIL_CODE"
@@ -110,6 +118,7 @@ SUCCESS_SCREEN = "SUCCESS"
 #: refuses new keystrokes and reads as broken.
 RESULT_SCREEN = "RESULT"
 FLOW_PIN_STATE = "flow_pin"   # PendingAction.state (and WaOnboarding.step) while a secure Flow is armed
+FLOW_PRIVACY_STATE = "flow_privacy"  # ...while the privacy notice is awaiting consent
 FLOW_SIGNUP_STATE = "flow_signup"   # WaOnboarding.step while the signup form is open
 FLOW_EMAIL_CODE_STATE = "flow_email_code"   # ...while the signup email code is pending
 FLOW_PHONE_STATE = "flow_phone"             # ...while the signup phone page is open
@@ -178,6 +187,7 @@ def resolve_onboarding_token(token: str):
         return None
     ob = WaOnboarding.objects.filter(id=int(pid)).first()
     if ob is None or ob.expired or ob.step not in (
+            FLOW_PRIVACY_STATE,
             FLOW_SIGNUP_STATE, FLOW_EMAIL_CODE_STATE, FLOW_PHONE_STATE,
             FLOW_PHONE_CODE_STATE, FLOW_PASSWORD_STATE, FLOW_PIN_STATE):
         return None
@@ -653,6 +663,8 @@ def _handle_flow_request(payload: dict) -> dict:
         if action == "data_exchange":
             # Which page submitted is the onboarding's STEP, not the shape of
             # the posted data - same rule as the money session's dispatch.
+            if ob.step == FLOW_PRIVACY_STATE:
+                return _submit_privacy_consent(ob, data)
             if ob.step == FLOW_SIGNUP_STATE:
                 return _submit_signup_details(ob, data)
             if ob.step == FLOW_EMAIL_CODE_STATE:
@@ -664,8 +676,10 @@ def _handle_flow_request(payload: dict) -> dict:
             if ob.step == FLOW_PASSWORD_STATE:
                 return _submit_signup_password(ob, data)
             return _submit_onboarding_pin(ob, data)
+        if ob.step == FLOW_PRIVACY_STATE:
+            return _privacy_screen()
         if ob.step == FLOW_SIGNUP_STATE:
-            return _signup_screen()
+            return _signup_screen(screen=_flow_screen(ob, SIGNUP_SCREEN))
         if ob.step == FLOW_EMAIL_CODE_STATE:
             return _signup_email_code_screen(ob)
         if ob.step == FLOW_PHONE_STATE:
@@ -792,11 +806,57 @@ def _confirm_pin_screen(error: str = "") -> dict:
                      "error": error or ""}}
 
 
-def _signup_screen(error: str = "") -> dict:
+def _signup_screen(error: str = "", screen: str = "") -> dict:
     # The refusal is flagged loudly: a same-screen re-render keeps the typed
     # values (right for visible fields), so without a marker "we didn't accept
     # that" reads as "nothing happened".
-    return {"screen": SIGNUP_SCREEN, "data": {"error": f"⚠️ {error}" if error else ""}}
+    return {"screen": screen or SIGNUP_SCREEN,
+            "data": {"error": f"⚠️ {error}" if error else ""}}
+
+
+#: Bump when the notice's WORDING changes, not when a policy page is edited.
+#: What is recorded against a customer is which version of THIS text they were
+#: shown; a silent edit that left the version alone would make the stored
+#: consent claim something the customer never actually read.
+PRIVACY_NOTICE_VERSION = "2026-09-05"
+
+
+def privacy_screen_live() -> bool:
+    """Is PRIVACY_NOTICE actually PUBLISHED on Meta's side yet?
+
+    The Flow JSON and this code are a contract and the publish is a manual step,
+    so the code can reach production before the screen does. That is normally a
+    degraded screen; here it would be fatal, because this is the FIRST screen a
+    signup opens on — Meta rejects an unpublished first screen outright (131009)
+    and there is no partial signup to fall back to. Hence: default OFF, and the
+    caller opens on SIGNUP_SCREEN exactly as before until this is flipped.
+    """
+    return bool((getattr(settings, "WHATSAPP_FLOW", {}) or {}).get("PRIVACY_SCREEN"))
+
+
+def _privacy_screen() -> dict:
+    links = getattr(settings, "ZITCH_LINKS", {}) or {}
+    return {"screen": PRIVACY_NOTICE,
+            "data": {"privacy_url": links.get("PRIVACY", ""),
+                     "terms_url": links.get("TERMS", "")}}
+
+
+def _submit_privacy_consent(ob, data: dict) -> dict:
+    """Record the consent, then open the form it gates.
+
+    The timestamp is stamped on the ONBOARDING row and copied onto the User at
+    the end of signup, because no User exists yet at this point — the whole
+    reason WaOnboarding exists. Storing it here means an abandoned signup leaves
+    no consent claim behind, which is correct: consent belongs to an account
+    that was actually created.
+    """
+    from .router import _onboard_to
+
+    ob.payload["privacy_consent_at"] = timezone.now().isoformat()
+    ob.payload["privacy_consent_version"] = PRIVACY_NOTICE_VERSION
+    ob.payload["flow_screen"] = SIGNUP_CHAIN
+    _onboard_to(ob, FLOW_SIGNUP_STATE)
+    return _signup_screen(screen=SIGNUP_CHAIN)
 
 
 def _submit_signup_details(ob, data: dict) -> dict:
@@ -814,13 +874,16 @@ def _submit_signup_details(ob, data: dict) -> dict:
     last = str(data.get("last_name", "")).strip()[:40]
     email = str(data.get("email", "")).strip().lower()
     if len(first) < 2 or len(last) < 2:
-        return _signup_screen(error="Please enter your first and last name.")
+        return _signup_screen(error="Please enter your first and last name.",
+                              screen=_flow_screen(ob, SIGNUP_SCREEN))
     if len(email) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
-        return _signup_screen(error="That doesn't look like an email address.")
+        return _signup_screen(error="That doesn't look like an email address.",
+                              screen=_flow_screen(ob, SIGNUP_SCREEN))
     if User.objects.filter(email__iexact=email).exists():
         # Recovery looks accounts up by email; a duplicate would make reset
         # codes ambiguous - refused at entry, exactly like the chat path.
-        return _signup_screen(error="That email is already on a Zitch account - use a different one.")
+        return _signup_screen(error="That email is already on a Zitch account - use a different one.",
+                              screen=_flow_screen(ob, SIGNUP_SCREEN))
     ob.payload.update({"first_name": first, "last_name": last, "email": email})
     from .router import _onboard_to, send_onboarding_email_code
 
@@ -833,7 +896,8 @@ def _submit_signup_details(ob, data: dict) -> dict:
     # reliably recover. Keep the form open instead; a retry may use the same or
     # a corrected address and no User row has been created yet.
     return _signup_screen(
-        error="We couldn't send the email code. Check the address and try again.")
+        error="We couldn't send the email code. Check the address and try again.",
+        screen=_flow_screen(ob, SIGNUP_SCREEN))
 
 
 def _signup_email_code_screen(ob, error: str = "") -> dict:

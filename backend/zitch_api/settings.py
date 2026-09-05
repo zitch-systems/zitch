@@ -687,6 +687,12 @@ ZITCH_LINKS = {
     # Defaults to the business number so "chat support" always resolves.
     "SUPPORT_WA": os.environ.get("ZITCH_SUPPORT_WHATSAPP", ""),
     "SUPPORT_EMAIL": os.environ.get("ZITCH_SUPPORT_EMAIL", "support@zitch.ng"),
+    # Shown on the signup Flow's privacy notice. These are the pages a customer
+    # is told to review before consenting, so they must resolve: a dead link
+    # there is worse than no notice, because the notice asserts they were able
+    # to read it.
+    "PRIVACY": os.environ.get("ZITCH_PRIVACY_URL", "https://zitch.ng/privacy.html"),
+    "TERMS": os.environ.get("ZITCH_TERMS_URL", "https://zitch.ng/terms.html"),
 }
 # Social profiles for the email footer. Env-driven and omitted when blank —
 # the same never-print-a-dead-link rule the WhatsApp menu follows. Deliberately
@@ -736,6 +742,15 @@ WHATSAPP_FLOW = {
     # content" failure, and here it would land in the middle of a signup.
     "PASSWORD_SCREEN": os.environ.get("WHATSAPP_FLOW_PASSWORD_SCREEN", "").strip().lower()
                        in ("1", "true", "yes", "on"),
+    # Same gate, same reason, for the privacy notice that now precedes signup.
+    # OFF means a signup opens directly on SIGNUP_SCREEN exactly as it does
+    # today, and no consent is recorded. Turn it on only once `publish_flow`
+    # lists PRIVACY_NOTICE among the live screens — opening a Flow on a screen
+    # Meta has not published is the 131009 "screen not allowed as first screen"
+    # rejection, and here it would take out signup entirely rather than degrade
+    # it, because it is the FIRST screen.
+    "PRIVACY_SCREEN": os.environ.get("WHATSAPP_FLOW_PRIVACY_SCREEN", "").strip().lower()
+                      in ("1", "true", "yes", "on"),
 }
 
 # LLM intent layer for WhatsApp. Blank API_KEY => AI off (deterministic router
