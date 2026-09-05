@@ -3454,12 +3454,64 @@ def _start_add_account(user, msisdn: str, after_signup: bool = False) -> None:
             "wema_missing_nuban user=%s channel=whatsapp detail=%s",
             user.pk, str(_detail or "")[:160],
         )
+        # DO NOT STOP HERE. This used to be a terminal message, and it left the
+        # customer with no move at all: no funding account number, "reply 6 to
+        # set one up", and replying 6 arrives back at this same sentence. The
+        # account-details card meanwhile still says "You don't have a funding
+        # account number yet - reply 6 (Add money)", so the product is telling
+        # them to do the one thing that cannot work.
+        #
+        # Being out of BVN options is not the same as being out of options. BVN
+        # is one of two rails, and the code below refuses a re-submitted BVN once
+        # it is verified, so NIN is the only route left - but nothing was
+        # offering it. Wema confirmed (28 Aug) that a customer can still be
+        # opened on our platform where the KYC is provided, so a fresh attempt on
+        # the other identity is a legitimate thing to try rather than a
+        # workaround. Support is still paged above: the incomplete provider-side
+        # record wants repairing either way, we just stop making that the
+        # customer's problem to sit in.
+        nin_attempt = wallet_views._active_wema_attempt(user, identity_type="nin")
+        if nin_attempt is not None:
+            resend = wema_provider.resend_wallet_otp(
+                user.phone or "", nin_attempt.tracking_id, bvn=False)
+            pa = PendingAction.objects.create(
+                user=user, msisdn=msisdn, action_type="add_account", state="otp",
+                payload={
+                    "tracking_id": nin_attempt.tracking_id,
+                    "using_bvn": False,
+                    "id_type": "nin",
+                },
+                expires_at=_flow_deadline("otp"),
+            )
+            tail = ("Wema sent the existing setup code again. " if resend.get("success")
+                    else "Use the existing Wema setup code. ")
+            if _send_account_otp_flow(pa):
+                return reply(
+                    msisdn,
+                    "📲 Your NIN setup is still open. " + tail
+                    + "Enter it on the secure form to finish issuing your account number.")
+            return reply(
+                msisdn,
+                "📲 Your NIN setup is still open. " + tail
+                + "Enter it to finish issuing your account number.")
+        # Straight to the verification-method question with NIN already chosen:
+        # sending them through the BVN/NIN picker would only offer a BVN that
+        # this same function refuses.
+        PendingAction.objects.create(
+            user=user, msisdn=msisdn, action_type="add_account",
+            state="verification_method", payload={"id_type": "nin"},
+            expires_at=_flow_deadline("verification_method"),
+        )
         return reply(
             msisdn,
-            "Your BVN is verified and will not be requested again. Wema has not "
-            "returned an account number for this verified identity, and there is "
-            "no OTP request to resume. Zitch support has been notified to have "
-            "Wema repair the incomplete account record.")
+            "Your BVN is verified and will not be requested again - but Wema has "
+            "not returned an account number for it, and there is no code left to "
+            "resume. Zitch support has been notified to have Wema repair that "
+            "record.\n\nYou do not have to wait for it: we can open your account "
+            "with your *NIN* instead.\n\nHow should Wema verify your NIN?\n"
+            "*1* SMS OTP\n*2* Face verification\n\n"
+            "Choose before entering the number, because Wema treats these as "
+            "separate setup routes. Reply \"cancel\" to leave it for now.")
     PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="add_account", state="id_type",
         payload={}, expires_at=_flow_deadline("id_type"),

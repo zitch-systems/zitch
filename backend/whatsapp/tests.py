@@ -491,10 +491,55 @@ class ChannelTests(TestCase):
         self.assertIn("BVN is verified", reply)
         self.assertIn("support has been notified", reply)
         self.assertNotIn("being linked", reply)
-        self.assertFalse(PendingAction.objects.filter(
-            msisdn=MSISDN, action_type="add_account").exists())
         alerted.assert_called_once()
         self.assertEqual(alerted.call_args.kwargs["user_id"], self.user.pk)
+
+        # This assertion used to read assertFalse(...exists()) - it pinned the
+        # customer-facing dead end. Paging support is right and still happens
+        # above, but leaving NO pending action meant the only advice on offer
+        # ("reply 6 to add money") led straight back to this same sentence, with
+        # the account card still saying no funding number existed. BVN cannot be
+        # re-submitted once verified, so NIN is the one remaining rail and the
+        # customer is now put on it.
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="add_account")
+        self.assertEqual(pa.state, "verification_method")
+        self.assertEqual(pa.payload.get("id_type"), "nin")
+        self.assertIn("NIN", reply)
+
+    @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=True)
+    @patch("whatsapp.router.attach_existing_bank_account",
+           return_value=(None, "provider returned no account"))
+    @patch("whatsapp.router.wema_provider.resend_wallet_otp",
+           return_value={"success": True})
+    @patch("utility.alerts.alert")
+    def test_verified_bvn_without_nuban_resumes_an_open_nin_attempt(
+            self, _alerted, resend, _readback, _enabled):
+        """A still-open NIN setup is resumable even though the BVN rail is dead.
+
+        Starting a fresh NIN attempt here would abandon a tracking id Wema is
+        still holding a code against, and ask the customer for a second code
+        while the first is live."""
+        from wallet.models import WemaProvisioningAttempt
+
+        self.link()
+        router.cache.delete(f"wema-missing-nuban:{self.user.pk}")
+        WemaProvisioningAttempt.objects.create(
+            user=self.user, identity_type=WemaProvisioningAttempt.NIN,
+            tracking_id="nin-track-1", status=WemaProvisioningAttempt.PENDING,
+            expires_at=timezone.now() + timedelta(minutes=30),
+        )
+
+        self.inbound("6", "am-missing-nuban-nin")
+
+        pa = PendingAction.objects.get(msisdn=MSISDN, action_type="add_account")
+        self.assertEqual(pa.state, "otp")
+        self.assertEqual(pa.payload.get("tracking_id"), "nin-track-1")
+        # The resend and the screen must both be told this is the NIN rail;
+        # bvn=True here would ask Wema to resend against the wrong product.
+        self.assertIs(pa.payload.get("using_bvn"), False)
+        self.assertEqual(pa.payload.get("id_type"), "nin")
+        self.assertIs(resend.call_args.kwargs.get("bvn"), False)
+        self.assertIn("NIN", self.last_reply())
 
     @patch("whatsapp.router.wallet_views._wema_funding_enabled", return_value=False)
     def test_add_money_is_unavailable_when_funding_is_off(self, _enabled):

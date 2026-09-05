@@ -1216,21 +1216,40 @@ def _submit_identity(pa, data: dict) -> dict:
 
 def _identity_otp_screen(pa, error: str = "") -> dict:
     """The identity challenge code. Always the chained twin: this is only ever
-    reached from IDENTITY_SCREEN inside one session, never opened on."""
-    # Bind the screen to the server-side identity rail. Older pending actions
-    # may not have id_otp_kind yet, so fall back to id_kind instead of silently
-    # presenting a NIN challenge as a BVN code.
-    raw_kind = pa.payload.get("id_otp_kind") or pa.payload.get("id_kind") or "bvn"
-    kind = str(raw_kind).lower()
-    kind_label = "NIN" if kind == "nin" else "BVN"
-    record = "your NIN" if kind_label == "NIN" else "your BVN"
-    return _identity_screen(
-        kind_label,
-        error=error,
-        label=f"{kind_label} code",
-        summary=f"Enter the 6-digit code Wema sent to the phone registered on {record}.",
-        screen=CODE_RETRY if error else IDENTITY_CHAIN,
-    )
+    reached from IDENTITY_SCREEN inside one session, never opened on.
+
+    NEVER DEFAULT THE IDENTITY TO BVN, AND NEVER TAKE A NON-IDENTITY AS ONE.
+    This screen labelled itself from `(id_otp_kind or "bvn")`, so any session
+    arriving without that key said "BVN code" - on a NIN verification that names
+    the wrong document and sends the customer looking on the wrong handset.
+
+    Adding id_kind as a fallback narrows it but does not close it: id_kind is
+    overloaded. It carries an identity in some places, but also "email" and
+    ACCOUNT_OTP ("account_otp") elsewhere, and neither of those is "nin", so a
+    `"nin" if kind == "nin" else "BVN"` test relabels exactly the sessions the
+    fallback was added to rescue. Each candidate is therefore checked for BEING
+    an identity, and when none is, the screen says something true and
+    unqualified rather than guessing. A generic label costs nothing; the wrong
+    one costs the customer the attempt.
+
+    The code on THIS screen is Zitch's own (secrets.randbelow, sent through
+    send_sms), not the bank's - so it says "we sent", and names the masked line
+    it actually went to when we have it. Attributing it to Wema here would be
+    inaccurate; that wording belongs on _account_otp_screen, which really does
+    render the bank's code.
+    """
+    kind = ""
+    for key in ("id_otp_kind", "id_kind", "id_type"):
+        candidate = str(pa.payload.get(key) or "").lower()
+        if candidate in ("bvn", "nin"):
+            kind = candidate.upper()
+            break
+    label = f"{kind} code" if kind else "Verification code"
+    sent_to = pa.payload.get("id_otp_to")
+    where = sent_to or (f"the phone registered on your {kind}" if kind else "your phone")
+    return _identity_screen(kind or "identity", error=error, label=label,
+                            summary=f"Enter the 6-digit code we sent to {where}",
+                            screen=CODE_RETRY if error else IDENTITY_CHAIN)
 
 
 def _submit_identity_otp(pa, data: dict) -> dict:
@@ -1277,13 +1296,21 @@ def _account_otp_screen(pa, error: str = "") -> dict:
     # used by OTP validation and prevents a NIN challenge being labelled as BVN.
     from wallet.models import WemaProvisioningAttempt
 
-    attempt = WemaProvisioningAttempt.objects.filter(
-        user=pa.user,
-        tracking_id=str(pa.payload.get("tracking_id") or ""),
-    ).only("identity_type").first()
     # The server-side attempt is the exact rail Wema opened and the same record
     # OTP validation uses. It must override every client/cached Flow field. Only
     # fall back to this session's menu choice before a tracking record exists.
+    #
+    # A BLANK tracking id is not a lookup key. Wema does not always return one,
+    # and `filter(tracking_id="")` then matches whatever other attempt row for
+    # this user carries an empty tracking id - for a customer with a verified
+    # BVN that is very likely the BVN row, so the "authoritative" record would
+    # be one with nothing to do with this challenge. No id, no lookup.
+    tracking_id = str(pa.payload.get("tracking_id") or "").strip()
+    attempt = (
+        WemaProvisioningAttempt.objects.filter(user=pa.user, tracking_id=tracking_id)
+        .only("identity_type").first()
+        if tracking_id else None
+    )
     if attempt is not None:
         using_bvn = attempt.identity_type == WemaProvisioningAttempt.BVN
     else:
