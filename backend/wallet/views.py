@@ -141,7 +141,7 @@ def _account_setup_state(user, wallet) -> dict:
             "otp_required": True,
             "tracking_id": attempt.tracking_id,
             "using_bvn": attempt.identity_type == WemaProvisioningAttempt.BVN,
-            "otp_destination": user.phone or "",
+            # The attempt does not store or invent a phone destination. Wema\n            # owns the identity-linked line; expose only its identity kind.\n            "otp_destination": "",\n            "otp_destination_kind": "bvn" if attempt.identity_type == WemaProvisioningAttempt.BVN else "nin",
             "identity_verified": bool(user.bvn_verified or user.nin_verified),
         }
     if user.bvn_verified or user.nin_verified:
