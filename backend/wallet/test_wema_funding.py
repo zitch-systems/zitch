@@ -269,6 +269,35 @@ class WemaWalletProvisioningTests(TestCase):
         self.assertTrue(b["tracking_id"])
         self.assertTrue(b["using_bvn"])
 
+    def test_verified_bvn_without_nuban_can_start_nin_otp(self):
+        """A verified BVN must not dead-end the independent NIN account rail.
+
+        When Wema has not returned the BVN-created NUBAN, the customer can use
+        the NIN product instead. This must issue a NIN-bound OTP and must never
+        ask for the already-verified BVN again.
+        """
+        self.user.set_bvn("22222222222")
+        self.user.bvn_verified = True
+        self.user.save(update_fields=["bvn_hash", "bvn_last4", "bvn_verified"])
+
+        # In production this is the provider read-back. Simulate the reported
+        # state: Wema has not made the BVN account visible yet.
+        with patch("utility.wema.get_account_details",
+                   return_value={"success": False, "message": "not found"}):
+            response = self._post(
+                "/api/wallet/wema/create/",
+                {"nin": "12345678901"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["success"])
+        self.assertTrue(body["otp_required"])
+        self.assertFalse(body["using_bvn"])
+        self.assertEqual(body["otp_destination_kind"], "nin")
+        self.assertIn("NIN", body["message"])
+        self.assertNotIn("enter your BVN", body["message"])
+
     def test_existing_account_reuses_pending_identity_otp(self):
         tracking = self._post("/api/wallet/wema/create/",
                               {"bvn": "22222222222"}).json()["tracking_id"]
