@@ -187,24 +187,17 @@ def wallet_account_create(request):
     if user.bvn_verified and bvn:
         return fail("Your BVN is already verified. You do not need to enter it again.", status=409)
     if user.bvn_verified and nin and not wallet.account_number:
+        # A missing BVN NUBAN must not dead-end the customer. Try the provider
+        # read-back first, but if Wema has not returned the account, continue
+        # through the normal NIN onboarding path below. Wema supports NIN-based
+        # account creation for existing customers; its OTP is bound to the NIN
+        # record and does not require asking for the verified BVN again.
         recovered, _detail = attach_existing_bank_account(user, using_bvn=True)
         if recovered is not None and recovered.account_number:
             return ok(**_account_payload(
                 recovered, already=True, tier=user.tier,
                 bvn_verified=True, nin_verified=user.nin_verified,
                 message="Your verified bank account has been reconnected."))
-        return ok(
-            **_account_setup_state(user, wallet),
-            bvn_verified=True,
-            nin_verified=user.nin_verified,
-            nin_otp_not_started=True,
-            holder_name=(user.get_full_name() or "").strip(),
-            message=(
-                "Wema NIN OTP is for NIN-based account creation. Your customer "
-                "record already exists from BVN verification, so we are recovering "
-                "that account number instead of opening a duplicate NIN request."
-            ),
-        )
 
     if wallet.account_number:
         if len(bvn) == 11:
