@@ -634,13 +634,13 @@ const AddMoney = () => {
           // where the account number will appear.
           <>
             <Text style={{ fontSize: 15, color: c.ink1, fontFamily: font.bold }}>
-              {pendingAttempt ? 'Finish your funding account' : bvnVerified ? 'Continue account setup' : 'Get your account number'}
+              {pendingAttempt ? 'Finish your funding account' : bvnVerified ? 'Finish with NIN or wait for Wema' : 'Get your account number'}
             </Text>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginTop: 6, lineHeight: 20 }}>
               {pendingAttempt
                 ? 'Your BVN is verified. Enter the Wema SMS code already sent to finish issuing your account number.'
                 : bvnVerified
-                  ? 'Your BVN is verified. Wema has not issued or linked your funding account number yet.'
+                  ? 'Your BVN is verified and will not be requested again. Wema has not issued or linked your funding account number yet; use NIN verification or wait for the bank sync.'
                   : 'Enter your BVN to get a dedicated account for funding by bank transfer. It is verified securely; we never store it.'}
             </Text>
             {holderName ? (
@@ -668,11 +668,23 @@ const AddMoney = () => {
             ) : null}
             <View style={{ height: 16 }} />
             <Btn
-              label={pendingAttempt ? 'Enter Wema SMS code' : creating ? 'Creating your account...' : bvnVerified ? 'Continue account setup' : 'Get my account'}
+              label={pendingAttempt ? 'Enter Wema SMS code' : creating ? 'Creating your account...' : bvnVerified ? 'Waiting for Wema account...' : 'Get my account'}
               icon="bank"
-              disabled={creating || (!bvnVerified && !pendingAttempt && bvn.length !== 11)}
+              disabled={creating || (bvnVerified && !pendingAttempt) || (!bvnVerified && !pendingAttempt && bvn.length !== 11)}
               onPress={createAccount}
             />
+            {bvnVerified && !pendingAttempt ? (
+              <>
+                <View style={{ height: 10 }} />
+                <Btn
+                  label="Set up with NIN instead"
+                  icon="user"
+                  variant="outline"
+                  disabled={creating}
+                  onPress={() => router.push('/kyc')}
+                />
+              </>
+            ) : null}
             {/* The bank's own alternative to the SMS code, offered up front as well
                 as on the code step - the customers who need it are exactly the ones
                 whose BVN is registered to a line they no longer carry, and they have
