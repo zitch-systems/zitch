@@ -22,8 +22,20 @@ type DediAccount = {
   otp_required?: boolean;
   tracking_id?: string;
   otp_destination?: string;
+  otp_destination_kind?: 'bvn' | 'nin';
   using_bvn?: boolean;
 };
+
+type OtpAttempt = {
+  trackingId: string;
+  destination: string;
+  identity: 'BVN' | 'NIN';
+};
+
+const otpIdentityLabel = (r: any): 'BVN' | 'NIN' =>
+  String(r?.otp_destination_kind || (r?.using_bvn === false ? 'nin' : 'bvn')).toLowerCase() === 'nin'
+    ? 'NIN'
+    : 'BVN';
 
 // ---- Account number display helpers ----
 // Grouping is DISPLAY ONLY: copy/share always send the raw digits, because a
@@ -165,11 +177,11 @@ const AddMoney = () => {
 
   // Wema/ALAT flow: account creation is a BVN + OTP round-trip. When the backend
   // answers otp_required, we hold the tracking id and show the OTP step.
-  const [otpFlow, setOtpFlow] = useState<{ trackingId: string; destination: string } | null>(null);
+  const [otpFlow, setOtpFlow] = useState<OtpAttempt | null>(null);
   const [otp, setOtp] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [bvnVerified, setBvnVerified] = useState(false);
-  const [pendingAttempt, setPendingAttempt] = useState<{ trackingId: string; destination: string } | null>(null);
+  const [pendingAttempt, setPendingAttempt] = useState<OtpAttempt | null>(null);
 
   // useCallback so loadAccount below can be stable too — the mount effect needs
   // to list it as a dependency (react-hooks/exhaustive-deps) without that turning
@@ -178,7 +190,11 @@ const AddMoney = () => {
   const rememberAccountState = useCallback((r: any) => {
     setBvnVerified(!!r?.bvn_verified);
     if (r?.otp_required && r?.tracking_id) {
-      const next = { trackingId: String(r.tracking_id), destination: String(r.otp_destination || '') };
+      const next: OtpAttempt = {
+        trackingId: String(r.tracking_id),
+        destination: String(r.otp_destination || ''),
+        identity: otpIdentityLabel(r),
+      };
       setPendingAttempt(next);
       return next;
     }
@@ -246,7 +262,7 @@ const AddMoney = () => {
   const verifyWithFace = async () => {
     if (pendingAttempt) {
       setOtpFlow(pendingAttempt);
-      notify('SMS already sent', 'Enter the Wema code already sent to finish creating your account.');
+      notify('SMS already sent', `Enter the Wema ${pendingAttempt.identity} code already sent to finish creating your account.`);
       return;
     }
     if (bvnVerified) {
@@ -406,11 +422,15 @@ const AddMoney = () => {
         // number ON THE BVN RECORD - not to the number this account uses. `destination`
         // is therefore only ever a number the bank itself named; empty means "we don't
         // know it", which must not be papered over with "your phone".
-        setOtpFlow(pending || { trackingId: String(r.tracking_id || ''), destination: String(r.otp_destination || '') });
+        setOtpFlow(pending || {
+          trackingId: String(r.tracking_id || ''),
+          destination: String(r.otp_destination || ''),
+          identity: otpIdentityLabel(r),
+        });
         setOtp('');
         notify('OTP sent', r.otp_destination
           ? `Enter the code Wema sent to ${r.otp_destination}`
-          : 'Enter the code Wema sent to the phone number registered on your BVN');
+          : `Enter the code Wema sent to the phone number registered on the ${otpIdentityLabel(r)}`);
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -480,7 +500,7 @@ const AddMoney = () => {
             Enter the OTP
           </Text>
           <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
-            Wema sent a one-time code to {otpFlow.destination || 'the phone number registered on your BVN'} to confirm your account.
+            Wema sent a one-time code to {otpFlow.destination || `the phone number registered on your ${otpFlow.identity}`} to confirm your account.
           </Text>
         </View>
 
@@ -514,7 +534,7 @@ const AddMoney = () => {
               No code arriving?
             </Text>
             <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, textAlign: 'center', marginTop: 6, marginBottom: 14, lineHeight: 19 }}>
-              The code goes to the phone registered on your BVN. Verify on Wema’s secure
+              The code goes to the phone registered on your {otpFlow.identity}. Verify on Wema’s secure
               face page instead - your face is never sent to or stored by Zitch.
             </Text>
             <Btn
