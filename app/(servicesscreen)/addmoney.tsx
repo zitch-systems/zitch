@@ -658,7 +658,7 @@ const AddMoney = () => {
             </Text>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginTop: 6, lineHeight: 20 }}>
               {pendingAttempt
-                ? 'Your BVN is verified. Enter the Wema SMS code already sent to finish issuing your account number.'
+                ? `Your ${pendingAttempt.identity} verification is in progress. Enter the Wema SMS code already sent to finish issuing your account number.`
                 : bvnVerified
                   ? 'Your BVN is verified and will not be requested again. Wema has not issued or linked your funding account number yet; use NIN verification or wait for the bank sync.'
                   : 'Enter your BVN to get a dedicated account for funding by bank transfer. It is verified securely; we never store it.'}
