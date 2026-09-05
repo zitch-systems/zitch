@@ -563,7 +563,11 @@ def wema_wallet_create(request):
             # support needs the provider-side reason/profile outcome.
             return fail("Wema says these details already exist in Wallet Service. Contact Zitch support so we can review your account setup.", status=409)
         return fail(res.get("message", "Couldn't start account creation"), status=502)
-    return ok(success=True, tracking_id=res.get("tracking_id", ""),
+    # otp_required, like the account/create/ twin above. Both endpoints end the
+    # same way - an attempt is open and the next call is verify-otp - so a client
+    # that reads this flag to decide whether to show the code screen was getting
+    # `undefined` from one of the two and skipping it.
+    return ok(success=True, otp_required=True, tracking_id=res.get("tracking_id", ""),
               **_otp_delivery(res, using_bvn=using_bvn),
               using_bvn=using_bvn, mock=res.get("mock", False),
               # The bank's own success wording is dropped here on purpose. It is
