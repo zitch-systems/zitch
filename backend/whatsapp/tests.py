@@ -2456,6 +2456,56 @@ class ChatSignupEntryTests(TestCase):
         self.assertNotIn("Link WhatsApp", r)
 
     @override_settings(WHATSAPP=WA)
+    def test_a_stalled_signup_is_told_where_it_is_not_just_to_tap_the_form(self):
+        """The identity ladder has always shown a ✅/⬜ card; signup answered a
+        customer who tapped away with "fill the form above" and nothing else, so
+        there was no way to see how much was left or that the email code already
+        round-tripped was still held."""
+        from datetime import timedelta as td
+
+        from .flows import FLOW_PHONE_STATE
+        from .models import WaOnboarding
+
+        m = "2349090000092"
+        WaOnboarding.objects.create(
+            msisdn=m, step=FLOW_PHONE_STATE,
+            payload={"first_name": "Ngozi", "last_name": "Ade",
+                     "email": "ngozi@example.com", "email_verified_flow": True},
+            expires_at=timezone.now() + td(minutes=15))
+
+        self.inbound("what now?", "nudge-1", msisdn=m)
+
+        reply = self.last_reply(m)
+        self.assertIn("secure screen", reply)
+        self.assertIn("Where you are", reply)
+        self.assertIn("✅ Your name", reply)
+        self.assertIn("✅ Email address", reply)
+        self.assertIn("⬜ Phone number", reply)
+        self.assertIn("⬜ Transaction PIN", reply)
+
+    @override_settings(WHATSAPP=WA)
+    def test_a_code_typed_into_the_chat_keeps_delete_it_advice_uncluttered(self):
+        """The delete-it-now instruction is time-sensitive in a way a checklist
+        is not. Burying it under five lines of progress is the wrong trade on
+        the one message where acting fast actually matters."""
+        from datetime import timedelta as td
+
+        from .flows import FLOW_EMAIL_CODE_STATE
+        from .models import WaOnboarding
+
+        m = "2349090000093"
+        WaOnboarding.objects.create(
+            msisdn=m, step=FLOW_EMAIL_CODE_STATE,
+            payload={"first_name": "Ngozi", "last_name": "Ade"},
+            expires_at=timezone.now() + td(minutes=15))
+
+        self.inbound("483920", "nudge-2", msisdn=m)
+
+        reply = self.last_reply(m)
+        self.assertIn("Delete for everyone", reply)
+        self.assertNotIn("Where you are", reply)
+
+    @override_settings(WHATSAPP=WA)
     def test_saying_it_in_words_starts_the_signup(self):
         # Verbatim from the thread that reported this: a plain sentence, no digit.
         for i, phrase in enumerate(["i want to open account here", "How do I create an account?",

@@ -21,6 +21,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
 from django.db import transaction as db_transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from common.http import (MIN_AIRTIME, MIN_ELECTRICITY, MIN_TRANSFER, daily_limit_error,
                          evaluate_transaction_pin, mask_pii, send_limit_error,
@@ -51,9 +52,12 @@ from . import ai
 from .flows import (ACCOUNT_OTP, CODE_SCREEN, EMAIL_SCREEN, FLOW_EMAIL_CODE_STATE,
                     FLOW_FORM_STATE, IDENTITY_CHAIN,
                     FLOW_ID_STATE, FLOW_PHONE_CODE_STATE, FLOW_PHONE_STATE, FLOW_PIN_STATE,
-                    FLOW_SIGNUP_STATE, FLOW_VTU_STATE, IDENTITY_SCREEN, SIGNUP_SCREEN,
+                    FLOW_PRIVACY_STATE,
+                    FLOW_SIGNUP_STATE, FLOW_VTU_STATE, IDENTITY_SCREEN, PRIVACY_NOTICE,
+                    SIGNUP_SCREEN,
                     TRANSFER_FORM, VTU_SCREEN,
                     PIN_SCREEN,
+                    privacy_screen_live,
                     sign_approve_token, sign_flow_token, sign_identity_token,
                     sign_onboarding_token)
 from .models import ConversationState, PendingAction, SystemSetting, WaMessageLog, WaOnboarding, WhatsAppLink
@@ -1627,16 +1631,31 @@ def _start_onboarding(msisdn: str) -> None:
     # email address are not secrets, so unlike the PIN this falls back to the
     # chat question-by-question path when Flows are unavailable.
     if flows_live():
+        # The privacy notice, when it is live on Meta's side, is the screen the
+        # signup OPENS on - consent is asked before anything is collected, not
+        # after. Until it is published the entry point is unchanged, because
+        # opening on a screen Meta has never seen would take out signup
+        # entirely rather than degrade it (131009, "not allowed as first
+        # screen"); see privacy_screen_live().
+        gated = privacy_screen_live()
         ob, _ = WaOnboarding.objects.update_or_create(
             msisdn=msisdn,
-            defaults={"step": FLOW_SIGNUP_STATE, "payload": {},
+            defaults={"step": FLOW_PRIVACY_STATE if gated else FLOW_SIGNUP_STATE,
+                      "payload": {},
                       "expires_at": timezone.now() + ONBOARD_TTL},
         )
+        links = getattr(settings, "ZITCH_LINKS", {}) or {}
         res = send_flow(
             msisdn, sign_onboarding_token(ob),
-            header="Create your Zitch account",
-            body="Your details go into a private form - they never appear in this chat.",
-            screen=SIGNUP_SCREEN, screen_data={"error": ""}, cta="Create account",
+            header="Privacy Notice" if gated else "Create your Zitch account",
+            body=("How Zitch uses your details - review this before you continue."
+                  if gated else
+                  "Your details go into a private form - they never appear in this chat."),
+            screen=PRIVACY_NOTICE if gated else SIGNUP_SCREEN,
+            screen_data=({"privacy_url": links.get("PRIVACY", ""),
+                          "terms_url": links.get("TERMS", "")}
+                         if gated else {"error": ""}),
+            cta="Review and continue" if gated else "Create account",
         )
         if res.get("success"):
             return reply(msisdn, "🎉 Tap *Create account* on the secure form above to get started.")
@@ -1730,9 +1749,14 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
     if val.lower() in ("cancel", "quit", "stop"):
         _clear_onboarding(msisdn)
         return reply(msisdn, "No problem - signup cancelled. Reply *1* to start again anytime.")
+    if ob.step == FLOW_PRIVACY_STATE:
+        return reply(msisdn, _signup_nudge(
+            ob, "🔒 Tap the secure screen above to read how Zitch uses your details, "
+                "then *I Understand, Continue* - or reply \"cancel\"."))
     if ob.step == FLOW_SIGNUP_STATE:
-        return reply(msisdn, "📝 Please fill the secure *Create account* form above - "
-                             "or reply \"cancel\" to start over.")
+        return reply(msisdn, _signup_nudge(
+            ob, "📝 Please fill the secure *Create account* form above - "
+                "or reply \"cancel\" to start over."))
     if ob.step == FLOW_EMAIL_CODE_STATE:
         # The code is a bearer credential for 15 minutes; typed here it sits in
         # the customer's own history. Same advice as a chat-typed PIN.
@@ -1740,18 +1764,21 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
             return reply(msisdn, "📧 Please enter the code on the *secure screen* above - not in "
                                  "the chat. Delete the message you just sent (press and hold -> "
                                  "Delete -> *Delete for everyone*), then tap the secure screen.")
-        return reply(msisdn, "📧 Tap the *secure screen* above to enter your email code, "
-                             "or reply \"cancel\".")
+        return reply(msisdn, _signup_nudge(
+            ob, "📧 Tap the *secure screen* above to enter your email code, "
+                "or reply \"cancel\"."))
     if ob.step == FLOW_PHONE_STATE:
-        return reply(msisdn, "📱 Please enter your phone number on the *secure screen* above - "
-                             "or reply \"cancel\" to start over.")
+        return reply(msisdn, _signup_nudge(
+            ob, "📱 Please enter your phone number on the *secure screen* above - "
+                "or reply \"cancel\" to start over."))
     if ob.step == FLOW_PHONE_CODE_STATE:
         if re.fullmatch(r"\d{4,8}", val):
             return reply(msisdn, "📲 Please enter the code on the *secure screen* above - not in "
                                  "the chat. Delete the message you just sent (press and hold -> "
                                  "Delete -> *Delete for everyone*), then tap the secure screen.")
-        return reply(msisdn, "📲 Tap the *secure screen* above to enter the SMS code, "
-                             "or reply \"cancel\".")
+        return reply(msisdn, _signup_nudge(
+            ob, "📲 Tap the *secure screen* above to enter the SMS code, "
+                "or reply \"cancel\"."))
     if ob.step == FLOW_PIN_STATE:
         # The PIN belongs in the secure screen, never here. If they typed one
         # anyway it is already masked in our log - but it is still sitting in
@@ -1760,7 +1787,8 @@ def _advance_onboarding(ob: WaOnboarding, msisdn: str, text: str) -> None:
             return reply(msisdn, "🔐 Please set your PIN on the *secure screen* above - not in the chat. "
                                  "Delete the message you just sent (press and hold -> Delete -> "
                                  "*Delete for everyone*), then tap the secure screen.")
-        return reply(msisdn, "🔐 Tap the *secure screen* above to set your PIN, or reply \"cancel\".")
+        return reply(msisdn, _signup_nudge(
+            ob, "🔐 Tap the *secure screen* above to set your PIN, or reply \"cancel\"."))
     if ob.step == "first_name":
         if len(val) < 2:
             return reply(msisdn, "Please enter your first name.")
@@ -1844,6 +1872,14 @@ def _finish_onboarding(ob: WaOnboarding, msisdn: str, pin: str) -> bool:
         user.set_unusable_password()   # "Forgot password" sets one in the app
     if pin:
         user.set_transaction_pin(pin)
+    # Consent was captured before anything was collected; copy it onto the
+    # account now that there is one to hang it on. Absent when the notice is not
+    # live on this deploy, which is why these are nullable rather than defaulted
+    # to "now" - a consent timestamp nobody actually gave is worse than none.
+    consented = (ob.payload.get("privacy_consent_at") or "").strip()
+    if consented:
+        user.privacy_consent_at = parse_datetime(consented)
+        user.privacy_consent_version = str(ob.payload.get("privacy_consent_version") or "")[:32]
     user.save()
     get_or_create_wallet(user)
     WhatsAppLink.objects.create(
@@ -2680,6 +2716,45 @@ def _kyc_status_lines(user) -> str:
         f"{mark(user.bvn_verified)} BVN",
         f"{mark(user.nin_verified)} NIN",
     ])
+
+
+def _signup_status_lines(ob) -> str:
+    """The signup twin of _kyc_status_lines.
+
+    KYC has shown a ✅/⬜ card since it was built. Signup never did: a customer
+    who tapped away from the secure form and typed in the chat was told only to
+    "fill the form above", with no sense of how much was left or that anything
+    they had already confirmed was still held. Same marks and same order as the
+    identity card, so the two ladders read as one process.
+
+    Read from the payload rather than the step, because the step says where the
+    form is pointing and the payload says what has actually been proved - those
+    diverge whenever a page is re-rendered after an error.
+
+    The PIN is always outstanding here: it is the last step, and the row this
+    renders from is deleted the moment it is set, so a ✅ would be unreachable.
+    """
+    p = ob.payload or {}
+    mark = lambda ok: "✅" if ok else "⬜"  # noqa: E731
+    return "\n".join([
+        f"{mark(bool(p.get('first_name') and p.get('last_name')))} Your name",
+        f"{mark(bool(p.get('email_verified_flow')))} Email address",
+        f"{mark(bool(p.get('phone_verified_flow')))} Phone number",
+        f"{mark(bool(p.get('flow_pw_hash')))} App password",
+        f"{mark(False)} Transaction PIN",
+    ])
+
+
+def _signup_nudge(ob, message: str) -> str:
+    """A nudge back to the secure screen, with the progress card under it.
+
+    Only on the plain "tap the screen" nudges. The branches that fire because a
+    CODE or a PIN was typed into the chat carry delete-it-now advice, and that
+    instruction is time-sensitive in a way a checklist is not - burying it under
+    five lines of progress is the wrong trade on the one message where acting
+    fast actually matters.
+    """
+    return f"{message}\n\n*Where you are:*\n{_signup_status_lines(ob)}"
 
 
 def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
