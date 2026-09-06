@@ -1049,7 +1049,15 @@ def get_transactions(account_number: str, date_from: str, date_to: str, keyword:
                     "diagnostic": _response_meta(resp, data), "raw": data}
         # This envelope uses {successful, result[], message} rather than status/hasError.
         ok = bool(data.get("successful")) or _ok(data)
-        return {"success": ok, "transactions": data.get("result", []) or [],
+        rows = data.get("result", data.get("data", []))
+        # Account-Maintenance deployments have returned both result[] and
+        # data:{result[]} / data:{transactions[]} envelopes. Accept all documented
+        # shapes so a successful statement cannot be mistaken for an empty wallet.
+        if isinstance(rows, dict):
+            rows = rows.get("result", rows.get("transactions", rows.get("data", [])))
+        if not isinstance(rows, list):
+            rows = []
+        return {"success": ok, "transactions": rows,
                 "message": _msg(data), "diagnostic": _response_meta(resp, data), "raw": data}
     except requests.RequestException as exc:
         return _unreachable(exc)
