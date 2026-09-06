@@ -93,7 +93,13 @@ const History = () => {
       .map(([key, rows]) => ({
         key,
         label: key === 'undated' ? 'Earlier' : monthLabel(key),
-        rows,
+        // Shaped for the row HERE, inside the memo, rather than inline in the
+        // list below. TxnRow is memoized, and `{ ...x, detail }` built in the
+        // render body is a new object every time, so the shallow compare never
+        // matched and all ~100 rows re-rendered on every state change on this
+        // screen — a filter tap, a pull-to-refresh, the ledger arriving. Built
+        // once per (txns, cat, status) instead, the memo actually holds.
+        rows: rows.map((t) => (t.ts ? { ...t, detail: txnDate(t.ts) } : t)),
         // Failed money never left the account, so counting it would overstate
         // both sides of the summary.
         moneyIn: rows.filter((t) => t.dir === 'in' && txnState(t.status) !== 'failed')
@@ -187,7 +193,7 @@ const History = () => {
                   {g.rows.map((x, i) => (
                     <TxnRow
                       key={x.id}
-                      txn={{ ...x, detail: x.ts ? txnDate(x.ts) : x.detail }}
+                      txn={x}
                       last={i === g.rows.length - 1}
                       onSelect={openTxn}
                     />
