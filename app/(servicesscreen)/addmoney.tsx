@@ -182,6 +182,11 @@ const AddMoney = () => {
   const [verifying, setVerifying] = useState(false);
   const [bvnVerified, setBvnVerified] = useState(false);
   const [pendingAttempt, setPendingAttempt] = useState<OtpAttempt | null>(null);
+  // The identity digits re-entered on the OTP screen to open the face check. Held
+  // only for the length of that one call: the raw BVN/NIN is never persisted here
+  // or on the server, which keeps a keyed hash and nothing else.
+  const [faceId, setFaceId] = useState('');
+  const [faceIdAsked, setFaceIdAsked] = useState(false);
 
   // useCallback so loadAccount below can be stable too — the mount effect needs
   // to list it as a dependency (react-hooks/exhaustive-deps) without that turning
@@ -260,9 +265,62 @@ const AddMoney = () => {
    * trusting the page.
    */
   const verifyWithFace = async () => {
-    if (pendingAttempt) {
-      setOtpFlow(pendingAttempt);
-      notify('SMS already sent', `Enter the Wema ${pendingAttempt.identity} code already sent to finish creating your account.`);
+    // The attempt this button is escaping FROM, if any. On the OTP screen it is
+    // always set — that screen is the only place this button is offered next to
+    // "No code arriving?".
+    const attempt = otpFlow || pendingAttempt;
+
+    // This used to return right here with "SMS already sent", which made the
+    // button impossible to use: it is only ever shown while an attempt is live,
+    // so the guard fired every single time and answered the one question it
+    // exists to answer ("the code never came") with "we already sent the code".
+    // The code goes to the line registered against the BVN/NIN, which is very
+    // often not the phone in the customer's hand, so resending is no help either
+    // — and with the SMS not arriving there was then no way to finish signup at
+    // all. Asking on purpose now opens the face check; the OTP stays live, and
+    // whichever proof the bank returns first creates the same account.
+    if (attempt) {
+      const type = attempt.identity === 'NIN' ? 'nin' : 'bvn';
+      // The raw number is never stored — not on the device and not on the server,
+      // which keeps only a keyed hash — so it has to come from this screen. Reuse
+      // what was typed a moment ago when it is the same identity; otherwise ask,
+      // which is also the case for an attempt started in an earlier session.
+      const known = type === 'bvn' && bvn.length === 11 ? bvn : faceId;
+      if (known.length !== 11) {
+        setFaceIdAsked(true);
+        notify(`Enter your ${attempt.identity}`,
+               `Confirm your 11-digit ${attempt.identity} to open Wema's face check.`);
+        return;
+      }
+      setCreating(true);
+      try {
+        // prefer_face: without it the server answers a live attempt with the same
+        // "enter the code we already sent", which is this dead end one layer down.
+        const r = await apiJson('/api/kyc/face/start/', { [type]: known, prefer_face: true });
+        // Only when the reply actually carries account state. A face SESSION reply
+        // is {url, session} and nothing else, and feeding that through here read
+        // its absent fields as negatives — clearing bvn_verified and dropping the
+        // pending attempt on the very response that means "the face route opened".
+        if (r?.account_number || r?.otp_required || 'bvn_verified' in (r || {})) {
+          rememberAccountState(r);
+        }
+        if (r?.success && r.account_number) {
+          setFaceId(''); setFaceIdAsked(false); setOtpFlow(null); setOtp(''); setBvn('');
+          loadAccount();
+          notify('Account ready', r.message || 'Your account is ready.');
+          return;
+        }
+        if (!r?.success || !r.url) {
+          notify('Not available', r?.message || 'Face verification is unavailable right now.');
+          return;
+        }
+        faceSession.current = String(r.session);
+        setFaceId(''); setFaceIdAsked(false);
+        setFaceUrl(String(r.url));
+        pollFace(String(r.session));
+      } catch {
+        notify('Error', 'Something went wrong. Please try again later.');
+      } finally { setCreating(false); }
       return;
     }
     if (bvnVerified) {
@@ -428,9 +486,11 @@ const AddMoney = () => {
           identity: otpIdentityLabel(r),
         });
         setOtp('');
-        notify('OTP sent', r.otp_destination
-          ? `Enter the code Wema sent to ${r.otp_destination}`
-          : `Enter the code Wema sent to the phone number registered on the ${otpIdentityLabel(r)}`);
+        // Same correction as the screen copy below: Wema accepting the request is
+        // not Wema delivering the SMS, and today it routinely is not.
+        notify('Code on its way', r.otp_destination
+          ? `Enter the code Wema is sending to ${r.otp_destination}`
+          : `Enter the code Wema is sending to the phone number registered on the ${otpIdentityLabel(r)}`);
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -500,7 +560,10 @@ const AddMoney = () => {
             Enter the OTP
           </Text>
           <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
-            Wema sent a one-time code to {otpFlow.destination || `the phone number registered on your ${otpFlow.identity}`} to confirm your account.
+            {/* "is sending", not "sent": all we observe is that Wema accepted the
+                request: delivery is on their side and never confirmed back to us.
+                See wallet.views._otp_prompt. */}
+            Wema is sending a one-time code to {otpFlow.destination || `the phone number registered on your ${otpFlow.identity}`} to confirm your account.
           </Text>
         </View>
 
@@ -537,8 +600,23 @@ const AddMoney = () => {
               The code goes to the phone registered on your {otpFlow.identity}. Verify on Wema’s secure
               face page instead - your face is never sent to or stored by Zitch.
             </Text>
+            {/* Asked for only when this screen cannot already supply it — the raw
+                number is never stored, on the device or on the server, so an
+                attempt begun in an earlier session has nothing to reuse. */}
+            {faceIdAsked ? (
+              <>
+                <Field
+                  label={`Confirm your ${otpFlow.identity}`}
+                  value={faceId}
+                  onChangeText={(v) => setFaceId(v.replace(/\D/g, '').slice(0, 11))}
+                  keyboardType="number-pad"
+                  placeholder={`Your 11-digit ${otpFlow.identity}`}
+                />
+                <View style={{ height: 14 }} />
+              </>
+            ) : null}
             <Btn
-              label={facePolling ? 'Waiting for Wema...' : 'Verify with Wema face'}
+              label={facePolling ? 'Waiting for Wema...' : creating ? 'Opening Wema...' : 'Verify with Wema face'}
               icon="faceid"
               variant="outline"
               disabled={creating || facePolling}

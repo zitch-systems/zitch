@@ -1,11 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Modal, View, Text, ActivityIndicator, Pressable, Platform } from 'react-native';
+import { Modal, View, Text, Pressable, Platform } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import apiBaseUrl from '@/components/configFiles/apiConfig';
+import { Loading } from './Loading';
 
 /**
  * The host our Wema face callback lands on, for THIS build.
@@ -201,7 +202,7 @@ const FaceVerifyModal = ({
             position: 'absolute', left: 0, right: 0, top: 64, bottom: 0,
             alignItems: 'center', justifyContent: 'center', backgroundColor: c.bg,
           }}>
-            <ActivityIndicator color={c.brand} />
+            <Loading full={false} />
             <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13, marginTop: 12 }}>
               Opening your bank&apos;s secure page…
             </Text>

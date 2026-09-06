@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Text, View } from 'react-native';
+import { Linking, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import ZIcon from '@/components/design/ZIcon';
 import { Btn, Header, PinPad, Screen } from '@/components/design/ui';
@@ -8,6 +8,7 @@ import { font, useTheme } from '@/lib/theme';
 import AuthGuard from '@/components/AuthGuard';
 import { usePinScreenProtection } from '@/lib/screenCapture';
 import { clearPendingWhatsAppApproval, rememberWhatsAppApproval } from '@/lib/pendingApproval';
+import { Loading } from '@/components/design/Loading';
 
 /**
  * Deep-link approval for a WhatsApp-armed payment.
@@ -127,7 +128,7 @@ const WaApprove = () => {
 
       {phase === 'loading' && (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <ActivityIndicator size="large" color={c.brand} />
+          <Loading />
         </View>
       )}
 

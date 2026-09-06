@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Modal, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, Modal, Pressable } from 'react-native';
 import { useTheme, font } from '@/lib/theme';
+import { Loading } from '@/components/design/Loading';
 
 // Mono Connect (open banking) launcher.
 //
@@ -82,7 +83,7 @@ export const MonoLauncherProvider = ({ children }: { children: React.ReactNode }
       <Modal visible={!!sim} transparent animationType="fade" onRequestClose={() => { const o = sim; setSim(null); o?.onClose?.(); }}>
         <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,.45)', alignItems: 'center', justifyContent: 'center', padding: 28 }}>
           <View style={{ width: '100%', maxWidth: 360, borderRadius: 22, backgroundColor: c.surface, padding: 24, alignItems: 'center' }}>
-            <ActivityIndicator color={c.brand} />
+            <Loading full={false} />
             <Text style={{ fontSize: 16, fontFamily: font.extrabold, color: c.ink1, marginTop: 16 }}>Connecting your bank…</Text>
             <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, textAlign: 'center', marginTop: 8, lineHeight: 19 }}>
               Test mode — real bank linking needs the native Mono build. Tap Simulate to link a demo bank and test the flow.

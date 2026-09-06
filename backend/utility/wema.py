@@ -56,6 +56,8 @@ from decimal import Decimal, InvalidOperation
 import requests
 from django.conf import settings
 
+from common.http_pool import pooled_session
+
 from .providers import mock_disabled_in_prod
 
 REQUEST_TIMEOUT = 30
@@ -344,16 +346,31 @@ def _raise_if_ambiguous(resp: requests.Response) -> requests.Response:
     return resp
 
 
+def _gateway():
+    """One pooled HTTPS connection pool for the bank gateway.
+
+    Every call here used to open a fresh connection, so a transfer paid for a TCP
+    and TLS handshake to the gateway before the request itself started — on the
+    critical path of the thing a customer is watching a spinner for, in the app
+    and on WhatsApp alike, and again for each of the several calls one movement
+    makes (transfer, then status, then balance). See common.http_pool; it never
+    retries, which matters more here than anywhere else, because replaying a POST
+    to a money endpoint is a duplicated payment. _raise_if_ambiguous below stays
+    the only thing that decides which gateway responses may be retried at all.
+    """
+    return pooled_session("wema-gateway")
+
+
 def _get(product: str, path: str, params: dict | None = None) -> requests.Response:
     return _raise_if_ambiguous(
-        requests.get(_url(product, path), params=params or {},
-                     headers=_headers(product), timeout=REQUEST_TIMEOUT))
+        _gateway().get(_url(product, path), params=params or {},
+                       headers=_headers(product), timeout=REQUEST_TIMEOUT))
 
 
 def _post(product: str, path: str, body: dict, params: dict | None = None) -> requests.Response:
     return _raise_if_ambiguous(
-        requests.post(_url(product, path), json=body, params=params or {},
-                      headers=_headers(product), timeout=REQUEST_TIMEOUT))
+        _gateway().post(_url(product, path), json=body, params=params or {},
+                        headers=_headers(product), timeout=REQUEST_TIMEOUT))
 
 
 def _response_meta(resp: requests.Response, data) -> dict:

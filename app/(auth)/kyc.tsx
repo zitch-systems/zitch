@@ -368,7 +368,13 @@ const Kyc = () => {
     setBusy(true);
     let started: { url: string; session: string } | null = null;
     try {
-      const res = await apiJson('/api/kyc/face/start/', kind === 'bvn' ? { bvn: raw } : { nin: raw });
+      // prefer_face, because reaching this function is never incidental: it is
+      // behind "No longer using that number? Verify with face instead". Without
+      // the flag the server answers an identity that already has a live attempt
+      // with "enter the code we already sent" — which is the exact dead end this
+      // button exists to open, restated, for the one customer it cannot help.
+      const res = await apiJson('/api/kyc/face/start/',
+        kind === 'bvn' ? { bvn: raw, prefer_face: true } : { nin: raw, prefer_face: true });
       if (res.success && res.status === 'account_otp_pending' && res.tracking_id) {
         if (kind === 'bvn') {
           setBvnTrackingId(String(res.tracking_id));

@@ -14,8 +14,19 @@ import requests
 from django.conf import settings
 
 from common.http import mask_pii
+from common.http_pool import pooled_session
 
 log = logging.getLogger("whatsapp")
+
+
+def _graph():
+    """One pooled HTTPS connection pool for every Graph API call.
+
+    Outbound sends used to build a throwaway session each time, paying a TCP and
+    TLS handshake before every single WhatsApp message — and again for the second
+    message whenever a command answers with two. See common.http_pool.
+    """
+    return pooled_session("whatsapp-graph")
 
 
 def _cfg() -> dict:
@@ -131,7 +142,7 @@ def send_text(msisdn: str, text: str) -> dict:
         "text": {"body": text[:4096]},
     }
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        r = _graph().post(url, json=payload, headers=headers, timeout=15)
         return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
         log.warning("wa_send_failed recipient=%s error_type=%s",
@@ -162,7 +173,8 @@ def _send_payload(msisdn: str, payload: dict, mock_note: str) -> dict:
     url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages"
     headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"}
     try:
-        r = requests.post(url, json={"messaging_product": "whatsapp", "to": msisdn, **payload},
+        r = _graph().post(url,
+                          json={"messaging_product": "whatsapp", "to": msisdn, **payload},
                           headers=headers, timeout=15)
         return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
@@ -349,7 +361,7 @@ def send_image(msisdn: str, image_url: str, caption: str = "") -> dict:
         "image": {"link": image_url, "caption": caption[:1024]},
     }
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=15)
+        r = _graph().post(url, json=payload, headers=headers, timeout=15)
         return _log_if_rejected(r, msisdn)
     except requests.RequestException as exc:
         log.warning("wa_image_send_failed recipient=%s error_type=%s",
@@ -368,7 +380,7 @@ def upload_media(data: bytes, mime: str, filename: str) -> str:
         return ""
     url = f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/media"
     try:
-        r = requests.post(
+        r = _graph().post(
             url,
             headers={"Authorization": f"Bearer {_cfg()['TOKEN']}"},
             data={"messaging_product": "whatsapp", "type": mime},
@@ -404,7 +416,7 @@ def download_media(media_id: str) -> tuple[bytes, str]:
         return b"", ""
     auth = {"Authorization": f"Bearer {_cfg()['TOKEN']}"}
     try:
-        meta = requests.get(f"{_cfg()['BASE_URL']}/{media_id}", headers=auth, timeout=15)
+        meta = _graph().get(f"{_cfg()['BASE_URL']}/{media_id}", headers=auth, timeout=15)
         if not meta.ok:
             log.warning("wa_media_lookup_failed status=%s", meta.status_code)
             return b"", ""
@@ -415,7 +427,7 @@ def download_media(media_id: str) -> tuple[bytes, str]:
         # Streamed and capped rather than read whole: `file_size` is Meta's claim
         # about the object, not a promise about the bytes on the wire, and this
         # runs on a shared worker.
-        with requests.get(url, headers=auth, timeout=30, stream=True) as resp:
+        with _graph().get(url, headers=auth, timeout=30, stream=True) as resp:
             if not resp.ok:
                 log.warning("wa_media_fetch_failed status=%s", resp.status_code)
                 return b"", ""
@@ -470,7 +482,7 @@ def send_template(msisdn: str, template_name: str, params: list | None = None, l
         "template": {"name": template_name, "language": {"code": lang}, "components": components},
     }
     try:
-        r = requests.post(
+        r = _graph().post(
             f"{_cfg()['BASE_URL']}/{_cfg()['PHONE_NUMBER_ID']}/messages",
             json=payload,
             headers={"Authorization": f"Bearer {_cfg()['TOKEN']}", "Content-Type": "application/json"},
@@ -581,7 +593,7 @@ def _published_flow_report() -> dict:
     base = _cfg().get("BASE_URL", "https://graph.facebook.com/v21.0")
     headers = {"Authorization": f"Bearer {_cfg()['TOKEN']}"}
     try:
-        meta = requests.get(f"{base}/{flow_id}",
+        meta = _graph().get(f"{base}/{flow_id}",
                             params={"fields": "id,name,status,validation_errors"},
                             headers=headers, timeout=6)
         info = meta.json() if meta.content else {}
@@ -591,12 +603,12 @@ def _published_flow_report() -> dict:
                     "detail": str(err.get("message") or meta.status_code)[:300]}
 
         # The published screens live in the FLOW_JSON asset, not on the node.
-        assets = requests.get(f"{base}/{flow_id}/assets", headers=headers, timeout=6)
+        assets = _graph().get(f"{base}/{flow_id}/assets", headers=headers, timeout=6)
         published, published_props = [], {}
         for item in (assets.json().get("data") or []) if assets.content else []:
             if item.get("asset_type") != "FLOW_JSON" or not item.get("download_url"):
                 continue
-            body = requests.get(item["download_url"], timeout=6)
+            body = _graph().get(item["download_url"], timeout=6)
             screens = body.json().get("screens") or []
             published = [s["id"] for s in screens]
             published_props = {s["id"]: set((s.get("data") or {}).keys()) for s in screens}

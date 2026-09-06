@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking, ActivityIndicator, AppState } from 'react-native';
+import { View, Text, Pressable, Linking, AppState } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
@@ -9,6 +9,7 @@ import { useTheme, font } from '@/lib/theme';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { BANK_WHATSAPP } from '@/components/configFiles/links';
 import { safeWhatsAppUrl } from '@/lib/externalLinks';
+import { Loading, LoadingMark } from '@/components/design/Loading';
 
 const WA_GREEN = '#25D366';
 
@@ -197,7 +198,7 @@ const LinkWhatsApp = () => {
       </View>
 
       {stage === 'loading' && (
-        <View style={{ paddingVertical: 40, alignItems: 'center' }}><ActivityIndicator color={c.brand} /></View>
+        <Loading full={false} />
       )}
 
       {stage === 'unlinked' && (
@@ -235,7 +236,7 @@ const LinkWhatsApp = () => {
           <View style={{ height: 16 }} />
           <Btn label="Open WhatsApp" variant="primary" onPress={() => openWa(`LINK ${code}`, waLink)} />
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 34, marginTop: 4 }}>
-            {polling && <ActivityIndicator size="small" color={c.ink3} />}
+            {polling && <LoadingMark size={16} />}
             {polling && <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3 }}>Waiting for the code…</Text>}
           </View>
           <Btn label="I've sent it — check now" variant="outline" onPress={() => refreshStatus(false)} />
