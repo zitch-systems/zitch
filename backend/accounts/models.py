@@ -444,7 +444,7 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
     Older successful Wema OTP flows predate IdentityProof, so the verified
     WemaProvisioningAttempt row is also accepted as durable evidence.
     """
-    from wallet.models import WemaProvisioningAttempt
+    from wallet.models import WemaFaceSession, WemaProvisioningAttempt
 
     fields: list[str] = []
     for identity_type, flag, hash_field, last4_field in (
@@ -472,6 +472,22 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
             )
             source_hash = attempt.identity_hash if attempt else ""
             source_last4 = attempt.identity_last4 if attempt else ""
+        # A successful Wema face callback is also durable identity proof. This
+        # fallback matters when face verification commits before account recovery:
+        # the later WhatsApp read must not reopen BVN/NIN just because the
+        # provisioning attempt was never created or was left pending.
+        if not source_hash:
+            face = (
+                WemaFaceSession.objects.filter(
+                    user=user,
+                    identity_type=identity_type,
+                    status=WemaFaceSession.VERIFIED,
+                )
+                .order_by("-updated")
+                .first()
+            )
+            source_hash = face.identity_hash if face else ""
+            source_last4 = face.identity_last4 if face else ""
         if not source_hash:
             continue
         setattr(user, hash_field, getattr(user, hash_field) or source_hash)
