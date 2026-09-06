@@ -2692,6 +2692,12 @@ def _kyc_outstanding(user) -> list:
     """Which steps this customer still owes, in order."""
     from accounts.models import rehydrate_verified_identity_flags
 
+    # The worker may hold a User instance loaded before the OTP/face callback
+    # committed. Refresh durable flags before rendering the checklist; a stale
+    # object was the last way a completed BVN could reappear as pending.
+    user.refresh_from_db(fields=["phone_verified", "email_verified",
+                              "bvn_verified", "nin_verified", "bvn_hash",
+                              "bvn_last4", "nin_hash", "nin_last4", "tier"])
     rehydrate_verified_identity_flags(user)
     done = {
         "phone": user.phone_verified,
