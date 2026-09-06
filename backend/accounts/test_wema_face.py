@@ -701,3 +701,94 @@ class TheSessionCallbackShapeStaysStrictTests(TestCase):
         self.session.refresh_from_db()
         self.assertFalse(self.user.bvn_verified)
         self.assertEqual(self.session.status, WemaFaceSession.PENDING)
+
+
+@override_settings(
+    WEMA={"CALLBACK_TOKEN": "tok", "CALLBACK_TOKEN_PREV": "",
+          "CALLBACK_ENFORCE_IPS": False, "CALLBACK_IPS": [],
+          "KEYS": {"wallet": "k"}, "CHANNEL_ID": "c", "SIMULATION": False,
+          "FACE_VERIFY_URL": "https://face.example/"})
+class FaceIsTheWayOutOfAnUndeliveredCodeTests(TestCase):
+    """A live OTP attempt must not close the face route.
+
+    The SMS goes to the line registered against the BVN/NIN — for a NIN that is
+    routinely an enrolment-era number the customer no longer holds — so "we
+    already sent the code" is not help to the person whose code never arrived, it
+    is the dead end restated. It is still the right DEFAULT answer (the code is
+    usually in hand, and re-proving the same identity twice is waste); it is only
+    wrong as an answer to someone explicitly asking for the face route instead.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="f1", phone="08050000001",
+                                             password="Str0ng!pass1", email="f@z.ng")
+        self.user.email_verified = True
+        self.user.nin_verified = True
+        self.user.nin_hash = hash_identifier("44444444444")
+        self.user.save()
+        from accounts.models import AccessToken
+        from wallet.models import WemaProvisioningAttempt
+
+        self.token = AccessToken.issue(self.user).key
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = ""
+        wallet.save(update_fields=["account_number"])
+        # The code Wema says it sent and the customer never received.
+        WemaProvisioningAttempt.objects.create(
+            user=self.user, tracking_id="trk-1",
+            identity_type=WemaProvisioningAttempt.NIN,
+            identity_hash=hash_identifier("44444444444"),
+            identity_last4="4444",
+            status=WemaProvisioningAttempt.PENDING,
+            expires_at=timezone.now() + timedelta(minutes=20),
+        )
+
+    def _start(self, **body):
+        return self.client.post("/api/kyc/face/start/",
+                                {"access_token": self.token, **body},
+                                content_type="application/json")
+
+    def test_without_asking_the_pending_code_is_still_the_answer(self):
+        """The default is unchanged: don't re-prove an identity for nothing."""
+        res = self._start(nin="44444444444")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["status"], "account_otp_pending")
+        self.assertEqual(res.json()["tracking_id"], "trk-1")
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+    def test_asking_for_the_face_route_opens_one(self):
+        """The whole point of the button under "No code arriving?"."""
+        with mock.patch("accounts.views.attach_existing_bank_account",
+                        return_value=(None, "no account")):
+            res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["url"], "no face session was opened")
+        session = WemaFaceSession.objects.get(user=self.user)
+        self.assertEqual(session.identity_type, "nin")
+        self.assertEqual(session.identity_hash, hash_identifier("44444444444"))
+
+    def test_the_pending_attempt_survives_so_either_proof_still_works(self):
+        """Whichever the bank answers first creates the same account."""
+        from wallet.models import WemaProvisioningAttempt
+
+        with mock.patch("accounts.views.attach_existing_bank_account",
+                        return_value=(None, "no account")):
+            self._start(nin="44444444444", prefer_face=True)
+        self.assertTrue(WemaProvisioningAttempt.objects.filter(
+            user=self.user, status=WemaProvisioningAttempt.PENDING).exists())
+
+    def test_asking_for_the_face_route_never_loosens_the_identity_binding(self):
+        """prefer_face is a routing preference, not an authorisation."""
+        res = self._start(nin="55555555555", prefer_face=True)
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())
+
+    def test_an_account_that_already_exists_still_short_circuits(self):
+        """Nothing to prove: hand back the account rather than a face check."""
+        wallet = get_or_create_wallet(self.user)
+        wallet.account_number = "0123456789"
+        wallet.save(update_fields=["account_number"])
+        res = self._start(nin="44444444444", prefer_face=True)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json()["account_number"], "0123456789")
+        self.assertFalse(WemaFaceSession.objects.filter(user=self.user).exists())

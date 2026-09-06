@@ -8,7 +8,6 @@ import {
   RefreshControl,
   Modal,
   ViewStyle,
-  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
@@ -668,7 +667,7 @@ export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiomet
   if (!resolved && autoBiometric) {
     return (
       <View style={{ alignItems: 'center', paddingVertical: 48 }}>
-        <ActivityIndicator color={c.brand} />
+        <LoadingMark size={28} />
       </View>
     );
   }

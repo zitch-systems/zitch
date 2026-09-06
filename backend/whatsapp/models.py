@@ -137,6 +137,46 @@ class WaMessageLog(models.Model):
         indexes = [
             # The operator inbox replays a conversation oldest-first per number.
             models.Index(fields=["msisdn", "created"], name="wamsg_msisdn_created_idx"),
+            # The worker's queue poll, and the web drain that shadows it.
+            #
+            # This table is an append-only audit of EVERY message in both
+            # directions, so it grows without bound, while the queue inside it —
+            # inbound rows not yet processed — is nearly always empty. Without a
+            # partial index Postgres answered "anything to do?" with a parallel
+            # sequential scan of the whole table: measured on a 300k-row table,
+            # 21ms and ~38MB of buffer traffic across three backends to return
+            # zero rows. The worker asks that twice a second forever, and
+            # jobs.drain_in_background asks it again on every inbound webhook.
+            #
+            # The cost is therefore continuous, proportional to the whole history
+            # rather than to the backlog, and paid on the same 0.1-CPU Postgres
+            # instance every app request uses. It is not what makes the product
+            # feel slow TODAY — production sits at a few percent of that CPU, on a
+            # table nowhere near 300k rows — but it is the one load here that
+            # grows without a ceiling while doing no work, and it saturates that
+            # instance long before the traffic does.
+            #
+            # Partial, on the exact predicate both queries carry. A row enters the
+            # index when it is queued and leaves for good when processed_at is
+            # set, so the index stays at the size of the backlog (usually zero)
+            # rather than the size of the history, and the poll becomes an index
+            # scan that stops at the first row.
+            models.Index(
+                fields=["created"],
+                name="wamsg_inbound_queue_idx",
+                condition=models.Q(direction="in", processed_at__isnull=True),
+            ),
+            # jobs._claim_inbound's per-sender ordering check ("is an earlier
+            # message from this number still unprocessed?"). Served before this by
+            # wamsg_msisdn_created_idx, which is keyed on the sender's ENTIRE
+            # history: it re-read every message that number ever exchanged to find
+            # the handful still pending. Same partial predicate, so it too is
+            # bounded by the backlog.
+            models.Index(
+                fields=["msisdn", "created"],
+                name="wamsg_inbound_pending_idx",
+                condition=models.Q(direction="in", processed_at__isnull=True),
+            ),
         ]
         constraints = [
             models.UniqueConstraint(

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Appearance } from 'react-native';
 import {
@@ -241,19 +241,42 @@ export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
     return () => { alive = false; };
   }, []);
 
-  const setTheme = (t: ThemeName) => {
+  // Stable identities, all three of them, because this context is read by
+  // practically every component in the app — Screen, ServiceTile, Hero, Badge,
+  // TxnRow, and every screen body.
+  //
+  // The provider used to build `{ theme, c, setTheme, toggle }` inline, so the
+  // value was a NEW object on every render and React re-rendered every consumer
+  // in the mounted tree whether or not the theme had actually changed. That was
+  // not a rare event: ThemeProvider sits under RootLayout, RootLayout calls
+  // usePathname(), and so every navigation re-rendered the provider — which is
+  // to say every tap that opened a screen re-rendered the whole app underneath
+  // it, ~30 react-native-svg icon trees on Home alone. Memoising the callbacks
+  // too, since a value memo is only as stable as the things inside it.
+  const setTheme = useCallback((t: ThemeName) => {
     setThemeState(t);
     // Keep the module cache in step so the next cold start paints this choice
     // on the first frame rather than re-reading its way to it.
     storedTheme = t;
     AsyncStorage.setItem(STORAGE_KEY, t).catch(() => {});
-  };
-  const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
+  }, []);
+  // Depends on `theme`, so its identity changes when the theme does — which is
+  // exactly when every consumer has to re-render anyway, because `c` changed
+  // with it. The bug was an identity that churned on EVERY render; one that
+  // changes only when the value does is correct and costs nothing.
+  const toggle = useCallback(
+    () => setTheme(theme === 'dark' ? 'light' : 'dark'),
+    [theme, setTheme],
+  );
 
   const c = theme === 'dark' ? dark : light;
+  const value = useMemo(
+    () => ({ theme, c, setTheme, toggle }),
+    [theme, c, setTheme, toggle],
+  );
 
   return (
-    <ThemeContext.Provider value={{ theme, c, setTheme, toggle }}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   );

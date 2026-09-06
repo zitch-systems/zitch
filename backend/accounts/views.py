@@ -1547,7 +1547,7 @@ def _face_callback_url(state: str) -> str:
 @ratelimit("kyc_face_start", limit=10, window=600)
 @require_user
 def kyc_face_start(request):
-    """POST /api/kyc/face/start/ {access_token, bvn|nin} -> {url, session}
+    """POST /api/kyc/face/start/ {access_token, bvn|nin, prefer_face?} -> {url, session}
 
     Opens ALAT's hosted face-biometric ownership check. This is an alternative to
     Wallet Service SMS OTP for proving one BVN/NIN and creating Tier 1; it is not the
@@ -1555,6 +1555,17 @@ def kyc_face_start(request):
 
     The BVN/NIN is used to build the URL and then discarded — only its keyed hash is
     kept on the session, which is what the bank's callback is later matched against.
+
+    `prefer_face` is the caller saying "I am asking for the face route ON PURPOSE",
+    and it exists because the answer below for an identity with a live OTP attempt
+    is "enter the code Wema already sent". That is the right DEFAULT — the code is
+    usually in the customer's hand and re-proving the same identity twice is waste
+    — but it is the wrong answer to the one person who needs this endpoint most:
+    someone whose code never arrived. The code goes to the line registered against
+    the BVN/NIN, which is very often not the phone they are holding, so "we already
+    sent it" is not help, it is the dead end restated. With this flag the pending
+    attempt is left alive (either proof creates the same account, whichever the
+    bank returns first) and a real face session is opened instead.
     """
     user = request.user_obj
     gate = _email_gate(user)
@@ -1562,6 +1573,7 @@ def kyc_face_start(request):
         return gate
     bvn = (request.data.get("bvn") or "").strip()
     nin = (request.data.get("nin") or "").strip()
+    prefer_face = str(request.data.get("prefer_face") or "").strip().lower() in ("1", "true", "yes", "on")
     # NO blanket "BVN already verified -> 409" here, deliberately.
     #
     # A guard like that reads as obviously right and is not: it made every branch
@@ -1604,7 +1616,10 @@ def kyc_face_start(request):
             status=WemaProvisioningAttempt.PENDING,
             expires_at__gt=timezone.now(),
         ).order_by("-created").first()
-        if pending is not None:
+        # Not when the caller explicitly asked for the face route: see prefer_face
+        # above. Pointing someone at a code they have already told us never
+        # arrived is what made this screen a dead end in the first place.
+        if pending is not None and not prefer_face:
             return ok(success=True, status="account_otp_pending", already=True,
                       otp_required=True, tracking_id=pending.tracking_id,
                       using_bvn=identity_type == "bvn",

@@ -279,7 +279,16 @@ const P: Record<string, (color: string) => React.ReactNode> = {
 
 export type IconName = keyof typeof P;
 
-const ZIcon = ({ name, size = 22, color = '#000', stroke = 1.75 }: IconProps & { name: string }) => {
+/**
+ * Memoized because it is the single most-rendered component in the app: Home
+ * alone mounts around thirty of these (eight grid tiles, four quick actions,
+ * eleven in the More sheet, the header and hero buttons, one per activity row),
+ * and each one is a react-native-svg tree with its own native views. Every
+ * prop here is a primitive, so the default shallow compare is exactly the right
+ * test — an icon whose name, size, colour and stroke are unchanged has nothing
+ * to redraw when its parent re-renders because a balance arrived.
+ */
+const ZIcon = React.memo(({ name, size = 22, color = '#000', stroke = 1.75 }: IconProps & { name: string }) => {
   const render = P[name];
   if (!render) return null;
   return (
@@ -296,6 +305,7 @@ const ZIcon = ({ name, size = 22, color = '#000', stroke = 1.75 }: IconProps & {
       {render(color)}
     </Svg>
   );
-};
+});
+ZIcon.displayName = 'ZIcon';
 
 export default ZIcon;

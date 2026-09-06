@@ -69,7 +69,14 @@ export const Badge = ({ label, hot }: { label: string; hot?: boolean }) => {
 };
 
 // 48px rounded icon tile used by the services grid + quick actions.
-export const ServiceTile = ({
+//
+// Memoized for the same reason ZIcon and TxnRow are: Home renders nineteen of
+// these (eight in the grid, eleven in the More sheet) and every one of them
+// carries an SVG icon and an optional badge. Their props come from module-level
+// GRID/MORE constants, so both the strings and the `go` handlers are stable
+// identities and the shallow compare actually holds — without that a memo here
+// would be pure overhead rather than a saving.
+export const ServiceTile = React.memo(({
   icon,
   label,
   onPress,
@@ -112,5 +119,6 @@ export const ServiceTile = ({
       <Text style={{ fontSize: 11, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
     </Pressable>
   );
-};
+});
+ServiceTile.displayName = 'ServiceTile';
 

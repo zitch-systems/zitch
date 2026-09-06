@@ -308,8 +308,17 @@ def _wema_funding_enabled() -> bool:
 # itself returned one.
 def _otp_prompt(using_bvn: bool) -> str:
     kind = "BVN" if using_bvn else "NIN"
-    return (f"Wema checked your {kind} and sent a code by SMS to the phone number "
-            "registered on it. Enter that code to finish.")
+    # "is sending", not "sent". What we actually observe is that Wema ACCEPTED the
+    # request and handed back a tracking id; delivery happens on their side and we
+    # get no confirmation of it either way. Stating it as done is a promise we
+    # cannot keep — and it is currently being broken in production, where NIN
+    # requests return 200 with a tracking id and no SMS reaches the customer (open
+    # with Wema). Someone who then waits for a message that never comes reasonably
+    # concludes the app is broken, so the sentence also names the route that does
+    # work rather than leaving them to find it under "No code arriving?".
+    return (f"Wema checked your {kind} and is sending a code by SMS to the phone number "
+            "registered on it. Enter that code to finish - or, if it does not arrive, "
+            "verify with Wema's face check instead.")
 
 
 def _otp_delivery(res: dict | None, *, using_bvn: bool) -> dict:
