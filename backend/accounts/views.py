@@ -978,10 +978,12 @@ def email_verify_confirm(request):
 
 
 def _repair_unbacked_wema_identity_flags(user) -> None:
-    """Rehydrate identity flags from proof rows; never clear them on a read."""
-    if not wema.wema_live():
-        return
+    """Rehydrate identity flags from local proof rows; never clear them on a read.
 
+    This intentionally does not depend on the live Wema switch. Rehydration reads
+    only our durable proof/provisioning records and must work during pilot, simulation,
+    or a temporary gateway outage; otherwise completed BVN verification is shown again.
+    """
     fields = rehydrate_verified_identity_flags(user)
     if fields:
         log.info("rehydrated_wema_identity_flags user=%s fields=%s", user.id, fields)
