@@ -39,6 +39,7 @@ from utility.views import CABLE_NAMES, DISCO_NAMES, NETWORK_NAMES
 from utility import wema as wema_provider
 from wallet import views as wallet_views
 from wallet.forex import FxError, all_balances, create_fx_quote, currency_balance, execute_fx
+from wallet.models import WemaProvisioningAttempt
 from wallet.services import (
     DuplicateTransaction,
     InsufficientFunds,
