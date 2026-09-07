@@ -99,7 +99,7 @@ def ensure_reserved_account(user, bvn: str = "", nin: str = "") -> Wallet:
     if wallet.account_number:
         return wallet
 
-    reference = f"ZITCH-WALLET-{user.id}"
+    reference = wema_account_reference(user)
     name = (user.get_full_name() or user.phone or "Zitch user").strip()
     email = user.email or f"{user.phone}@zitch.app"
 
@@ -568,12 +568,21 @@ def wema_account_reference(user) -> str:
 
 
 def wema_provisioned_wallets():
-    """Wallets whose funding account lives on Wema (have a NUBAN + our Wema ref).
+    """Wallets whose funding account lives on Wema and must be swept for deposits.
 
-    These are polled for inbound credits because ALAT exposes no funding webhook."""
+    Older reserved-account code stored the generic ``ZITCH-WALLET-`` reference
+    even though the number was minted on Wema. Those accounts look valid in the
+    app and on WhatsApp, but the funding reconciler skipped them because it only
+    scanned ``WEMA-WALLET-`` references. Include that legacy prefix for real
+    Wema accounts so existing customers' deposits are polled without needing a
+    manual data repair; demo/mock accounts stay excluded.
+    """
     return (Wallet.objects
-            .filter(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
-            .exclude(account_number=""))
+            .filter(Q(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
+                    | (Q(account_reference__startswith="ZITCH-WALLET-")
+                       & Q(bank_name__icontains="Wema")))
+            .exclude(account_number="")
+            .exclude(bank_name__icontains=DEMO_ACCOUNT_MARKER))
 
 
 def self_payout_references(user) -> list[str]:
