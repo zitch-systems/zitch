@@ -1191,16 +1191,15 @@ def _submit_identity(pa, data: dict) -> dict:
                                 screen=IDENTITY_RETRY)
 
     try:
-        # Same screen, third purpose: the number is being forwarded to the bank's
-        # face verifier rather than verified here, so it must not run back through
-        # the identity checks (which would re-queue an already-verified BVN for
-        # review). Checked before the action_type split because the purpose, not
-        # the action, is what decides.
+        # NIN/BVN account verification is Wema-owned. A face-purpose action
+        # is stale data from the removed Prembly fallback and must never open a
+        # second provider or claim that Wema supports a face route here.
         if pa.payload.get("id_purpose") == "face":
-            from .router import _kyc_send_face_link
-
-            _kyc_send_face_link(pa, pa.user, pa.msisdn, kind, number)
-            return _success_screen("Check the chat for your face-check link.")
+            pa.payload.pop("id_purpose", None)
+            pa.save(update_fields=["payload"])
+            return _success_screen(
+                f"Wema requires the {kind.upper()} SMS verification code. "
+                "Enter the number again to request it from Wema.")
         # Both entry points collect the same number on the same screen; what
         # happens next is the action's business, not this module's.
         if pa.action_type == "add_account":
@@ -1216,7 +1215,9 @@ def _submit_identity(pa, data: dict) -> dict:
                 pa.refresh_from_db()
                 return _account_otp_screen(pa)
             if outcome == "face":
-                return _success_screen("Open the Wema face-check link in the chat to finish creating your account.")
+                return _success_screen(
+                    f"Wema does not use face verification for {kind.upper()} here. "
+                    "The Wema SMS code is required.")
             if outcome == "adopted":
                 return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
             if outcome == "fail":
@@ -1284,10 +1285,13 @@ def _submit_identity(pa, data: dict) -> dict:
                     f"{kind.upper()} verification did not complete. See the chat for details.")
             if outcome == "face":
                 return _success_screen(
-                    "Open the Wema face-check link in the chat to complete verification.")
+                    f"Wema does not use face verification for {kind.upper()} here. "
+                    "The Wema SMS code is required.")
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
-        return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
+        return _success_screen(
+            "Wema could not complete that verification request. "
+            "No identity was marked verified. Reply 8 to retry the Wema SMS step.")
     # The chat carries the detailed outcome (verified, or queued for review), so
     # this screen only has to close cleanly.
     return _success_screen(f"{kind.upper()} received ✅ — see the chat for what's next.")
