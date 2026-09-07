@@ -3693,10 +3693,33 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
             _clear_actions(msisdn)
             _send_account_details(msisdn, wallet,
                                   intro="✅ *Found it!* Your Zitch account was already set up")
+            if using_bvn and not user.nin_verified:
+                PendingAction.objects.create(
+                    user=user, msisdn=msisdn, action_type="kyc",
+                    state="id_number", payload={"id_type": "nin"},
+                    expires_at=_flow_deadline("id_number"),
+                )
+                reply(msisdn,
+                      "✅ Your BVN is verified and will not be requested again. "
+                      "Only NIN is left for Tier 2. Tap *Enter securely* above or "
+                      "reply *8* again to enter your NIN on WhatsApp.")
+                _send_identity_number_flow(msisdn, "nin")
+                return "adopted"
+            if not using_bvn and not user.nin_verified:
+                PendingAction.objects.create(
+                    user=user, msisdn=msisdn, action_type="add_account",
+                    state="id_number", payload={"id_type": "nin", "verification_method": "sms"},
+                    expires_at=_flow_deadline("id_number"),
+                )
+                reply(msisdn,
+                      "We reconnected the account. Continue the Tier 2 NIN check "
+                      "on WhatsApp now - Wema will send the required OTP after you "
+                      "enter your NIN securely.")
+                _send_identity_number_flow(msisdn, "nin")
+                return "adopted"
             reply(msisdn,
-                  "We reconnected the account. To verify another identity on an "
-                  "existing Wema account, complete BVN, NIN and live face together "
-                  "from *Verify identity* in the Zitch app.")
+                  "We reconnected the account. Your verified identity details are up to date; "
+                  "reply *8* anytime to review what is left.")
             return "adopted"
         _clear_actions(msisdn)
         if wallet_views._ALREADY_ONBOARDED.search(res.get("message", "") or ""):
