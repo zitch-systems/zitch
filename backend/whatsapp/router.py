@@ -3666,6 +3666,17 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
         if payload.get("success"):
             reply(msisdn, message or f"✅ Your {kind.upper()} is already verified.")
             return "adopted"
+        if payload.get("upgrade_required") and kind == "nin" and user.bvn_verified:
+            reply(
+                msisdn,
+                "✅ Your BVN is still verified.\n\n"
+                "Wema will not open another Wallet Service OTP for this NIN because "
+                "your Wema account number already exists. To finish Tier 2, open "
+                "*Verify identity* in the Zitch app and complete the existing-account "
+                "upgrade step. That sends Wema the required BVN, NIN and live selfie "
+                "together; WhatsApp will not ask you to verify BVN again."
+            )
+            return "fail"
         reply(msisdn, message or
               (f"{kind.upper()} verification could not start right now. Please try again later."))
         return "fail" if status >= 400 else "adopted"
