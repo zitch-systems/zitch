@@ -317,8 +317,7 @@ def _otp_prompt(using_bvn: bool) -> str:
     # concludes the app is broken, so the sentence also names the route that does
     # work rather than leaving them to find it under "No code arriving?".
     return (f"Wema checked your {kind} and is sending a code by SMS to the phone number "
-            "registered on it. Enter that code to finish - or, if it does not arrive, "
-            "verify with Wema's face check instead.")
+            "registered on it. Enter that code to finish.")
 
 
 def _otp_delivery(res: dict | None, *, using_bvn: bool) -> dict:
@@ -803,11 +802,15 @@ def wema_wallet_upgrade_tier2(request):
     nin = "".join(ch for ch in (request.data.get("nin") or "") if ch.isdigit())
     live_image = (request.data.get("live_image") or request.data.get("selfie") or "").strip()
     if user.bvn_verified:
-        return fail(
-            "Your BVN is already verified and cannot be entered again. "
-            "This bank upgrade route is unavailable until Wema supports reuse of verified identity.",
-            status=409,
-        )
+        if len(bvn) != 11:
+            return fail(
+                "Wema requires BVN, NIN and a live selfie in one secure existing-account "
+                "upgrade request. Enter the same verified BVN securely so it can be "
+                "submitted to Wema; Zitch will not store or re-verify it.",
+                status=400,
+            )
+        if hash_identifier(bvn) != user.bvn_hash:
+            return fail("That BVN does not match the BVN already verified on this account.", status=409)
     if len(bvn) != 11:
         return fail("Enter your 11-digit BVN")
     if len(nin) != 11:
