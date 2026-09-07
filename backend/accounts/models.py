@@ -472,6 +472,26 @@ def rehydrate_verified_identity_flags(user: User) -> list[str]:
             )
             source_hash = attempt.identity_hash if attempt else ""
             source_last4 = attempt.identity_last4 if attempt else ""
+        # Account creation callbacks can persist the NUBAN before the customer
+        # submits the one-time bank OTP. In that ordering the attempt remains
+        # PENDING even though the bank account is already provisioned. Reconcile
+        # the pending BVN proof only when a real NUBAN is already attached; this
+        # cannot turn an abandoned identity form into verification.
+        if not source_hash:
+            from wallet.models import Wallet
+            has_account = Wallet.objects.filter(user=user).exclude(account_number="").exists()
+            if has_account:
+                pending_attempt = (
+                    WemaProvisioningAttempt.objects.filter(
+                        user=user,
+                        identity_type=identity_type,
+                        status=WemaProvisioningAttempt.PENDING,
+                    )
+                    .order_by("-updated")
+                    .first()
+                )
+                source_hash = pending_attempt.identity_hash if pending_attempt else ""
+                source_last4 = pending_attempt.identity_last4 if pending_attempt else ""
         # A successful Wema face callback is also durable identity proof. This
         # fallback matters when face verification commits before account recovery:
         # the later WhatsApp read must not reopen BVN/NIN just because the
