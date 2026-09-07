@@ -1269,7 +1269,22 @@ def _submit_identity(pa, data: dict) -> dict:
                 # number. Collected on the same open session, so the code never
                 # becomes a chat message either.
                 pa.refresh_from_db()
+                # The KYC branch can switch to Wema account provisioning above.
+                # Its tracking ID and OTP belong to the bank, not the local KYC
+                # challenge cache. Render the matching confirmation screen.
+                if pa.action_type == "add_account":
+                    return _account_otp_screen(pa)
                 return _identity_otp_screen(pa)
+            if outcome == "adopted":
+                return _success_screen(
+                    f"Account found. This does not confirm {kind.upper()} verification. "
+                    "See the chat for the current identity status and next step.")
+            if outcome == "fail":
+                return _success_screen(
+                    f"{kind.upper()} verification did not complete. See the chat for details.")
+            if outcome == "face":
+                return _success_screen(
+                    "Open the Wema face-check link in the chat to complete verification.")
     except Exception:  # noqa: BLE001 - never leak a stack into the Flow
         log.exception("identity flow submission failed for pa=%s", pa.id)
         return _success_screen("Something went wrong saving that. Reply 8 in the chat to try again.")
