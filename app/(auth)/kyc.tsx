@@ -40,6 +40,9 @@ const Kyc = () => {
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
   const [nin, setNin] = useState('');
+  const [ninOtp, setNinOtp] = useState('');
+  const [ninTrackingId, setNinTrackingId] = useState('');
+  const [ninSent, setNinSent] = useState(false);
   const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false); // selfie liveness ring running
@@ -60,6 +63,7 @@ const Kyc = () => {
   const goMenu = () => {
     setMethod('menu');
     setBvnSent(false);
+    setNinSent(false);
     setScanning(false);
     setBusy(false);
     spin.stopAnimation();
@@ -76,7 +80,7 @@ const Kyc = () => {
         setStatus(res);
         notify(successTitle, undefined, 'success');
         setBvn(''); setBvnOtp(''); setBvnSent(false);
-        setNin(''); setNinImage('');
+        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinSent(false); setNinImage('');
         setMethod('menu');
       } else notify('Error', res.message || 'Verification failed');
     } catch { notify('Error', 'Something went wrong.'); }
@@ -95,7 +99,30 @@ const Kyc = () => {
   };
   const confirmBvn = () => submit(() => kycService.confirmBvn(bvnOtp), 'BVN verified — tier upgraded');
 
-  // --- NIN: number + a photo of the NIN slip ---
+  // --- NIN: enter number -> Wema sends a one-time code -> confirm it ---
+  const startNin = async () => {
+    setBusy(true);
+    try {
+      const res = await kycService.startNin(nin);
+      if (res.success && res.otp_required && res.tracking_id) {
+        setNinTrackingId(String(res.tracking_id));
+        setNinSent(true);
+        notify('NIN code requested', res.message || 'Enter the Wema SMS code to finish.', 'success');
+      } else if (res.success) {
+        setStatus(res);
+        notify('NIN verified', res.message || 'NIN verified successfully', 'success');
+        setNin(''); setNinOtp(''); setNinTrackingId(''); setNinSent(false);
+        setMethod('menu');
+      } else notify('Error', res.message || 'Could not start NIN verification');
+    } catch { notify('Error', 'Something went wrong.'); }
+    finally { setBusy(false); }
+  };
+  const confirmNin = () => submit(
+    () => kycService.confirmNin(ninTrackingId, ninOtp, nin),
+    'NIN verified — tier upgraded',
+  );
+
+  // Optional document upload remains available for providers that require a slip.
   const pickNinSlip = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your NIN slip.'); return; }
@@ -108,7 +135,7 @@ const Kyc = () => {
       setNinImage(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
-  const verifyNin = () => submit(() => kycService.verifyNin(nin, ninImage), 'NIN submitted for review');
+  const verifyNin = startNin;
 
   // --- Selfie: a real captured image for server-side liveness (NOT device
   // Face ID — KYC must match a face, which the device unlock can't prove). ---
@@ -240,9 +267,9 @@ const Kyc = () => {
         </View>
       )}
 
-      {method === 'nin' && (
+      {method === 'nin' && !ninSent && (
         <View>
-          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your NIN and upload a clear photo of your NIN slip or ID card." />
+          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your 11-digit NIN. Wema will send a code to the phone number registered on your NIN." />
           <View style={{ marginTop: 22 }}>
             <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
             <View style={{ height: 12 }} />
@@ -252,13 +279,26 @@ const Kyc = () => {
                   <ZIcon name={ninImage ? 'check' : 'plus'} size={20} color={ninImage ? C_BVN : c.ink3} stroke={2.4} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{ninImage ? 'NIN_slip.jpg' : 'Upload photo of your NIN slip / ID'}</Text>
-                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{ninImage ? 'Tap to replace' : 'JPG or PNG · max 5MB'}</Text>
+                  <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{ninImage ? 'NIN_slip.jpg' : 'Upload NIN slip if available'}</Text>
+                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{ninImage ? 'Tap to replace' : 'Optional support document'}</Text>
                 </View>
               </View>
             </Tap>
             <View style={{ height: 18 }} />
-            <Btn label={busy ? 'Verifying…' : 'Verify NIN'} disabled={busy || nin.length !== 11 || !ninImage} onPress={verifyNin} />
+            <Btn label={busy ? 'Requesting code…' : 'Send NIN verification code'} disabled={busy || nin.length !== 11} onPress={verifyNin} />
+          </View>
+          <Footer />
+        </View>
+      )}
+
+      {method === 'nin' && ninSent && (
+        <View>
+          <Hero icon="card" color={C_NIN} title="Confirm your NIN" sub="Enter the 6-digit code Wema sent to the phone number registered on your NIN." />
+          <View style={{ marginTop: 22 }}>
+            <Field label="Verification code" placeholder="6-digit code" keyboardType="number-pad" value={ninOtp} onChangeText={(v) => setNinOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+            <Text onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); }} style={{ fontSize: 12.5, color: c.brand, marginTop: 10, fontFamily: font.semibold }}>Change NIN</Text>
+            <View style={{ height: 22 }} />
+            <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6 || !ninTrackingId} onPress={confirmNin} />
           </View>
           <Footer />
         </View>
