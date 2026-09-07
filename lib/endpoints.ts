@@ -24,6 +24,8 @@ export const EP = {
     history: '/api/user-transaction-history/',
     account: '/api/wallet/account/',
     createAccount: '/api/wallet/account/create/',
+    wemaVerifyOtp: '/api/wallet/wema/verify-otp/',
+    wemaResendOtp: '/api/wallet/wema/resend-otp/',
   },
   kyc: {
     status: '/api/kyc/status/',
