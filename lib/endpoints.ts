@@ -27,6 +27,12 @@ export const EP = {
     createAccount: '/api/wallet/account/create/',
     wemaVerifyOtp: '/api/wallet/wema/verify-otp/',
     wemaResendOtp: '/api/wallet/wema/resend-otp/',
+    // Combined existing-account upgrade. Once the bank has opened the NUBAN it
+    // will not take a second identity on its own, so BVN + NIN + a live selfie
+    // go up together. This is the ONLY route to Tier 2 for such an account —
+    // without it the app's NIN screen dead-ends on the same refusal WhatsApp
+    // was hitting.
+    wemaUpgradeTier2: '/api/wallet/wema/upgrade-tier2/',
   },
   kyc: {
     status: '/api/kyc/status/',

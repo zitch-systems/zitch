@@ -1777,3 +1777,70 @@ class PrivacyNoticeTests(TestCase):
         user = User.objects.get(email="noconsent@example.com")
         self.assertIsNone(user.privacy_consent_at)
         self.assertEqual(user.privacy_consent_version, "")
+
+
+class BlockedIdentityIsNotRequestedTests(TestCase):
+    """The screenshot defect: "Enter your NIN privately" and "we can't take your
+    NIN" arriving in the same burst.
+
+    Once the bank has opened the NUBAN it will not accept a second identity on
+    its own - only the combined upgrade (BVN + NIN + selfie in one request) will
+    do. The old flow asked anyway, discovered the refusal from the provider, and
+    told the customer only after they had handed the number over. These tests
+    pin the ordering: the check runs BEFORE the prompt, so the secure-entry
+    screen is never offered for an identity that cannot be submitted.
+    """
+
+    def setUp(self):
+        self.user = _make_user()
+        self.user.nin_verified = False
+        self.user.save(update_fields=["nin_verified"])
+        self.wallet = get_or_create_wallet(self.user)
+        self.wallet.account_number = "0452745377"
+        self.wallet.account_name = "Ada Eze"
+        self.wallet.bank_name = "Wema Bank"
+        self.wallet.identity_upgrade_required = True
+        self.wallet.save(update_fields=["account_number", "account_name",
+                                        "bank_name", "identity_upgrade_required"])
+
+    def _start_kyc(self):
+        from whatsapp import router
+
+        sent, flows = [], []
+        with patch.object(router, "flows_live", return_value=True), \
+             patch.object(router, "send_flow",
+                          side_effect=lambda *a, **k: flows.append(k) or {"success": True}), \
+             patch.object(router, "reply", side_effect=lambda m, t, **k: sent.append(t)):
+            router._start_kyc(self.user, MSISDN)
+        return sent, flows
+
+    def test_no_secure_entry_screen_is_offered_for_a_blocked_nin(self):
+        _sent, flows = self._start_kyc()
+        self.assertEqual(flows, [], "a NIN entry screen was sent for an identity the bank refuses")
+
+    def test_the_customer_is_told_where_the_step_actually_happens(self):
+        sent, _flows = self._start_kyc()
+        body = "\n".join(sent)
+        self.assertIn("Verify identity", body)
+        self.assertIn("app", body.lower())
+
+    def test_the_burst_never_contradicts_itself(self):
+        """No message may ask for the NIN when another says it cannot be used."""
+        sent, _flows = self._start_kyc()
+        body = "\n".join(sent).lower()
+        self.assertNotIn("enter your nin", body)
+        self.assertNotIn("let's do the rest now", body)
+
+    def test_no_provider_vocabulary_reaches_the_customer(self):
+        sent, _flows = self._start_kyc()
+        body = "\n".join(sent)
+        for jargon in ("Wallet Service OTP", "NUBAN", "Tier 2", "existing-account upgrade", "Wema"):
+            self.assertNotIn(jargon, body)
+
+    def test_a_still_open_identity_is_unaffected(self):
+        """The gate is specific to the blocked account state - a customer whose
+        bank has not closed the per-identity path still gets the secure screen."""
+        self.wallet.identity_upgrade_required = False
+        self.wallet.save(update_fields=["identity_upgrade_required"])
+        _sent, flows = self._start_kyc()
+        self.assertTrue(flows, "the secure entry screen should still be offered here")

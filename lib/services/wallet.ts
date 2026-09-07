@@ -44,4 +44,10 @@ export const walletService = {
     apiJson<VirtualAccount>(EP.wallet.wemaVerifyOtp, { tracking_id: trackingId, otp, ...identity }),
   resendWemaOtp: (trackingId: string) =>
     apiJson<VirtualAccount>(EP.wallet.wemaResendOtp, { tracking_id: trackingId }),
+  // One request, or nothing: the bank scores BVN, NIN and the live image
+  // together for an account it has already opened. `live_image` is base64 with
+  // no data: prefix, matching kycService.verifyFace.
+  upgradeTier2: (bvn: string, nin: string, liveImage: string) =>
+    apiJson<VirtualAccount>(EP.wallet.wemaUpgradeTier2,
+                            { bvn, nin, live_image: liveImage }),
 };

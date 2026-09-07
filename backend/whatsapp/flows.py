@@ -1220,6 +1220,13 @@ def _submit_identity(pa, data: dict) -> dict:
                     "The Wema SMS code is required.")
             if outcome == "adopted":
                 return _success_screen("Account found ✅ — see the chat for the bank-upgrade step.")
+            if outcome == "upgrade":
+                # The account is open; only the identity is blocked. Closing on
+                # the failure screen below would say setup failed, which the
+                # chat is at that moment denying.
+                return _success_screen(
+                    "Your account is ready ✅ — one step left, in the Zitch app. "
+                    "See the chat.")
             if outcome == "fail":
                 # A hard failure: the ID was refused, name-matched to a different
                 # person, or the provider was unreachable. _account_submit_identity

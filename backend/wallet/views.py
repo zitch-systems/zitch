@@ -396,6 +396,19 @@ def _adopt_existing_wema_account(user, *, using_bvn: bool, reason: str) -> dict 
         message="Your bank account was already set up — we've reconnected it.")
 
 
+def _mark_identity_upgrade_required(wallet, required: bool = True) -> None:
+    """Persist (or clear) "this NUBAN needs the combined upgrade".
+
+    Written on the refusal rather than re-derived, because the only way to learn
+    it is to ask the provider - and asking means having already collected the
+    identity we are about to refuse.
+    """
+    if wallet is None or wallet.identity_upgrade_required == required:
+        return
+    wallet.identity_upgrade_required = required
+    wallet.save(update_fields=["identity_upgrade_required"])
+
+
 def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identity: str) -> tuple[dict, int]:
     kind = "bvn" if identity_type == WemaProvisioningAttempt.BVN else "nin"
     raw_identity = "".join(ch for ch in (raw_identity or "") if ch.isdigit())
@@ -442,52 +455,27 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             message=_otp_prompt(identity_type == WemaProvisioningAttempt.BVN),
         ), 200
 
-    # Existing NUBANs still need a bank-attested path for the second identity.
-    # The Wallet Service OTP request is the only production BVN/NIN ownership
-    # proof exposed to this codebase, and complete_wema_provisioning already
-    # supports the "account number exists first" ordering by validating the OTP
-    # and marking only the submitted identity. Try that path before falling back
-    # to a manual bank-profile review.
-    res, identity_error = _start_wema_attempt(
-        user,
-        raw_identity if identity_type == WemaProvisioningAttempt.BVN else "",
-        raw_identity if identity_type == WemaProvisioningAttempt.NIN else "",
-    )
-    if identity_error:
-        return {"success": False, "message": identity_error}, 409
-    if res and res.get("success"):
-        return _account_payload(
-            wallet,
-            otp_required=True,
-            tracking_id=res.get("tracking_id", ""),
-            **_otp_delivery(res, using_bvn=identity_type == WemaProvisioningAttempt.BVN),
-            using_bvn=identity_type == WemaProvisioningAttempt.BVN,
-            tier=user.tier,
-            bvn_verified=user.bvn_verified,
-            nin_verified=user.nin_verified,
-            message=_otp_prompt(identity_type == WemaProvisioningAttempt.BVN),
-        ), 200
-
-    if res and _ALREADY_ONBOARDED.search(res.get("message", "") or ""):
-        return {
-            "success": False,
-            "upgrade_required": True,
-            "message": (
-                f"Your verified BVN remains saved and will not be requested again. "
-                f"Wema will not open a second Wallet Service OTP for {kind.upper()} "
-                "because this account number already exists. To finish Tier 2, "
-                "complete the existing-account upgrade step in the Zitch app so "
-                "Wema receives the required BVN, NIN and live selfie together."
-            ),
-        }, 409
-
+    # No OTP attempt here. Wema exposes no OTP continuation for a SECOND identity
+    # on a NUBAN it has already created (see wema_wallet_upgrade_tier2) - the
+    # combined existing-account upgrade is the only route. Asking anyway is what
+    # produced the production defect this branch was rewritten for: the request
+    # is made, the bank refuses with "customer already exists", and the customer
+    # is told the number cannot be used only AFTER they have handed it over. On
+    # WhatsApp that read as "enter your NIN securely" followed immediately by
+    # "we can't take your NIN", in the same burst.
+    #
+    # Refusing up front is also what makes the state knowable without a provider
+    # round-trip, so every surface can decline to ask in the first place.
+    _mark_identity_upgrade_required(wallet)
     return {
         "success": False,
         "upgrade_required": True,
         "message": (
-            f"Your verified BVN is retained. Wema did not open an OTP request for "
-            f"{kind.upper()} because this NUBAN is already provisioned. Finish "
-            "Tier 2 through the existing-account upgrade step in the Zitch app."
+            "Your bank account is already open, so your bank needs the rest of your "
+            "details together in one step - it can't take your "
+            f"{kind.upper()} on its own.\n\n"
+            "Open *Verify identity* in the Zitch app to finish. Nothing you've "
+            "already verified is lost."
         ),
     }, 409
 
@@ -578,7 +566,13 @@ def wema_wallet_create(request):
         payload, status = _verify_existing_wema_identity(user, wallet, identity_type, raw_identity)
         if payload.get("success"):
             return ok(**payload)
-        return fail(payload.get("message", "Couldn't verify identity with Wema"), status=status)
+        # Forward upgrade_required. Without it every refusal looks alike to the
+        # client, so it cannot tell "that number is wrong, try again" from "this
+        # account can only be finished by the combined upgrade" - and it kept
+        # offering the retry that can never succeed.
+        extra = {"upgrade_required": True} if payload.get("upgrade_required") else {}
+        return fail(payload.get("message", "Couldn't verify identity with Wema"),
+                    status=status, **extra)
     res, identity_error = _start_wema_attempt(user, bvn, nin)
     if identity_error:
         return fail(identity_error, status=409)
@@ -609,7 +603,7 @@ def wema_wallet_create(request):
             # a customer instruction to retry forever. It means Wallet Service
             # rejected one of the submitted creation fields as a duplicate and
             # support needs the provider-side reason/profile outcome.
-            return fail("Wema says these details already exist in Wallet Service. Contact Zitch support so we can review your account setup.", status=409)
+            return fail("Your bank says these details are already registered. Contact Zitch support and we'll sort your account setup out.", status=409)
         return fail(res.get("message", "Couldn't start account creation"), status=502)
     # otp_required, like the account/create/ twin above. Both endpoints end the
     # same way - an attempt is open and the next call is verify-otp - so a client
@@ -805,9 +799,9 @@ def wema_wallet_upgrade_tier2(request):
     if user.bvn_verified:
         if len(bvn) != 11:
             return fail(
-                "Wema requires BVN, NIN and a live selfie in one secure existing-account "
-                "upgrade request. Enter the same verified BVN securely so it can be "
-                "submitted to Wema; Zitch will not store or re-verify it.",
+                "Your bank needs your BVN, NIN and selfie in the same request, so "
+                "please enter your BVN once more. It stays verified either way - "
+                "we don't re-store it.",
                 status=400,
             )
         if hash_identifier(bvn) != user.bvn_hash:
@@ -863,6 +857,10 @@ def wema_wallet_upgrade_tier2(request):
     except IntegrityError:
         return fail("This identity is already linked to another account. Contact support.",
                     status=409)
+    # The combined upgrade is exactly the step the flag was holding out for, so
+    # clear it: the identity ladder is complete and nothing should route this
+    # customer back here.
+    _mark_identity_upgrade_required(wallet, False)
     try:
         sync_bank_tier(wallet)
     except Exception:  # noqa: BLE001

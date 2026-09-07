@@ -14,9 +14,13 @@ import { useTheme, font } from '@/lib/theme';
 type Status = {
   tier: number; transaction_limit: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
+  // Set once the bank has opened the account number: from then on it will not
+  // accept a lone BVN or NIN, only all of it at once. Read here so the menu can
+  // send the customer straight to the step that works.
+  identity_upgrade_required?: boolean;
 };
 
-type Method = 'menu' | 'bvn' | 'nin' | 'selfie';
+type Method = 'menu' | 'bvn' | 'nin' | 'selfie' | 'upgrade';
 
 // Method accent colours — EXACT per the design handoff.
 const C_BVN = '#0FA295';
@@ -44,6 +48,12 @@ const Kyc = () => {
   const [ninTrackingId, setNinTrackingId] = useState('');
   const [ninSent, setNinSent] = useState(false);
   const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
+  // Combined existing-account upgrade. The bank scores all three together, so
+  // they are collected before anything is sent — a partial submission is just a
+  // refusal with the customer's identity already handed over.
+  const [upBvn, setUpBvn] = useState('');
+  const [upNin, setUpNin] = useState('');
+  const [upSelfie, setUpSelfie] = useState('');
   const [busy, setBusy] = useState(false);
   const [scanning, setScanning] = useState(false); // selfie liveness ring running
   const spin = useRef(new Animated.Value(0)).current;
@@ -64,11 +74,16 @@ const Kyc = () => {
     setMethod('menu');
     setBvnSent(false);
     setNinSent(false);
+    setUpBvn(''); setUpNin(''); setUpSelfie('');
     setScanning(false);
     setBusy(false);
     spin.stopAnimation();
   };
   const onBack = method === 'menu' ? () => router.back() : goMenu;
+  // Both identities are still outstanding to the BANK in this state even when
+  // one is verified with us, because the upgrade request carries both.
+  const needsUpgrade = !!status?.identity_upgrade_required
+    && !(status?.bvn_verified && status?.nin_verified);
 
   // Shared submit: on success update tier status, toast the design copy, reset
   // the sub-flow fields and bounce back to the menu.
@@ -81,6 +96,7 @@ const Kyc = () => {
         notify(successTitle, undefined, 'success');
         setBvn(''); setBvnOtp(''); setBvnSent(false);
         setNin(''); setNinOtp(''); setNinTrackingId(''); setNinSent(false); setNinImage('');
+        setUpBvn(''); setUpNin(''); setUpSelfie('');
         setMethod('menu');
       } else notify('Error', res.message || 'Verification failed');
     } catch { notify('Error', 'Something went wrong.'); }
@@ -113,6 +129,12 @@ const Kyc = () => {
         notify('NIN verified', res.message || 'NIN verified successfully', 'success');
         setNin(''); setNinOtp(''); setNinTrackingId(''); setNinSent(false);
         setMethod('menu');
+      } else if (res.upgrade_required) {
+        // Not an error the customer can retry out of: this account can only be
+        // finished by the combined upgrade. Carry the NIN they already typed
+        // across so they are not asked for it twice.
+        setUpNin(nin);
+        setMethod('upgrade');
       } else notify('Error', res.message || 'Could not start NIN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
@@ -165,6 +187,28 @@ const Kyc = () => {
       captureSelfie();
     }, 2300);
   };
+  // --- Combined upgrade: BVN + NIN + a live selfie, submitted together ---
+  // The selfie is captured and HELD rather than posted, because the bank scores
+  // it against the two numbers in one request. Posting it alone would spend the
+  // liveness check on a call that cannot complete the upgrade.
+  const captureUpgradeSelfie = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
+    beginExternalActivity();
+    let shot;
+    try {
+      shot = await ImagePicker.launchCameraAsync({
+        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
+      });
+    } finally { endExternalActivity(); }
+    if (shot.canceled || !shot.assets?.[0]?.base64) return;
+    setUpSelfie(shot.assets[0].base64);
+  };
+  const submitUpgrade = () => submit(
+    () => kycService.upgradeTier2(upBvn, upNin, upSelfie),
+    'Identity verified — tier upgraded',
+  );
+
   const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
   // ---- pieces shared by every sub-flow ----
@@ -231,8 +275,24 @@ const Kyc = () => {
             </View>
           )}
 
-          <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Fastest · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
-          <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="National ID number + photo of your slip" done={!!status?.nin_verified} />
+          {needsUpgrade ? (
+            <>
+              <View style={{ flexDirection: 'row', gap: 10, padding: 14, borderRadius: 14, backgroundColor: 'rgba(45,127,249,.10)', marginTop: 14 }}>
+                <ZIcon name="help" size={16} color={C_NIN} />
+                <Text style={{ flex: 1, fontSize: 12.5, color: c.ink2, lineHeight: 19, fontFamily: font.regular }}>
+                  Your Zitch account number is already open, so your bank needs your
+                  BVN, NIN and a selfie together in one step. It can&apos;t take them
+                  one at a time any more.
+                </Text>
+              </View>
+              <MethodCard id="upgrade" icon="insurance" color={C_BVN} title="Verify identity" sub="BVN, NIN and a selfie · about a minute" badge="Finish" />
+            </>
+          ) : (
+            <>
+              <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Fastest · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
+              <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="National ID number + photo of your slip" done={!!status?.nin_verified} />
+            </>
+          )}
           <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Quick liveness check with your camera" done={!!status?.face_verified} />
           <Footer />
         </View>
@@ -299,6 +359,45 @@ const Kyc = () => {
             <Text onPress={() => { setNinSent(false); setNinOtp(''); setNinTrackingId(''); }} style={{ fontSize: 12.5, color: c.brand, marginTop: 10, fontFamily: font.semibold }}>Change NIN</Text>
             <View style={{ height: 22 }} />
             <Btn label={busy ? 'Confirming…' : 'Confirm NIN'} disabled={busy || ninOtp.length !== 6 || !ninTrackingId} onPress={confirmNin} />
+          </View>
+          <Footer />
+        </View>
+      )}
+
+      {method === 'upgrade' && (
+        <View>
+          <Hero icon="insurance" color={C_BVN} title="Verify identity"
+                sub="Your bank needs your BVN, NIN and a live selfie together. Nothing is sent until all three are here." />
+          <View style={{ marginTop: 22 }}>
+            <Field label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad"
+                   value={upBvn} onChangeText={(v) => setUpBvn(v.replace(/\D/g, '').slice(0, 11))}
+                   prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
+            {status?.bvn_verified && (
+              <Text style={{ fontSize: 12, color: c.ink3, marginTop: 6, lineHeight: 18, fontFamily: font.regular }}>
+                Already verified with us — your bank still needs it inside this one
+                request, so enter it once more. We don&apos;t re-store it.
+              </Text>
+            )}
+            <View style={{ height: 14 }} />
+            <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad"
+                   value={upNin} onChangeText={(v) => setUpNin(v.replace(/\D/g, '').slice(0, 11))}
+                   prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
+            <View style={{ height: 14 }} />
+            <Tap onPress={captureUpgradeSelfie}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: upSelfie ? C_BVN : c.line, backgroundColor: upSelfie ? 'rgba(15,162,149,.08)' : c.surface2 }}>
+                <View style={{ width: 40, height: 40, borderRadius: 11, backgroundColor: upSelfie ? 'rgba(15,162,149,.16)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+                  <ZIcon name={upSelfie ? 'check' : 'user'} size={20} color={upSelfie ? C_BVN : c.ink3} stroke={2.4} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{upSelfie ? 'Selfie captured' : 'Take a live selfie'}</Text>
+                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{upSelfie ? 'Tap to retake' : 'Front camera · required by your bank'}</Text>
+                </View>
+              </View>
+            </Tap>
+            <View style={{ height: 22 }} />
+            <Btn label={busy ? 'Verifying…' : 'Finish verification'}
+                 disabled={busy || upBvn.length !== 11 || upNin.length !== 11 || !upSelfie}
+                 onPress={submitUpgrade} />
           </View>
           <Footer />
         </View>

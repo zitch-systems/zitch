@@ -2769,6 +2769,14 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
     if not outstanding:
         return reply(msisdn, "✅ *You're fully verified.*\n\n" + _kyc_status_lines(user)
                      + f"\n\nTier {user.tier} · up to ₦{user.transaction_limit:,.0f} per transaction.")
+    # "Let's do the rest now" is a promise, so it must not be made when every
+    # outstanding step is one the bank will no longer accept over chat. Send the
+    # checklist with the real next step instead of an invitation to a form that
+    # cannot be submitted.
+    if all(_bank_upgrade_blocks(user, step) for step in outstanding):
+        _clear_actions(msisdn)
+        reply(msisdn, "🪪 *Verify your identity*\n\n" + _kyc_status_lines(user))
+        return _kyc_bank_upgrade_notice(user, msisdn)
     _clear_actions(msisdn)
     pa = PendingAction.objects.create(
         user=user, msisdn=msisdn, action_type="kyc", state="idle",
@@ -2778,6 +2786,45 @@ def _start_kyc(user, msisdn: str, *, attempted: set[str] | None = None) -> None:
           + "\n\nThese raise your limits. Let's do the rest now - "
             'reply "cancel" to stop anytime.')
     return _kyc_next(pa, user, msisdn)
+
+
+_UPGRADE_STEPS = {"bvn", "nin"}
+
+
+def _bank_upgrade_blocks(user, step: str) -> bool:
+    """True when this identity cannot be submitted on its own any more.
+
+    Once the bank has created the NUBAN it will not take a second identity by
+    itself - only the combined upgrade (BVN + NIN + live selfie in one request)
+    gets it in. Asking anyway is what produced the "enter your NIN securely"
+    message followed, in the same burst, by "we can't take your NIN": the number
+    was collected before anything checked whether it could be used.
+    """
+    if step not in _UPGRADE_STEPS:
+        return False
+    wallet = get_or_create_wallet(user)
+    return bool(wallet.account_number and wallet.identity_upgrade_required)
+
+
+def _kyc_bank_upgrade_notice(user, msisdn: str) -> None:
+    """What is left, and the one place it can actually be done.
+
+    No secure-entry screen: there is nothing this chat can do with the number,
+    and offering a form that cannot be submitted is what made the refusal read
+    as a contradiction.
+    """
+    _clear_actions(msisdn)
+    reply(
+        msisdn,
+        "🪪 *One step left - and it has to happen in the app*\n\n"
+        "Your Zitch account number is already open, so your bank now needs your "
+        "remaining details together in one go: BVN, NIN and a quick selfie. It "
+        "cannot take them one at a time any more, which is why I am not asking "
+        "for your NIN here.\n\n"
+        "Open the Zitch app and tap *Verify identity* to finish it in about a "
+        "minute. Everything you have already verified stays verified - you will "
+        "not be asked for it again.",
+    )
 
 
 def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
@@ -2792,6 +2839,9 @@ def _kyc_next(pa: PendingAction, user, msisdn: str) -> None:
         return _kyc_finish(pa, user, msisdn)
     step = outstanding[0]
     pa.payload["attempted"] = sorted(attempted | {step})
+    # Check BEFORE the prompt goes out, not after the number comes back.
+    if _bank_upgrade_blocks(user, step):
+        return _kyc_bank_upgrade_notice(user, msisdn)
     if step == "phone":
         return _kyc_send_phone_code(pa, user, msisdn)
     if step == "email":
@@ -3619,10 +3669,16 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
     Returns one of three SENTINELS, because the Flow caller has to tell the
     outcomes apart to pick a closing screen and they are otherwise
     indistinguishable (every branch used to return whatever reply() gave back):
-      "otp"  - accepted, code page next.
-      "fail" - hard failure; the chat already carries the "⚠️ ..." reason and
-               the pending action is cleared. The Flow must NOT close green.
-      other  - the account was adopted/created successfully.
+      "otp"     - accepted, code page next.
+      "fail"    - hard failure; the chat already carries the "⚠️ ..." reason and
+                  the pending action is cleared. The Flow must NOT close green.
+      "upgrade" - the account itself is fine; only this identity is blocked and
+                  must go through the combined upgrade in the app. Distinct from
+                  "fail" because the account setup did NOT fail - closing on the
+                  failure screen tells the customer their account is broken while
+                  the chat tells them it is open, which is the same
+                  self-contradiction this whole branch exists to remove.
+      other     - the account was adopted/created successfully.
     """
     kind = "bvn" if pa.payload.get("id_type") == "bvn" else "nin"
     using_bvn = kind == "bvn"
@@ -3666,17 +3722,13 @@ def _account_submit_identity(pa: PendingAction, user, msisdn: str, digits: str,
         if payload.get("success"):
             reply(msisdn, message or f"✅ Your {kind.upper()} is already verified.")
             return "adopted"
-        if payload.get("upgrade_required") and kind == "nin" and user.bvn_verified:
-            reply(
-                msisdn,
-                "✅ Your BVN is still verified.\n\n"
-                "Wema will not open another Wallet Service OTP for this NIN because "
-                "your Wema account number already exists. To finish Tier 2, open "
-                "*Verify identity* in the Zitch app and complete the existing-account "
-                "upgrade step. That sends Wema the required BVN, NIN and live selfie "
-                "together; WhatsApp will not ask you to verify BVN again."
-            )
-            return "fail"
+        if payload.get("upgrade_required"):
+            # Not scoped to NIN-with-a-verified-BVN any more: the bank refuses
+            # whichever identity is outstanding once the account exists, and the
+            # narrower condition dropped the other cases into the generic
+            # "try again later" below - advice that could never work.
+            _kyc_bank_upgrade_notice(user, msisdn)
+            return "upgrade"
         reply(msisdn, message or
               (f"{kind.upper()} verification could not start right now. Please try again later."))
         return "fail" if status >= 400 else "adopted"
