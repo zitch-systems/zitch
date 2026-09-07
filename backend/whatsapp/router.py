@@ -3212,11 +3212,16 @@ def _kyc_submit_identity(pa: PendingAction, user, msisdn: str, kind: str, digits
             return "stop"
         return "invalid"
 
+    if not result.get("success") and result.get("otp_required"):
+        # No standalone lookup (Prembly down or unconfigured) but the bank's
+        # account-creation flow CAN verify this identity via name-matching.
+        # Route through account setup instead of dead-ending to review.
+        pa.payload["id_type"] = kind
+        _touch(pa, payload=pa.payload)
+        return _account_submit_identity(pa, user, msisdn, digits)
+
     if not result.get("success"):
-        # We could not ASK - provider unreachable or unconfigured. That is ours,
-        # not the customer's, so it queues rather than accusing them of a wrong
-        # number. Record why: "submitted for review" is one sentence for several
-        # causes, and they need different actions.
+        # Provider genuinely unreachable — queue for operator review.
         setter(digits)
         user.save(update_fields=fields)
         _record_identity_review(kind, result.get("message", ""))
