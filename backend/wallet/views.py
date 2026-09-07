@@ -443,15 +443,53 @@ def _verify_existing_wema_identity(user, wallet, identity_type: str, raw_identit
             message=_otp_prompt(identity_type == WemaProvisioningAttempt.BVN),
         ), 200
 
+    # Existing NUBANs still need a bank-attested path for the second identity.
+    # The Wallet Service OTP request is the only production BVN/NIN ownership
+    # proof exposed to this codebase, and complete_wema_provisioning already
+    # supports the "account number exists first" ordering by validating the OTP
+    # and marking only the submitted identity. Try that path before falling back
+    # to a manual bank-profile review.
+    res, identity_error = _start_wema_attempt(
+        user,
+        raw_identity if identity_type == WemaProvisioningAttempt.BVN else "",
+        raw_identity if identity_type == WemaProvisioningAttempt.NIN else "",
+    )
+    if identity_error:
+        return {"success": False, "message": identity_error}, 409
+    if res and res.get("success"):
+        return _account_payload(
+            wallet,
+            otp_required=True,
+            tracking_id=res.get("tracking_id", ""),
+            **_otp_delivery(res, using_bvn=identity_type == WemaProvisioningAttempt.BVN),
+            using_bvn=identity_type == WemaProvisioningAttempt.BVN,
+            tier=user.tier,
+            bvn_verified=user.bvn_verified,
+            nin_verified=user.nin_verified,
+            message=_otp_prompt(identity_type == WemaProvisioningAttempt.BVN),
+        ), 200
+
+    if res and _ALREADY_ONBOARDED.search(res.get("message", "") or ""):
+        return {
+            "success": False,
+            "upgrade_required": True,
+            "message": (
+                f"{kind.upper()} could not start as a separate OTP because Wema "
+                "says this customer already exists in Wallet Service. Support must "
+                "review the bank profile; Zitch will not ask for the verified BVN again."
+            ),
+        }, 409
+
     return {
         "success": False,
         "upgrade_required": True,
         "message": (
-            f"{kind.upper()} needs Wema verification. For an existing Wema account, "
-            "Wema requires BVN, NIN, and a live face check together before we can "
-            "mark this step verified."
+            f"{kind.upper()} needs Wema verification, but Wema did not open an OTP "
+            "request for this existing account. Try Wema face verification from "
+            "Verify identity, or contact support if this repeats."
         ),
     }, 409
+
 
 
 def _start_wema_attempt(user, bvn: str, nin: str) -> tuple[dict | None, str | None]:
