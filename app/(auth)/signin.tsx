@@ -2,12 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { notify } from '@/components/design/Notify';
 import { router, Link } from 'expo-router';
-import { publicPost } from '@/lib/api';
-import {
-  storeSession, getToken, getDisplayName,
-  rememberIdentifier, getRememberedIdentifier,
-} from '@/lib/secureStore';
-import { unlockSession, beginExternalActivity, endExternalActivity } from '@/lib/session';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import baseUrl from '@/components/configFiles/apiConfig';
+import { saveToken, getToken } from '@/lib/secureStore';
+import { unlockSession } from '@/lib/session';
 import { isBiometricAvailable, isBiometricEnabled, authenticate } from '@/lib/biometrics';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
@@ -15,48 +13,24 @@ import { Loading } from '@/components/design/Loading';
 import { Screen, Field, Btn } from '@/components/design/ui';
 import { Hero } from '@/components/design/widgets';
 import { useTheme, font } from '@/lib/theme';
-import { pendingWhatsAppApproval } from '@/lib/pendingApproval';
-import { registerForPushNotifications, takePendingNotificationOpen } from '@/lib/notifications';
 
 const Signin = () => {
   const { c } = useTheme();
   const [ischecking, setIsChecking] = useState(false);
   const [form, setForm] = useState({ email: '', password: '' });
   const [bioReady, setBioReady] = useState(false);
-  const [knownName, setKnownName] = useState('');
   const autoPrompted = useRef(false);
-
-  const resumeAfterSignin = async () => {
-    registerForPushNotifications(false).catch(() => {});
-    const approval = await pendingWhatsAppApproval();
-    if (approval) {
-      router.replace({ pathname: '/waapprove', params: { token: approval } });
-    } else if (await takePendingNotificationOpen()) {
-      router.replace('/notifications');
-    } else {
-      router.replace('/home');
-    }
-  };
 
   // Offer instant sign-in only if the user enabled biometrics, the device
   // supports them, and a previous session token is still on the device.
   useEffect(() => {
     (async () => {
-      const [enabled, available, token, name, lastIdentifier] = await Promise.all([
+      const [enabled, available, token] = await Promise.all([
         isBiometricEnabled(),
         isBiometricAvailable(),
         getToken(),
-        getDisplayName(),
-        getRememberedIdentifier(),
       ]);
       setBioReady(enabled && available && !!token);
-      setKnownName(name);
-      // Fill in who this device belongs to. A returning customer retyping their
-      // own email is the app failing to recognise someone it has known for
-      // months — and the field was blank even for people who had signed in from
-      // this phone a hundred times. Only the identifier: the password is a
-      // secret and is never pre-filled.
-      if (lastIdentifier) setForm((f) => (f.email ? f : { ...f, email: lastIdentifier }));
     })();
   }, []);
 
@@ -65,25 +39,11 @@ const Signin = () => {
       notify('Biometric sign-in', 'Enable biometrics from Me → Face ID / Fingerprint after signing in with your password.');
       return;
     }
-    // The OS biometric sheet backgrounds the app, exactly like the image picker
-    // and the camera — and lib/session's grace period names this prompt as one of
-    // the excursions it exists to cover, but only the picker, camera and contacts
-    // were ever wired to it. Without the guard, showing the sheet stamped a
-    // "backgrounded at" time; the app-lock check that runs on return then read a
-    // still-locked session (unlockSession only lands after this await resolves)
-    // and replaced the route with /signin — remounting this screen, resetting
-    // autoPrompted, and asking for the same fingerprint a second time.
-    beginExternalActivity();
-    let ok = false;
-    try {
-      ok = await authenticate('Sign in to Zitch');
-    } finally {
-      endExternalActivity();
-    }
+    const ok = await authenticate('Sign in to Zitch');
     if (ok) {
       // Clear any idle lock and refresh activity before entering the app.
       await unlockSession();
-      await resumeAfterSignin();
+      router.replace('/home');
     }
   };
 
@@ -111,22 +71,23 @@ const Signin = () => {
       return;
     }
     try {
-      const response = await publicPost('/api/sigin/', { email_or_phone: form.email, password: form.password });
+      const response = await fetch(`${baseUrl}/api/sigin/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email_or_phone: form.email, password: form.password }),
+      });
       const result = await response.json();
       if (response.ok && result.access_token) {
         // Persist the session BEFORE navigating so the auth guard sees a token.
-        // (The legacy userID/sessionExpiration AsyncStorage stamps are gone —
-        // nothing read them; session state lives in secureStore + lib/session.)
-        await storeSession(result);
-        // Remember WHICH account, so the next sign-in starts filled in. Stored
-        // after success only, so a typo is never the thing we remember.
-        await rememberIdentifier(form.email);
+        await saveToken(result.access_token);
+        await AsyncStorage.setItem('userID', form.email);
+        await AsyncStorage.setItem('sessionExpiration', Date.now().toString());
         await unlockSession(); // clear any idle lock + stamp activity
-        await resumeAfterSignin();
+        router.replace('/home');
       } else {
         notify('Error', result.message || 'Incorrect Details');
       }
-    } catch {
+    } catch (error) {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setIsChecking(false);
@@ -144,10 +105,8 @@ const Signin = () => {
   return (
     <Screen>
       <View style={{ alignItems: 'center', marginTop: 18, marginBottom: 26 }}>
-        <ZMark size={56} />
-        <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>
-          {knownName ? `Welcome back, ${knownName}` : 'Welcome back'}
-        </Text>
+        <ZMark size={56} badge glow />
+        <Text style={{ fontSize: 26, fontFamily: font.extrabold, color: c.ink1, marginTop: 16, textAlign: 'center' }}>Welcome back</Text>
         <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, fontFamily: font.regular, textAlign: 'center' }}>
           Sign in to continue to Zitch
         </Text>
@@ -160,8 +119,6 @@ const Signin = () => {
           onChangeText={(e) => setForm({ ...form, email: e })}
           keyboardType="email-address"
           placeholder="Email or phone number"
-          autoComplete="username"
-          textContentType="username"
           prefix={<ZIcon name="user" size={18} color={c.ink3} />}
         />
         <Field
@@ -170,15 +127,11 @@ const Signin = () => {
           onChangeText={(e) => setForm({ ...form, password: e })}
           secureTextEntry
           placeholder="Enter password"
-          autoComplete="current-password"
-          textContentType="password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
       <Text
         onPress={() => router.push('/forgotpassword')}
-        accessibilityRole="link"
-        accessibilityLabel="Forgot password"
         style={{ textAlign: 'right', marginTop: 10, fontSize: 13, fontFamily: font.semibold, color: c.brand }}
       >
         Forgot password?
@@ -195,12 +148,7 @@ const Signin = () => {
       </View>
 
       {/* instant biometric sign-in — auto-prompts on open; tap to retry */}
-      <Pressable
-        onPress={handleBiometricSignin}
-        accessibilityRole="button"
-        accessibilityLabel="Instant biometric sign in"
-        accessibilityHint="Uses Face ID or fingerprint when enabled"
-      >
+      <Pressable onPress={handleBiometricSignin}>
         <Hero style={{ flexDirection: 'row', alignItems: 'center', gap: 14, padding: 16 }} watermark={0}>
           <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: 'rgba(255,255,255,.2)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="faceid" size={26} color="#fff" />

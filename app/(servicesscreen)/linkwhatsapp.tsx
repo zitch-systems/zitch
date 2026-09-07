@@ -1,15 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, Linking, AppState } from 'react-native';
+import { View, Text, Pressable, Linking, ActivityIndicator } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { Screen, Header, Card, Btn, PinSheet } from '@/components/design/ui';
+import { Screen, Header, Card, Btn } from '@/components/design/ui';
 import { notify } from '@/components/design/Notify';
 import { apiJson } from '@/lib/api';
 import { useTheme, font } from '@/lib/theme';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
 import { BANK_WHATSAPP } from '@/components/configFiles/links';
-import { safeWhatsAppUrl } from '@/lib/externalLinks';
-import { Loading, LoadingMark } from '@/components/design/Loading';
 
 const WA_GREEN = '#25D366';
 
@@ -17,8 +15,7 @@ type Stage = 'loading' | 'unlinked' | 'code' | 'linked';
 
 // Open WhatsApp at the Zitch banking number, optionally with prefilled text.
 const openWa = (text?: string, link?: string) => {
-  const fallback = `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
-  const url = safeWhatsAppUrl(link) || fallback;
+  const url = link || `https://wa.me/${BANK_WHATSAPP}${text ? `?text=${encodeURIComponent(text)}` : ''}`;
   Linking.openURL(url).catch(() => notify('WhatsApp', 'Could not open WhatsApp. Make sure it is installed, then try again.'));
 };
 
@@ -34,12 +31,6 @@ const Step = ({ n, text }: { n: number; text: string }) => {
   );
 };
 
-//: Auto-detect cadence. /api/whatsapp/link/status/ allows 30 requests per 300s;
-//: fast-then-slow keeps the worst 5-minute window at 10 + 12 = 22.
-const POLL_FAST_MS = 6000;
-const POLL_SLOW_MS = 20000;
-const POLL_FAST_FOR_MS = 60000;
-
 const LinkWhatsApp = () => {
   const { c } = useTheme();
   const [stage, setStage] = useState<Stage>('loading');
@@ -47,108 +38,32 @@ const LinkWhatsApp = () => {
   const [code, setCode] = useState('');
   const [waLink, setWaLink] = useState('');
   const [busy, setBusy] = useState(false);
-  const [pinOpen, setPinOpen] = useState(false);
   const [polling, setPolling] = useState(false);
-  // A self-rescheduling timeout, not setInterval: the cadence changes as the wait
-  // goes on (see POLL_FAST_MS / POLL_SLOW_MS) and a fixed interval cannot do that.
-  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollDeadlineRef = useRef(0);
-  const pollStartedRef = useRef(0);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPoll = useCallback(() => {
-    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     setPolling(false);
   }, []);
 
   // Check whether this account already has an active WhatsApp link.
   const refreshStatus = useCallback(async (silent = false): Promise<boolean> => {
-    try {
-      const res = await apiJson<{ linked?: boolean; masked_number?: string }>('/api/whatsapp/link/status/');
-      if (res?.linked) {
-        setMasked(res.masked_number || '');
-        setStage('linked');
-        stopPoll();
-        return true;
-      }
-      if (!silent) setStage((s) => (s === 'loading' ? 'unlinked' : s));
-      return false;
-    } catch {
-      if (!silent) {
-        setStage((s) => (s === 'loading' ? 'unlinked' : s));
-        notify('Connection error', 'Could not check your WhatsApp link. Please try again.');
-      }
-      return false;
+    const res = await apiJson<{ linked?: boolean; masked_number?: string }>('/api/whatsapp/link/status/');
+    if (res?.linked) {
+      setMasked(res.masked_number || '');
+      setStage('linked');
+      stopPoll();
+      return true;
     }
+    if (!silent) setStage((s) => (s === 'loading' ? 'unlinked' : s));
+    return false;
   }, [stopPoll]);
 
-  /* Auto-detect cadence, sized to the SERVER'S budget.
-   *
-   * /api/whatsapp/link/status/ is rate-limited to 30 requests per 300s. The old
-   * loop polled every 4 seconds — 75 requests per 5 minutes, two and a half times
-   * over — so after roughly two minutes every poll came back 429. refreshStatus
-   * swallows errors when silent, so nothing surfaced: auto-detect simply stopped
-   * working, and a customer who took longer than two minutes to send the code sat
-   * there until the 30-minute deadline told them it had expired, even when the
-   * link had actually succeeded.
-   *
-   * Fast for the first minute (the window where someone is actually switching to
-   * WhatsApp and sending), then slow. Worst case in any 5-minute window is
-   * 10 + 12 = 22 requests, comfortably inside the budget with room for the
-   * mount-time check and a manual refresh.
-   */
-  // Self-reference for the recursive scheduler: a useCallback cannot call itself
-  // (it is not in scope inside its own initialiser), and a ref keeps the loop
-  // pointing at the CURRENT closure rather than the one captured on first render.
-  const scheduleRef = useRef<() => void>(() => {});
+  useEffect(() => { refreshStatus(); return () => stopPoll(); }, [refreshStatus, stopPoll]);
 
-  const schedulePoll = useCallback(() => {
-    if (pollRef.current) clearTimeout(pollRef.current);
-    const elapsed = Date.now() - pollStartedRef.current;
-    const delay = elapsed < POLL_FAST_FOR_MS ? POLL_FAST_MS : POLL_SLOW_MS;
-    pollRef.current = setTimeout(async () => {
-      if (Date.now() >= pollDeadlineRef.current) {
-        stopPoll();
-        notify('Code expired', 'Generate a new WhatsApp link code to continue.');
-        setStage('unlinked');
-        setCode('');
-        setWaLink('');
-        return;
-      }
-      // Nothing to detect while the app is in the background — the customer is
-      // in WhatsApp. Polling on anyway spent battery and the request budget on
-      // exactly the minutes we cannot use them.
-      if (AppState.currentState === 'active') {
-        const linked = await refreshStatus(true);
-        if (linked) return;            // refreshStatus already stopped the poll
-      }
-      if (pollRef.current) scheduleRef.current();
-    }, delay);
-  }, [refreshStatus, stopPoll]);
-
-  useEffect(() => { scheduleRef.current = schedulePoll; }, [schedulePoll]);
-
-  // Coming back from WhatsApp is the single most likely moment for the link to
-  // have completed, so check immediately on foreground rather than waiting out
-  // the next tick.
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (next) => {
-      if (next === 'active' && pollRef.current) void refreshStatus(true);
-    });
-    return () => sub.remove();
-  }, [refreshStatus]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => void refreshStatus(), 0);
-    return () => { clearTimeout(timer); stopPoll(); };
-  }, [refreshStatus, stopPoll]);
-
-  // Linking grants a channel that can move money, so the PIN is required before
-  // a code is issued — an unlocked phone must not be enough to bind a stranger's
-  // WhatsApp to this account.
-  const generate = async (transaction_pin: string) => {
-    setPinOpen(false);
+  const generate = async () => {
     setBusy(true);
-    const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; message?: string }>('/api/whatsapp/link/start/', { transaction_pin });
+    const res = await apiJson<{ success?: boolean; code?: string; wa_link?: string; message?: string }>('/api/whatsapp/link/start/');
     setBusy(false);
     if (res?.success && res.code) {
       setCode(res.code);
@@ -157,9 +72,7 @@ const LinkWhatsApp = () => {
       // Auto-detect the moment the user sends the code from WhatsApp.
       stopPoll();
       setPolling(true);
-      pollStartedRef.current = Date.now();
-      pollDeadlineRef.current = pollStartedRef.current + (30 * 60 * 1000);  // matches LINK_CODE_TTL
-      schedulePoll();
+      pollRef.current = setInterval(() => { refreshStatus(true); }, 4000);
     } else {
       notify('Error', res?.message || 'Could not generate a code. Please try again.');
     }
@@ -184,7 +97,7 @@ const LinkWhatsApp = () => {
 
   return (
     <Screen>
-      <Header title="Link WhatsApp" onBack={() => router.back()} />
+      <Header title="Bank on WhatsApp" onBack={() => router.back()} />
 
       {/* Hero badge */}
       <View style={{ alignItems: 'center', marginTop: 6, marginBottom: 22 }}>
@@ -198,7 +111,7 @@ const LinkWhatsApp = () => {
       </View>
 
       {stage === 'loading' && (
-        <Loading full={false} />
+        <View style={{ paddingVertical: 40, alignItems: 'center' }}><ActivityIndicator color={c.brand} /></View>
       )}
 
       {stage === 'unlinked' && (
@@ -209,15 +122,7 @@ const LinkWhatsApp = () => {
             <Step n={3} text="You're linked. This screen updates on its own." />
           </Card>
           <View style={{ height: 18 }} />
-          {/* No location request here. This screen generates a link code and
-              hands off to WhatsApp — it reads no location, and nothing it opens
-              does either. The call was copied from the KYC screen, where the
-              bank's hosted liveness page genuinely needs it. Asking for a
-              customer's location immediately before a PIN prompt, with no
-              visible reason, is the kind of thing that costs trust and gets
-              flagged in store review. */}
-          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary"
-            onPress={() => setPinOpen(true)} disabled={busy} />
+          <Btn label={busy ? 'Generating…' : 'Generate link code'} variant="primary" onPress={generate} disabled={busy} />
         </>
       )}
 
@@ -225,18 +130,18 @@ const LinkWhatsApp = () => {
         <>
           <Card style={{ alignItems: 'center' }}>
             <Text style={{ fontFamily: font.medium, fontSize: 12, color: c.ink3, textTransform: 'uppercase', letterSpacing: 1 }}>Your link code</Text>
-            <Text selectable numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.55} style={{ fontFamily: font.bold, fontSize: 22, color: c.ink1, letterSpacing: 2, marginTop: 8, width: '100%', textAlign: 'center' }}>{code}</Text>
+            <Text style={{ fontFamily: font.bold, fontSize: 34, color: c.ink1, letterSpacing: 6, marginTop: 8 }}>{code}</Text>
             <Pressable onPress={copyCode} style={{ marginTop: 10, paddingVertical: 7, paddingHorizontal: 15, borderRadius: 999, backgroundColor: c.surface3 }}>
               <Text style={{ fontFamily: font.semibold, fontSize: 12.5, color: c.brandDeep }}>Copy “LINK {code}”</Text>
             </Pressable>
             <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3, textAlign: 'center', marginTop: 14, lineHeight: 19 }}>
-              Send <Text style={{ fontFamily: font.semibold, color: c.ink2 }}>LINK {code}</Text> to the Zitch WhatsApp number from this phone. The code expires in 30 minutes and can only be used once.
+              Send <Text style={{ fontFamily: font.semibold, color: c.ink2 }}>LINK {code}</Text> to the Zitch WhatsApp number from this phone. The code expires in 10 minutes.
             </Text>
           </Card>
           <View style={{ height: 16 }} />
           <Btn label="Open WhatsApp" variant="primary" onPress={() => openWa(`LINK ${code}`, waLink)} />
           <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 34, marginTop: 4 }}>
-            {polling && <LoadingMark size={16} />}
+            {polling && <ActivityIndicator size="small" color={c.ink3} />}
             {polling && <Text style={{ fontFamily: font.regular, fontSize: 12.5, color: c.ink3 }}>Waiting for the code…</Text>}
           </View>
           <Btn label="I've sent it — check now" variant="outline" onPress={() => refreshStatus(false)} />
@@ -261,13 +166,6 @@ const LinkWhatsApp = () => {
           <Btn label={busy ? 'Unlinking…' : 'Unlink WhatsApp'} variant="outline" onPress={unlink} disabled={busy} />
         </>
       )}
-      <PinSheet
-        open={pinOpen}
-        onClose={() => setPinOpen(false)}
-        onComplete={generate}
-        title="Confirm it's you"
-        subtitle="Enter your 6-digit PIN to generate a WhatsApp link code."
-      />
     </Screen>
   );
 };

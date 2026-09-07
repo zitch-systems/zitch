@@ -1,53 +1,37 @@
 import React, { useState } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { apiPost } from '@/lib/api';
-import { saveTransactionPin, hasTransactionPin } from '@/lib/secureStore';
+import { EP } from '@/lib/endpoints';
+import { saveTransactionPin } from '@/lib/secureStore';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { Screen, Header, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
-import { isTrivialPin } from '@/lib/format';
-import AuthGuard from '@/components/AuthGuard';
-import { usePinScreenProtection } from '@/lib/screenCapture';
 
-// Change the transaction PIN for a signed-in user. Changing an existing PIN
-// requires the CURRENT PIN by default (so a stolen session token alone can't
-// overwrite it); if the user has forgotten it, they can switch to confirming
-// with their account password as the recovery path.
+// Change the transaction PIN for a signed-in user. The backend requires the
+// account password to change an existing PIN, so a stolen session token alone
+// can't overwrite it — that's also the recovery path for a forgotten PIN.
 const ResetPin = () => {
-  usePinScreenProtection();
   const { c } = useTheme();
-  const [useOldPin, setUseOldPin] = useState(true);   // false => verify with password (forgot-PIN)
-  const [oldPin, setOldPin] = useState('');
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
   const [pin2, setPin2] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // Existing pre-migration accounts may still have a legacy four-digit current
-  // PIN, but every replacement must be exactly six digits.
-  const authOk = useOldPin ? oldPin.length >= 4 : password.length >= 8;
-  const canSubmit = authOk && pin.length === 6 && pin === pin2;
+  const canSubmit = password.length >= 8 && pin.length >= 4 && pin === pin2;
 
   const submit = async () => {
     if (pin !== pin2) {
       notify('Error', 'PINs do not match');
       return;
     }
-    if (isTrivialPin(pin)) {
-      notify('Error', 'Choose a less guessable PIN (avoid repeated or sequential digits).');
-      return;
-    }
     setBusy(true);
     try {
-      const body = useOldPin ? { pin, old_pin: oldPin } : { pin, password };
-      const response = await apiPost('/api/set-transaction-pin/', body);
+      const response = await apiPost(EP.auth.setTransactionPin, { pin, password });
       const result = await response.json();
       if (response.ok) {
-        // Only refresh the cached keychain copy if the user already uses biometric
-        // pay; otherwise changing the PIN must NOT start caching the spending secret.
-        if (await hasTransactionPin()) await saveTransactionPin(pin);
+        await saveTransactionPin(pin); // keep the keychain copy (biometric pay) in sync
         notify('Done', 'Your transaction PIN has been changed.');
         router.back();
       } else {
@@ -64,75 +48,45 @@ const ResetPin = () => {
     <Screen>
       <Header title="Change transaction PIN" onBack={() => router.back()} />
       <Text style={{ fontSize: 14, color: c.ink3, marginTop: 2, marginBottom: 22, fontFamily: font.regular }}>
-        {useOldPin
-          ? 'Enter your current PIN, then choose a new 6-digit PIN.'
-          : 'Confirm your account password, then choose a new 6-digit PIN.'}
+        For your security, confirm your account password to set a new 4-digit transaction PIN.
       </Text>
 
       <View style={{ gap: 16 }}>
-        {useOldPin ? (
-          <Field
-            label="Current PIN"
-            value={oldPin}
-            onChangeText={(v) => setOldPin(v.replace(/\D/g, '').slice(0, 6))}
-            secureTextEntry
-            keyboardType="number-pad"
-            maxLength={6}
-            placeholder="Enter your current PIN"
-            prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
-          />
-        ) : (
-          <Field
-            label="Account password"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            placeholder="Enter your password"
-            prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
-          />
-        )}
+        <Field
+          label="Account password"
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          placeholder="Enter your password"
+          prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+        />
         <Field
           label="New PIN"
           value={pin}
-          onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, 6))}
+          onChangeText={(v) => setPin(v.replace(/\D/g, '').slice(0, 4))}
           secureTextEntry
           keyboardType="number-pad"
-          maxLength={6}
-          placeholder="6-digit PIN"
+          maxLength={4}
+          placeholder="4-digit PIN"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
         <Field
           label="Confirm new PIN"
           value={pin2}
-          onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, 6))}
+          onChangeText={(v) => setPin2(v.replace(/\D/g, '').slice(0, 4))}
           secureTextEntry
           keyboardType="number-pad"
-          maxLength={6}
+          maxLength={4}
           placeholder="Re-enter PIN"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
       </View>
 
-      <Pressable onPress={() => setUseOldPin((v) => !v)} style={{ marginTop: 16, alignSelf: 'flex-start' }}>
-        <Text style={{ fontSize: 13, color: c.brand, fontFamily: font.semibold }}>
-          {useOldPin ? 'Forgot your current PIN? Use your password' : 'Use your current PIN instead'}
-        </Text>
-      </Pressable>
-
-      <View style={{ marginTop: 24 }}>
+      <View style={{ marginTop: 26 }}>
         <Btn label={busy ? 'Saving…' : 'Change PIN'} onPress={submit} disabled={!canSubmit || busy} />
       </View>
     </Screen>
   );
 };
 
-// Post-login screen living in the unguarded (auth) group: gate it explicitly
-// so a deep link can't render it without a valid, unlocked session (the API
-// would 401 anyway — this keeps the surface consistent with the other groups).
-const GuardedResetPin = () => (
-  <AuthGuard>
-    <ResetPin />
-  </AuthGuard>
-);
-
-export default GuardedResetPin;
+export default ResetPin;

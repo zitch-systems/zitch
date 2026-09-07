@@ -1,30 +1,31 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Appearance } from 'react-native';
 import {
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
-  Inter_800ExtraBold,
-} from '@expo-google-fonts/inter';
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
+} from '@expo-google-fonts/manrope';
 
-// ---- App font map (Inter; loaded in app/_layout.tsx) ----
+// ---- App font map (Manrope; loaded in app/_layout.tsx) ----
+// The design system (tokens.css) specifies Manrope with a default body weight
+// of 500 — see lib base text default in app/_layout.tsx.
 export const appFonts = {
-  Inter_400Regular,
-  Inter_500Medium,
-  Inter_600SemiBold,
-  Inter_700Bold,
-  Inter_800ExtraBold,
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
 };
 
 // font-family by weight — RN needs the exact variant, not a numeric weight
 export const font = {
-  regular: 'Inter_400Regular',
-  medium: 'Inter_500Medium',
-  semibold: 'Inter_600SemiBold',
-  bold: 'Inter_700Bold',
-  extrabold: 'Inter_800ExtraBold',
+  regular: 'Manrope_400Regular',
+  medium: 'Manrope_500Medium',
+  semibold: 'Manrope_600SemiBold',
+  bold: 'Manrope_700Bold',
+  extrabold: 'Manrope_800ExtraBold',
 };
 
 // ---- Brand ramp (from docs/design_handoff_zitch_revamp/assets/tokens.css) ----
@@ -69,10 +70,6 @@ export type ThemeTokens = {
   brand: string;
   brandDeep: string;
   heroGradient: [string, string, string];
-  /** The tier/limits card. Deliberately NOT the brand teal: that gradient means
-   *  "your money" everywhere else in the app, and this card is about what the
-   *  account is ALLOWED to do, not what it holds. */
-  tierGradient: [string, string, string];
   // shared palette passthrough
   cyan: string;
   lime: string;
@@ -88,14 +85,13 @@ export const light: ThemeTokens = {
   surface2: '#F4F9F8',
   surface3: '#EAF3F1',
   line: '#E2EEEB',
-  ink1: '#0A0A0B',
-  ink2: '#3A434A',
-  ink3: '#737B83',
+  ink1: '#06231F',
+  ink2: '#3C4F4C',
+  ink3: '#6B7A77',
   inkOnBrand: '#FFFFFF',
   brand: palette.teal500,
   brandDeep: palette.teal600,
   heroGradient: ['#0C5249', '#00847B', '#0FA295'],
-  tierGradient: ['#F6E4B4', '#EFD79B', '#E7C97E'],
   cyan: palette.cyan,
   lime: palette.lime,
   amber: palette.amber,
@@ -112,14 +108,11 @@ export const dark: ThemeTokens = {
   line: '#1B463C',
   ink1: '#EAFBF7',
   ink2: '#A6C9C1',
-  ink3: '#86ABA2',
+  ink3: '#6F9189',
   inkOnBrand: '#04221F',
   brand: palette.teal400,
   brandDeep: palette.teal500,
   heroGradient: ['#073A34', '#00847B', '#12B7AA'],
-  // Dimmer and less saturated than the light card: the same gold at full
-  // strength glares against a dark background and swamps the ink on it.
-  tierGradient: ['#4A3C1C', '#5C4A22', '#6E5928'],
   cyan: palette.cyan,
   lime: palette.lime,
   amber: palette.amber,
@@ -130,24 +123,26 @@ export const dark: ThemeTokens = {
 // Per-icon accent colours so each service/transaction reads as its own
 // colourful tile instead of one flat brand tint. Keyed by ZIcon name; anything
 // unlisted falls back to the brand colour so new icons still look intentional.
+// Service tile colours below mirror the design v2 SVC_COLOR map exactly
+// (docs/design_handoff_v2/README.md → "Design tokens" + tabs.jsx).
 export const ICON_COLORS: Record<string, string> = {
   airtime: '#0FA295',
   data: '#2D7FF9',
   dice: '#F5A623',     // betting
   tv: '#7A5CFF',       // cable
-  fixed: '#16A34A',    // save
-  loan: '#FF3B3B',
-  jamb: '#5B6CFF',     // exams
-  bills: '#FB8C00',    // electricity
+  fixed: '#1EA05E',    // save
+  loan: '#E8590C',
+  jamb: '#F5760A',     // exams
+  bills: '#F59E0B',    // electricity
   send: '#0FA295',     // transfer
   withdraw: '#16A34A',
-  insurance: '#00B8D4',
-  remita: '#7A5CFF',
-  movie: '#FF4D8D',
-  convert: '#00B8D4',
-  invite: '#F5A623',
+  insurance: '#16A34A',
+  remita: '#2D7FF9',
+  movie: '#D6336C',
+  convert: '#0CA5B8',
+  invite: '#7A5CFF',
   spark: '#00B51D',
-  more: '#64748B',
+  more: '#6E8B86',
   // List-row icons (profile, settings, savings, loan, cards screens).
   history: '#0FA295',
   chart: '#2D7FF9',
@@ -168,7 +163,7 @@ export const ICON_COLORS: Record<string, string> = {
   download: '#2D7FF9',
   share: '#0FA295',
   deposit: '#16A34A',
-  save: '#16A34A',
+  save: '#1EA05E',
   phone: '#0FA295',
   faceid: '#7A5CFF',
   fingerprint: '#2D7FF9',
@@ -176,7 +171,8 @@ export const ICON_COLORS: Record<string, string> = {
 
 // A soft translucent tint of an accent (hex + alpha) that sits cleanly on both
 // light and dark surfaces, so we don't need a separate colour per theme.
-export const iconTint = (hex: string, dark: boolean) => hex + (dark ? '33' : '1F');
+// ~14% tint in light (0x24/0xFF ≈ 14%), per the design's "own colour at ~14%".
+export const iconTint = (hex: string, dark: boolean) => hex + (dark ? '33' : '24');
 
 // ---- Radii ----
 export const radius = { sm: 12, md: 18, lg: 24, xl: 30, pill: 999 };
@@ -198,85 +194,25 @@ const ThemeContext = createContext<ThemeContextValue>({
 
 const STORAGE_KEY = 'z-theme';
 
-/**
- * The stored preference, read at MODULE LOAD rather than on mount.
- *
- * ThemeProvider only mounts once the root layout is `ready`, which is after the
- * splash has waited on fonts. Reading storage in its useEffect therefore landed
- * a frame or two AFTER first paint: the whole app painted light, then flipped to
- * dark. Every dark-mode customer saw that white flash on every single cold
- * start, with no network involved.
- *
- * Starting the read here means it is issued as soon as the bundle evaluates —
- * far earlier than the font wait — so by the time the provider mounts the value
- * is almost always already in hand and the first paint is simply correct.
- *
- * It is a cache, never a gate: if the read has not landed we fall through to the
- * OS setting below and correct on arrival. Nothing about the theme is worth
- * delaying the app for, which is the same rule lib/boot applies to fonts.
- */
-let storedTheme: ThemeName | null = null;
-const storedThemeRead = AsyncStorage.getItem(STORAGE_KEY)
-  .then((v) => { if (v === 'light' || v === 'dark') storedTheme = v; })
-  .catch(() => { /* no preference readable — the OS setting stands */ });
-
-/** Best guess at the right theme for the very first frame. */
-const initialTheme = (): ThemeName => {
-  if (storedTheme) return storedTheme;
-  // No stored choice yet: honour the phone. Opening a light app on a phone set
-  // to dark is its own small jolt, and defaulting to the OS is what a customer
-  // who has never touched our toggle actually expects.
-  return Appearance.getColorScheme() === 'dark' ? 'dark' : 'light';
-};
-
 export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
-  const [theme, setThemeState] = useState<ThemeName>(initialTheme);
+  const [theme, setThemeState] = useState<ThemeName>('light');
 
   useEffect(() => {
-    let alive = true;
-    // Covers the case where the module-scope read had not resolved before mount.
-    void storedThemeRead.then(() => {
-      if (alive && storedTheme) setThemeState(storedTheme);
+    AsyncStorage.getItem(STORAGE_KEY).then((v) => {
+      if (v === 'light' || v === 'dark') setThemeState(v);
     });
-    return () => { alive = false; };
   }, []);
 
-  // Stable identities, all three of them, because this context is read by
-  // practically every component in the app — Screen, ServiceTile, Hero, Badge,
-  // TxnRow, and every screen body.
-  //
-  // The provider used to build `{ theme, c, setTheme, toggle }` inline, so the
-  // value was a NEW object on every render and React re-rendered every consumer
-  // in the mounted tree whether or not the theme had actually changed. That was
-  // not a rare event: ThemeProvider sits under RootLayout, RootLayout calls
-  // usePathname(), and so every navigation re-rendered the provider — which is
-  // to say every tap that opened a screen re-rendered the whole app underneath
-  // it, ~30 react-native-svg icon trees on Home alone. Memoising the callbacks
-  // too, since a value memo is only as stable as the things inside it.
-  const setTheme = useCallback((t: ThemeName) => {
+  const setTheme = (t: ThemeName) => {
     setThemeState(t);
-    // Keep the module cache in step so the next cold start paints this choice
-    // on the first frame rather than re-reading its way to it.
-    storedTheme = t;
-    AsyncStorage.setItem(STORAGE_KEY, t).catch(() => {});
-  }, []);
-  // Depends on `theme`, so its identity changes when the theme does — which is
-  // exactly when every consumer has to re-render anyway, because `c` changed
-  // with it. The bug was an identity that churned on EVERY render; one that
-  // changes only when the value does is correct and costs nothing.
-  const toggle = useCallback(
-    () => setTheme(theme === 'dark' ? 'light' : 'dark'),
-    [theme, setTheme],
-  );
+    AsyncStorage.setItem(STORAGE_KEY, t);
+  };
+  const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 
   const c = theme === 'dark' ? dark : light;
-  const value = useMemo(
-    () => ({ theme, c, setTheme, toggle }),
-    [theme, c, setTheme, toggle],
-  );
 
   return (
-    <ThemeContext.Provider value={value}>
+    <ThemeContext.Provider value={{ theme, c, setTheme, toggle }}>
       {children}
     </ThemeContext.Provider>
   );

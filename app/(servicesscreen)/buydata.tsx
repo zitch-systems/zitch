@@ -1,19 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, TextInput, Pressable, Image, ActivityIndicator } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
-import { apiPost, newIdempotencyKey, publicJson } from '@/lib/api';
-import {
-  Screen, Header, Btn, Sheet, PinPad, money, HeaderLink, PillTabs, PickerSheet, Card, NText,
-} from '@/components/design/ui';
-import ZIcon from '@/components/design/ZIcon';
-import { ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
+import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
+import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
+import { Label, ProviderGrid, Segmented, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
-import { localPhoneNumber } from '@/lib/phone';
-import { pickContactPhone } from '@/lib/contacts';
 
 const NETWORKS = [
   { id: '1', name: 'MTN', color: '#FFCC00', logo: require('@/assets/images/providers/mtn.png') },
@@ -21,9 +19,6 @@ const NETWORKS = [
   { id: '3', name: 'Airtel', color: '#E40000', logo: require('@/assets/images/providers/airtel.png') },
   { id: '4', name: '9mobile', color: '#0A8A3D', logo: require('@/assets/images/providers/9mobile.png') },
 ];
-
-// A real API parameter — it selects which catalogue the provider serves, so it
-// stays a control rather than becoming a display category.
 const PLAN_TYPES = [
   { v: '1', label: 'SME' },
   { v: '2', label: 'SME2' },
@@ -31,85 +26,40 @@ const PLAN_TYPES = [
   { v: '4', label: 'Corporate' },
 ];
 
-const TABS = [
-  { v: 'all', label: 'All' },
-  { v: 'daily', label: 'Daily' },
-  { v: 'weekly', label: 'Weekly' },
-  { v: 'monthly', label: 'Monthly' },
-  { v: 'long', label: 'Broadband' },
-];
-
-// Derived from the plan's own validity string rather than a field the API
-// doesn't send. Anything that doesn't parse stays visible under "All" instead of
-// being filed under a guess.
-const planCategory = (validity: string, name: string): string => {
-  const s = `${validity} ${name}`.toLowerCase();
-  const days = /(\d+)\s*day/.exec(s);
-  if (/broadband|router|mifi/.test(s)) return 'long';
-  if (days) {
-    const n = Number(days[1]);
-    if (n <= 3) return 'daily';
-    if (n <= 14) return 'weekly';
-    if (n <= 31) return 'monthly';
-    return 'long';
-  }
-  if (/month/.test(s)) return /(\d+)\s*month/.test(s) && Number(/(\d+)\s*month/.exec(s)![1]) > 1 ? 'long' : 'monthly';
-  if (/week/.test(s)) return 'weekly';
-  if (/day|daily/.test(s)) return 'daily';
-  if (/year|annual/.test(s)) return 'long';
-  return '';
-};
-
-/** "0816 693 8327" — grouped while typing so a mistyped digit is spottable. */
-const prettyPhone = (d: string) =>
-  d.replace(/(\d{4})(\d{0,3})(\d{0,4})/, (_, a, b, cc) => [a, b, cc].filter(Boolean).join(' ')).trim();
-
 type Step = null | 'confirm' | 'pin';
-type Plan = { id: string; label: string; sub?: string; price: number };
 
 const BuyData = () => {
   const { c } = useTheme();
-  const { balance, reload, phoneNumber } = useWallet();
+  const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
   const [net, setNet] = useState('1');
   const [planType, setPlanType] = useState('1');
   const [plan, setPlan] = useState('');
   const [phone, setPhone] = useState('');
   const [price, setPrice] = useState('');
-  const [plans, setPlans] = useState<Plan[]>([]);
+  const [plans, setPlans] = useState<{ id: string; label: string; sub?: string; price: number }[]>([]);
   const [loadingPlans, setLoadingPlans] = useState(false);
-  const [tab, setTab] = useState('all');
-  const [grid, setGrid] = useState(true);
-  const [picker, setPicker] = useState<null | 'net' | 'type'>(null);
-  const [contactBusy, setContactBusy] = useState(false);
   const [step, setStep] = useState<Step>(null);
-  const [pinFirst, setPinFirst] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
-  const phoneSeeded = useRef(false);
 
-  useEffect(() => {
-    const own = localPhoneNumber(phoneNumber);
-    if (!own || phoneSeeded.current) return;
-    phoneSeeded.current = true;
-    setPhone((current) => current || own);
-  }, [phoneNumber]);
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
   // Fetch plans whenever network + plan type are chosen.
   useEffect(() => {
     if (!net || !planType) return;
-    let active = true;
-    const timer = setTimeout(() => {
-      if (!active) return;
-      setLoadingPlans(true);
-      setPlan('');
-      setPlans([]);
-      publicJson('/api/utility/get_data_plans/', { datanetwork: net, selectedPlanType: planType })
+    setLoadingPlans(true);
+    setPlan('');
+    setPlans([]);
+    fetch(`${baseUrl}/api/utility/get_data_plans/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ datanetwork: net, selectedPlanType: planType }),
+    })
+      .then((r) => r.json())
       .then((res) => {
-        if (active && res?.data_plans) {
+        if (res?.data_plans) {
           setPlans(res.data_plans.map((p: any) => ({
             id: String(p.plan_code),
             label: p.name,
@@ -119,71 +69,33 @@ const BuyData = () => {
         }
       })
       .catch(() => {})
-      .finally(() => { if (active) setLoadingPlans(false); });
-    }, 0);
-    return () => { active = false; clearTimeout(timer); };
+      .finally(() => setLoadingPlans(false));
   }, [net, planType]);
 
   // Fetch authoritative price for the chosen plan.
   useEffect(() => {
-    let active = true;
-    const timer = setTimeout(() => {
-      if (!active) return;
-      if (!plan) { setPrice(''); return; }
-      publicJson('/api/utility/get_data_plans_price/', { selectedDataPlan: plan })
-      .then((res) => { if (active && res?.price != null) setPrice(String(res.price)); })
+    if (!plan) { setPrice(''); return; }
+    fetch(`${baseUrl}/api/utility/get_data_plans_price/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selectedDataPlan: plan }),
+    })
+      .then((r) => r.json())
+      .then((res) => { if (res?.price != null) setPrice(String(res.price)); })
       .catch(() => {});
-    }, 0);
-    return () => { active = false; clearTimeout(timer); };
   }, [plan]);
 
   const network = NETWORKS.find((n) => n.id === net)!;
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
   const valid = phone.length >= 10 && !!plan && amount > 0 && amount <= balance;
-  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const idemKey = useRef('');  // stable across retries of one purchase attempt
-
-  // Any edit to the purchase details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [net, planType, plan, phone]);
-
-  // Which tabs to show: only the ones this catalogue actually has plans for. A
-  // tab that opens onto "no plans" is a dead end the customer paid attention to.
-  const { shown, tabs, activeTab } = useMemo(() => {
-    const cats = new Set(plans.map((p) => planCategory(p.sub ?? '', p.label)).filter(Boolean));
-    const list = TABS.filter((t) => t.v === 'all' || cats.has(t.v));
-    // A tab that was live for MTN may not exist for Airtel. Falling back HERE,
-    // rather than in an effect that re-sets state, means the grid never renders
-    // an empty frame under a selected-but-absent tab.
-    const active = list.some((t) => t.v === tab) ? tab : 'all';
-    return {
-      tabs: list,
-      activeTab: active,
-      shown: active === 'all' ? plans : plans.filter((p) => planCategory(p.sub ?? '', p.label) === active),
-    };
-  }, [plans, tab]);
-
-  const chooseContact = async () => {
-    if (contactBusy) return;
-    setContactBusy(true);
-    try {
-      const result = await pickContactPhone();
-      if (result.status === 'picked') setPhone(result.phone);
-      else if (result.status === 'missing') notify('No phone number', 'That contact has no Nigerian mobile number.');
-      else if (result.status === 'unsupported') notify('Contacts', 'Choose a contact from the Zitch mobile app.');
-    } catch {
-      notify('Contacts unavailable', 'Could not open your contacts. Please enter the number instead.');
-    } finally {
-      setContactBusy(false);
-    }
-  };
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const response = await apiPost('/api/utility/buydata/', {
+      const response = await apiPost(EP.utility.buyData, {
         phone,
         datanetwork: net,
         selectedDataPlan: plan,
@@ -193,10 +105,6 @@ const BuyData = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
-        // `pending` = provider timeout: held while reconciliation confirms or
-        // refunds — the receipt must say "processing", not claim delivery.
-        setTxnRef(String(result.reference || ''));
-        setPending(!!result.pending);
         setStep(null);
         setDone(true);
         reload();
@@ -219,171 +127,46 @@ const BuyData = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={pending ? 'Processing' : 'Successful'}
-          message={pending
-            ? `Your ${planObj?.label || 'data'} purchase to ${phone} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
-            : `Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
+          title="Successful"
+          message={`Your ${planObj?.label || 'data'} purchase to ${phone} was successful.`}
           rows={[['Type', 'Data bundle'], ['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
-          reference={txnRef}
-          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
     );
   }
 
-  const PlanCard = ({ p }: { p: Plan }) => {
-    const on = p.id === plan;
-    return (
-      <Pressable
-        onPress={() => setPlan(p.id)}
-        accessibilityRole="radio"
-        accessibilityLabel={`${p.label}, ${p.sub ?? ''}, ${money(p.price)}`}
-        accessibilityState={{ selected: on }}
-        style={{
-          width: grid ? '33.333%' : '100%',
-          padding: 5,
-        }}
-      >
-        <View
-          style={{
-            borderRadius: 16,
-            backgroundColor: on ? 'transparent' : c.surface2,
-            borderWidth: 2,
-            borderColor: on ? c.brand : 'transparent',
-            paddingVertical: grid ? 16 : 14,
-            paddingHorizontal: grid ? 8 : 16,
-            alignItems: grid ? 'center' : undefined,
-            flexDirection: grid ? 'column' : 'row',
-            gap: grid ? 0 : 12,
-          }}
-        >
-          <View style={{ flex: grid ? undefined : 1, alignItems: grid ? 'center' : 'flex-start' }}>
-            <Text style={{ fontSize: grid ? 19 : 16, fontFamily: font.extrabold, color: c.ink1, letterSpacing: -0.3 }}>
-              {p.label}
-            </Text>
-            {p.sub ? (
-              <Text style={{ fontSize: 12, fontFamily: font.regular, color: c.ink3, marginTop: 3 }}>{p.sub}</Text>
-            ) : null}
-          </View>
-          <NText style={{ fontSize: grid ? 14 : 16, fontFamily: font.bold, color: on ? c.brand : c.ink2, marginTop: grid ? 8 : 0, fontVariant: ['tabular-nums'] }}>
-            ₦{p.price.toLocaleString()}
-          </NText>
-        </View>
-      </Pressable>
-    );
-  };
-
   return (
     <Screen>
-      <Header
-        title="Mobile Data"
-        onBack={() => router.back()}
-        right={<HeaderLink label="History" onPress={() => router.push('/history')} />}
+      <Header title="Data" onBack={() => router.back()} />
+
+      <Label>Select network</Label>
+      <ProviderGrid items={NETWORKS} value={net} onPick={setNet} />
+
+      <Label>Plan type</Label>
+      <Segmented options={PLAN_TYPES} value={planType} onChange={setPlanType} />
+
+      <Label>Select a data plan</Label>
+      {loadingPlans ? (
+        <Loading full={false} />
+      ) : plans.length === 0 ? (
+        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 12 }}>No plans available for this selection.</Text>
+      ) : (
+        <PlanList plans={plans} value={plan} onPick={setPlan} />
+      )}
+      <View style={{ height: 16 }} />
+
+      <Field
+        label="Phone number"
+        value={phone}
+        onChangeText={(v) => setPhone(v.replace(/\D/g, '').slice(0, 11))}
+        keyboardType="number-pad"
+        placeholder="0801 234 5678"
       />
-
-      {/* --- who to top up --- */}
-      <Card style={{ marginBottom: 14 }} pad={14}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Pressable
-            onPress={() => setPicker('net')}
-            accessibilityRole="button"
-            accessibilityLabel={`Network, ${network.name}`}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}
-          >
-            <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: '#fff', borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-              <Image source={network.logo} resizeMode="contain" style={{ width: 28, height: 28 }} />
-            </View>
-            <ZIcon name="down" size={14} color={c.ink3} stroke={2.4} />
-          </Pressable>
-          <View style={{ width: 1, height: 28, backgroundColor: c.line }} />
-          <TextInput
-            value={phone ? prettyPhone(phone) : ''}
-            onChangeText={(value) => setPhone(value.replace(/\D/g, '').slice(0, 11))}
-            placeholder="Enter phone number"
-            placeholderTextColor={c.ink3}
-            keyboardType="phone-pad"
-            autoComplete="tel"
-            maxLength={13}
-            accessibilityLabel="Phone number"
-            style={{ flex: 1, fontSize: 17, fontFamily: font.bold, color: c.ink1, letterSpacing: 0.2, paddingVertical: 8 }}
-          />
-          <Pressable
-            onPress={chooseContact}
-            disabled={contactBusy}
-            accessibilityRole="button"
-            accessibilityLabel="Choose from contacts"
-            accessibilityState={{ disabled: contactBusy }}
-            hitSlop={8}
-            style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}
-          >
-            {contactBusy
-              ? <ActivityIndicator size="small" color={c.inkOnBrand} />
-              : <ZIcon name="contacts" size={18} color={c.inkOnBrand} stroke={2} />}
-          </Pressable>
-        </View>
-      </Card>
-
-      {/* --- plans --- */}
-      <Card style={{ marginBottom: 16 }} pad={14}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-          <Text style={{ flex: 1, fontSize: 16, fontFamily: font.bold, color: c.ink1 }}>Data Plans</Text>
-          <Pressable
-            onPress={() => setPicker('type')}
-            accessibilityRole="button"
-            accessibilityLabel={`Plan catalogue, ${PLAN_TYPES.find((t) => t.v === planType)?.label}`}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: 999, backgroundColor: c.surface3 }}
-          >
-            <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: c.ink2 }}>
-              {PLAN_TYPES.find((t) => t.v === planType)?.label}
-            </Text>
-            <ZIcon name="down" size={13} color={c.ink3} stroke={2.4} />
-          </Pressable>
-          <Pressable
-            onPress={() => setGrid((g) => !g)}
-            accessibilityRole="button"
-            accessibilityLabel={grid ? 'Show plans as a list' : 'Show plans as a grid'}
-            hitSlop={8}
-          >
-            <ZIcon name={grid ? 'more' : 'qr'} size={20} color={c.brand} />
-          </Pressable>
-        </View>
-
-        <PillTabs options={tabs} value={activeTab} onChange={setTab} />
-        <View style={{ height: 12 }} />
-
-        {loadingPlans ? (
-          <Loading full={false} />
-        ) : shown.length === 0 ? (
-          <Text style={{ color: c.ink3, fontFamily: font.regular, textAlign: 'center', paddingVertical: 24 }}>
-            {plans.length === 0 ? 'No plans available for this selection.' : 'No plans in this category.'}
-          </Text>
-        ) : (
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5 }}>
-            {shown.map((p) => <PlanCard key={p.id} p={p} />)}
-          </View>
-        )}
-      </Card>
-
+      <View style={{ height: 10 }} />
       <BalanceHint amount={amount} balance={balance} />
-      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 
-      <PickerSheet
-        open={picker === 'net'}
-        onClose={() => setPicker(null)}
-        title="Select network"
-        options={NETWORKS.map((n) => ({ v: n.id, label: n.name }))}
-        value={net}
-        onPick={setNet}
-      />
-      <PickerSheet
-        open={picker === 'type'}
-        onClose={() => setPicker(null)}
-        title="Plan catalogue"
-        options={PLAN_TYPES.map((t) => ({ v: t.v, label: t.label }))}
-        value={planType}
-        onPick={setPlanType}
-      />
+      <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 
       <ConfirmSheet
         open={step === 'confirm'}
@@ -391,18 +174,15 @@ const BuyData = () => {
         title="Confirm data"
         total={amount}
         balance={balance}
-        productIcon={network.logo}
-        rows={[['Product', `${network.name} Mobile Data`], ['Recipient Mobile', prettyPhone(phone)], ['Data Bundle', `${planObj?.label ?? '—'}${planObj?.sub ? ` · ${planObj.sub}` : ''}`]]}
-        onPay={(pinOnly) => { setStep(null); setPinError(''); setPinFirst(!!pinOnly); setTimeout(() => setStep('pin'), 320); }}
+        rows={[['Network', network.name], ['Phone', phone], ['Plan', planObj?.label || '—']]}
+        onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
-        {/* Asked for the PIN explicitly on the sheet, so don't open the biometric
-            prompt over the pad they just chose. */}
-        <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} autoBiometric={!pinFirst} />
+        <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />
       </Sheet>
     </Screen>
   );

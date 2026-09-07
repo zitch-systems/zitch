@@ -7,12 +7,12 @@ import * as ImagePicker from 'expo-image-picker';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { useWallet } from '@/lib/wallet';
 import ZIcon from '@/components/design/ZIcon';
 import { Avatar } from '@/components/design/Brand';
-import { Screen, Header, Field, Btn, Sheet } from '@/components/design/ui';
+import { Screen, Header, Field, Btn, Tap } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
-import AuthGuard from '@/components/AuthGuard';
 
 const AccountDetails = () => {
   const { c } = useTheme();
@@ -23,12 +23,6 @@ const AccountDetails = () => {
   const [token, setToken] = useState<string | null>(null);
   const [current, setCurrent] = useState({ firstName: '', lastName: '', email: '', phone: '' });
   const [form, setForm] = useState({ firstName: '', lastName: '', email: '', phone: '' });
-  // Changing the email or phone re-authenticates: those two fields decide where a
-  // password reset is delivered, so the server refuses the change on a session
-  // token alone (code "reauth_required"). Held here so the customer can supply it
-  // and have the save go through, instead of meeting a bare "failed to update".
-  const [reauthOpen, setReauthOpen] = useState(false);
-  const [reauthPassword, setReauthPassword] = useState('');
 
   useEffect(() => {
     getToken().then(setToken);
@@ -36,7 +30,7 @@ const AccountDetails = () => {
 
   useEffect(() => {
     if (!token) return;
-    apiPost('/api/wallet_balance/')
+    apiPost(EP.wallet.balance)
       .then((r) => r.json())
       .then((data) => {
         if (data.success) {
@@ -74,7 +68,7 @@ const AccountDetails = () => {
     setAvatar(asset.uri); // optimistic local preview
     setUploadingPhoto(true);
     try {
-      const r = await apiPost('/api/profile/avatar/', { image: `data:image/jpeg;base64,${asset.base64}` });
+      const r = await apiPost(EP.auth.avatar, { image: `data:image/jpeg;base64,${asset.base64}` });
       const body = await r.json();
       if (r.ok && body.success) {
         setAvatar(body.avatar);
@@ -89,6 +83,13 @@ const AccountDetails = () => {
     }
   };
 
+  // Gate "Save changes": only enable once something changed and what's entered
+  // is valid (email well-formed, phone 11 digits).
+  const emailOk = !form.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email);
+  const phoneOk = !form.phone || form.phone.length === 11;
+  const dirty = !!(form.firstName || form.lastName || form.email || form.phone);
+  const canSave = dirty && emailOk && phoneOk;
+
   const handleUpdate = async () => {
     if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
       notify('Invalid email', 'Enter a valid email address.');
@@ -98,36 +99,20 @@ const AccountDetails = () => {
       notify('Invalid phone', 'Enter a valid 11-digit phone number.');
       return;
     }
-    await submitUpdate();
-  };
-
-  const submitUpdate = async (password?: string) => {
     setIsUpdating(true);
     try {
-      const response = await apiPost('/api/update_info/', {
+      const response = await apiPost(EP.auth.updateInfo, {
         email: form.email || current.email,
         phone: form.phone || current.phone,
         first_name: form.firstName || current.firstName,
         last_name: form.lastName || current.lastName,
-        ...(password ? { password } : {}),
       });
       const result = await response.json();
       if (response.ok) {
         if (form.email) await AsyncStorage.setItem('UserEmail', form.email);
         if (form.phone) await AsyncStorage.setItem('UserPhone', form.phone);
-        setReauthOpen(false);
-        setReauthPassword('');
-        // Say so plainly: the new address has to be confirmed again before it
-        // counts towards the KYC tier, and the customer would otherwise only
-        // discover that at the next limit check.
-        const dropped = result?.email_verified === false || result?.phone_verified === false;
-        notify('Success', dropped
-          ? 'Account updated. Confirm your new email or phone to restore your verification.'
-          : 'Account updated');
-      } else if (result.code === 'reauth_required') {
-        setReauthOpen(true);
+        notify('Profile updated');
       } else {
-        setReauthPassword('');
         notify('Error', result.message || 'Failed to update account');
       }
     } catch {
@@ -141,53 +126,32 @@ const AccountDetails = () => {
     <Screen>
       <Header title="Account Details" sub="Your account profile details" onBack={() => router.back()} />
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 20 }}>
-        <Avatar size={64} ring={c.brand} surface={c.surface} uri={avatar} />
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 16 }}>
-            {current.firstName} {current.lastName}
-          </Text>
-          <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{current.phone}</Text>
+      <View style={{ alignItems: 'center', marginBottom: 18 }}>
+        <View style={{ position: 'relative' }}>
+          <Avatar size={84} ring={c.brand} surface={c.surface} uri={avatar} />
+          <View style={{ position: 'absolute', right: -2, bottom: -2, width: 30, height: 30, borderRadius: 15, backgroundColor: c.brand, borderWidth: 3, borderColor: c.surface, alignItems: 'center', justifyContent: 'center' }}>
+            <ZIcon name="plus" size={15} color="#fff" stroke={2.6} />
+          </View>
         </View>
-        <Btn label={uploadingPhoto ? 'Uploading…' : 'Update photo'} variant="outline" size="sm" full={false} disabled={uploadingPhoto} onPress={updatePhoto} />
+        <Tap onPress={updatePhoto} disabled={uploadingPhoto}>
+          <Text style={{ fontSize: 13, fontFamily: font.bold, color: c.brand, marginTop: 10 }}>
+            {uploadingPhoto ? 'Uploading…' : 'Change photo'}
+          </Text>
+        </Tap>
       </View>
 
       <View style={{ gap: 16 }}>
         <Field label="First name" value={form.firstName} onChangeText={(e) => setForm({ ...form, firstName: e })} placeholder={current.firstName || 'First name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
         <Field label="Last name" value={form.lastName} onChangeText={(e) => setForm({ ...form, lastName: e })} placeholder={current.lastName || 'Last name'} prefix={<ZIcon name="user" size={18} color={c.ink3} />} />
-        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="mail" size={18} color={c.ink3} />} />
+        <Field label="Email" value={form.email} onChangeText={(e) => setForm({ ...form, email: e })} keyboardType="email-address" placeholder={current.email || 'you@email.com'} prefix={<ZIcon name="remita" size={18} color={c.ink3} />} />
         <Field label="Phone" value={form.phone} onChangeText={(e) => setForm({ ...form, phone: e.replace(/\D/g, '').slice(0, 11) })} keyboardType="number-pad" placeholder={current.phone || '0801 234 5678'} prefix={<ZIcon name="airtime" size={18} color={c.ink3} />} />
       </View>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label="Update Profile" onPress={handleUpdate} disabled={isUpdating} />
+        <Btn label="Save changes" onPress={handleUpdate} disabled={isUpdating || !canSave} />
       </View>
-
-      <Sheet open={reauthOpen} onClose={() => { setReauthOpen(false); setReauthPassword(''); }}
-             title="Confirm it's you">
-        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, lineHeight: 20, marginBottom: 14 }}>
-          Your email and phone number are how we send account-recovery codes, so
-          changing either one needs your password.
-        </Text>
-        <Field label="Password" value={reauthPassword} onChangeText={setReauthPassword}
-               secureTextEntry placeholder="Your account password"
-               prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
-        <View style={{ height: 16 }} />
-        <Btn label={isUpdating ? 'Saving…' : 'Confirm and save'}
-             disabled={isUpdating || reauthPassword.length < 1}
-             onPress={() => submitUpdate(reauthPassword)} />
-      </Sheet>
     </Screen>
   );
 };
 
-// Post-login screen living in the unguarded (auth) group: gate it explicitly
-// so a deep link can't render it without a valid, unlocked session (the API
-// would 401 anyway — this keeps the surface consistent with the other groups).
-const GuardedAccountDetails = () => (
-  <AuthGuard>
-    <AccountDetails />
-  </AuthGuard>
-);
-
-export default GuardedAccountDetails;
+export default AccountDetails;

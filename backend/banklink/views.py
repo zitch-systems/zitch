@@ -1,4 +1,4 @@
-﻿"""Open-banking (Mono) endpoints: link an external bank, view it, and fund the
+"""Open-banking (Mono) endpoints: link an external bank, view it, and fund the
 wallet from it via DirectPay.
 
 Account login happens entirely in Mono's Connect widget client-side; only the
@@ -8,37 +8,17 @@ short-lived auth code reaches us here. Funding reuses the wallet's FundingIntent
 import json
 import logging
 
-from django.core.exceptions import RequestDataTooBig
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
-from common.http import (
-    api, fail, ok, parse_amount, require_user,
-    verify_transaction_pin, check_send_limits, check_daily_limit,
-    spend_key, idempotent_replay,
-)
+from common.http import api, fail, ok, parse_amount, require_user
 from utility import mono
-from wallet.models import FundingIntent, Transaction
-from wallet.services import make_reference, settle_funding, existing_for_key, get_or_create_wallet
-from transfers.models import Bank
-from transfers.services import detect_account_banks, execute_payout, PayoutError
+from wallet.models import FundingIntent
+from wallet.services import make_reference, settle_funding
 
 from .models import LinkedBankAccount
 
 log = logging.getLogger("banklink")
-MONO_WEBHOOK_BODY_MAX = 1024 * 1024
-
-
-def _linked_id(data) -> int | None:
-    """Coerce the client-supplied `linked_id` to an int, or None if unusable.
-
-    The value flows straight into a `filter(id=…)` on an integer PK; a non-numeric
-    string ("abc", []) would raise ValueError at query time → an unhandled 500.
-    Callers treat None as 'not found'."""
-    try:
-        return int(data.get("linked_id"))
-    except (TypeError, ValueError):
-        return None
 
 
 def _serialize(a: LinkedBankAccount) -> dict:
@@ -55,9 +35,33 @@ def _serialize(a: LinkedBankAccount) -> dict:
 
 @api
 @require_user
+def connect_init(request):
+    """POST /api/banklink/connect-init/ {access_token, redirect_url}
+    -> {success, mono_url} — start a hosted Mono Connect session.
+
+    The app opens ``mono_url`` in an auth session; Mono redirects to
+    ``redirect_url`` with a ``code`` the app then posts to /connect/.
+    """
+    user = request.user_obj
+    redirect_url = (request.data.get("redirect_url") or "").strip()
+    if not redirect_url:
+        return fail("Missing redirect_url")
+    res = mono.initiate_connect(
+        redirect_url,
+        name=(user.get_full_name() or user.username or "").strip(),
+        email=getattr(user, "email", "") or "",
+        ref=make_reference(),
+    )
+    if not res.get("success"):
+        return fail(res.get("message", "Could not start bank linking"), status=502)
+    return ok(success=True, mono_url=res["mono_url"])
+
+
+@api
+@require_user
 def connect(request):
     """POST /api/banklink/connect/ {access_token, code}
-    -> {success, account} â€” exchange a Mono Connect auth code and link the account.
+    -> {success, account} — exchange a Mono Connect auth code and link the account.
     """
     user = request.user_obj
     code = (request.data.get("code") or "").strip()
@@ -68,16 +72,6 @@ def connect(request):
     if not res.get("success"):
         return fail(res.get("message", "Could not link your bank"), status=502)
     account_id = res["account_id"]
-
-    # `mono_account_id` is globally unique, so an upsert keyed on it ALONE would
-    # reassign an existing row's `user` to the caller — letting whoever links an
-    # account id already owned by someone else silently steal (and unlink) that
-    # user's linked bank + its cached name/balance snapshot. Never mutate another
-    # user's row: reject a cross-user re-link; a same-user re-link still refreshes.
-    owned = LinkedBankAccount.objects.filter(mono_account_id=account_id).first()
-    if owned is not None and owned.user_id != user.id:
-        log.warning("banklink_cross_user_relink user=%s account=%s", user.id, account_id)
-        return fail("This bank account is already linked to another Zitch account.", status=409)
 
     details = mono.get_account(account_id)  # best-effort snapshot
     acct, _ = LinkedBankAccount.objects.update_or_create(
@@ -110,7 +104,7 @@ def refresh(request):
     Re-pulls the linked account's balance from Mono and caches it.
     """
     acct = request.user_obj.linked_banks.filter(
-        id=_linked_id(request.data), status=LinkedBankAccount.ACTIVE).first()
+        id=request.data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
     if acct is None:
         return fail("Linked account not found", status=404)
     res = mono.get_balance(acct.mono_account_id)
@@ -125,7 +119,7 @@ def refresh(request):
 @require_user
 def unlink(request):
     """POST /api/banklink/unlink/ {access_token, linked_id} -> {success}"""
-    acct = request.user_obj.linked_banks.filter(id=_linked_id(request.data)).first()
+    acct = request.user_obj.linked_banks.filter(id=request.data.get("linked_id")).first()
     if acct is None:
         return fail("Linked account not found", status=404)
     acct.status = LinkedBankAccount.UNLINKED
@@ -144,7 +138,7 @@ def fund(request):
     """
     user = request.user_obj
     acct = user.linked_banks.filter(
-        id=_linked_id(request.data), status=LinkedBankAccount.ACTIVE).first()
+        id=request.data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
     if acct is None:
         return fail("Linked account not found", status=404)
     amount = parse_amount(request.data.get("amount"))
@@ -165,106 +159,9 @@ def fund(request):
               authorization_url=res.get("authorization_url", ""), mock=res.get("mock", False))
 
 
-@api
-@require_user
-def payout(request):
-    """POST /api/banklink/payout/ {access_token, linked_id, amount, pin, idempotency_key}
-    -> {success, wallet, reference}
-
-    Move money OUT of the Zitch wallet to the user's own linked bank account
-    (PIN-verified). Reuses the transfers payout rail (detect bank -> execute_payout),
-    so balance/limit/idempotency guards and the reconcile_wema settlement poller all apply.
-    """
-    user, data = request.user_obj, request.data
-
-    pin_err = verify_transaction_pin(user, data.get("pin") or data.get("transaction_pin"))
-    if pin_err:
-        return pin_err
-
-    acct_obj = user.linked_banks.filter(
-        id=data.get("linked_id"), status=LinkedBankAccount.ACTIVE).first()
-    if acct_obj is None:
-        return fail("Linked account not found", status=404)
-
-    # A linked account created under Mono SIMULATION (no live bank connection) is
-    # a demo stub, not a verified real account. Never drive the LIVE payout rail
-    # from one â€” that would move real wallet money to an unverified/fake number.
-    # Fully-mock dev/pilot (payout rail also mock) stays allowed so the flow is
-    # testable. The provenance check is on the ROW, not the current config: a
-    # stub linked during the pilot must stay refused after real Mono keys go
-    # live, since it was never verified against a real bank.
-    from utility.providers import payout_live
-    if payout_live():
-        if mono.is_mock_account(acct_obj.mono_account_id):
-            return fail("This linked account was added in demo mode and can't "
-                        "receive payouts. Remove it and link your bank again.",
-                        status=409, code="simulation")
-        if not mono.mono_live():
-            return fail("Payouts to a linked bank need a live bank connection.",
-                        status=409, code="simulation")
-
-    acct = (acct_obj.account_number or "").strip()
-    if len(acct) != 10:
-        return fail("This linked account can't receive a payout.", status=400)
-
-    amount = parse_amount(data.get("amount"))
-    if amount is None:
-        return fail("Enter a valid amount")
-    if amount < 100:
-        return fail("Minimum payout is ₦100")
-
-    limit_err = check_send_limits(user, amount)
-    if limit_err:
-        return limit_err
-
-    key = spend_key(data.get("idempotency_key"), user, "mono_payout", str(acct_obj.id), amount)
-    replay = idempotent_replay(existing_for_key(user, key))
-    if replay:
-        return replay
-
-    daily_err = check_daily_limit(user, amount, "transfer")
-    if daily_err:
-        return daily_err
-
-    # Route the payout by detecting the bank for the linked account number (the
-    # linked account stores the bank name, not a routable code).
-    matches = detect_account_banks(acct)
-    if not matches:
-        return fail("Couldn't route a payout to this bank. Please try a normal transfer.", status=400)
-    if len(matches) > 1:
-        # A NUBAN can be a valid account at more than one bank â€” for DIFFERENT
-        # holders (see detect_account_banks). For a "fund your OWN linked account"
-        # flow we must never guess matches[0], which could disburse to a stranger;
-        # send the user to a normal transfer where they pick the bank explicitly.
-        return fail("This account number maps to more than one bank. Please use a normal transfer.",
-                    status=400)
-    chosen = matches[0]
-    bank = Bank.objects.filter(code=chosen["bank"]).first()
-    if bank is None:
-        return fail("Couldn't route a payout to this bank. Please try a normal transfer.", status=400)
-    name = (chosen.get("name") or acct_obj.account_name or "Bank recipient").strip()
-
-    try:
-        txn = execute_payout(user, amount, acct, bank, name,
-                             note=f"To {acct_obj.bank_name}".strip(), idempotency_key=key)
-    except PayoutError as exc:
-        if exc.kind == "duplicate":
-            return idempotent_replay(existing_for_key(user, key)) or fail("Duplicate request", status=409)
-        if exc.kind == "insufficient":
-            return fail("Insufficient wallet balance", status=402)
-        return fail(exc.message, status=502)
-
-    wallet = get_or_create_wallet(user)
-    if txn.transaction_status == Transaction.PENDING:
-        return ok(pending=True, wallet=str(wallet.balance), reference=txn.reference,
-                  message="Your payout is processing and will be confirmed shortly.")
-    return ok(success=True, wallet=str(wallet.balance), reference=txn.reference,
-              message=f"{name} funded")
-
-
 @csrf_exempt
 def webhook(request):
-    """POST /api/banklink/webhook/ â€” Mono callback.
+    """POST /api/banklink/webhook/ — Mono callback.
 
     Verifies the shared-secret header, then: marks accounts active on
     account_connected, and credits the wallet (idempotently) on a successful
@@ -272,54 +169,22 @@ def webhook(request):
     """
     if request.method != "POST":
         return fail("Method not allowed", status=405)
-    # Mono authenticates with a shared-secret header, not a body signature. Check
-    # that boundary before parsing attacker-controlled JSON, then bound the body.
+    try:
+        event = json.loads(request.body or b"{}")
+    except (ValueError, TypeError):
+        return fail("Invalid payload", status=400)
     signature = request.headers.get("mono-webhook-secret", "")
-    if not mono.verify_webhook({}, signature):
+    if not mono.verify_webhook(event, signature):
         log.warning("mono_webhook_bad_signature has_header=%s", bool(signature))
         return fail("Invalid signature", status=401)
-    try:
-        declared = int(request.META.get("CONTENT_LENGTH") or 0)
-    except (TypeError, ValueError):
-        declared = 0
-    if declared > MONO_WEBHOOK_BODY_MAX:
-        return fail("Payload too large", status=413)
-    try:
-        raw_body = request.body or b"{}"
-    except RequestDataTooBig:
-        return fail("Payload too large", status=413)
-    if len(raw_body) > MONO_WEBHOOK_BODY_MAX:
-        return fail("Payload too large", status=413)
-    if (request.content_type or "").lower() != "application/json":
-        return fail("Content-Type must be application/json", status=415)
-    try:
-        event = json.loads(raw_body)
-    except (ValueError, TypeError, UnicodeDecodeError):
-        return fail("Invalid payload", status=400)
-    if not isinstance(event, dict):
-        return fail("Invalid payload", status=400)
 
-    etype = str(event.get("event") or "").lower()
-    data = event.get("data")
-    if data is None:
-        data = {}
-    if not isinstance(data, dict):
-        return fail("Invalid payload", status=400)
+    etype = (event.get("event") or "").lower()
+    data = event.get("data", {}) or {}
     if "payment" in etype and ("success" in etype or "received" in etype):
         reference = data.get("reference", "") or data.get("merchant_ref", "")
         if reference:
-            # Credit what Mono actually settled, never the user-requested intent
-            # amount. A missing or malformed settlement amount is not proof that
-            # money arrived; leave the intent pending for investigation instead of
-            # manufacturing the requested balance from an incomplete callback.
-            raw_amount = data.get("amount")
-            paid = mono._naira(raw_amount) if raw_amount is not None else None
-            intent = FundingIntent.objects.filter(reference=reference).first()
-            if paid and paid > 0 and intent is not None:
-                settle_funding(reference, verified_amount=min(intent.amount, paid))
-                log.info("mono_funding_settled ref=%s paid=%s", reference, paid)
-            else:
-                log.warning("mono_funding_unsettled ref=%s reason=missing_verified_amount", reference)
+            settle_funding(reference)  # idempotent; uses the FundingIntent amount
+            log.info("mono_funding_settled ref=%s", reference)
     elif "account" in etype and ("connected" in etype or "updated" in etype):
         account_id = data.get("id", "") or data.get("account", "")
         LinkedBankAccount.objects.filter(mono_account_id=account_id).update(

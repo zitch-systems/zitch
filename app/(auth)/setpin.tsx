@@ -1,31 +1,24 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { getToken } from '@/lib/secureStore';
+import { getToken, saveTransactionPin } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
 import { ZMark } from '@/components/design/Brand';
 import { Screen } from '@/components/design/ui';
-import { Stepper } from '@/components/design/Stepper';
 import { Keypad } from '@/components/design/Keypad';
 import { useTheme, font } from '@/lib/theme';
-import { isTrivialPin } from '@/lib/format';
-import { usePinScreenProtection } from '@/lib/screenCapture';
 
-// The backend enforces six digits for every newly-created transaction PIN.
-// Keeping this in sync is security-critical: a four-digit client both weakens
-// the secret and leaves a newly-onboarded customer unable to authorise money.
-const PIN_LEN = 6;
+const PIN_LEN = 4;
 
 const SetPin = () => {
-  usePinScreenProtection();
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   const [confirm, setConfirm] = useState<string | null>(null);
   const [err, setErr] = useState(false);
-  const [errMsg, setErrMsg] = useState("PINs don't match, try again");
   const [submitting, setSubmitting] = useState(false);
-  const [, setToken] = useState('');
+  const [token, setToken] = useState('');
 
   const active = confirm === null ? pin : confirm;
 
@@ -36,12 +29,10 @@ const SetPin = () => {
   const submit = async (finalPin: string) => {
     setSubmitting(true);
     try {
-      const response = await apiPost('/api/set-transaction-pin/', { pin: finalPin });
+      const response = await apiPost(EP.auth.setTransactionPin, { pin: finalPin });
       const result = await response.json().catch(() => ({}));
       if (response.ok) {
-        // The money PIN is NOT cached here. It is only cached if the user later
-        // opts into "pay with biometrics" (Security → Biometrics), so the
-        // spending secret never sits at rest for users who don't use that shortcut.
+        await saveTransactionPin(finalPin); // cached (keychain) for biometric pay
         router.replace('/completed');
       } else if (response.status === 403 || result.code === 'password_required') {
         // This account already has a PIN (e.g. re-onboarding the same number);
@@ -53,7 +44,7 @@ const SetPin = () => {
         setConfirm('');
         setSubmitting(false);
       }
-    } catch {
+    } catch (error) {
       notify('Error', 'Something went wrong. Please try again later.');
       setConfirm('');
       setSubmitting(false);
@@ -63,14 +54,6 @@ const SetPin = () => {
   // Drive the create → confirm → submit flow.
   useEffect(() => {
     if (confirm === null && pin.length === PIN_LEN) {
-      if (isTrivialPin(pin)) {
-        const show = setTimeout(() => {
-          setErrMsg('Avoid an easy-to-guess PIN');
-          setErr(true);
-        }, 0);
-        const t = setTimeout(() => { setErr(false); setPin(''); }, 900);
-        return () => { clearTimeout(show); clearTimeout(t); };
-      }
       const t = setTimeout(() => setConfirm(''), 180);
       return () => clearTimeout(t);
     }
@@ -79,14 +62,11 @@ const SetPin = () => {
         const t = setTimeout(() => submit(pin), 220);
         return () => clearTimeout(t);
       }
-      const show = setTimeout(() => {
-        setErrMsg("PINs don't match, try again");
-        setErr(true);
-      }, 0);
+      setErr(true);
       const t = setTimeout(() => { setErr(false); setConfirm(''); }, 700);
-      return () => { clearTimeout(show); clearTimeout(t); };
+      return () => clearTimeout(t);
     }
-  }, [pin, confirm]);
+  }, [pin, confirm]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onKey = (k: string) => {
     if (submitting) return;
@@ -100,17 +80,14 @@ const SetPin = () => {
   return (
     <Screen scroll={false}>
       <View style={{ flex: 1, alignItems: 'center' }}>
-        <View style={{ width: '100%', paddingTop: 8 }}>
-          <Stepper step={4} total={4} label="Step 4 of 4 · Transaction PIN" />
-        </View>
-        <View style={{ marginTop: 4 }}>
+        <View style={{ marginTop: 26 }}>
           <ZMark size={44} />
         </View>
         <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1, marginTop: 20 }}>
-          {confirm === null ? 'Create a 6-digit PIN' : 'Confirm your PIN'}
+          {confirm === null ? 'Create a 4-digit PIN' : 'Confirm your PIN'}
         </Text>
         <Text style={{ fontSize: 14, color: err ? c.red : c.ink3, marginTop: 6, textAlign: 'center', fontFamily: err ? font.bold : font.regular }}>
-          {err ? errMsg : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
+          {err ? "PINs don't match, try again" : submitting ? 'Setting up your PIN…' : "You'll use this to authorize payments"}
         </Text>
 
         <View style={{ flexDirection: 'row', gap: 18, marginVertical: 30 }}>

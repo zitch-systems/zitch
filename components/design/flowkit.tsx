@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
-import { View, Text, Pressable, Image, ScrollView } from 'react-native';
-import ZIcon from '@/components/design/ZIcon';
-import { Sheet, Btn, Money, money, Field } from '@/components/design/ui';
-import { Naira, NText } from '@/components/design/Naira';
-import { formatAmountInput, sanitizeAmount } from '@/lib/format';
-import { useTheme, font, iconTint } from '@/lib/theme';
+import React from 'react';
+import { View, Text, Pressable, Image } from 'react-native';
 import { router } from 'expo-router';
+import ZIcon from '@/components/design/ZIcon';
+import { Sheet, Btn, Money, money, Tap } from '@/components/design/ui';
+import { Naira, NText } from '@/components/design/Naira';
+import { useTheme, font, radius } from '@/lib/theme';
 
 // Network/provider id → brand color, for monograms & accents.
 export const NET_COLORS: Record<string, string> = {
@@ -38,126 +37,35 @@ export const Segmented = ({
       {options.map((o) => {
         const on = value === o.v;
         return (
-          <Pressable
-            key={o.v}
-            onPress={() => onChange(o.v)}
-            accessibilityRole="radio"
-            accessibilityLabel={o.label}
-            accessibilityState={{ selected: on }}
-            style={{ flex: 1 }}
-          >
-            {/* Pill radius = container radius (14) − padding (4) = 10, so the active
-                pill's corners nest cleanly inside the track instead of poking past
-                its rounded edge. alignSelf:'stretch' keeps the pill full-tab-width. */}
-            <View style={{ alignSelf: 'stretch', alignItems: 'center', paddingVertical: 10, borderRadius: 10, backgroundColor: on ? c.surface : 'transparent' }}>
+          <Tap key={o.v} onPress={() => onChange(o.v)} style={{ flex: 1 }}>
+            <View style={{ alignItems: 'center', paddingVertical: 10, borderRadius: 11, backgroundColor: on ? c.surface : 'transparent' }}>
               <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? c.brand : c.ink3 }}>{o.label}</Text>
             </View>
-          </Pressable>
+          </Tap>
         );
       })}
     </View>
   );
 };
 
-// Quick amount presets — one horizontally-scrollable row of compact pills
-// (replaces the old 3-per-row grid of boxy chips, which dominated the screen
-// and pushed the actual amount field below the fold).
+// 3-per-row quick amount chips.
 export const QuickAmounts = ({ amounts, value, onPick }: { amounts: number[]; value: string; onPick: (a: string) => void }) => {
   const { c } = useTheme();
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={{ marginBottom: 12, flexGrow: 0 }}
-      contentContainerStyle={{ gap: 8, paddingVertical: 2 }}
-    >
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginBottom: 12 }}>
       {amounts.map((a) => {
         const on = String(value) === String(a);
         return (
-          <Pressable
-            key={a}
-            onPress={() => onPick(String(a))}
-            accessibilityRole="radio"
-            accessibilityLabel={`Select ${money(a)}`}
-            accessibilityState={{ selected: on }}
-            style={{
-              paddingHorizontal: 16,
-              paddingVertical: 9,
-              borderRadius: 999,
-              backgroundColor: on ? c.brand : c.surface,
-              borderWidth: 1.5,
-              borderColor: on ? c.brand : c.line,
-            }}
-          >
-            <Text style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink2, fontVariant: ['tabular-nums'] }}>
-              <Naira />{a.toLocaleString()}
-            </Text>
-          </Pressable>
+          <View key={a} style={{ width: '33.33%', padding: 5 }}>
+            <Tap
+              onPress={() => onPick(String(a))}
+              style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
+            >
+              <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{a.toLocaleString()}</Text>
+            </Tap>
+          </View>
         );
       })}
-    </ScrollView>
-  );
-};
-
-// The one money-amount input used by every transaction flow (transfer, airtime,
-// data, electricity, betting, card funding, savings, Remita, bank link…).
-// Thousands are grouped with commas as the user types and kobo can be entered
-// with a decimal point ("12,500.75"). The caller's state keeps the RAW numeric
-// string ("12500.75"), so `Number(amt)` and the API payload are unchanged.
-export const AmountField = ({
-  label,
-  value,
-  onChangeText,
-  placeholder = 'Enter amount',
-  editable = true,
-}: {
-  label?: string;
-  value: string;
-  onChangeText: (v: string) => void;
-  placeholder?: string;
-  editable?: boolean;
-}) => {
-  const { c } = useTheme();
-  return (
-    <Field
-      label={label}
-      value={formatAmountInput(value)}
-      onChangeText={(v) => onChangeText(sanitizeAmount(v))}
-      // decimal-pad, not number-pad: number-pad has no "." key on iOS, so kobo
-      // would be untypeable there.
-      keyboardType="decimal-pad"
-      placeholder={placeholder}
-      editable={editable}
-      prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
-    />
-  );
-};
-
-// Bank logo badge: the bank's real logo (served by the API) on a white tile,
-// falling back to a colored monogram square when there's no logo URL or the
-// image fails to load — the picker never shows a blank/broken image.
-export const BankLogo = ({ name, color, logo, size = 36 }: { name: string; color: string; logo?: string; size?: number }) => {
-  const { c } = useTheme();
-  // Track WHICH uri failed (not a plain boolean): the same mounted instance is
-  // reused when the user switches banks (e.g. the field prefix), and one bank's
-  // broken logo must not blank out the next bank's working one.
-  const [failedUri, setFailedUri] = useState('');
-  if (logo && failedUri !== logo) {
-    return (
-      <View
-        style={{
-          width: size, height: size, borderRadius: size * 0.3, backgroundColor: '#fff',
-          borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
-        }}
-      >
-        <Image source={{ uri: logo }} onError={() => setFailedUri(logo)} resizeMode="contain" style={{ width: size * 0.72, height: size * 0.72 }} />
-      </View>
-    );
-  }
-  const initials = (name || '').replace(/[^A-Za-z ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase() || 'BK';
-  return (
-    <View style={{ width: size, height: size, borderRadius: size * 0.3, backgroundColor: color || c.brand, alignItems: 'center', justifyContent: 'center' }}>
-      <Text style={{ color: '#fff', fontFamily: font.extrabold, fontSize: size * 0.36 }}>{initials}</Text>
     </View>
   );
 };
@@ -189,11 +97,8 @@ export const ProviderGrid = ({
         const initials = (it.name || '').replace(/[^A-Za-z0-9 ]/g, '').split(' ').map((w) => w[0] || '').join('').slice(0, 2).toUpperCase();
         return (
           <View key={it.id} style={{ width: `${100 / cols}%`, padding: 5 }}>
-            <Pressable
+            <Tap
               onPress={() => onPick(it.id)}
-              accessibilityRole="radio"
-              accessibilityLabel={it.name}
-              accessibilityState={{ selected: on }}
               style={{ alignItems: 'center', gap: 7, paddingVertical: 12, borderRadius: 16, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
             >
               {it.logo ? (
@@ -211,7 +116,7 @@ export const ProviderGrid = ({
                   <ZIcon name="check" size={10} color="#fff" stroke={3} />
                 </View>
               )}
-            </Pressable>
+            </Tap>
           </View>
         );
       })}
@@ -235,12 +140,9 @@ export const PlanList = ({
       {plans.map((p) => {
         const on = value === p.id;
         return (
-          <Pressable
+          <Tap
             key={p.id}
             onPress={() => onPick(p.id)}
-            accessibilityRole="radio"
-            accessibilityLabel={`${p.label}, ${money(p.price)}`}
-            accessibilityState={{ selected: on }}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, paddingHorizontal: 16, borderRadius: 15, backgroundColor: c.surface, borderWidth: 2, borderColor: on ? c.brand : c.line }}
           >
             <View style={{ flex: 1 }}>
@@ -248,7 +150,7 @@ export const PlanList = ({
               {p.sub ? <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{p.sub}</Text> : null}
             </View>
             <Text style={{ fontSize: 15, fontFamily: font.bold, color: on ? c.brand : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{p.price.toLocaleString()}</Text>
-          </Pressable>
+          </Tap>
         );
       })}
     </View>
@@ -263,12 +165,7 @@ export const BalanceHint = ({ amount, balance }: { amount: number; balance: numb
     return (
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, marginBottom: 14 }}>
         <Text style={{ fontSize: 12, fontFamily: font.semibold, color: c.red }}>Insufficient balance</Text>
-        <Pressable
-          onPress={() => router.push('/addmoney')}
-          accessibilityRole="button"
-          accessibilityLabel="Add money"
-          hitSlop={8}
-        >
+        <Pressable onPress={() => router.push('/addmoney')} hitSlop={8}>
           <Text style={{ fontSize: 12, fontFamily: font.bold, color: c.brand }}>+ Add money</Text>
         </Pressable>
       </View>
@@ -281,19 +178,12 @@ export const BalanceHint = ({ amount, balance }: { amount: number; balance: numb
   );
 };
 
-const Row2 = ({ k, v, strong, icon }: { k: string; v: string; strong?: boolean; icon?: any }) => {
+const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
   const { c } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 11, borderTopWidth: 1, borderTopColor: c.line }}>
       <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular }}>{k}</Text>
-      <View style={{ flexShrink: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-        {icon ? (
-          <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', borderWidth: 1, borderColor: c.line, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-            <Image source={icon} resizeMode="contain" style={{ width: 15, height: 15 }} />
-          </View>
-        ) : null}
-        <NText numberOfLines={1} style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
-      </View>
+      <NText style={{ fontSize: strong ? 16 : 14, fontFamily: strong ? font.extrabold : font.semibold, color: c.ink1, fontVariant: ['tabular-nums'] }}>{v}</NText>
     </View>
   );
 };
@@ -307,10 +197,6 @@ export const ConfirmSheet = ({
   rows,
   balance,
   onPay,
-  cta,
-  methodTitle = 'Payment Method',
-  methodSub,
-  productIcon,
 }: {
   open: boolean;
   onClose: () => void;
@@ -318,93 +204,42 @@ export const ConfirmSheet = ({
   total: number;
   rows: [string, string][];
   balance: number;
-  /** `pinOnly` is true when the customer chose "Use Payment PIN" rather than the
-   *  Pay button. Callers that ignore the argument keep their previous behaviour
-   *  (biometric offered first), so this stays backward-compatible. */
-  onPay: (pinOnly?: boolean) => void;
-  // Overrides for non-payment flows (e.g. a loan disbursement, where money is
-  // received, not paid). Defaults reproduce the standard "Pay with wallet" look.
-  cta?: string;            // pay-button label (default: "Pay ₦…")
-  methodTitle?: string;    // heading above the wallet card
-  methodSub?: string;      // sub-line under "Zitch Wallet" (default: "Available ₦…")
-  /** Logo for the first review row (the network/provider being bought from). */
-  productIcon?: any;
+  onPay: () => void;
 }) => {
-  const { c, theme } = useTheme();
+  const { c } = useTheme();
   // Never let a wallet-funded payment proceed past confirm when the funds (or,
   // for a loan, the available credit) can't cover it — the server rejects it
   // anyway, but the user should be blocked here, not after entering their PIN.
   const insufficient = total > balance;
   return (
     <Sheet open={open} onClose={onClose}>
-      {/* An explicit close, and the PIN as a stated choice. The sheet used to be
-          dismissable only by tapping the backdrop — undiscoverable on a panel
-          that covers most of the screen — and the PIN pad arrived unannounced
-          after Pay, so the one control the customer wanted (skip the biometric,
-          just let me type it) had no way to be asked for. */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10 }}>
-        <Pressable
-          onPress={onClose}
-          accessibilityRole="button"
-          accessibilityLabel="Close"
-          hitSlop={10}
-          style={{ width: 32, height: 32, alignItems: 'flex-start', justifyContent: 'center' }}
-        >
-          <ZIcon name="x" size={20} color={c.ink2} stroke={2.2} />
-        </Pressable>
-        <View style={{ flex: 1 }} />
-        <Pressable
-          onPress={() => onPay(true)}
-          accessibilityRole="button"
-          accessibilityLabel="Use payment PIN"
-          hitSlop={10}
-          disabled={insufficient}
-        >
-          <Text style={{ fontSize: 14, fontFamily: font.bold, color: insufficient ? c.ink3 : c.brand }}>Use Payment PIN</Text>
-        </Pressable>
-      </View>
-
       <View style={{ alignItems: 'center', marginBottom: 18 }}>
         <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink3 }}>{title}</Text>
         <Money amount={total} size={34} />
       </View>
-
-      <View style={{ borderRadius: 16, backgroundColor: c.surface2, paddingHorizontal: 14, paddingBottom: 2, marginBottom: 18 }}>
-        {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} icon={i === 0 ? productIcon : undefined} />)}
-        <Row2 k="Amount" v={money(total)} strong />
+      <View style={{ marginBottom: 18 }}>
+        {rows.map((r, i) => <Row2 key={i} k={r[0]} v={r[1]} />)}
         <Row2 k="Fee" v="₦0" />
       </View>
-
-      <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>{methodTitle}</Text>
-      <View style={{ borderRadius: 14, backgroundColor: c.surface2, borderWidth: 1.5, borderColor: insufficient ? c.line : c.brand, padding: 14, marginBottom: 18 }}>
+      <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1, marginBottom: 10 }}>Pay with</Text>
+      <View style={{ borderRadius: 14, backgroundColor: c.surface2, borderWidth: 1.5, borderColor: c.line, padding: 14, marginBottom: 18 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <View style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: iconTint(c.brand, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
             <ZIcon name="wallet" size={20} color={c.brand} />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>Zitch Wallet</Text>
-            <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{methodSub ?? `Available ${money(balance)}`}</NText>
+            <NText style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Available {money(balance)}</NText>
           </View>
-          {/* A filled radio, not a bare tick: this row is a CHOICE of funding
-              source, and it should look selectable even while the wallet is the
-              only one there is. */}
-          <View style={{ width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: insufficient ? c.line : c.brand, backgroundColor: insufficient ? 'transparent' : c.brand, alignItems: 'center', justifyContent: 'center' }}>
-            {!insufficient && <ZIcon name="check" size={12} color={c.inkOnBrand} stroke={3} />}
-          </View>
+          <ZIcon name="check" size={18} color={c.brand} />
         </View>
-        {insufficient && (
-          <Text style={{ fontSize: 12.5, fontFamily: font.semibold, color: c.red, marginTop: 10 }}>
-            {money(total - balance)} short — add money to continue.
-          </Text>
-        )}
       </View>
       <Btn
-        label={insufficient ? 'Insufficient balance' : (cta ?? `Pay ${money(total)}`)}
+        label={insufficient ? 'Insufficient balance' : `Pay ${money(total)}`}
         icon="lock"
-        onPress={() => onPay(false)}
+        onPress={onPay}
         disabled={insufficient}
       />
     </Sheet>
   );
 };
-

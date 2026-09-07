@@ -2,12 +2,17 @@
   "expo": {
     "name": "Zitch",
     "slug": "zitch",
-    "description": "Zitch is a Nigerian money app for instant bank transfers, airtime, data and bill payments — plus banking on WhatsApp.",
-    "version": "1.0.15",
+    "description": "Zitch is a Nigerian money app for instant transfers, airtime, data, bills, virtual dollar cards, savings and multi-currency wallets — plus banking on WhatsApp.",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "zitch",
+    "scheme": "Zitch",
     "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#03304C"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.zitch.app",
@@ -15,11 +20,9 @@
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": false
         }
-      },
-      "buildNumber": "15"
+      }
     },
     "android": {
-      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "monochromeImage": "./assets/adaptive-icon-mono.png",
@@ -28,34 +31,12 @@
       "permissions": [
         "android.permission.INTERNET",
         "android.permission.CAMERA",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT",
         "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION"
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ],
-      "package": "com.zitch.app",
-      "intentFilters": [
-        {
-          "action": "VIEW",
-          "autoVerify": false,
-          "data": [
-            {
-              "scheme": "https",
-              "host": "api.zitch.ng",
-              "pathPrefix": "/wa/approve/"
-            }
-          ],
-          "category": ["BROWSABLE", "DEFAULT"]
-        }
-      ],
-      "allowBackup": false,
-      "versionCode": 15,
-      "blockedPermissions": [
-        "android.permission.RECORD_AUDIO",
-        "android.permission.SYSTEM_ALERT_WINDOW",
-        "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
-      ]
+      "usesCleartextTraffic": false,
+      "package": "com.zitch.app"
     },
     "web": {
       "bundler": "metro",
@@ -64,13 +45,6 @@
     },
     "plugins": [
       "expo-router",
-      "expo-notifications",
-      [
-        "expo-contacts",
-        {
-          "contactsPermission": "Allow Zitch to let you choose a phone number for airtime and data purchases."
-        }
-      ],
       [
         "expo-local-authentication",
         {
@@ -80,56 +54,24 @@
       [
         "expo-image-picker",
         {
-          "cameraPermission": "Allow Zitch to use the camera to verify your identity and scan payment codes.",
-          "photosPermission": "Allow Zitch to access your photos so you can upload your ID and proof of address."
+          "cameraPermission": "Allow Zitch to use the camera to verify your identity (face check)."
         }
       ],
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow Zitch to use the camera to verify your identity and scan payment codes.",
+          "cameraPermission": "Allow Zitch to use the camera to scan QR codes for payments.",
           "recordAudioAndroid": false
-        }
-      ],
-      [
-        "expo-location",
-        {
-          "locationWhenInUsePermission": "Allow Zitch to access your location for identity verification and banking services."
-        }
-      ],
-      [
-        "expo-build-properties",
-        {
-          "android": {
-            "usesCleartextTraffic": false,
-            "compileSdkVersion": 36,
-            "targetSdkVersion": 36,
-            "buildToolsVersion": "36.0.0"
-          }
         }
       ],
       [
         "expo-media-library",
         {
-          "savePhotosPermission": "Allow Zitch to save your transaction receipts to your photos.",
-          "photosPermission": "Allow Zitch to save your transaction receipts to your photos.",
-          "isAccessMediaLocationEnabled": false,
-          "granularPermissions": ["photo"]
+          "photosPermission": "Allow Zitch to save transaction receipts to your photos.",
+          "savePhotosPermission": "Allow Zitch to save transaction receipts to your photos.",
+          "isAccessMediaLocationEnabled": false
         }
-      ],
-      "./plugins/withAndroidReleaseSigning",
-      "expo-font",
-      "expo-secure-store",
-      "expo-web-browser",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/splash-icon.png",
-          "resizeMode": "contain",
-          "backgroundColor": "#03304C"
-        }
-      ],
-      "expo-status-bar"
+      ]
     ],
     "experiments": {
       "typedRoutes": true

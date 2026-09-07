@@ -1,25 +1,51 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, Pressable } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, Pressable, Animated, Easing } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, Link } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ZIcon from '@/components/design/ZIcon';
 import { WhatsAppGlyph } from '@/components/design/WhatsAppGlyph';
-import { Loading } from '@/components/design/Loading';
+import { ZMark } from '@/components/design/Brand';
 import { NText } from '@/components/design/Naira';
 import { getToken } from '@/lib/secureStore';
-import { font } from '@/lib/theme';
+import { useTheme, font } from '@/lib/theme';
 
 const SLIDES = [
-  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to any Nigerian bank in seconds — with saved beneficiaries.' },
-  { wa: true, t: 'Bank on WhatsApp', d: 'Check your balance, send money and pay bills right from your chats — no download needed.' },
-  { icon: 'wallet', t: 'Everything in one app', d: 'Airtime, data, bills, dollar cards, savings and loans — all in one place.' },
+  { icon: 'send', t: 'Send money instantly', d: 'Free transfers to Zitch and any Nigerian bank, with saved beneficiaries.' },
+  { wa: true, t: 'Bank on WhatsApp', d: 'Check your balance, send money and pay bills right inside your WhatsApp chats.' },
+  { icon: 'more', t: 'Everything in one app', d: 'Airtime, data, bills, cards, savings & loans — all in one place.' },
 ];
 
 const GRADIENT = ['#DDF3EF', '#EFF7F5', '#F5FAF9'] as const;
+// Dark brand gradient for the splash (design AuthShell `dark`).
+const SPLASH_GRADIENT = ['#0C4D47', '#063A34', '#04221F'] as const;
+
+// Coin-flip loader: the badge mark flips in 3D, rotateY 0→360 looping ~1.9s.
+const CoinFlip = () => {
+  const spin = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(spin, {
+        toValue: 1,
+        duration: 1900,
+        easing: Easing.inOut(Easing.ease),
+        useNativeDriver: true,
+      })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [spin]);
+  const rotateY = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  return (
+    <Animated.View style={{ transform: [{ perspective: 600 }, { rotateY }] }}>
+      <ZMark size={104} badge glow />
+    </Animated.View>
+  );
+};
 
 const Index = () => {
+  const { c } = useTheme();
   const [ready, setReady] = useState(false);
   const [i, setI] = useState(0);
   const s = SLIDES[i];
@@ -40,11 +66,15 @@ const Index = () => {
     })();
   }, []);
 
-  // Animated brand loader on open (instead of a blank flash) while we decide.
+  // Coin-flip brand loader on open (instead of a blank flash) while we decide.
   if (!ready) {
     return (
-      <LinearGradient colors={GRADIENT} style={{ flex: 1 }}>
-        <Loading />
+      <LinearGradient colors={SPLASH_GRADIENT} style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <CoinFlip />
+        <View style={{ height: 22 }} />
+        <Text style={{ fontSize: 30, fontFamily: font.extrabold, letterSpacing: 30 * 0.18, color: '#fff' }}>ZITCH</Text>
+        <Text style={{ fontSize: 14, color: 'rgba(255,255,255,.7)', marginTop: 8, fontFamily: font.regular }}>Pay. Send. Grow.</Text>
+        <Text style={{ position: 'absolute', bottom: 36, fontSize: 11.5, color: 'rgba(255,255,255,.45)', fontFamily: font.regular }}>Secured by Zitch · NDIC insured</Text>
       </LinearGradient>
     );
   }
@@ -54,22 +84,30 @@ const Index = () => {
       <SafeAreaView style={{ flex: 1 }}>
         {/* skip */}
         <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 20, paddingTop: 8 }}>
-          <Pressable onPress={() => router.replace('/signin')} hitSlop={12} accessibilityRole="button" accessibilityLabel="Skip onboarding">
+          <Pressable onPress={() => router.replace('/signin')}>
             <Text style={{ fontSize: 14, fontFamily: font.semibold, color: '#6E8B86' }}>Skip</Text>
           </Pressable>
         </View>
 
         {/* slide */}
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 }}>
-          <LinearGradient
-            colors={['#0C5249', '#00847B', '#0FA295']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{ width: 150, height: 150, borderRadius: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#00847B', shadowOpacity: 0.5, shadowRadius: 26, shadowOffset: { width: 0, height: 22 }, elevation: 8 }}
-          >
-            {s.wa ? <WhatsAppGlyph size={66} color="#fff" /> : <ZIcon name={s.icon!} size={64} color="#fff" />}
-          </LinearGradient>
-          <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: '#000000', marginTop: 38, textAlign: 'center' }}>{s.t}</Text>
+          {s.wa ? (
+            <View
+              style={{ width: 150, height: 150, borderRadius: 44, alignItems: 'center', justifyContent: 'center', backgroundColor: '#25D366', shadowColor: '#25D366', shadowOpacity: 0.6, shadowRadius: 26, shadowOffset: { width: 0, height: 22 }, elevation: 8 }}
+            >
+              <WhatsAppGlyph size={66} color="#fff" />
+            </View>
+          ) : (
+            <LinearGradient
+              colors={['#0C5249', '#00847B', '#0FA295']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={{ width: 150, height: 150, borderRadius: 44, alignItems: 'center', justifyContent: 'center', shadowColor: '#00847B', shadowOpacity: 0.5, shadowRadius: 26, shadowOffset: { width: 0, height: 22 }, elevation: 8 }}
+            >
+              <ZIcon name={s.icon!} size={64} color="#fff" />
+            </LinearGradient>
+          )}
+          <Text style={{ fontSize: 24, fontFamily: font.extrabold, color: c.ink1, marginTop: 38, textAlign: 'center' }}>{s.t}</Text>
           <NText style={{ fontSize: 14.5, color: '#6E8B86', marginTop: 12, lineHeight: 22, textAlign: 'center', fontFamily: font.regular }}>{s.d}</NText>
         </View>
 
@@ -81,11 +119,9 @@ const Index = () => {
         </View>
 
         {/* cta */}
-        <View style={{ paddingHorizontal: 20 }}>
+        <View style={{ paddingHorizontal: 22 }}>
           <Pressable
             onPress={() => (last ? router.replace('/register') : setI(i + 1))}
-            accessibilityRole="button"
-            accessibilityLabel={last ? 'Get started' : 'Next onboarding step'}
             style={{ height: 56, borderRadius: 999, backgroundColor: '#0FA295', alignItems: 'center', justifyContent: 'center' }}
           >
             <Text style={{ color: '#fff', fontSize: 16, fontFamily: font.bold }}>{last ? 'Get Started' : 'Next'}</Text>
@@ -103,4 +139,3 @@ const Index = () => {
 };
 
 export default Index;
-

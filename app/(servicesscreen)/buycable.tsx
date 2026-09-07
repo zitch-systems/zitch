@@ -2,8 +2,11 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { router } from 'expo-router';
-import { apiPost, newIdempotencyKey, publicJson } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
+import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
+import { apiPost, newIdempotencyKey } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Label, ProviderGrid, PlanList, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
@@ -14,6 +17,10 @@ const PROVIDERS = [
   { id: '1', name: 'GoTV', color: '#92C020', logo: require('@/assets/images/providers/gotv.png') },
   { id: '2', name: 'DSTV', color: '#0A66C2', logo: require('@/assets/images/providers/dstv.png') },
   { id: '3', name: 'StarTimes', color: '#F47B20', logo: require('@/assets/images/providers/startimes.png') },
+  // Showmax has no raster logo asset yet; ProviderGrid renders an initials tile
+  // in its brand colour as a fallback. id '4' follows the sequential cablenetwork
+  // codes used by the backend (1=GoTV, 2=DSTV, 3=StarTimes).
+  { id: '4', name: 'Showmax', color: '#1A1A2E' },
 ];
 
 type Step = null | 'confirm' | 'pin';
@@ -21,6 +28,7 @@ type Step = null | 'confirm' | 'pin';
 const BuyCable = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
   const [prov, setProv] = useState('1');
   const [iuc, setIuc] = useState('');
   const [plan, setPlan] = useState('');
@@ -32,24 +40,25 @@ const BuyCable = () => {
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
+
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
 
   // Fetch bouquets for the chosen provider.
   useEffect(() => {
     if (!prov) return;
-    let active = true;
-    const timer = setTimeout(() => {
-      if (!active) return;
-      setLoadingPlans(true);
-      setPlan('');
-      setPlans([]);
-      setValidatedName('');
-      publicJson('/api/utility/get_cable_plans/', { cablenetwork: prov })
+    setLoadingPlans(true);
+    setPlan('');
+    setPlans([]);
+    setValidatedName('');
+    fetch(`${baseUrl}/api/utility/get_cable_plans/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cablenetwork: prov }),
+    })
+      .then((r) => r.json())
       .then((res) => {
-        if (active && res?.cable_plans) {
+        if (res?.cable_plans) {
           setPlans(res.cable_plans.map((p: any) => ({
             id: String(p.cable_plan_code),
             label: p.name,
@@ -59,34 +68,45 @@ const BuyCable = () => {
         }
       })
       .catch(() => {})
-      .finally(() => { if (active) setLoadingPlans(false); });
-    }, 0);
-    return () => { active = false; clearTimeout(timer); };
+      .finally(() => setLoadingPlans(false));
   }, [prov]);
 
   // Authoritative price for the chosen bouquet.
   useEffect(() => {
-    let active = true;
-    const timer = setTimeout(() => {
-      if (!active) return;
-      if (!plan) { setPrice(''); return; }
-      publicJson('/api/utility/get_cable_plans_price/', { cable_plan_code: plan })
-      .then((res) => { if (active && res?.cable_plans_price != null) setPrice(String(res.cable_plans_price)); })
+    if (!plan) { setPrice(''); return; }
+    fetch(`${baseUrl}/api/utility/get_cable_plans_price/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cable_plan_code: plan }),
+    })
+      .then((r) => r.json())
+      .then((res) => { if (res?.cable_plans_price != null) setPrice(String(res.cable_plans_price)); })
       .catch(() => {});
-    }, 0);
-    return () => { active = false; clearTimeout(timer); };
   }, [plan]);
 
   const provider = PROVIDERS.find((p) => p.id === prov)!;
   const planObj = plans.find((p) => p.id === plan);
   const amount = Number(price || planObj?.price || 0);
-  const valid = iuc.length >= 8 && !!plan && amount > 0;
+  const valid = iuc.length >= 8 && !!plan && amount > 0 && amount <= balance;
+
+  // Auto-resolve the customer name once the smartcard reaches a plausible length
+  // (most NUBAN-style IUCs are 10-11 digits). The manual button stays as a
+  // fallback. attemptedRef stops the effect from re-firing the API on every
+  // keystroke or while a request is already in flight.
+  const attemptedRef = useRef('');
+  useEffect(() => {
+    if (iuc.length >= 10 && !validatedName && !validating && attemptedRef.current !== `${prov}:${iuc}`) {
+      attemptedRef.current = `${prov}:${iuc}`;
+      validateIuc();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iuc, prov, validatedName, validating]);
 
   const validateIuc = async () => {
     if (iuc.trim().length < 8) { notify('Error', 'Enter a valid IUC / smartcard number.'); return; }
     setValidating(true);
     try {
-      const response = await apiPost('/api/utility/validate_iuc/', { iuc, cablenetwork: prov });
+      const response = await apiPost(EP.utility.validateIuc, { iuc, cablenetwork: prov });
       const result = await response.json();
       if (response.ok) {
         setValidatedName(result.customer_name || result.name || 'Verified');
@@ -100,18 +120,13 @@ const BuyCable = () => {
     }
   };
 
-  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const idemKey = useRef('');  // stable across retries of one purchase attempt
-
-  // Any edit to the purchase details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [prov, iuc, plan]);
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const response = await apiPost('/api/utility/buycable/', {
+      const response = await apiPost(EP.utility.buyCable, {
         iuc,
         cablenetwork: prov,
         selectedcablePlan: plan,
@@ -121,10 +136,6 @@ const BuyCable = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
-        // `pending` = provider timeout: held while reconciliation confirms or
-        // refunds — the receipt must say "processing", not claim delivery.
-        setTxnRef(String(result.reference || ''));
-        setPending(!!result.pending);
         setStep(null);
         setDone(true);
         reload();
@@ -147,13 +158,9 @@ const BuyCable = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={pending ? 'Processing' : 'Subscription active'}
-          message={pending
-            ? `Your ${provider.name} ${planObj?.label || ''} subscription on ${iuc} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
-            : `${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
+          title="Subscription active"
+          message={`${provider.name} ${planObj?.label || ''} on ${iuc} is now active.`}
           rows={[['Provider', provider.name], ['Smartcard / IUC', iuc], ['Plan', planObj?.label || '—'], ['Total', money(amount), true]]}
-          reference={txnRef}
-          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -162,10 +169,10 @@ const BuyCable = () => {
 
   return (
     <Screen>
-      <Header title="Cable TV" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
+      <Header title="Cable TV" onBack={() => router.back()} />
 
       <Label>Select provider</Label>
-      <ProviderGrid items={PROVIDERS} value={prov} onPick={setProv} cols={3} />
+      <ProviderGrid items={PROVIDERS} value={prov} onPick={setProv} cols={4} />
 
       <Field
         label="Smartcard / IUC number"
@@ -191,9 +198,7 @@ const BuyCable = () => {
         <PlanList plans={plans} value={plan} onPick={setPlan} />
       )}
       <View style={{ height: 14 }} />
-      {/* Balance / insufficient-funds signal, consistent with the other bill
-          screens (buydata, buyelectricity, betting, exams). */}
-      <BalanceHint amount={amount} balance={balance} />
+      {amount > 0 ? <BalanceHint amount={amount} balance={balance} /> : null}
 
       <Btn label={amount > 0 ? `Continue · ${money(amount)}` : 'Continue'} disabled={!valid} onPress={() => setStep('confirm')} />
 
@@ -207,8 +212,8 @@ const BuyCable = () => {
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
         <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />

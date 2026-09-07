@@ -1,85 +1,10 @@
-# Codemagic CI builds for the Zitch Expo (React Native) Android app.
+# Codemagic CI build for the Zitch Expo (React Native) Android app.
 #
-# Two workflows, deliberately separate:
+# Produces an installable APK with no EAS/Expo build credits. The Expo project
+# lives at the repository root, so this file sits at the root too.
 #
-#   android-apk  preview/sideload APK. Debug-signed by the Expo template, which is
-#                fine for internal testing and is what has been used to date.
-#   android-aab  Play Store artifact. Signed with the real upload keystore and
-#                *refuses to publish* anything the debug key touched.
-#
-# The Expo project lives at the repository root, so this file sits at the root too.
-
-# Shared build steps. YAML anchors, so both workflows run byte-identical gates —
-# a preview build and a Play build must not be able to drift apart.
-definitions:
-  scripts:
-    - &install_dependencies
-      name: Install dependencies
-      script: |
-        npm install --global npm@11.6.2
-        npm ci
-    - &lint
-      name: Lint app source
-      script: npm run lint
-    - &typecheck
-      name: Validate TypeScript
-      script: npm run typecheck
-    - &unit_tests
-      name: Run app unit tests
-      script: npm run test:ci
-    - &audit
-      name: Audit production dependencies
-      # Block actual critical advisories. Retry registry transport/parser faults;
-      # after the retries are spent, warn and preserve the build log.
-      #
-      # UNLIKE CI, THIS STEP DOES NOT FAIL on a service outage — it warns and
-      # lets the build continue. That is deliberate and stays that way: CI is
-      # the blocking dependency gate, and a mobile release build should not be
-      # unbuildable because npm is having a bad minute. What was wrong was the
-      # window, not the policy: three attempts five seconds apart tolerated
-      # about ten seconds, against outages that run in minutes, so the warning
-      # fired almost every time npm wobbled and "no advisory result" became
-      # ordinary log noise instead of a real signal.
-      #
-      # Now five attempts with linear backoff (15+30+45+60s = ~2m30s), and the transient
-      # patterns cover the transport errors npm actually emits rather than only
-      # the three phrases its parser-level failures use.
-      script: |
-        audit_status=0
-        attempts=5
-        for attempt in $(seq 1 "$attempts"); do
-          if audit_output="$(npm audit --omit=dev --audit-level=critical 2>&1)"; then
-            printf '%s\n' "$audit_output"
-            exit 0
-          else
-            audit_status=$?
-          fi
-          printf '%s\n' "$audit_output"
-          if ! printf '%s\n' "$audit_output" | grep -Eqi 'audit endpoint returned an error|invalid json response body|400 Bad Request|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|fetch failed|request to .* failed|npm ERR! network|Service Unavailable|Bad Gateway|Gateway Time-?out|Internal Server Error|Too Many Requests'; then
-            exit "$audit_status"
-          fi
-          if [ "$attempt" -lt "$attempts" ]; then
-            wait_s=$(( 15 * attempt ))
-            echo "npm advisory service unreachable (attempt ${attempt}/${attempts}); retrying in ${wait_s}s…"
-            sleep "$wait_s"
-          fi
-        done
-        echo "WARNING: npm advisory service unavailable after ${attempts} attempts over ~2m30s; no advisory result was returned. CI's audit gate is the blocking one — check it before releasing this build."
-    - &validate_expo
-      name: Validate Expo project
-      # doctor and install --check both ask Expo's servers what the SDK expects,
-      # so they can fail with nothing in this repository having changed. Both go
-      # through ci-retry.sh, which retries ONLY on network/upstream-service
-      # wording — a genuine drift report still fails on the first attempt, so a
-      # real answer is never delayed. `expo config` is local and needs no wrapper.
-      script: |
-        scripts/ci-retry.sh npm run doctor
-        scripts/ci-retry.sh npx expo install --check
-        npx expo config --type public
-    - &prebuild
-      name: Expo prebuild (generate the native android/ project)
-      script: npx expo prebuild --platform android --clean --no-install
-
+# Builds automatically when app code lands on main (see `triggering:` below), and
+# can be started anytime from the dashboard: "Start new build" → "android-apk".
 workflows:
   android-apk:
     name: Zitch Android APK (preview)
@@ -87,180 +12,67 @@ workflows:
     # fine here — the Android SDK is preinstalled on the macOS image. Switch to
     # linux_x2 if/when your plan includes Linux instances (cheaper for Android).
     instance_type: mac_mini_m2
-    max_build_duration: 120
+    max_build_duration: 60
     environment:
-      node: 22
+      node: 20
       java: 17
       vars:
-        # Preview APK target. Keep secrets out of EXPO_PUBLIC_* variables because
-        # Expo inlines them into the app bundle.
+        # Mirrors eas.json's "preview" profile so the app talks to the live API.
         EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
     cache:
       cache_paths:
         - $CM_BUILD_DIR/node_modules
         - $HOME/.gradle/caches
     scripts:
-      - *install_dependencies
-      - *lint
-      - *typecheck
-      - *unit_tests
-      - *audit
-      - *validate_expo
-      - *prebuild
+      - name: Install dependencies
+        script: npm ci
+      - name: Expo prebuild (generate the native android/ project)
+        script: npx expo prebuild --platform android --clean
       - name: Build release APK
-        # No ZITCH_UPLOAD_* gradle properties are set here, so
-        # plugins/withAndroidReleaseSigning.js falls back to the debug key and says
-        # so in the build log. Installable for testing/sideloading; Play rejects it.
-        # The android-aab workflow below is the Play path.
+        # Expo's prebuild template signs the release variant with the debug key,
+        # so this APK is installable for testing/sideloading out of the box.
+        # For a Play Store upload, configure Android code signing in Codemagic
+        # and switch to `assembleRelease`/`bundleRelease` with that keystore.
         script: |
           cd android
-          ./gradlew assembleRelease --stacktrace
-      - name: Verify APK artifact
-        script: |
-          APK_PATH="$(find android/app/build/outputs/apk/release -name '*.apk' -type f | head -n 1)"
-          if [ -z "$APK_PATH" ]; then
-            echo "Release APK was not produced"
-            exit 1
-          fi
-          ls -lh "$APK_PATH"
+          ./gradlew assembleRelease
     artifacts:
-      - android/app/build/outputs/apk/release/*.apk
-      - android/app/build/reports/**
-    # Build on every push to main, AND on demand from the dashboard
-    # ("Start new build" → android-apk).
+      - android/app/build/outputs/**/*.apk
+    # Auto-build when app code lands on main. Trigger manually anytime from the
+    # dashboard ("Start new build" → android-apk). The changeset filter that
+    # avoids burning free build minutes on irrelevant changes lives in the
+    # workflow-level `when:` below.
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: main
           include: true
-    # Email the APK download link when a build finishes.
-    publishing:
-      email:
-        recipients:
-          - teyokensax1@gmail.com
-        notify:
-          success: true
-          failure: true
-
-  android-aab:
-    name: Zitch Android AAB (Play, upload-key signed)
-    instance_type: mac_mini_m2
-    max_build_duration: 120
-    environment:
-      node: 22
-      java: 17
-      # Codemagic decrypts the keystore in the "zitch_upload" reference and exports
-      # CM_KEYSTORE_PATH / CM_KEYSTORE_PASSWORD / CM_KEY_ALIAS / CM_KEY_PASSWORD.
-      #
-      # ONE-TIME SETUP (Codemagic UI → Teams/App settings → Code signing identities
-      # → Android keystores): upload the upload keystore and give it the reference
-      # name "zitch_upload". Generate it once and BACK IT UP — losing it means the
-      # app can never be updated under this package name unless Play App Signing
-      # key rotation is already enabled:
-      #
-      #   keytool -genkeypair -v -keystore zitch-upload.jks -alias zitch-upload \
-      #     -keyalg RSA -keysize 4096 -validity 10000
-      #
-      # Until that reference exists this workflow fails at "Confirm the upload
-      # keystore is attached" rather than quietly producing a debug-signed bundle.
-      android_signing:
-        - zitch_upload
-      vars:
-        EXPO_PUBLIC_API_URL: "https://api.zitch.ng"
-    cache:
-      cache_paths:
-        - $CM_BUILD_DIR/node_modules
-        - $HOME/.gradle/caches
-    scripts:
-      - name: Confirm the upload keystore is attached
-        # Fail before spending build minutes, and before any artifact exists that
-        # someone could mistake for a Play-ready bundle.
-        script: |
-          if [ -z "$CM_KEYSTORE_PATH" ]; then
-            echo "No Android keystore is attached to this build."
-            echo "Add the upload keystore in Codemagic under Code signing identities"
-            echo "with the reference name 'zitch_upload' (see environment.android_signing"
-            echo "in codemagic.yaml). Refusing to build an unsigned Play artifact."
-            exit 1
-          fi
-          echo "Keystore attached: $CM_KEYSTORE_PATH (alias: $CM_KEY_ALIAS)"
-      - *install_dependencies
-      - *lint
-      - *typecheck
-      - *unit_tests
-      - *audit
-      - *validate_expo
-      - *prebuild
-      - name: Hand the upload keystore to Gradle
-        # android/ is generated by prebuild and never committed, so writing the
-        # credentials into its gradle.properties keeps them off the command line
-        # (and out of any process listing) without touching a tracked file.
-        script: |
-          cat >> android/gradle.properties <<PROPS
-          ZITCH_UPLOAD_STORE_FILE=$CM_KEYSTORE_PATH
-          ZITCH_UPLOAD_STORE_PASSWORD=$CM_KEYSTORE_PASSWORD
-          ZITCH_UPLOAD_KEY_ALIAS=$CM_KEY_ALIAS
-          ZITCH_UPLOAD_KEY_PASSWORD=$CM_KEY_PASSWORD
-          PROPS
-      - name: Build release AAB
-        script: |
-          cd android
-          ./gradlew bundleRelease --stacktrace
-      - name: Verify the bundle is signed with the upload key
-        # The single check that makes this workflow trustworthy. A debug-signed AAB
-        # is the exact failure this workflow exists to prevent, and Play's rejection
-        # message is not where you want to discover it.
-        script: |
-          AAB_PATH="$(find android/app/build/outputs/bundle/release -name '*.aab' -type f | head -n 1)"
-          if [ -z "$AAB_PATH" ]; then
-            echo "Release AAB was not produced"
-            exit 1
-          fi
-          ls -lh "$AAB_PATH"
-          keytool -printcert -jarfile "$AAB_PATH" > signer.txt 2>&1 || {
-            echo "Could not read the bundle's signer certificate:"
-            cat signer.txt
-            exit 1
-          }
-          cat signer.txt
-          if grep -qi 'CN=Android Debug' signer.txt; then
-            echo
-            echo "REFUSING: this bundle is signed with the Android DEBUG key."
-            echo "The ZITCH_UPLOAD_* gradle properties did not reach the release"
-            echo "signingConfig — check plugins/withAndroidReleaseSigning.js applied."
-            exit 1
-          fi
-          if ! grep -qi 'Owner:' signer.txt; then
-            echo "REFUSING: no signer certificate found in the bundle."
-            exit 1
-          fi
-          echo "Bundle is signed with a non-debug certificate."
-      - name: Restate the manual release steps
-        # Deliberately not automated: no Google Play service-account credentials are
-        # configured, and versionCode is hand-managed in app.json. Automating an
-        # upload before either is settled is how a duplicate versionCode reaches
-        # Play.
-        script: |
-          echo "Next: upload the AAB to Play Console (Internal testing first)."
-          echo "app.json android.versionCode must be higher than the last upload."
-    artifacts:
-      - android/app/build/outputs/bundle/release/*.aab
-      - android/app/build/outputs/mapping/release/mapping.txt
-      - android/app/build/reports/**
-      - signer.txt
-    # Never on push: a Play artifact is cut deliberately. Tag a release (v1.0.12) or
-    # start it from the dashboard ("Start new build" → android-aab).
-    triggering:
-      events:
-        - tag
-      tag_patterns:
-        - pattern: 'v*'
+        # Build the v2 design branch too, so the redesign produces a sideloadable
+        # APK before it merges to main.
+        - pattern: new-design-files-v2
           include: true
-    publishing:
-      email:
-        recipients:
-          - teyokensax1@gmail.com
-        notify:
-          success: true
-          failure: true
+    # `when` is a workflow-level key (sibling of `triggering`, not a child of
+    # it). With a changeset filter it skips webhook-triggered builds whose
+    # changes don't touch any of these paths, so landing/docs/backend-only
+    # changes don't burn free build minutes.
+    when:
+      changeset:
+        includes:
+          - 'app'
+          - 'components'
+          - 'lib'
+          - 'assets'
+          - 'package.json'
+          - 'package-lock.json'
+          - 'app.json'
+          - 'eas.json'
+          - 'codemagic.yaml'
+    # Optional — email the APK link when the build finishes:
+    # publishing:
+    #   email:
+    #     recipients:
+    #       - you@example.com
+    #     notify:
+    #       success: true
+    #       failure: true

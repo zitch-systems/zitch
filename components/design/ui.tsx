@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,27 +7,74 @@ import {
   ScrollView,
   RefreshControl,
   Modal,
-  ViewStyle,
-  KeyboardAvoidingView,
-  Platform,
-  useWindowDimensions,
+  Animated,
   StyleSheet,
+  ViewStyle,
+  TextStyle,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import ZIcon from '@/components/design/ZIcon';
 import AmbientBackground from '@/components/design/AmbientBackground';
-import { Loading, LoadingMark } from '@/components/design/Loading';
 import { Naira, NText } from '@/components/design/Naira';
-import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
+import { useTheme, font, radius, ThemeTokens, ICON_COLORS, iconTint } from '@/lib/theme';
 import { money as fmtMoney, moneyk as fmtMoneyk } from '@/lib/format';
-import { isBiometricTxnEnabled, isBiometricAvailable, biometricLabel } from '@/lib/biometrics';
-import { getTransactionPin, hasTransactionPin } from '@/lib/secureStore';
-import { usePinScreenProtection } from '@/lib/screenCapture';
+import { isBiometricEnabled, isBiometricAvailable, authenticate, biometricLabel } from '@/lib/biometrics';
+import { getTransactionPin } from '@/lib/secureStore';
 
 export const money = fmtMoney;
 export const moneyk = fmtMoneyk;
 export { Naira, NText };
+
+// ---- Tap: shared 3D spring press wrapper (design `Tap`) ----
+// The design wraps EVERY interactive element in a 3D push-in: on press it scales
+// to .96 with a perspective tilt and fades to .92, then springs back with an
+// overshoot (cubic-bezier(.34,1.56,.64,1) analogue). Built on RN Animated
+// (the project has no reanimated babel plugin) so it works in the APK as-is.
+export const Tap = ({
+  children,
+  onPress,
+  onLongPress,
+  disabled,
+  style,
+  hitSlop,
+  accessibilityLabel,
+}: {
+  children: React.ReactNode;
+  onPress?: () => void;
+  onLongPress?: () => void;
+  disabled?: boolean;
+  style?: ViewStyle;
+  hitSlop?: number;
+  accessibilityLabel?: string;
+}) => {
+  const v = useRef(new Animated.Value(0)).current;
+  const animate = (to: number, bounce = false) =>
+    Animated.spring(v, {
+      toValue: to,
+      useNativeDriver: true,
+      speed: 50,
+      bounciness: bounce ? 12 : 0,
+    }).start();
+  const scale = v.interpolate({ inputRange: [0, 1], outputRange: [1, 0.96] });
+  const opacity = v.interpolate({ inputRange: [0, 1], outputRange: [1, 0.92] });
+  return (
+    <Pressable
+      onPress={disabled ? undefined : onPress}
+      onLongPress={disabled ? undefined : onLongPress}
+      onPressIn={() => !disabled && animate(1)}
+      onPressOut={() => animate(0, true)}
+      hitSlop={hitSlop}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityRole="button"
+    >
+      <Animated.View style={[{ transform: [{ perspective: 150 }, { scale }], opacity }, style]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+};
 
 const cardShadow = {
   shadowColor: '#063731',
@@ -38,11 +85,10 @@ const cardShadow = {
 };
 
 // ---- Layout shell ----
-// `tab` prevents a second safe-area inset being added beneath tab scenes. Expo
-// Router already lays those scenes out above the custom tab bar.
+// `tab` adds extra bottom padding so content clears the custom bottom nav
+// (the tab screens render their own nav bar over the scene).
 export const Screen = ({
   children,
-  header,
   pad = true,
   scroll = true,
   tab = false,
@@ -50,12 +96,6 @@ export const Screen = ({
   refreshing = false,
 }: {
   children: React.ReactNode;
-  // Rendered ABOVE the scroll view, as its sibling rather than its first child —
-  // so it never scrolls. Not `stickyHeaderIndices`: that pins a header only once
-  // the ScrollView has scrolled PAST it, section-list style, which still lets it
-  // travel with the content up to that point. This is simpler and matches what
-  // was actually asked for — the header never moves at all.
-  header?: React.ReactNode;
   pad?: boolean;
   scroll?: boolean;
   tab?: boolean;
@@ -66,41 +106,19 @@ export const Screen = ({
   const { c } = useTheme();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const bottomPad = 28;
-  // Phone tab scenes already sit above BottomNav, including its safe area. On
-  // fold/tablet the tab bar becomes a side rail, so keep the device bottom inset.
-  const bottomInset = tab && width < 600 ? 0 : insets.bottom;
+  const bottomPad = tab ? 96 : 28;
   // Fold/tablet: cap the content to a comfortable reading width and centre it so
   // screens never stretch edge-to-edge on wide displays. No-op on phones
   // (maxW undefined → the inner view is simply full width, as before).
   const maxW = width >= 600 ? 720 : undefined;
   const px = pad ? 20 : 0;
-  // `header`, if given, needs the same width cap and horizontal padding as the
-  // scrolling content below it, or the two drift out of alignment on tablet/fold
-  // widths where maxW actually applies.
-  const headerBlock = header ? (
-    <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px, alignSelf: 'center' }}>
-      {header}
-    </View>
-  ) : null;
   return (
     <LinearGradient colors={c.bgGradient} style={{ flex: 1 }}>
       <AmbientBackground />
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
-        {/* Lift content above the keyboard on iOS so a focused field / its submit
-            button is never hidden behind it (Android handles this via the OS
-            softInputMode). */}
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        {headerBlock}
         {scroll ? (
           <ScrollView
             showsVerticalScrollIndicator={false}
-            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-            // "handled" so the FIRST tap on a button while the keyboard is open
-            // activates it, instead of being swallowed to just dismiss the keyboard
-            // (which forced a double-tap on every form's submit button).
-            keyboardShouldPersistTaps="handled"
             refreshControl={
               onRefresh
                 ? <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={c.brand} colors={[c.brand]} />
@@ -109,16 +127,15 @@ export const Screen = ({
             // Add the device's bottom safe-area inset so the last content (buttons,
             // PIN pad, list rows) clears the home indicator / gesture bar instead of
             // being cut off — fixes the "cut at the bottom" on installed builds.
-            contentContainerStyle={{ paddingBottom: bottomPad + bottomInset, alignItems: 'center' }}
+            contentContainerStyle={{ paddingBottom: bottomPad + insets.bottom, alignItems: 'center' }}
           >
             <View style={{ width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </ScrollView>
         ) : (
-          <View style={{ flex: 1, alignItems: 'center', paddingBottom: bottomInset }}>
+          <View style={{ flex: 1, alignItems: 'center', paddingBottom: insets.bottom }}>
             <View style={{ flex: 1, width: '100%', maxWidth: maxW, paddingHorizontal: px }}>{children}</View>
           </View>
         )}
-        </KeyboardAvoidingView>
       </SafeAreaView>
     </LinearGradient>
   );
@@ -141,9 +158,6 @@ export const Header = ({
       {onBack && (
         <Pressable
           onPress={onBack}
-          hitSlop={2}
-          accessibilityRole="button"
-          accessibilityLabel="Go back"
           style={{
             width: 42,
             height: 42,
@@ -173,7 +187,7 @@ export const Card = ({
   children,
   style,
   onPress,
-  pad = 15,
+  pad = 18,
 }: {
   children: React.ReactNode;
   style?: ViewStyle;
@@ -190,7 +204,7 @@ export const Card = ({
     ...cardShadow,
     ...style,
   };
-  if (onPress) return <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [base, pressed && { opacity: 0.9 }]}>{children}</Pressable>;
+  if (onPress) return <Tap onPress={onPress} style={base}>{children}</Tap>;
   return <View style={base}>{children}</View>;
 };
 
@@ -204,6 +218,8 @@ const btnSizes: Record<BtnSize, ViewStyle> = {
   sm: { height: 40, paddingHorizontal: 16 },
 };
 const btnFont: Record<BtnSize, number> = { lg: 16, md: 15, sm: 14 };
+// Design button radii (ui.jsx PrimaryButton = 18; README buttons 16/14), not pill.
+const btnRadius: Record<BtnSize, number> = { lg: 18, md: 16, sm: 14 };
 
 export const Btn = ({
   label,
@@ -235,50 +251,29 @@ export const Btn = ({
   };
   const v = variants[variant];
   return (
-    <Pressable
-      onPress={disabled ? undefined : onPress}
-      hitSlop={size === 'sm' ? 2 : undefined}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: !!disabled }}
-      disabled={!!disabled}
-      style={({ pressed }) => [
-        {
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 9,
-          borderRadius: radius.pill,
-          width: full ? '100%' : undefined,
-          backgroundColor: v.bg,
-          borderWidth: v.border ? 1.5 : 0,
-          borderColor: v.border,
-          opacity: disabled ? 0.5 : pressed ? 0.92 : 1,
-          ...btnSizes[size],
-        },
-        style,
-      ]}
-    >
-      {icon && <ZIcon name={icon} size={size === 'lg' ? 20 : 18} color={v.fg} stroke={2.2} />}
-      <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</NText>
-    </Pressable>
-  );
-};
-
-// ---- Toggle switch ----
-// Shared on/off switch used across settings and the security screens.
-export const Toggle = ({ on, onChange, disabled }: { on: boolean; onChange: (v: boolean) => void; disabled?: boolean }) => {
-  const { c } = useTheme();
-  return (
-    <Pressable
-      onPress={disabled ? undefined : () => onChange(!on)}
-      hitSlop={{ top: 8, bottom: 8, left: 2, right: 2 }}
-      accessibilityRole="switch"
-      accessibilityState={{ checked: on, disabled: !!disabled }}
-      style={{ width: 46, height: 28, borderRadius: 999, padding: 3, backgroundColor: on ? c.brand : c.surface3, justifyContent: 'center', opacity: disabled ? 0.5 : 1 }}
-    >
-      <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: '#fff', transform: [{ translateX: on ? 18 : 0 }] }} />
-    </Pressable>
+    <Tap onPress={onPress} disabled={disabled} style={full ? { width: '100%' } : undefined}>
+      <View
+        style={[
+          {
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 9,
+            borderRadius: btnRadius[size],
+            width: full ? '100%' : undefined,
+            backgroundColor: v.bg,
+            borderWidth: v.border ? 1.5 : 0,
+            borderColor: v.border,
+            opacity: disabled ? 0.5 : 1,
+            ...btnSizes[size],
+          },
+          style,
+        ]}
+      >
+        {icon && <ZIcon name={icon} size={size === 'lg' ? 20 : 18} color={v.fg} stroke={2.2} />}
+        <NText style={{ color: v.fg, fontFamily: font.bold, fontSize: btnFont[size] }}>{label}</NText>
+      </View>
+    </Tap>
   );
 };
 
@@ -297,9 +292,6 @@ export const Money = ({
   const { c } = useTheme();
   return (
     <NText
-      numberOfLines={1}
-      adjustsFontSizeToFit
-      minimumFontScale={0.7}
       style={{
         fontSize: size,
         fontFamily: font.extrabold,
@@ -318,7 +310,6 @@ export const ZItem = ({
   icon,
   iconColor,
   iconBg,
-  leading,
   title,
   sub,
   right,
@@ -328,10 +319,6 @@ export const ZItem = ({
   icon?: string;
   iconColor?: string;
   iconBg?: string;
-  /** Custom glyph for the icon box (e.g. a brand mark ZIcon doesn't carry).
-   *  Rendered in the same 44px box as `icon`, so a row using it stays on the
-   *  same alignment grid as every other row in the group. */
-  leading?: React.ReactNode;
   title: string;
   sub?: string;
   right?: React.ReactNode;
@@ -339,7 +326,7 @@ export const ZItem = ({
   last?: boolean;
 }) => {
   const { c, theme } = useTheme();
-  const Wrap: any = onPress ? Pressable : View;
+  const Wrap: any = onPress ? Tap : View;
   // Per-icon accent so list rows (profile, settings, savings, loan…) read
   // colourful — unless the caller overrides, or the icon isn't mapped.
   const mapped = icon ? ICON_COLORS[icon] : undefined;
@@ -348,25 +335,23 @@ export const ZItem = ({
   return (
     <Wrap
       onPress={onPress}
-      accessibilityRole={onPress ? 'button' : undefined}
-      accessibilityLabel={onPress ? [title, sub].filter(Boolean).join(', ') : undefined}
       style={{
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingVertical: 11,
+        gap: 14,
+        paddingVertical: 13,
         borderBottomWidth: last ? 0 : 1,
         borderBottomColor: c.line,
       }}
     >
-      {(icon || leading) && (
-        <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
-          {leading ?? <ZIcon name={icon as string} size={18} color={accent} stroke={2.2} />}
+      {icon && (
+        <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: accentBg, alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name={icon} size={21} color={accent} stroke={2} />
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>
-        <NText numberOfLines={1} style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
-        {sub && <NText style={{ fontSize: 12, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
+        <NText numberOfLines={1} style={{ fontSize: 15, fontFamily: font.semibold, color: c.ink1 }}>{title}</NText>
+        {sub && <NText style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{sub}</NText>}
       </View>
       {right}
     </Wrap>
@@ -387,13 +372,6 @@ export const Field = ({
   editable = true,
   pointerEvents,
   autoCapitalize,
-  autoComplete,
-  textContentType,
-  returnKeyType,
-  onSubmitEditing,
-  autoCorrect,
-  inputRef,
-  loading = false,
 }: {
   label?: string;
   value?: string;
@@ -407,29 +385,13 @@ export const Field = ({
   editable?: boolean;
   pointerEvents?: 'none' | 'auto' | 'box-none';
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
-  // Autofill / SMS-autoread / keyboard-chaining pass-throughs (opt-in per field).
-  autoComplete?: any;
-  textContentType?: any;
-  returnKeyType?: 'done' | 'go' | 'next' | 'search' | 'send';
-  onSubmitEditing?: () => void;
-  autoCorrect?: boolean;
-  inputRef?: React.Ref<TextInput>;
-  // While true, the input area shows the small branded Zitch loader in place of
-  // the value/placeholder (e.g. the Send-money bank field while auto-detecting).
-  loading?: boolean;
 }) => {
   const { c } = useTheme();
   const [show, setShow] = useState(false);
   const secure = !!secureTextEntry && !show;
-  // Passwords/PINs and emails must never be auto-capitalized or auto-corrected —
-  // a silently capitalized first character is a classic "wrong password" trap.
-  // Default those off unless the caller explicitly overrides.
-  const isEmail = keyboardType === 'email-address';
-  const capitalize = autoCapitalize ?? (secureTextEntry || isEmail ? 'none' : undefined);
-  const correct = autoCorrect ?? (secureTextEntry || isEmail ? false : undefined);
   return (
     <View>
-      {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, letterSpacing: 0.2, marginBottom: 8 }}>{label}</Text>}
+      {label && <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text>}
       <View
         pointerEvents={pointerEvents}
         style={{
@@ -439,49 +401,26 @@ export const Field = ({
           backgroundColor: c.surface,
           borderWidth: 1,
           borderColor: c.line,
-          borderRadius: radius.md,
+          borderRadius: 13,
           paddingHorizontal: 16,
           height: 56,
         }}
       >
         {prefix}
-        {loading ? (
-          <View
-            style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
-            accessible
-            accessibilityRole="progressbar"
-            accessibilityLabel="Loading"
-          >
-            <LoadingMark size={22} />
-          </View>
-        ) : (
         <TextInput
-          ref={inputRef}
           editable={editable}
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          accessibilityLabel={label || placeholder || 'Input'}
           placeholderTextColor={c.ink3}
           keyboardType={keyboardType}
           secureTextEntry={secure}
           maxLength={maxLength}
-          autoCapitalize={capitalize}
-          autoCorrect={correct}
-          autoComplete={autoComplete}
-          textContentType={textContentType}
-          returnKeyType={returnKeyType}
-          onSubmitEditing={onSubmitEditing}
+          autoCapitalize={autoCapitalize}
           style={{ flex: 1, fontSize: 16, color: c.ink1, fontFamily: font.medium }}
         />
-        )}
         {secureTextEntry ? (
-          <Pressable
-            onPress={() => setShow((s) => !s)}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel={show ? 'Hide password' : 'Show password'}
-          >
+          <Pressable onPress={() => setShow((s) => !s)} hitSlop={10} accessibilityLabel={show ? 'Hide password' : 'Show password'}>
             <ZIcon name={show ? 'eyeoff' : 'eye'} size={20} color={c.ink3} />
           </Pressable>
         ) : suffix}
@@ -496,216 +435,87 @@ export const Sheet = ({
   onClose,
   children,
   title,
-  protectScreen = false,
 }: {
   open: boolean;
   onClose: () => void;
   children: React.ReactNode;
   title?: string;
-  /** Block screenshots only while a PIN-entry sheet is actually visible. */
-  protectScreen?: boolean;
 }) => {
   const { c } = useTheme();
   const { width } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
-  usePinScreenProtection(open && protectScreen);
-  // A hidden React Native Modal can keep its children mounted. PIN pads then
-  // initialise biometrics while the sheet is invisible and initialise again
-  // when the customer opens it, which presents the native fingerprint prompt
-  // twice. Mount sheet content only for the visible lifetime of the sheet.
-  if (!open) return null;
   // On fold/tablet, cap the sheet width and centre it so it reads as a card
   // rather than stretching across the whole display. Full-width on phones.
   const maxW = width >= 600 ? 560 : undefined;
+  // Spring slide-up (design uses var(--ease-spring) on sheets). RN's built-in
+  // Modal "slide" is linear, so we drive translateY ourselves with a spring.
+  const ty = useRef(new Animated.Value(700)).current;
+  useEffect(() => {
+    if (open) {
+      ty.setValue(700);
+      Animated.spring(ty, { toValue: 0, useNativeDriver: true, bounciness: 7, speed: 13 }).start();
+    }
+  }, [open]);
   return (
-    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
-      {/* Ride the panel above the keyboard so a field inside the sheet (bank
-          search, fund amount) and its button aren't covered while typing. */}
-      <KeyboardAvoidingView
-        style={{ flex: 1, justifyContent: 'flex-end' }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    <Modal visible={open} transparent animationType="none" onRequestClose={onClose}>
+      <Pressable onPress={onClose} style={{ flex: 1, backgroundColor: 'rgba(2,16,14,.5)' }} />
+      <Animated.View
+        style={{
+          width: '100%',
+          maxWidth: maxW,
+          alignSelf: 'center',
+          backgroundColor: c.surface,
+          borderTopLeftRadius: 28,
+          borderTopRightRadius: 28,
+          padding: 20,
+          paddingTop: 10,
+          paddingBottom: 26,
+          maxHeight: '88%',
+          transform: [{ translateY: ty }],
+        }}
       >
-        {/* Keep the scrim behind the sheet as well as above it. When the backdrop
-            was a flex sibling it stopped at the panel's rectangular bounds, so
-            the transparent pixels outside the rounded corners exposed the bright
-            screen underneath and left a jagged halo at both edges. */}
-        <Pressable
-          onPress={onClose}
-          accessible={false}
-          style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(2,16,14,.5)' }]}
-        />
-        <View
-          style={{
-            width: '100%',
-            maxWidth: maxW,
-            alignSelf: 'center',
-            backgroundColor: c.surface,
-            borderTopLeftRadius: 28,
-            borderTopRightRadius: 28,
-            overflow: 'hidden',
-            padding: 20,
-            paddingTop: 10,
-            // Clear the home indicator / gesture bar so the sheet's bottom content
-            // (the PIN keypad's last row) isn't flush against the screen edge.
-            paddingBottom: 26 + insets.bottom,
-            maxHeight: '90%',
-          }}
-        >
-          <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
-          {title && <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginBottom: 14 }}>{title}</Text>}
-          {/* "handled": first tap on a row/button inside the sheet activates it
-              instead of only dismissing the keyboard. */}
-          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView>
-        </View>
-      </KeyboardAvoidingView>
+        <View style={{ width: 40, height: 5, borderRadius: 3, backgroundColor: c.line, alignSelf: 'center', marginBottom: 14 }} />
+        {title && <Text style={{ fontSize: 18, fontFamily: font.extrabold, color: c.ink1, marginBottom: 14 }}>{title}</Text>}
+        <ScrollView showsVerticalScrollIndicator={false}>{children}</ScrollView>
+      </Animated.View>
     </Modal>
   );
 };
 
 // ---- PIN entry ----
-export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiometric = true }: { onComplete?: (pin: string, viaBiometric?: boolean) => void; length?: number; busy?: boolean; error?: string; autoBiometric?: boolean }) => {
+export const PinPad = ({ onComplete, length = 4, busy = false, error }: { onComplete?: (pin: string) => void; length?: number; busy?: boolean; error?: string }) => {
   const { c } = useTheme();
   const [pin, setPin] = useState('');
   // Biometric "pay" shortcut: shown only when the user enabled biometrics, the
   // device has them, and a PIN is cached in the keychain to submit on success.
   const [bioKind, setBioKind] = useState<'face' | 'fingerprint' | 'biometrics' | null>(null);
-  // Until we've checked whether biometric pay is set up we don't know which screen
-  // to show; `resolved` avoids flashing the keypad before switching to biometrics.
-  const [resolved, setResolved] = useState(false);
-  // When biometric pay is set up we open straight onto a biometric screen (not the
-  // keypad); the user can tap ✕ to fall back to the PIN.
-  const [showBio, setShowBio] = useState(false);
-  // Fire the biometric prompt at most once per mount (each time the sheet opens),
-  // so the OS sheet doesn't reappear after a manual cancel or a wrong-PIN retry.
-  const autoTried = React.useRef(false);
-  // Both the auto prompt and the visible biometric button call the same async
-  // function. A fast tap while the automatic OS sheet is opening used to start a
-  // second native prompt; keep one scan and one completion in flight per pad.
-  const bioInFlight = React.useRef(false);
-  const bioCompleted = React.useRef(false);
-  // Keep the latest onComplete/busy in refs so the biometric helpers stay STABLE
-  // and the setup effect runs exactly once per mount — not on every render (an
-  // inline onComplete in the parent would otherwise re-run the effect each render,
-  // hammering native biometric calls and destabilising the sheet).
-  const onCompleteRef = React.useRef(onComplete);
-  const busyRef = React.useRef(busy);
-  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
-  useEffect(() => { busyRef.current = busy; }, [busy]);
-  useEffect(() => {
-    if (error) bioCompleted.current = false;
-  }, [error]);
-  const handleBiometric = React.useCallback(async () => {
-    if (busyRef.current || bioInFlight.current || bioCompleted.current) return;
-    bioInFlight.current = true;
-    try {
-      // The transaction PIN is itself protected by SecureStore's authenticated
-      // keychain ACL. Reading it opens the single OS biometric prompt; doing a
-      // separate LocalAuthentication scan first caused the double prompt users
-      // reported and added no protection to the already-gated secret.
-      const storedPin = await getTransactionPin();
-      if (storedPin) {
-        bioCompleted.current = true;
-        onCompleteRef.current && onCompleteRef.current(storedPin, true);
-      }
-    } catch {
-      /* biometrics must never crash the payment sheet — fall back to the keypad */
-    } finally {
-      bioInFlight.current = false;
-    }
-  }, []);
   useEffect(() => {
     let alive = true;
     (async () => {
-      try {
-        // Show the biometric screen only when the user has turned ON transaction-
-        // biometrics AND has a cached PIN (a NON-secret flag; we never read the PIN
-        // here just to pick a screen).
-        const [txnOn, available, hasPin] = await Promise.all([
-          isBiometricTxnEnabled(), isBiometricAvailable(), hasTransactionPin(),
-        ]);
-        const kind = txnOn && available && hasPin ? await biometricLabel() : null;
-        if (!alive) return;
-        setBioKind(kind);
-        // Biometric approval set up → open on the biometric screen and prompt Face
-        // ID / fingerprint straight away. Runs once per mount (this component mounts
-        // only when the sheet actually opens).
-        const useBio = !!(kind && autoBiometric);
-        setShowBio(useBio);
-        setResolved(true);
-        if (useBio && !autoTried.current && !busyRef.current) {
-          autoTried.current = true;
-          handleBiometric();
-        }
-      } catch {
-        if (alive) setResolved(true); // any failure → just show the keypad
-      }
+      const [enabled, available, storedPin] = await Promise.all([
+        isBiometricEnabled(), isBiometricAvailable(), getTransactionPin(),
+      ]);
+      const kind = enabled && available && storedPin ? await biometricLabel() : null;
+      if (alive) setBioKind(kind);
     })();
     return () => { alive = false; };
-  }, [autoBiometric, handleBiometric]);
+  }, []);
   const press = (d: string) => {
     if (busy) return; // ignore input while a submission is in flight (prevents double-charge)
     if (pin.length < length) {
       const np = pin + d;
       setPin(np);
-      if (np.length === length) setTimeout(() => { onComplete && onComplete(np, false); setPin(''); }, 120);
+      if (np.length === length) setTimeout(() => { onComplete && onComplete(np); setPin(''); }, 120);
     }
   };
   const del = () => { if (!busy) setPin((p) => p.slice(0, -1)); };
-  // Row-based key layout: each row of three stretches edge-to-edge (with even
-  // gaps) so the keypad lines up with the sheet's own padding instead of
-  // floating on a fixed-width island with mismatched margins.
-  const keyRows: string[][] = [['1', '2', '3'], ['4', '5', '6'], ['7', '8', '9'], ['bio', '0', 'del']];
-  // While a submission is in flight, replace the keypad with the branded
-  // loading animation — the moment the correct PIN is entered (or the biometric
-  // clears) the sheet cuts straight to the same loader used across the app,
-  // never an "authenticating" keypad state.
-  if (busy) {
-    return <Loading full={false} label="Processing…" />;
-  }
-  // Brief check-in-progress hold (only when biometrics may take over) so the
-  // keypad doesn't flash before the biometric screen appears.
-  if (!resolved && autoBiometric) {
-    return (
-      <View style={{ alignItems: 'center', paddingVertical: 48 }}>
-        <LoadingMark size={28} />
-      </View>
-    );
-  }
-  // Biometric-first screen: a big tap-to-scan icon (the OS prompt also auto-fires
-  // on open) with a small ✕ underneath to cancel and use the PIN instead.
-  if (showBio) {
-    return (
-      <View style={{ alignItems: 'center', paddingVertical: 16 }}>
-        <Pressable
-          onPress={handleBiometric}
-          accessibilityRole="button"
-          accessibilityLabel={bioKind === 'face' ? 'Approve with Face ID' : 'Approve with fingerprint'}
-          style={{ width: 104, height: 104, borderRadius: 52, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}
-        >
-          <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={52} color={c.brand} />
-        </Pressable>
-        <Text style={{ marginTop: 18, fontSize: 15.5, fontFamily: font.bold, color: c.ink1 }}>
-          {bioKind === 'face' ? 'Approve with Face ID' : 'Approve with fingerprint'}
-        </Text>
-        <Text style={{ marginTop: 6, fontSize: 12.5, fontFamily: font.regular, color: c.ink3 }}>
-          Tap the icon to scan again
-        </Text>
-        {error ? (
-          <Text style={{ textAlign: 'center', color: c.red, fontSize: 13, fontFamily: font.semibold, marginTop: 10 }}>{error}</Text>
-        ) : null}
-        <Pressable
-          onPress={() => setShowBio(false)}
-          accessibilityRole="button"
-          accessibilityLabel="Use PIN instead"
-          hitSlop={12}
-          style={{ marginTop: 24, width: 46, height: 46, borderRadius: 23, borderWidth: 1.5, borderColor: c.line, alignItems: 'center', justifyContent: 'center' }}
-        >
-          <ZIcon name="x" size={20} color={c.ink2} />
-        </Pressable>
-        <Text style={{ marginTop: 9, fontSize: 12.5, color: c.ink3, fontFamily: font.medium }}>Use PIN instead</Text>
-      </View>
-    );
-  }
+  const useBiometric = async () => {
+    if (busy) return;
+    const ok = await authenticate('Approve payment');
+    if (!ok) return;
+    const storedPin = await getTransactionPin();
+    if (storedPin) onComplete && onComplete(storedPin);
+  };
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', 'del'];
   return (
     <View>
       <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 16, marginTop: 8, marginBottom: error ? 10 : 26 }}>
@@ -728,43 +538,53 @@ export const PinPad = ({ onComplete, length = 6, busy = false, error, autoBiomet
           {error}
         </Text>
       ) : null}
-      <View style={{ width: '100%', maxWidth: 420, alignSelf: 'center', gap: 10 }}>
-        {keyRows.map((row, ri) => (
-          <View key={ri} style={{ flexDirection: 'row', gap: 10 }}>
-            {row.map((k) =>
-              k === 'bio' && !bioKind ? (
-                <View key={k} style={{ flex: 1, height: 62 }} />
-              ) : (
-                <Pressable
-                  key={k}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', maxWidth: 280, alignSelf: 'center' }}>
+        {keys.map((k, i) =>
+          k === '' ? (
+            bioKind ? (
+              <View key={i} style={{ width: '33.33%', padding: 7 }}>
+                <Tap
+                  onPress={useBiometric}
                   disabled={busy}
-                  accessibilityRole="button"
-                  accessibilityLabel={k === 'del' ? 'Delete digit' : k === 'bio' ? 'Use biometric approval' : `Digit ${k}`}
-                  accessibilityState={{ disabled: busy }}
-                  onPress={() => (k === 'del' ? del() : k === 'bio' ? handleBiometric() : press(k))}
-                  style={({ pressed }) => ({
-                    flex: 1,
-                    height: 62,
-                    borderRadius: 16,
-                    backgroundColor: pressed ? c.surface3 : c.surface,
-                    borderWidth: 1,
-                    borderColor: c.line,
+                  style={{
+                    height: 56,
+                    borderRadius: 14,
+                    backgroundColor: 'transparent',
                     alignItems: 'center',
                     justifyContent: 'center',
-                  })}
+                  }}
                 >
-                  {k === 'del' ? (
-                    <ZIcon name="left" size={24} color={c.ink1} />
-                  ) : k === 'bio' ? (
-                    <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={26} color={c.brand} />
-                  ) : (
-                    <Text style={{ fontSize: 24, fontFamily: font.bold, color: c.ink1 }}>{k}</Text>
-                  )}
-                </Pressable>
-              )
-            )}
-          </View>
-        ))}
+                  <ZIcon name={bioKind === 'face' ? 'faceid' : 'fingerprint'} size={26} color={c.brand} />
+                </Tap>
+              </View>
+            ) : (
+              <View key={i} style={{ width: '33.33%', height: 56 }} />
+            )
+          ) : (
+            <View key={i} style={{ width: '33.33%', padding: 7 }}>
+              <Tap
+                onPress={() => (k === 'del' ? del() : press(k))}
+                style={{
+                  height: 56,
+                  borderRadius: 14,
+                  backgroundColor: 'transparent',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {k === 'del' ? (
+                  <ZIcon name="left" size={24} color={c.ink1} />
+                ) : (
+                  <Text style={{ fontSize: 24, fontFamily: font.bold, color: c.ink1 }}>{k}</Text>
+                )}
+              </Tap>
+            </View>
+          )
+        )}
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 14 }}>
+        <ZIcon name="lock" size={13} color={c.ink3} />
+        <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.medium }}>Secured by Zitch</Text>
       </View>
     </View>
   );
@@ -775,329 +595,37 @@ export const PinSheet = ({
   onClose,
   onComplete,
   title = 'Enter your PIN',
-  subtitle = 'Confirm this transaction with your 6-digit PIN',
   busy = false,
   error,
-  autoBiometric = false,
 }: {
   open: boolean;
   onClose: () => void;
-  onComplete?: (pin: string, viaBiometric?: boolean) => void;
+  onComplete?: (pin: string) => void;
   title?: string;
-  subtitle?: string;
   busy?: boolean;
   error?: string;
-  // Default OFF: PinSheet backs setup flows (capturing a PIN to enable biometric
-  // pay) where auto-prompting biometrics would be wrong. Money-approval callers
-  // pass autoBiometric so Face ID / fingerprint is offered on open.
-  autoBiometric?: boolean;
 }) => {
   const { c } = useTheme();
   return (
-    <Sheet open={open} onClose={onClose} title={title} protectScreen>
-      {/* No negative top margin: the subtitle renders inside the sheet's
-          ScrollView, so pulling it up clips its top edge against the title. */}
-      {!busy && (
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
-          {subtitle}
-        </Text>
-      )}
-      <PinPad onComplete={onComplete} busy={busy} error={error} autoBiometric={autoBiometric} />
+    <Sheet open={open} onClose={onClose} title={title}>
+      <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
+        Confirm this transaction with your 4-digit PIN
+      </Text>
+      <PinPad onComplete={onComplete} busy={busy} error={error} />
     </Sheet>
   );
 };
 
 // ---- Translucent pill (hero actions) ----
 export const StatPill = ({ icon, label, onPress }: { icon: string; label: string; onPress?: () => void }) => (
-  <Pressable
+  <Tap
     onPress={onPress}
     style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingVertical: 9, paddingHorizontal: 14, backgroundColor: 'rgba(255,255,255,.16)', borderRadius: 999 }}
   >
     <ZIcon name={icon} size={16} color="#fff" stroke={2.2} />
     <Text style={{ color: '#fff', fontSize: 13, fontFamily: font.semibold }}>{label}</Text>
-  </Pressable>
+  </Tap>
 );
-
-// ---- Status pill ----
-// One place decides what a transaction status LOOKS like. The list row, the
-// detail screen and the statement all read the same three states, and before
-// this they each styled them differently — a failed transfer was red on one
-// screen and plain grey on another, which is the one status you cannot afford
-// to under-state.
-export type TxnState = 'success' | 'pending' | 'failed';
-
-export const txnState = (status: string): TxnState => {
-  const s = (status || '').toLowerCase();
-  if (/fail|declin|revers|cancel/.test(s)) return 'failed';
-  if (/pend|process|await|queue/.test(s)) return 'pending';
-  return 'success';
-};
-
-export const StatusPill = ({ status, small }: { status: string; small?: boolean }) => {
-  const { c, theme } = useTheme();
-  const state = txnState(status);
-  const tone = state === 'failed' ? c.red : state === 'pending' ? c.amber : c.lime;
-  return (
-    <View
-      style={{
-        alignSelf: 'flex-end',
-        paddingHorizontal: small ? 7 : 9,
-        paddingVertical: small ? 2 : 3,
-        borderRadius: 999,
-        backgroundColor: iconTint(tone, theme === 'dark'),
-      }}
-    >
-      <Text style={{ fontSize: small ? 10 : 11, fontFamily: font.semibold, color: tone }}>{status}</Text>
-    </View>
-  );
-};
-
-// ---- Header text link ----
-// The "History" / "Download" affordance that sits in a Header's `right` slot.
-// A plain coloured word rather than a bordered pill: it is a shortcut to a
-// sibling screen, not an action on the screen you are looking at, and a button
-// chrome around it competes with the screen's real primary button.
-export const HeaderLink = ({ label, onPress, icon }: { label: string; onPress: () => void; icon?: string }) => {
-  const { c } = useTheme();
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={10}
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 5, opacity: pressed ? 0.6 : 1 })}
-    >
-      {icon ? <ZIcon name={icon} size={16} color={c.brand} stroke={2.2} /> : null}
-      <Text style={{ fontSize: 14.5, fontFamily: font.bold, color: c.brand }}>{label}</Text>
-    </Pressable>
-  );
-};
-
-// ---- Pill tabs ----
-// N-option selector. `Segmented` is a 2-slot toggle on a filled track; this is
-// a row of free-standing pills that scrolls when the options outgrow the width
-// (data-plan categories) and wraps a checkmark onto the chosen one when it is
-// a commitment rather than a view filter (statement time frame).
-export const PillTabs = ({
-  options,
-  value,
-  onChange,
-  scroll = true,
-  check = false,
-}: {
-  options: { v: string; label: string }[];
-  value: string;
-  onChange: (v: string) => void;
-  scroll?: boolean;
-  check?: boolean;
-}) => {
-  const { c, theme } = useTheme();
-  const pills = options.map((o) => {
-    const on = value === o.v;
-    return (
-      <Pressable
-        key={o.v}
-        onPress={() => onChange(o.v)}
-        accessibilityRole="radio"
-        accessibilityLabel={o.label}
-        accessibilityState={{ selected: on }}
-        style={{
-          flex: scroll ? undefined : 1,
-          alignItems: 'center',
-          justifyContent: 'center',
-          paddingHorizontal: check ? 10 : 16,
-          paddingVertical: check ? 13 : 9,
-          borderRadius: check ? 14 : 999,
-          backgroundColor: on ? (check ? iconTint(c.brand, theme === 'dark') : c.brand) : c.surface3,
-          borderWidth: check ? 1.5 : 0,
-          borderColor: on ? c.brand : 'transparent',
-          overflow: 'hidden',
-        }}
-      >
-        <Text
-          numberOfLines={1}
-          style={{ fontSize: 13.5, fontFamily: font.bold, color: on ? (check ? c.brand : c.inkOnBrand) : c.ink3 }}
-        >
-          {o.label}
-        </Text>
-        {check && on && (
-          // Notched into the corner the way a selected card is ticked elsewhere
-          // in the app (ProviderGrid), so "chosen" reads the same everywhere.
-          <View style={{ position: 'absolute', right: 0, bottom: 0, width: 22, height: 22, borderTopLeftRadius: 10, backgroundColor: c.brand, alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="check" size={11} color={c.inkOnBrand} stroke={3} />
-          </View>
-        )}
-      </Pressable>
-    );
-  });
-  if (!scroll) return <View style={{ flexDirection: 'row', gap: 10 }}>{pills}</View>;
-  return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8, paddingVertical: 2 }}>
-      {pills}
-    </ScrollView>
-  );
-};
-
-// ---- Select row ----
-// A field-shaped row that opens a picker rather than a keyboard. The app's
-// convention (bank picker in sendmoney) is a closed row + a Sheet list, never
-// the native Picker, so this is that pattern extracted once.
-export const SelectRow = ({
-  label,
-  value,
-  placeholder,
-  onPress,
-  icon,
-  compact,
-}: {
-  label?: string;
-  value?: string;
-  placeholder?: string;
-  onPress: () => void;
-  icon?: string;
-  compact?: boolean;
-}) => {
-  const { c } = useTheme();
-  const filled = !!value;
-  return (
-    <View style={{ flex: compact ? 1 : undefined }}>
-      {label ? <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.ink2, marginBottom: 8 }}>{label}</Text> : null}
-      <Pressable
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={`${label ?? placeholder ?? 'Select'}${filled ? `, ${value}` : ''}`}
-        style={({ pressed }) => ({
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          height: compact ? 48 : 56,
-          paddingHorizontal: 16,
-          borderRadius: compact ? 14 : radius.sm + 4,
-          backgroundColor: compact ? c.surface3 : c.surface,
-          borderWidth: compact ? 0 : 1.5,
-          borderColor: c.line,
-          opacity: pressed ? 0.85 : 1,
-        })}
-      >
-        {icon ? <ZIcon name={icon} size={18} color={c.ink3} /> : null}
-        <Text
-          numberOfLines={1}
-          style={{ flex: 1, fontSize: compact ? 14 : 15, fontFamily: filled ? font.semibold : font.regular, color: filled ? c.ink1 : c.ink3, textAlign: compact ? 'center' : 'left' }}
-        >
-          {value || placeholder}
-        </Text>
-        <ZIcon name="down" size={16} color={c.ink3} stroke={2.4} />
-      </Pressable>
-    </View>
-  );
-};
-
-// ---- Picker sheet ----
-// The list a SelectRow opens. Options carry an optional icon + sub-label so the
-// same component serves a flat filter list and the file-type chooser.
-export type PickerOption = { v: string; label: string; sub?: string; icon?: string };
-
-type PickerSheetProps = {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  options: PickerOption[];
-  value: string;
-  onPick: (v: string) => void;
-  /** Show a filter box above the list. Opt-in, so a short list (two networks,
-   *  three plans) does not grow a search field it does not need — but a long one
-   *  (37 states) stops being a list you scroll and becomes one you type at. */
-  searchable?: boolean;
-  searchPlaceholder?: string;
-  emptyLabel?: string;
-};
-
-/**
- * Deliberately a hook-free shell around the body, so a closed picker holds NO
- * state. The filter box then resets on every open for free, rather than needing
- * an effect to clear it — and reopening onto someone's last filter looks like the
- * list has lost most of its entries. This mirrors what `Sheet` does one level
- * down, and for the same reason.
- */
-export const PickerSheet = (props: PickerSheetProps) => (props.open ? <PickerSheetBody {...props} /> : null);
-
-const PickerSheetBody = ({
-  open,
-  onClose,
-  title,
-  options,
-  value,
-  onPick,
-  searchable,
-  searchPlaceholder,
-  emptyLabel,
-}: PickerSheetProps) => {
-  const { c } = useTheme();
-  const [query, setQuery] = useState('');
-  const q = query.trim().toLowerCase();
-  // Substring, not prefix: people look for "ibom" and "river" as readily as they
-  // type the first letters, and a 37-item list is far too small for the
-  // difference to cost anything.
-  const shown = q
-    ? options.filter((o) => o.label.toLowerCase().includes(q) || o.v.toLowerCase().includes(q))
-    : options;
-  return (
-    <Sheet open={open} onClose={onClose} title={title}>
-      {searchable ? (
-        <View style={{ marginBottom: 6 }}>
-          <Field
-            value={query}
-            onChangeText={setQuery}
-            placeholder={searchPlaceholder ?? 'Type to search'}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-        </View>
-      ) : null}
-      {searchable && shown.length === 0 ? (
-        <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, paddingVertical: 18, textAlign: 'center' }}>
-          {emptyLabel ?? 'Nothing matches that.'}
-        </Text>
-      ) : null}
-      {shown.map((o) => {
-        const on = o.v === value;
-        return (
-          <Pressable
-            key={o.v}
-            onPress={() => { onPick(o.v); onClose(); }}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: on }}
-            style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: c.line }}
-          >
-            {o.icon ? (
-              <View style={{ width: 38, height: 38, borderRadius: 11, backgroundColor: c.surface3, alignItems: 'center', justifyContent: 'center' }}>
-                <ZIcon name={o.icon} size={19} color={on ? c.brand : c.ink2} />
-              </View>
-            ) : null}
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={{ fontSize: 15, fontFamily: on ? font.bold : font.semibold, color: on ? c.brand : c.ink1 }}>{o.label}</Text>
-              {o.sub ? <Text style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{o.sub}</Text> : null}
-            </View>
-            {on ? <ZIcon name="check" size={18} color={c.brand} stroke={2.6} /> : null}
-          </Pressable>
-        );
-      })}
-    </Sheet>
-  );
-};
-
-// ---- Progress bar ----
-export const Progress = ({ value, max, tone }: { value: number; max: number; tone?: string }) => {
-  const { c } = useTheme();
-  // Clamped, not just divided: a limit raised mid-session (or a stale cached
-  // max of 0) would otherwise render a bar wider than its own track.
-  const pct = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
-  return (
-    <View style={{ height: 9, borderRadius: 999, backgroundColor: c.surface3, overflow: 'hidden' }}>
-      <View style={{ width: `${pct * 100}%`, height: '100%', borderRadius: 999, backgroundColor: tone ?? c.brand }} />
-    </View>
-  );
-};
 
 // ---- Transaction row ----
 export type Txn = {
@@ -1110,61 +638,39 @@ export type Txn = {
   icon: string;
   dir: 'in' | 'out';
   reference?: string;
-  /** The customer's own note for this payment, when they gave one. */
-  narration?: string;
-  /** Epoch ms parsed from the backend's date string, or undefined when it
-   *  couldn't be read. Grouping by month needs a real instant; `detail` is a
-   *  pre-formatted display string and cannot be sorted or bucketed. */
-  ts?: number;
 };
 
-/**
- * A transaction row. Memoized because it is the single most-repeated component
- * in the app — Home, Wallet and History all render lists of these, and History
- * renders every row of every month group at once. Without memo, any state change
- * on those screens (a filter toggle, a pull-to-refresh, the balance arriving)
- * re-renders every row's icon, tint lookup and money formatting.
- *
- * Note for callers: this only pays off if `onPress` is STABLE. An inline arrow
- * is a new function every render and defeats the comparison — wrap row handlers
- * in useCallback, or hoist them.
- */
-export const TxnRow = React.memo((
-  { txn, last, onPress, onSelect }:
-  { txn: Txn; last?: boolean; onPress?: () => void; onSelect?: (txn: Txn) => void },
-) => {
-  const { c, theme } = useTheme();
-  // `onSelect` is the memo-friendly door: callers hand over ONE stable function
-  // for the whole list and this closes over the row's own txn internally, where
-  // a fresh closure per render costs nothing because it is not a prop. `onPress`
-  // stays for callers that need something bespoke per row.
-  const handlePress = onPress ?? (onSelect ? () => onSelect(txn) : undefined);
+// Two-letter monogram from a transaction's label (design renders txns/banks as
+// monograms on a solid colour tile, never raster logos / service icons).
+const txnMono = (s: string) => {
+  const w = (s || '').trim().split(/\s+/).filter(Boolean);
+  const code = ((w[0]?.[0] || '') + (w[1]?.[0] || w[0]?.[1] || '')).toUpperCase();
+  return code || 'ZT';
+};
+
+export const TxnRow = ({ txn, last, onPress }: { txn: Txn; last?: boolean; onPress?: () => void }) => {
+  const { c } = useTheme();
   const inflow = txn.dir === 'in';
-  // Credits stay green; debits take their service's accent colour (airtime
-  // teal, data blue, …) so transaction lists read colourful instead of flat
-  // grey. Unmapped icons fall back to the neutral ink tone.
-  const accent = inflow ? c.lime : (ICON_COLORS[txn.icon] ?? c.ink2);
-  const tint = inflow ? 'rgba(0,181,29,.12)' : (ICON_COLORS[txn.icon] ? iconTint(ICON_COLORS[txn.icon], theme === 'dark') : c.surface3);
-  const Wrap: any = handlePress ? Pressable : View;
+  // Credits read green; debits take their service's accent colour (airtime
+  // teal, data blue, …) so transaction lists stay colourful. The tile is the
+  // SOLID accent with a 2-letter white monogram, per the design's TxnRow.
+  const accent = inflow ? c.lime : (ICON_COLORS[txn.icon] ?? c.brand);
+  const Wrap: any = onPress ? Tap : View;
   return (
-    <Wrap onPress={handlePress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
-      {/* A disc, not the rounded square used for service TILES: a tile is a
-          thing you tap to start something, a transaction is a thing that already
-          happened, and the two should not read as the same affordance. */}
-      <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: tint, alignItems: 'center', justifyContent: 'center' }}>
-        <ZIcon name={txn.icon} size={20} color={accent} stroke={2} />
+    <Wrap onPress={onPress} style={{ flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 13, borderBottomWidth: last ? 0 : 1, borderBottomColor: c.line }}>
+      <View style={{ width: 44, height: 44, borderRadius: 13, backgroundColor: accent, alignItems: 'center', justifyContent: 'center' }}>
+        <Text style={{ fontSize: 14.5, fontFamily: font.extrabold, color: '#fff' }}>{txnMono(txn.type)}</Text>
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text numberOfLines={1} style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
+        <Text style={{ fontSize: 14.5, fontFamily: font.semibold, color: c.ink1 }}>{txn.type}</Text>
         <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.detail}</Text>
       </View>
-      <View style={{ alignItems: 'flex-end', gap: 4 }}>
+      <View style={{ alignItems: 'flex-end' }}>
         <NText style={{ fontSize: 14.5, fontFamily: font.bold, color: inflow ? c.lime : c.ink1, fontVariant: ['tabular-nums'] }}>
           {(inflow ? '+' : '-') + money(Math.abs(txn.amount))}
         </NText>
-        <StatusPill status={txn.status} small />
+        <Text style={{ fontSize: 11.5, color: txn.status === 'Pending' ? c.amber : c.ink3, marginTop: 2, fontFamily: font.regular }}>{txn.status}</Text>
       </View>
     </Wrap>
   );
-});
-TxnRow.displayName = 'TxnRow';
+};

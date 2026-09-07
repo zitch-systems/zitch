@@ -1,937 +1,294 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text } from 'react-native';
+import React, { useCallback, useRef, useState } from 'react';
+import { View, Text, Animated, Easing } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import * as DocumentPicker from 'expo-document-picker';
-import * as Location from 'expo-location';
+import Svg, { Circle } from 'react-native-svg';
 import { notify } from '@/components/design/Notify';
 import { getToken } from '@/lib/secureStore';
 import { beginExternalActivity, endExternalActivity } from '@/lib/session';
-import { apiJson } from '@/lib/api';
+import { kycService, type KycStatus } from '@/lib/services/kyc';
 import ZIcon from '@/components/design/ZIcon';
-import { Screen, Header, Field, Btn, money, NText, SelectRow, PickerSheet } from '@/components/design/ui';
-import { Loading } from '@/components/design/Loading';
-import { NIGERIAN_STATES, canonicalState } from '@/constants/nigeria';
+import { Screen, Header, Field, Btn, Tap, money } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
-import AuthGuard from '@/components/AuthGuard';
-import FaceVerifyModal from '@/components/design/FaceVerifyModal';
-import FaceLivenessModal from '@/components/design/FaceLivenessModal';
 
 type Status = {
-  tier: number; tier_name?: string; transaction_limit: string;
-  daily_transfer_limit?: string; daily_bill_limit?: string;
+  tier: number; transaction_limit: string;
   bvn_verified: boolean; nin_verified: boolean; face_verified: boolean;
-  address_verified?: boolean; id_document_verified?: boolean;
-  email?: string; email_verified?: boolean; email_verification_required?: boolean;
-  bank_tier?: number;
-  has_wema_account?: boolean;
-  bank_upgrade_required?: boolean;
-  bank_tier_limits?: { single_inflow?: string | null; daily_spend?: string | null; max_balance?: string | null };
-  // Which rail each step runs on. The server decides, because it is the only side
-  // that knows which bank products are actually keyed on this deploy - a screen
-  // that hardcoded "bank" would show a button that 503s, and one that hardcoded
-  // "document" would ask for a utility bill nobody reads.
-  face_rail?: 'wema' | 'document';
-  identity_face_available?: boolean;
-  identity_verification_methods?: ('sms_otp' | 'wema_face')[];
-  tier2_face_rail?: 'prembly';
-  address_rail?: 'wema' | 'document';
 };
 
-const MAX_IMAGE_BASE64 = 2_800_000;
-// Matches FACE_SESSION_TTL_MINUTES on the server. Polling past the point where the
-// session can still be completed only burns battery and requests.
-const FACE_SESSION_MAX_MS = 20 * 60 * 1000;
-// How long the poll keeps going after the customer closes the bank's sheet.
-//
-// Not zero, because they may have passed the check a second before closing and the
-// bank's callback can still be in flight - cancelling instantly would lose it. Not
-// the full session either: when the bank's page fails (it renders its own error card
-// inside the sheet, which we cannot read from out here), closing it is the only
-// signal we get, and twenty more minutes of silent polling leaves the retry button
-// disabled the whole time. Long enough for a callback that is really coming.
-const FACE_DISMISS_GRACE_MS = 90 * 1000;
+type Method = 'menu' | 'bvn' | 'nin' | 'selfie';
 
-const KycRow = ({ icon, title, sub, done, children }: { icon: string; title: string; sub: string; done: boolean; children?: React.ReactNode }) => {
-  const { c } = useTheme();
-  return (
-    <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 16, marginTop: 12 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: done ? 'rgba(0,181,29,.14)' : 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center' }}>
-          <ZIcon name={done ? 'check' : icon} size={20} color={done ? c.lime : c.brand} stroke={done ? 2.6 : 1.9} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 15 }}>{title}</Text>
-          <Text style={{ fontSize: 12.5, color: done ? c.lime : c.ink3, marginTop: 2, fontFamily: font.regular }}>{done ? 'Verified' : sub}</Text>
-        </View>
-      </View>
-      {!done && children ? <View style={{ marginTop: 12 }}>{children}</View> : null}
-    </View>
-  );
+// Method accent colours — EXACT per the design handoff.
+const C_BVN = '#0FA295';
+const C_NIN = '#2D7FF9';
+const C_SELFIE = '#7A5CFF';
+
+const cardShadow = {
+  shadowColor: '#063731',
+  shadowOpacity: 0.12,
+  shadowRadius: 16,
+  shadowOffset: { width: 0, height: 8 },
+  elevation: 3,
 };
 
 const Kyc = () => {
   const { c } = useTheme();
   const [, setToken] = useState('');
   const [status, setStatus] = useState<Status | null>(null);
-  const [loaded, setLoaded] = useState(false); // has the first kyc/status fetch resolved yet
+  const [method, setMethod] = useState<Method>('menu');
   const [bvn, setBvn] = useState('');
   const [bvnOtp, setBvnOtp] = useState('');
   const [bvnSent, setBvnSent] = useState(false);
-  const [bvnTrackingId, setBvnTrackingId] = useState('');
-  // Only ever a number the BANK named. Empty is the normal case - ALAT does not
-  // document an otpDestination field - and empty must render as "the phone
-  // registered on your BVN", never as the number the customer uses with Zitch.
-  // The code goes to the line on the BVN record; naming any other number sends
-  // the customer to a handset that will never ring.
-  const [bvnDelivery, setBvnDelivery] = useState('');
   const [nin, setNin] = useState('');
-  const [ninOtp, setNinOtp] = useState('');
-  const [ninSent, setNinSent] = useState(false);
-  const [ninTrackingId, setNinTrackingId] = useState('');
-  // Same rule as bvnDelivery, against the NIMC line held on the NIN.
-  const [ninDelivery, setNinDelivery] = useState('');
-  const [address, setAddress] = useState('');
-  const [city, setCity] = useState('');
-  const [stateName, setStateName] = useState('');
-  const [statePicker, setStatePicker] = useState(false);
-  const [docSource, setDocSource] = useState(false);
-  const [addressDoc, setAddressDoc] = useState(''); // base64 proof of address
-  const [idImage, setIdImage] = useState(''); // base64 of the government ID
-  const [emailOtp, setEmailOtp] = useState('');
-  const [emailAddr, setEmailAddr] = useState('');
-  const [emailOtpSent, setEmailOtpSent] = useState(false);
+  const [ninImage, setNinImage] = useState(''); // base64 of the NIN slip
   const [busy, setBusy] = useState(false);
-  const [facePolling, setFacePolling] = useState(false);
-  // The bank's page, shown inside the app rather than handed to the system browser.
-  const [faceUrl, setFaceUrl] = useState('');
-  // The session being polled. A ref, not state: it is the poll loop's cancellation
-  // token, and it has to be readable by a loop that started before the render that
-  // would have updated a state value.
-  const faceSession = useRef('');
-  const faceIdentityKind = useRef<'bvn' | 'nin'>('bvn');
-  // When the customer closed the bank's sheet, or 0 while it is still open. A ref
-  // for the same reason as faceSession: the poll loop has to see it mid-flight.
-  const faceDismissedAt = useRef(0);
-  // The address rail decides whether a proof-of-address document is even asked for.
-  const bankAddress = status?.address_rail === 'wema';
-  const [identityFlow, setIdentityFlow] = useState<null | 'bvn' | 'nin'>(null);
-  const [identityStep, setIdentityStep] = useState<'number' | 'otp'>('number');
-  const [bankUpgradeOpen, setBankUpgradeOpen] = useState(false);
-  const [bankUpgradeStep, setBankUpgradeStep] = useState<'bvn' | 'nin' | 'selfie'>('bvn');
+  const [scanning, setScanning] = useState(false); // selfie liveness ring running
+  const spin = useRef(new Animated.Value(0)).current;
 
   const load = useCallback(async () => {
     const t = await getToken();
-    if (!t) { setLoaded(true); return; }
+    if (!t) return;
     setToken(t);
     try {
-      const res = await apiJson('/api/kyc/status/');
+      const res = await kycService.getStatus();
       if (res.success) setStatus(res);
     } catch { /* keep */ }
-    finally { setLoaded(true); }
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
-  // Leaving the screen stops the loop. Without this it keeps polling - and calling
-  // setState - against a component nobody is looking at any more.
-  useEffect(() => () => { faceSession.current = ''; }, []);
 
-  const submit = async (path: string, body: object, label: string) => {
+  // Return to the method menu and clear any in-flight sub-flow state.
+  const goMenu = () => {
+    setMethod('menu');
+    setBvnSent(false);
+    setScanning(false);
+    setBusy(false);
+    spin.stopAnimation();
+  };
+  const onBack = method === 'menu' ? () => router.back() : goMenu;
+
+  // Shared submit: on success update tier status, toast the design copy, reset
+  // the sub-flow fields and bounce back to the menu.
+  const submit = async (call: () => Promise<KycStatus>, successTitle: string) => {
     setBusy(true);
     try {
-      const res = await apiJson(path, body);
-      if (res.success) { setStatus(res); notify('Success', `${label} verified`); }
-      else notify('Error', res.message || `${label} verification failed`);
+      const res = await call();
+      if (res.success) {
+        setStatus(res);
+        notify(successTitle, undefined, 'success');
+        setBvn(''); setBvnOtp(''); setBvnSent(false);
+        setNin(''); setNinImage('');
+        setMethod('menu');
+      } else notify('Error', res.message || 'Verification failed');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
 
-  const openIdentityFlow = (kind: 'bvn' | 'nin') => {
-    if ((kind === 'bvn' && status?.bvn_verified) || (kind === 'nin' && status?.nin_verified)) {
-      notify('Already verified', `${kind.toUpperCase()} is already verified on this account.`);
-      load();
-      return;
-    }
-    if (status?.has_wema_account && status?.bank_upgrade_required) {
-      setBankUpgradeOpen(true);
-      setBankUpgradeStep(kind);
-      return;
-    }
-    setIdentityFlow(kind);
-    setIdentityStep(kind === 'bvn' && bvnSent ? 'otp' : kind === 'nin' && ninSent ? 'otp' : 'number');
-  };
-
-  const closeIdentityFlow = () => {
-    setIdentityFlow(null);
-    setIdentityStep('number');
-  };
-
-  const resetIdentityFlow = (kind: 'bvn' | 'nin') => {
-    if (kind === 'bvn') {
-      setBvnSent(false);
-      setBvnTrackingId('');
-      setBvnOtp('');
-    } else {
-      setNinSent(false);
-      setNinTrackingId('');
-      setNinOtp('');
-    }
-    setIdentityStep('number');
-  };
-
-  // Wema validates the BVN or NIN used to create the customer's bank account.
-  // The opaque tracking ID binds the OTP to that identity on the server; do not
-  // send a raw BVN/NIN again when the code is confirmed.
+  // --- BVN: enter number -> we send a one-time code -> confirm it ---
   const startBvn = async () => {
     setBusy(true);
     try {
-      const res = await apiJson('/api/wallet/wema/create/', { bvn });
-      if (res.success && res.tracking_id) {
-        if ((res.otp_destination_kind || 'bvn').toLowerCase() !== 'bvn') {
-          notify('Verification mismatch', 'Wema returned a non-BVN challenge. Please start again.');
-          return;
-        }
-        setBvnTrackingId(String(res.tracking_id));
-        setBvnDelivery(res.otp_destination || '');
-        setBvnSent(true);
-        setIdentityStep('otp');
-        notify('Wema OTP sent', res.message || 'Enter the code Wema sent to the phone registered on your BVN.');
-      } else if (res.success) {
-        await load();
-        if (res.bvn_verified || res.upgraded) {
-          notify('Success', res.message || 'BVN verified with Wema.');
-        } else {
-          notify('Account already set up', res.message || 'Your Wema account is already set up.');
-        }
-      } else notify('Error', res.message || 'Could not start Wema BVN verification');
+      const res = await kycService.startBvn(bvn);
+      if (res.success) { setBvnSent(true); notify('Code sent to your BVN phone', undefined, 'success'); }
+      else notify('Error', res.message || 'Could not start BVN verification');
     } catch { notify('Error', 'Something went wrong.'); }
     finally { setBusy(false); }
   };
+  const confirmBvn = () => submit(() => kycService.confirmBvn(bvnOtp), 'BVN verified — tier upgraded');
 
-  const startNin = async () => {
-    setBusy(true);
-    try {
-      const res = await apiJson('/api/wallet/wema/create/', { nin });
-      if (res.success && res.tracking_id) {
-        if ((res.otp_destination_kind || 'nin').toLowerCase() !== 'nin') {
-          notify('Verification mismatch', 'Wema returned a non-NIN challenge. Please start again.');
-          return;
-        }
-        setNinTrackingId(String(res.tracking_id));
-        setNinDelivery(res.otp_destination || '');
-        setNinSent(true);
-        setIdentityStep('otp');
-        notify('Wema OTP sent', res.message || 'Enter the code Wema sent to the phone registered on your NIN.');
-      } else if (res.success) {
-        await load();
-        if (res.nin_verified || res.upgraded) {
-          notify('Success', res.message || 'NIN verified with Wema.');
-        } else {
-          notify('Account already set up', res.message || 'Your Wema account is already set up.');
-        }
-      } else notify('Error', res.message || 'Could not start Wema NIN verification');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
-  };
-  const confirmNin = async () => {
-    setBusy(true);
-    try {
-      const res = await apiJson('/api/wallet/wema/verify-otp/', { otp: ninOtp, tracking_id: ninTrackingId });
-      if (res.success) {
-        await load();
-        setNinSent(false);
-        setNinTrackingId('');
-        setNin('');
-        setNinOtp('');
-        closeIdentityFlow();
-        notify('Success', 'NIN verified with Wema');
-      } else notify('Error', res.message || 'Incorrect Wema code');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
-  };
-  const confirmBvn = async () => {
-    setBusy(true);
-    try {
-      const res = await apiJson('/api/wallet/wema/verify-otp/', { otp: bvnOtp, tracking_id: bvnTrackingId });
-      if (res.success) {
-        await load();
-        setBvnSent(false);
-        setBvnTrackingId('');
-        setBvn('');
-        setBvnOtp('');
-        closeIdentityFlow();
-        notify('Success', 'BVN verified with Wema');
-      } else notify('Error', res.message || 'Incorrect Wema code');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
-  };
-
-  const resendWemaOtp = async (kind: 'bvn' | 'nin') => {
-    const trackingId = kind === 'bvn' ? bvnTrackingId : ninTrackingId;
-    if (!trackingId) {
-      notify('Start again', `Enter your ${kind.toUpperCase()} again so Wema can send a fresh code.`);
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await apiJson('/api/wallet/wema/resend-otp/', { tracking_id: trackingId });
-      if (res.success) {
-        const destination = res.otp_destination || '';
-        if (kind === 'bvn') setBvnDelivery(destination);
-        else setNinDelivery(destination);
-        // A resend goes back to the SAME registered line - it cannot be redirected
-        // to the phone in the customer's hand. Promising "a new code to your phone"
-        // is what keeps someone tapping resend instead of taking the face route.
-        notify('Wema OTP resent', res.message
-          || `Wema sent a new code to the phone registered on your ${kind.toUpperCase()}.`);
-      } else notify('Error', res.message || 'Could not resend the Wema code');
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
-  };
-
-  // --- Generic photo picker (NIN slip / ID document / proof of address) ---
-  //
-  // `crop` is opt-IN. It used to be forced on for every document, and the crop UI
-  // imposes an aspect ratio: on a full-page utility bill that means the customer
-  // trims their own proof of address, and the line the verifier is looking for -
-  // the address - is one of the things most easily trimmed off. Nothing here
-  // needs a squared-off image, so nothing here asks for one by default.
-  const pickImage = async (set: (b64: string) => void, crop = false) => {
+  // --- NIN: number + a photo of the NIN slip ---
+  const pickNinSlip = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your document.'); return; }
+    if (!perm.granted) { notify('Photos needed', 'Allow photo access to upload your NIN slip.'); return; }
     beginExternalActivity(); // don't let the app-lock fire while the picker is up
     try {
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.25, allowsEditing: crop,
+        mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.4, allowsEditing: true,
       });
       if (res.canceled || !res.assets?.[0]?.base64) return;
-      if (res.assets[0].base64.length > MAX_IMAGE_BASE64) {
-        notify('Image too large', 'Choose a photo under 2 MB.');
-        return;
-      }
-      set(res.assets[0].base64);
+      setNinImage(res.assets[0].base64);
     } finally { endExternalActivity(); }
   };
-  // --- PDF picker (proof of address) ---
-  //
-  // A bank statement or utility bill arrives as a PDF far more often than as a
-  // photo - it is emailed, not photographed - and the photo picker cannot see one.
-  //
-  // Kept SEPARATE from the image path rather than merged into one file browser,
-  // because the two need different handling: ImagePicker re-encodes a photo at
-  // quality 0.25, which is what keeps a phone camera's 4MB original under the
-  // upload cap. A document browser hands back the bytes as they are, so routing
-  // photos through it would start rejecting exactly the uploads that work today.
-  const pickPdf = async (set: (b64: string) => void) => {
-    beginExternalActivity();
+  const verifyNin = () => submit(() => kycService.verifyNin(nin, ninImage), 'NIN submitted for review');
+
+  // --- Selfie: a real captured image for server-side liveness (NOT device
+  // Face ID — KYC must match a face, which the device unlock can't prove). ---
+  const captureSelfie = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) { notify('Camera needed', 'Allow camera access so we can verify your identity.'); return; }
+    beginExternalActivity(); // keep the app-lock from firing while the camera is up
+    let shot;
     try {
-      const res = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf', copyToCacheDirectory: true, multiple: false,
+      shot = await ImagePicker.launchCameraAsync({
+        cameraType: ImagePicker.CameraType.front, base64: true, quality: 0.4, allowsEditing: false,
       });
-      if (res.canceled || !res.assets?.[0]?.uri) return;
-      const asset = res.assets[0];
-      // Checked before reading, not after: base64 of the file is ~1.37x its size,
-      // and there is no reason to pull a 20MB statement into memory to find that
-      // out.
-      if (typeof asset.size === 'number' && asset.size * 1.37 > MAX_IMAGE_BASE64) {
-        notify('File too large', 'Choose a PDF under 2 MB.');
-        return;
-      }
-      const FS = await import('expo-file-system/legacy');
-      const b64 = await FS.readAsStringAsync(asset.uri, { encoding: 'base64' });
-      if (b64.length > MAX_IMAGE_BASE64) {
-        notify('File too large', 'Choose a PDF under 2 MB.');
-        return;
-      }
-      set(b64);
-    } catch {
-      notify('Could not read that file', 'Try another file, or upload a photo instead.');
     } finally { endExternalActivity(); }
+    if (shot.canceled || !shot.assets?.[0]?.base64) return;
+    const selfie = shot.assets[0].base64;
+    submit(() => kycService.verifyFace(selfie), 'Selfie verified — liveness passed');
   };
-
-  // --- Face check, bank rail: the BANK runs liveness in its own hosted verifier.
-  //
-  // We open it, and that is all we do. The result never comes back through the
-  // browser - the bank POSTs it to our server, which is the only version an app
-  // cannot fake by driving its own WebView. So the flow is: start (server mints a
-  // one-time session), open, then poll our own API until the server says verified.
-  //
-  // The identity number is asked for again rather than reused, because we keep only
-  // a keyed hash of it: the raw BVN/NIN is sent to the bank and dropped. Retyping
-  // eleven digits is the cost of not storing them.
-  const verifyFaceWithBank = async (kind: 'bvn' | 'nin', identityValue: string) => {
-    const raw = identityValue.trim();
-    if (raw.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN or NIN.'); return; }
-    // The bank's face verification page requests device location as part of its
-    // liveness check. Ask for permission up front so the OS prompt appears here,
-    // in context, rather than interrupting the face scan mid-capture.
-    await Location.requestForegroundPermissionsAsync();
-    setBusy(true);
-    let started: { url: string; session: string } | null = null;
-    try {
-      // prefer_face, because reaching this function is never incidental: it is
-      // behind "No longer using that number? Verify with face instead". Without
-      // the flag the server answers an identity that already has a live attempt
-      // with "enter the code we already sent" — which is the exact dead end this
-      // button exists to open, restated, for the one customer it cannot help.
-      const res = await apiJson('/api/kyc/face/start/',
-        kind === 'bvn' ? { bvn: raw, prefer_face: true } : { nin: raw, prefer_face: true });
-      if (res.success && res.status === 'account_otp_pending' && res.tracking_id) {
-        if (kind === 'bvn') {
-          setBvnTrackingId(String(res.tracking_id));
-          setBvnDelivery(res.otp_destination || '');
-          setBvnSent(true);
-        } else {
-          setNinTrackingId(String(res.tracking_id));
-          setNinDelivery(res.otp_destination || '');
-          setNinSent(true);
-        }
-        setIdentityStep('otp');
-        notify('SMS already sent', res.message || 'Enter the Wema SMS code already sent to finish creating your account.');
-        return;
-      }
-      if (res.success && res.status === 'verified') {
-        setStatus(res);
-        if (res.account_number || res.has_wema_account) {
-          closeIdentityFlow();
-          notify('Already verified', `${kind.toUpperCase()} is already verified.`);
-        } else {
-          notify('Identity verified', res.message || 'Your identity is verified. Continue account setup to get your account number.');
-        }
-        return;
-      }
-      if (!res.success || !res.url) {
-        notify('Not available', res.message || 'Face verification is unavailable right now.');
-        return;
-      }
-      started = { url: res.url, session: res.session };
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally {
-      // Released here, not after the check. The poll below runs for as long as the
-      // bank's session lives, and holding `busy` across it would disable every other
-      // button on this screen for twenty minutes.
-      setBusy(false);
-    }
-    if (!started) return;
-    faceIdentityKind.current = kind;
-    // Cleared per attempt: a retry after a closed sheet would otherwise start out
-    // already past its grace window and give up on the first tick.
-    faceDismissedAt.current = 0;
-    faceSession.current = started.session;
-    setFaceUrl(started.url);
-    // Polled alongside the sheet, never in place of it. The result arrives on our
-    // server from the bank, so nothing the page does tells us the answer - and the
-    // customer closing the sheet proves nothing either way.
-    pollFace(started.session);
+  // Show a visible liveness ring (~2.3s spin) THEN open the front camera.
+  const runSelfie = () => {
+    if (scanning || busy) return;
+    setScanning(true);
+    spin.setValue(0);
+    Animated.loop(Animated.timing(spin, { toValue: 1, duration: 1000, easing: Easing.linear, useNativeDriver: true })).start();
+    setTimeout(() => {
+      spin.stopAnimation();
+      setScanning(false);
+      captureSelfie();
+    }, 2300);
   };
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
-  /** Stop polling and take the sheet down. Safe to call twice. */
-  const closeFace = useCallback(() => {
-    faceSession.current = '';
-    setFaceUrl('');
-    setFacePolling(false);
-  }, []);
+  // ---- pieces shared by every sub-flow ----
+  const Hero = ({ icon, color, title, sub }: { icon: string; color: string; title: string; sub: string }) => (
+    <View style={{ alignItems: 'center', paddingHorizontal: 8, paddingTop: 4 }}>
+      <View style={{ width: 80, height: 80, borderRadius: 24, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
+        <ZIcon name={icon} size={38} color={color} stroke={1.9} />
+      </View>
+      <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1, marginTop: 14 }}>{title}</Text>
+      <Text style={{ fontSize: 13.5, color: c.ink3, marginTop: 6, lineHeight: 20, textAlign: 'center', maxWidth: 300, fontFamily: font.regular }}>{sub}</Text>
+    </View>
+  );
 
-  /** The customer closing the sheet themselves.
-   *
-   * The sheet comes down, but the POLL KEEPS RUNNING: they may well have finished
-   * the check a second before closing, and the bank's callback can still be in
-   * flight. Cancelling on close and reading the status once would race it - and
-   * lose, often enough - leaving somebody who passed looking at an unverified
-   * screen.
-   *
-   * It no longer runs to the full session deadline, though. Closing the sheet is
-   * also what someone does when the BANK'S page failed - it shows its own error card
-   * in there, which we cannot see from out here - and for them every extra minute of
-   * polling is a minute the retry button stays disabled reading "Waiting for Wema...".
-   * So the poll gets a grace window from here and then says what happened.
-   */
-  const dismissFace = () => {
-    faceDismissedAt.current = Date.now();
-    setFaceUrl('');
-    load();
-  };
+  const Footer = () => (
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 18 }}>
+      <ZIcon name="lock" size={13} color={c.ink3} />
+      <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.regular }}>BVN/NIN are never stored in full.</Text>
+    </View>
+  );
 
-  /** No verdict is coming: stop, release the button, and say what to do next.
-   *
-   * The important part is the second sentence. This lands when the bank never
-   * answered at all, and "nothing happened" reads as the app being broken - while
-   * the SMS code sitting on the screen behind it is still perfectly good.
-   */
-  const faceGaveNoResult = useCallback(() => {
-    const kind = faceIdentityKind.current.toUpperCase();
-    closeFace();
-    notify('Not verified',
-           `Wema didn't send a result, so your ${kind} isn't verified yet. `
-           + 'Enter the code they sent by SMS, or try the face check again.');
-  }, [closeFace]);
-
-  const pollFace = async (session: string) => {
-    setFacePolling(true);
-    // Poll for as long as the SERVER's session can still be completed. The first
-    // version gave up after a minute and then closed the sheet - which pulled the
-    // bank's page away mid-capture, because reading the instructions, granting the
-    // camera and positioning a face takes longer than sixty seconds. Nothing here
-    // may close the sheet on a timer; only a verdict or the customer does that.
-    const deadline = Date.now() + FACE_SESSION_MAX_MS;
-    const startedAt = Date.now();
-    try {
-      while (faceSession.current === session && Date.now() < deadline) {
-        // Tight at first, then slow down. A flat 3s for twenty minutes is 400
-        // requests against a 120-per-600s limit, so the poll would start getting
-        // 429s - which this loop cannot tell apart from "not verified yet", and
-        // would sit through in silence. The check itself takes a minute or two, so
-        // the fast window is where it actually pays.
-        const elapsed = Date.now() - startedAt;
-        await new Promise((r) => setTimeout(r, elapsed < 60_000 ? 3000 : 10_000));
-        // Re-checked after the wait: the customer may have closed the sheet, or
-        // started a second attempt, while we were sleeping.
-        if (faceSession.current !== session) return;
-        let res;
-        try {
-          res = await apiJson('/api/kyc/face/status/', { session });
-        } catch {
-          continue; // a dropped request is not a failed check
-        }
-        if (res.status === 'verified') {
-          const kind = faceIdentityKind.current;
-          setStatus(res);
-          if (kind === 'bvn') setBvn('');
-          else setNin('');
-          closeIdentityFlow();
-          closeFace();
-          notify('Success', `${kind.toUpperCase()} verified by Wema face check`);
-          return;
-        }
-        if (res.status === 'failed' || res.status === 'expired') {
-          closeFace();
-          notify('Not verified', 'The face check did not complete. You can try again.');
-          return;
-        }
-        // Checked AFTER the status read above, never before it: that read is the
-        // last chance for a callback that landed while the sheet was closing, and
-        // giving up without it would throw away a verification we already have.
-        const dismissedAt = faceDismissedAt.current;
-        if (dismissedAt && Date.now() - dismissedAt > FACE_DISMISS_GRACE_MS) {
-          return faceGaveNoResult();
-        }
-      }
-      // Fell out of the loop on the session deadline with no verdict - the bank
-      // never answered. This used to end in silence, leaving the customer looking
-      // at an unverified screen with nothing to act on.
-      if (faceSession.current === session) faceGaveNoResult();
-    } finally {
-      setFacePolling(false);
-    }
-  };
-
-  // --- Tier-2 selfie: a real captured image for Prembly liveness (NOT device
-  // Face ID - KYC must match a face, which the device unlock can't prove).
-  // Captured through FaceLivenessModal's live camera + face guide, not a
-  // gallery-style picker - the on-device face check there is UX only, the
-  // actual liveness verdict is still Prembly's, decided on this same photo. ---
-  const [faceCaptureOpen, setFaceCaptureOpen] = useState(false);
-
-  const onBankUpgradeSelfie = async (base64: string) => {
-    setFaceCaptureOpen(false);
-    if (base64.length > MAX_IMAGE_BASE64) {
-      notify('Image too large', 'Retake the photo at a lower device resolution.');
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await apiJson('/api/wallet/wema/upgrade-tier2/', { bvn, nin, live_image: base64 });
-      if (res.success) {
-        await load();
-        setBvn('');
-        setNin('');
-        setBankUpgradeOpen(false);
-        setBankUpgradeStep('bvn');
-        notify('Success', res.message || 'Bank identity upgrade complete');
-      } else {
-        notify('Error', res.message || 'Wema could not complete the bank upgrade.');
-      }
-    } catch { notify('Error', 'Something went wrong.'); }
-    finally { setBusy(false); }
-  };
-
-  if (bankUpgradeOpen) {
-    const isBvn = bankUpgradeStep === 'bvn';
-    return (
-      <Screen>
-        <Header title="Bank Tier 2" sub="Prembly checks liveness, then Wema upgrades the account" onBack={() => { setBankUpgradeOpen(false); setBankUpgradeStep('bvn'); }} />
-        <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
-          <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
-            <ZIcon name={isBvn ? 'bank' : bankUpgradeStep === 'nin' ? 'user' : 'faceid'} size={24} color={c.brand} stroke={2} />
-          </View>
-          {bankUpgradeStep === 'selfie' ? (
-            <>
-              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>Live selfie</Text>
-              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Prembly first confirms this is a live face. After it passes, the same image is sent with your BVN and NIN to Wema for the Tier 2 upgrade.
-              </Text>
-              <Btn label="Take selfie and submit" icon="faceid" size="md" disabled={busy} onPress={() => setFaceCaptureOpen(true)} />
-              <FaceLivenessModal visible={faceCaptureOpen} onClose={() => setFaceCaptureOpen(false)} onCapture={onBankUpgradeSelfie} />
-            </>
-          ) : (
-            <>
-              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{isBvn ? 'Enter BVN' : 'Enter NIN'}</Text>
-              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Existing Wema accounts use a combined upgrade check, so there is no separate OTP screen for this step.
-              </Text>
-              <Field value={isBvn ? bvn : nin} onChangeText={(v) => (isBvn ? setBvn : setNin)(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
-              <View style={{ height: 14 }} />
-              <Btn label="Next" size="md" disabled={busy || (isBvn ? bvn : nin).length !== 11} onPress={() => setBankUpgradeStep(isBvn ? 'nin' : 'selfie')} />
-            </>
-          )}
+  const MethodCard = ({ id, icon, color, title, sub, badge, done }: { id: Method; icon: string; color: string; title: string; sub: string; badge?: string; done?: boolean }) => (
+    <Tap onPress={() => setMethod(id)} style={{ marginTop: 12 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 13, padding: 15, borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, ...cardShadow }}>
+        <View style={{ width: 46, height: 46, borderRadius: 13, backgroundColor: color + '22', alignItems: 'center', justifyContent: 'center' }}>
+          <ZIcon name={icon} size={22} color={color} stroke={1.9} />
         </View>
-      </Screen>
-    );
-  }
-
-  if (identityFlow) {
-    const isBvn = identityFlow === 'bvn';
-    const title = isBvn ? 'Verify BVN' : 'Verify NIN';
-    const value = isBvn ? bvn : nin;
-    const otp = isBvn ? bvnOtp : ninOtp;
-    const sent = isBvn ? bvnSent : ninSent;
-    const delivery = isBvn ? bvnDelivery : ninDelivery;
-    const setValue = isBvn ? setBvn : setNin;
-    const setOtp = isBvn ? setBvnOtp : setNinOtp;
-    const start = isBvn ? startBvn : startNin;
-    const confirm = isBvn ? confirmBvn : confirmNin;
-
-    return (
-      <Screen>
-        <Header title={title} sub={`Code to your ${isBvn ? 'BVN' : 'NIN'} phone, or a face check instead`} onBack={closeIdentityFlow} />
-
-        <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 18, padding: 18, marginTop: 8 }}>
-          <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: 'rgba(15,162,149,.14)', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
-            <ZIcon name={isBvn ? 'bank' : 'user'} size={24} color={c.brand} stroke={2} />
-          </View>
-
-          {identityStep === 'number' ? (
-            <>
-              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>{title}</Text>
-              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                Enter your 11-digit {isBvn ? 'BVN' : 'NIN'}. Wema checks it against{' '}
-                {isBvn ? 'the BVN register' : 'NIMC'} and then sends a consent code by SMS to the
-                phone number registered on {isBvn ? 'that BVN' : 'that NIN'} - which may not be the
-                number you use with Zitch. Zitch does not store the raw number.
-              </Text>
-              <Field value={value} onChangeText={(v) => setValue(v.replace(/\D/g, '').slice(0, 11))} keyboardType="number-pad" placeholder={`Enter 11-digit ${isBvn ? 'BVN' : 'NIN'}`} />
-              <View style={{ height: 14 }} />
-              <Btn label={`Send code to my ${isBvn ? 'BVN' : 'NIN'} phone`} size="md" disabled={busy || value.length !== 11} onPress={start} />
-
-              {/* Offered BEFORE the code is requested, not only after it fails to
-                  arrive. The SMS lands on the register's line, and for a NIN that
-                  is an enrolment-era number often enough that making people fail
-                  first is a design choice, not a necessity. Wema's own face check
-                  is a documented no-OTP route to the same Tier 1 - it matches the
-                  customer against the photo on the record instead of texting a
-                  number they may no longer hold. */}
-              {status?.identity_face_available ? (
-                <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
-                  <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
-                    No longer using that number?
-                  </Text>
-                  <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4, marginBottom: 12 }}>
-                    Verify with a face check instead - no SMS code at all. Wema matches you
-                    against the photo on your {isBvn ? 'BVN' : 'NIN'} record. Your face is never
-                    sent to or stored by Zitch.
-                  </Text>
-                  <Btn label={facePolling ? 'Waiting for Wema...' : 'Verify with face instead'}
-                    icon="faceid" variant="outline" size="md"
-                    disabled={busy || facePolling || value.length !== 11}
-                    onPress={() => verifyFaceWithBank(identityFlow, value)} />
-                </View>
-              ) : null}
-</>
-          ) : (
-            <>
-              <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 19 }}>
-                Enter {isBvn ? 'BVN' : 'NIN'} verification code
-              </Text>
-              <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 13.5, lineHeight: 20, marginTop: 6, marginBottom: 16 }}>
-                {/* `delivery` is only ever a number the BANK returned. Falling back to
-                    "your registered phone" read as the Zitch number and was the whole
-                    complaint: a NIN step that looks like it is asking for a code sent
-                    somewhere the customer never sees. Name the RECORD instead. */}
-                Enter the code Wema sent to {delivery
-                  ? delivery
-                  : `the phone number registered on your ${isBvn ? 'BVN' : 'NIN'}`}.
-              </Text>
-              <Field
-                value={otp}
-                onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 6))}
-                keyboardType="number-pad"
-                placeholder={`6-digit ${isBvn ? 'BVN' : 'NIN'} code`}
-              />
-              <View style={{ height: 14 }} />
-              <Btn label={`Confirm ${isBvn ? 'BVN' : 'NIN'} with Wema`} size="md" disabled={busy || otp.length !== 6 || !sent} onPress={confirm} />
-              <Text onPress={() => resendWemaOtp(identityFlow)} style={{ textAlign: 'center', marginTop: 14, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
-
-              <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 18, paddingTop: 16 }}>
-                <Text style={{ fontFamily: font.semibold, color: c.ink1, fontSize: 14 }}>
-                  Already started by SMS
-                </Text>
-                <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 4 }}>
-                  Finish this code step to create the Wema account. Face verification is available before SMS is requested, but it cannot replace an account request that Wema already opened.
-                </Text>
-              </View>
-
-              <Text onPress={() => resetIdentityFlow(identityFlow)} style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: c.ink3, fontFamily: font.semibold }}>Use a different {isBvn ? 'BVN' : 'NIN'}</Text>
-            </>
-          )}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.ink1 }}>{title}</Text>
+          <Text style={{ fontSize: 12.5, color: done ? c.lime : c.ink3, marginTop: 1, fontFamily: font.regular }}>{done ? 'Verified' : sub}</Text>
         </View>
-        {/* Rendered once for the whole screen rather than inside the number step,
-            so the sheet still has a host when the face route starts from the code
-            step. Two copies would fight over the same `faceUrl`. */}
-        <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={dismissFace} />
-      </Screen>
-    );
-  }
+        {done ? (
+          <ZIcon name="check" size={20} color={c.lime} stroke={2.6} />
+        ) : badge ? (
+          <View style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999, backgroundColor: 'rgba(15,162,149,.14)' }}>
+            <Text style={{ fontSize: 10, fontFamily: font.bold, color: C_BVN }}>{badge}</Text>
+          </View>
+        ) : (
+          <ZIcon name="right" size={18} color={c.ink3} />
+        )}
+      </View>
+    </Tap>
+  );
 
   return (
     <Screen>
-      <Header title="Verify identity" sub="Zitch and partner-bank limits are separate" onBack={() => router.back()} />
+      <Header title="Identity verification" onBack={onBack} />
 
-      {!status && !loaded ? (
-        // Every card and row below reads `status?....`, so before the first fetch
-        // resolves this screen would otherwise render as a near-empty page (the
-        // two summary cards are gated on `status` entirely, and every KycRow
-        // would flash "not verified" for steps that are actually done) and then
-        // visibly pop in a beat later. Show a spinner instead of that flash.
-        // Gated on `!loaded` too (not just `!status`): if the fetch settles
-        // without a token/session, `status` stays null forever and this must
-        // fall through to the real content below rather than spin forever.
-        <View style={{ alignItems: 'center', paddingTop: 60 }}>
-          <Loading full={false} label="Loading your verification status…" />
-        </View>
-      ) : (
-      <>
-      {status && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginBottom: 4 }}>
-          <View>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Zitch verification level</Text>
-            <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}{status.tier_name ? ` · ${status.tier_name}` : ''}</Text>
-          </View>
-          <View style={{ alignItems: 'flex-end' }}>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
-            <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{money(Number(status.transaction_limit))}</Text>
-          </View>
+      {method === 'menu' && (
+        <View>
+          <Text style={{ fontSize: 13.5, color: c.ink3, lineHeight: 20, marginBottom: 6, fontFamily: font.regular }}>
+            Verify your identity to raise your limits and unlock every Zitch feature.
+          </Text>
+
+          {status && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: c.surface3, borderRadius: 16, padding: 16, marginTop: 12 }}>
+              <View>
+                <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Current tier</Text>
+                <Text style={{ fontSize: 20, fontFamily: font.extrabold, color: c.ink1 }}>Tier {status.tier}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>Per-transaction limit</Text>
+                <Text style={{ fontSize: 16, fontFamily: font.bold, color: c.brand, fontVariant: ['tabular-nums'] }}>{money(Number(status.transaction_limit))}</Text>
+              </View>
+            </View>
+          )}
+
+          <MethodCard id="bvn" icon="insurance" color={C_BVN} title="BVN verification" sub="Fastest · Bank Verification Number" badge="Recommended" done={!!status?.bvn_verified} />
+          <MethodCard id="nin" icon="card" color={C_NIN} title="NIN verification" sub="National ID number + photo of your slip" done={!!status?.nin_verified} />
+          <MethodCard id="selfie" icon="user" color={C_SELFIE} title="Selfie verification" sub="Quick liveness check with your camera" done={!!status?.face_verified} />
+          <Footer />
         </View>
       )}
 
-      {status && (
-        <View style={{ backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, borderRadius: 16, padding: 16, marginTop: 10, marginBottom: 2 }}>
-          <Text style={{ fontFamily: font.bold, color: c.ink1, fontSize: 14.5 }}>
-            Partner bank account tier {status.bank_tier ? status.bank_tier : 'not yet synced'}
-          </Text>
-          {status.bank_tier === 1 && (
-            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
-              Single inflow ₦50,000 · daily spend ₦30,000 · maximum balance ₦300,000.
-            </Text>
-          )}
-          {status.bank_tier === 2 && (
-            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
-              Single inflow ₦100,000 · daily spend ₦100,000 · maximum balance ₦500,000.
-            </Text>
-          )}
-          {status.bank_tier === 3 && (
-            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
-              No bank tier inflow, daily-spend or balance cap.
-            </Text>
-          )}
-          {!status.bank_tier && (
-            <Text style={{ fontFamily: font.regular, color: c.ink3, fontSize: 12.5, lineHeight: 19, marginTop: 6 }}>
-              Set up your funding account to read its bank tier. Until it syncs, assume Tier 1 limits.
-            </Text>
-          )}
+      {method === 'bvn' && !bvnSent && (
+        <View>
+          <Hero icon="insurance" color={C_BVN} title="BVN verification" sub="Enter your 11-digit BVN. We'll send a code to the phone number linked to it." />
+          <View style={{ marginTop: 22 }}>
+            <Field label="Bank Verification Number (BVN)" placeholder="Enter your 11-digit BVN" keyboardType="number-pad" value={bvn} onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="insurance" size={18} color={c.ink3} />} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <ZIcon name="help" size={14} color={c.amber} />
+              <Text style={{ flex: 1, color: c.ink3, fontSize: 12.5, fontFamily: font.regular }}>Dial *565*0# on your registered line to get your BVN.</Text>
+            </View>
+            <View style={{ height: 22 }} />
+            <Btn label={busy ? 'Sending code…' : 'Send verification code'} disabled={busy || bvn.length !== 11} onPress={startBvn} />
+          </View>
+          <Footer />
         </View>
       )}
 
-      {status && !status.email_verified ? (
-        <KycRow icon="mail" title="Confirm your email"
-          sub={status.email
-            ? `We'll send a code to ${status.email} - ${status.email_verification_required ? 'required before identity verification' : 'required to reach Tier 1'}`
-            : 'Add and confirm an email - required to reach Tier 1'}
-          done={false}>
-          {/* Tier 1 requires a verified email for every account. For chat-onboarded
-              accounts the identity steps below are additionally closed server-side
-              until it's confirmed, so surfacing it first saves a confusing 403. */}
-          {!emailOtpSent ? (
-            <>
-              {!status.email ? (
-                <>
-                  <Field value={emailAddr} onChangeText={setEmailAddr} keyboardType="email-address" autoCapitalize="none" placeholder="you@example.com" />
-                  <View style={{ height: 10 }} />
-                </>
-              ) : null}
-              <Btn label="Send code" size="md" disabled={busy || (!status.email && !emailAddr.includes('@'))}
-                onPress={async () => {
-                  setBusy(true);
-                  try {
-                    const res = await apiJson('/api/email/verify/start/', emailAddr ? { email: emailAddr.trim() } : {});
-                    if (res.success) { setEmailOtpSent(true); notify('Code sent', res.message || 'Check your inbox.'); }
-                    else notify('Error', res.message || 'Could not send the code');
-                  } catch { notify('Error', 'Something went wrong.'); }
-                  finally { setBusy(false); }
-                }} />
-            </>
-          ) : (
-            <>
-              <Field value={emailOtp} onChangeText={(v) => setEmailOtp(v.replace(/\D/g, '').slice(0, 6))} keyboardType="number-pad" placeholder="6-digit code from the email" />
-              <View style={{ height: 10 }} />
-              <Btn label="Confirm email" size="md" disabled={busy || emailOtp.length !== 6}
-                onPress={() => submit('/api/email/verify/confirm/', { otp: emailOtp }, 'Email')} />
-              <Text onPress={() => setEmailOtpSent(false)} style={{ textAlign: 'center', marginTop: 10, fontSize: 13, color: c.brand, fontFamily: font.semibold }}>Resend code</Text>
-            </>
-          )}
-        </KycRow>
-      ) : null}
-
-      <KycRow icon="bank" title="BVN"
-        sub={status?.bvn_verified ? "Verified once and locked to this account" : "Wema will send a code to verify it"}
-        done={!!status?.bvn_verified}>
-        {!status?.bvn_verified ? (
-          <Btn label={bvnSent ? 'Enter BVN OTP' : 'Verify BVN'} size="md" disabled={busy} onPress={() => openIdentityFlow('bvn')} />
-        ) : null}
-      </KycRow>
-
-      <KycRow
-        icon="user"
-        title="NIN"
-        sub={
-          status?.nin_verified
-            ? 'Verified once and locked to this account'
-            : status?.bvn_verified && !status?.has_wema_account
-              ? 'Your BVN is verified. Use NIN to issue the account number if Wema has not returned the BVN account.'
-              : status?.has_wema_account
-                ? 'Wema verifies NIN in the combined Tier 2 upgrade, not with a separate OTP'
-                : 'Wema will send an SMS code when NIN is used to create the account'
-        }
-        done={!!status?.nin_verified}
-      >
-        {!status?.nin_verified ? (
-          <Btn
-            label={ninSent ? 'Enter NIN OTP' : status?.bvn_verified && !status?.has_wema_account ? 'Create account with NIN' : 'Verify NIN'}
-            size="md"
-            disabled={busy}
-            onPress={() => openIdentityFlow('nin')}
-          />
-        ) : null}
-      </KycRow>
-
-      <KycRow icon="faceid" title="Tier 2 Face ID"
-        sub="Prembly liveness + Wema account upgrade" done={!!status?.face_verified}>
-        <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 10, fontFamily: font.regular, lineHeight: 19 }}>
-          {status?.bvn_verified
-            ? 'Your BVN is already verified and will not be requested again. The bank upgrade will become available when Wema supports verified-identity reuse.'
-            : 'Prembly Face ID checks that your selfie is live, then Wema receives it with both identities for the Tier 2 upgrade.'}
-        </Text>
-        <Btn
-          label={status?.bvn_verified ? 'BVN already verified' : 'Start Tier 2 upgrade'}
-          icon="faceid"
-          size="md"
-          variant="outline"
-          disabled={busy || !status?.has_wema_account || !!status?.bvn_verified}
-          onPress={() => { setBankUpgradeStep('bvn'); setBankUpgradeOpen(true); }}
-        />
-      </KycRow>
-
-      <KycRow icon="home"
-        title="Residential address"
-        sub={bankAddress ? 'Verified by your bank - unlocks Tier 2'
-                         : 'Address + proof of address - unlocks Tier 2'}
-        done={!!status?.address_verified}>
-        <Field value={address} onChangeText={setAddress} placeholder="Street address" />
-        <View style={{ height: 10 }} />
-        <View style={{ flexDirection: 'row', gap: 10 }}>
-          <View style={{ flex: 1 }}><Field value={city} onChangeText={setCity} placeholder="City / LGA" /></View>
-          {/* A closed list, not free text. "Lagos", "lagos", "Lagos State" and
-              "LAG" all used to arrive as different values for one place, and
-              every reader downstream - address verification, the compliance
-              export, anything grouping by region - had to guess which meant the
-              same thing. The sheet is searchable, so 37 entries stay a list you
-              type at rather than one you scroll. */}
-          <View style={{ flex: 1 }}>
-            <SelectRow compact placeholder="State" value={stateName} onPress={() => setStatePicker(true)} />
+      {method === 'bvn' && bvnSent && (
+        <View>
+          <Hero icon="insurance" color={C_BVN} title="Confirm your BVN" sub="Enter the 6-digit code we sent to the phone linked to your BVN." />
+          <View style={{ marginTop: 22 }}>
+            <Field label="Verification code" placeholder="6-digit code" keyboardType="number-pad" value={bvnOtp} onChangeText={(v) => setBvnOtp(v.replace(/\D/g, '').slice(0, 6))} prefix={<ZIcon name="lock" size={18} color={c.ink3} />} />
+            <Text onPress={() => { setBvnSent(false); setBvnOtp(''); }} style={{ fontSize: 12.5, color: c.brand, marginTop: 10, fontFamily: font.semibold }}>Change BVN</Text>
+            <View style={{ height: 22 }} />
+            <Btn label={busy ? 'Confirming…' : 'Confirm BVN'} disabled={busy || bvnOtp.length !== 6} onPress={confirmBvn} />
           </View>
+          <Footer />
         </View>
-        <PickerSheet
-          open={statePicker}
-          onClose={() => setStatePicker(false)}
-          title="State"
-          searchable
-          searchPlaceholder="Type a state"
-          emptyLabel="No Nigerian state matches that."
-          options={NIGERIAN_STATES.map((v) => ({ v, label: v }))}
-          value={stateName}
-          onPick={setStateName}
-        />
-        <View style={{ height: 10 }} />
-        {/* On the bank rail the document section is not merely optional - it is
-            absent. Wema verifies the address itself and lifts the NUBAN to its
-            Tier 3 on that; asking for a utility bill nobody reads would be
-            theatre, and a slow, 2 MB one at that. */}
-        {bankAddress ? (
-          <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular, lineHeight: 19 }}>
-            Your bank verifies this address directly - no document upload needed.
+      )}
+
+      {method === 'nin' && (
+        <View>
+          <Hero icon="card" color={C_NIN} title="NIN verification" sub="Enter your NIN and upload a clear photo of your NIN slip or ID card." />
+          <View style={{ marginTop: 22 }}>
+            <Field label="National Identification Number (NIN)" placeholder="Enter your 11-digit NIN" keyboardType="number-pad" value={nin} onChangeText={(v) => setNin(v.replace(/\D/g, '').slice(0, 11))} prefix={<ZIcon name="card" size={18} color={c.ink3} />} />
+            <View style={{ height: 12 }} />
+            <Tap onPress={pickNinSlip}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, borderWidth: 1.5, borderStyle: 'dashed', borderColor: ninImage ? C_BVN : c.line, backgroundColor: ninImage ? 'rgba(15,162,149,.08)' : c.surface2 }}>
+                <View style={{ width: 40, height: 40, borderRadius: 11, backgroundColor: ninImage ? 'rgba(15,162,149,.16)' : c.surface3, alignItems: 'center', justifyContent: 'center' }}>
+                  <ZIcon name={ninImage ? 'check' : 'plus'} size={20} color={ninImage ? C_BVN : c.ink3} stroke={2.4} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontFamily: font.semibold, color: c.ink1 }}>{ninImage ? 'NIN_slip.jpg' : 'Upload photo of your NIN slip / ID'}</Text>
+                  <Text style={{ fontSize: 12, color: c.ink3, marginTop: 1, fontFamily: font.regular }}>{ninImage ? 'Tap to replace' : 'JPG or PNG · max 5MB'}</Text>
+                </View>
+              </View>
+            </Tap>
+            <View style={{ height: 18 }} />
+            <Btn label={busy ? 'Verifying…' : 'Verify NIN'} disabled={busy || nin.length !== 11 || !ninImage} onPress={verifyNin} />
+          </View>
+          <Footer />
+        </View>
+      )}
+
+      {method === 'selfie' && (
+        <View>
+          <Hero icon="user" color={C_SELFIE} title="Selfie verification" sub="Hold your phone at eye level and keep your face inside the circle." />
+          <View style={{ alignItems: 'center', marginVertical: 22 }}>
+            <View style={{ width: 180, height: 180, borderRadius: 90, backgroundColor: c.surface2, borderWidth: 2, borderStyle: 'dashed', borderColor: '#8FDDD4', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+              <ZIcon name="user" size={92} color={c.ink3} stroke={1.5} />
+              {scanning && (
+                <Animated.View style={{ position: 'absolute', width: 180, height: 180, transform: [{ rotate }] }}>
+                  <Svg width={180} height={180} viewBox="0 0 180 180">
+                    <Circle cx={90} cy={90} r={84} fill="none" stroke="rgba(15,162,149,.20)" strokeWidth={4} />
+                    <Circle cx={90} cy={90} r={84} fill="none" stroke={C_BVN} strokeWidth={4} strokeLinecap="round" strokeDasharray="132 528" />
+                  </Svg>
+                </Animated.View>
+              )}
+            </View>
+          </View>
+          <Text style={{ textAlign: 'center', fontSize: 13, color: scanning ? c.brand : c.ink3, fontFamily: scanning ? font.bold : font.regular, marginBottom: 14 }}>
+            {scanning ? 'Checking liveness…' : 'Front camera · no Face ID needed'}
           </Text>
-        ) : (
-        <>
-        {/* Named so the user knows what counts before opening the picker - the
-            server refuses this step without a document, and a rejection after
-            the fact is a worse way to learn the requirement. */}
-        <Text style={{ fontSize: 12.5, color: c.ink3, marginBottom: 8, fontFamily: font.regular }}>
-          Upload a utility bill, bank statement or tenancy agreement showing this address (issued in the last 3 months). JPEG, PNG or PDF, up to 2 MB.
-        </Text>
-        <Btn label={addressDoc ? 'Proof of address added ✓' : 'Upload proof of address'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => setDocSource(true)} />
-        {/* Two sources, named, because they are genuinely different files: a photo
-            of a bill, or the PDF the bank emailed. Asking is one tap and removes
-            the guesswork of a file browser that may or may not show photos. */}
-        <PickerSheet
-          open={docSource}
-          onClose={() => setDocSource(false)}
-          title="Upload proof of address"
-          value=""
-          options={[
-            { v: 'photo', label: 'Photo (JPEG or PNG)', sub: 'From your gallery', icon: 'copy' },
-            { v: 'pdf', label: 'PDF file', sub: 'A statement or bill you were emailed', icon: 'copy' },
-          ]}
-          onPick={(v) => { if (v === 'pdf') pickPdf(setAddressDoc); else pickImage(setAddressDoc); }}
-        />
-        </>
-        )}
-        <View style={{ height: 10 }} />
-        <Btn label={bankAddress ? 'Verify with your bank' : 'Verify address'} size="md"
-          disabled={busy || address.trim().length < 6 || (!bankAddress && !addressDoc)}
-          onPress={() => submit('/api/kyc/address/', { address, city, state: canonicalState(stateName) || stateName, document: addressDoc }, 'Address')} />
-      </KycRow>
-
-      <KycRow icon="shield" title="Government ID" sub="Passport, driver's licence or voter's card - unlocks Tier 3" done={!!status?.id_document_verified}>
-        <Btn label={idImage ? 'ID added ✓' : 'Upload your government ID'} icon="copy" size="md" variant="outline" disabled={busy} onPress={() => pickImage(setIdImage)} />
-        <View style={{ height: 10 }} />
-        <Btn label="Verify ID document" size="md" disabled={busy || !idImage}
-          onPress={() => submit('/api/kyc/id/', { image: idImage, doc_type: 'government_id' }, 'ID document')} />
-      </KycRow>
-
-      <NText style={{ fontSize: 12, color: c.ink3, marginTop: 16, lineHeight: 18, fontFamily: font.regular }}>
-        Zitch app limits: Unverified ₦20,000 · Verified (BVN + NIN) ₦50,000 · Enhanced (+ selfie + address) ₦200,000 · Premium (+ government ID) ₦5,000,000 per transaction. These are additional to the partner bank limits above. Raw BVN, NIN, proof-of-address and ID images are not retained by Zitch.
-      </NText>
-      </>
+          <Btn label={scanning ? 'Verifying…' : 'Start camera'} disabled={scanning || busy} onPress={runSelfie} />
+          <Footer />
+        </View>
       )}
     </Screen>
   );
 };
 
-// Post-login screen living in the unguarded (auth) group: gate it explicitly
-// so a deep link can't render it without a valid, unlocked session (the API
-// would 401 anyway - this keeps the surface consistent with the other groups).
-const GuardedKyc = () => (
-  <AuthGuard>
-    <Kyc />
-  </AuthGuard>
-);
-
-export default GuardedKyc;
+export default Kyc;

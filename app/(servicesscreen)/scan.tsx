@@ -1,8 +1,8 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, Platform } from 'react-native';
+import { View, Text, Pressable, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { Screen, Header, Card, Field, Btn, HeaderLink } from '@/components/design/ui';
+import { Screen, Header, Card, Field, Btn } from '@/components/design/ui';
 import ZIcon from '@/components/design/ZIcon';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -24,14 +24,10 @@ const Scan = () => {
   const [manual, setManual] = useState('');
   const handled = useRef(false); // guard against the camera firing repeatedly
 
-  const handleResult = (raw: string) => {
+  const applyResult = (raw: string) => {
     const id = extractIdentifier(raw);
     if (id) {
-      // Say WHICH it is. Send money cannot infer it safely from the value alone
-      // in every case, and a phone landing in the bank-account field is a
-      // payment to a stranger, not a failed scan.
-      const kind = id.length === 11 ? 'phone' : 'account';
-      router.replace({ pathname: '/sendmoney', params: { identifier: id, kind } });
+      router.replace({ pathname: '/sendmoney', params: { identifier: id } });
     } else {
       handled.current = false; // let them try again
       notify('Unrecognised code', "That QR doesn't contain a Zitch account or phone number.");
@@ -41,12 +37,12 @@ const Scan = () => {
   const onScan = ({ data }: { data: string }) => {
     if (handled.current) return;
     handled.current = true;
-    handleResult(data);
+    applyResult(data);
   };
 
   const submitManual = () => {
     if (!manual.trim()) return;
-    handleResult(manual);
+    applyResult(manual);
   };
 
   // Web (and any platform without camera support) → manual entry fallback.
@@ -55,10 +51,10 @@ const Scan = () => {
   return (
     <Screen pad={false} scroll={false}>
       <View style={{ paddingHorizontal: 20 }}>
-        <Header title="Scan to Pay" sub="Point at a Zitch QR code" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
+        <Header title="Scan to Pay" sub="Point at a Zitch QR code" onBack={() => router.back()} />
       </View>
 
-      <View style={{ flex: 1, paddingHorizontal: 20 }}>
+      <View style={{ flex: 1, paddingHorizontal: 16 }}>
         {cameraSupported && permission?.granted ? (
           <View style={{ flex: 1, borderRadius: 22, overflow: 'hidden', backgroundColor: '#000' }}>
             <CameraView

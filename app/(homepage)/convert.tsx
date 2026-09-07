@@ -3,9 +3,9 @@ import { View, Text, Pressable } from 'react-native';
 import { Loading } from '@/components/design/Loading';
 import { useFocusEffect } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { apiJson } from '@/lib/api';
-import { Screen, Card, NText } from '@/components/design/ui';
-import { Label, QuickAmounts, AmountField } from '@/components/design/flowkit';
+import { convertService } from '@/lib/services/bills';
+import { Screen, Card, Field, Naira, NText } from '@/components/design/ui';
+import { Label, QuickAmounts } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
 import { useTheme, font } from '@/lib/theme';
 
@@ -14,12 +14,9 @@ const NGN_PRESETS = [1000, 5000, 10000, 50000, 100000, 500000];
 
 type Currency = { code: string; name: string; symbol: string; rate: number };
 
-// Format a foreign-currency value: "$1,234.56". A non-finite value (e.g. a
-// missing/non-numeric rate from the API) renders as "—" instead of "$NaN".
+// Format a foreign-currency value: "$1,234.56".
 const fx = (value: number, symbol: string) =>
-  Number.isFinite(value)
-    ? `${symbol}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-    : '—';
+  `${symbol}${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // "Mon, 08 Jun 2026 00:02:31 +0000" -> "08 Jun 2026, 00:02 UTC".
 const prettyTime = (s: string) =>
@@ -38,7 +35,7 @@ const Convert = () => {
     setLoading(true);
     setError('');
     try {
-      const res = await apiJson('/api/convert/fx/');
+      const res = await convertService.getRate();
       if (res?.success && Array.isArray(res.currencies) && res.currencies.length) {
         setCurrencies(res.currencies.map((r: any) => ({ ...r, rate: Number(r.rate) })));
         setUpdated(typeof res.updated === 'string' ? res.updated : '');
@@ -78,7 +75,14 @@ const Convert = () => {
       <View style={{ paddingHorizontal: 20, paddingTop: 18 }}>
         <Label>Amount in Naira</Label>
         <QuickAmounts amounts={NGN_PRESETS} value={amt} onPick={setAmt} />
-        <AmountField label="Or enter amount" value={amt} onChangeText={setAmt} placeholder="0" />
+        <Field
+          label="Or enter amount"
+          value={amt}
+          onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
+          keyboardType="number-pad"
+          placeholder="0"
+          prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
+        />
 
         {/* converted values */}
         <View style={{ marginTop: 20 }}>

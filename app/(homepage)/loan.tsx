@@ -1,12 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiJson, newIdempotencyKey } from '@/lib/api';
+import { newIdempotencyKey } from '@/lib/api';
+import { loansService } from '@/lib/services/loans';
 import { Screen, Card, Btn, Sheet, PinPad, money } from '@/components/design/ui';
 import { Hero, SectionLabel } from '@/components/design/widgets';
 import { notify } from '@/components/design/Notify';
-import { LoadingMark } from '@/components/design/Loading';
 import { useTheme, font } from '@/lib/theme';
 import { useWallet } from '@/lib/wallet';
 
@@ -24,37 +24,28 @@ type ActiveLoan = {
 const Loans = () => {
   const { c } = useTheme();
   const { reload: reloadWallet } = useWallet();
-  const [, setToken] = useState('');
-  // Start at 0 so the pre-load (and API-failure) state is honest — never a
-  // fabricated credit line. The real limit/available overwrite these once
-  // /api/loans/status/ returns.
-  const [limit, setLimit] = useState(0);
-  const [available, setAvailable] = useState(0);
+  const [token, setToken] = useState('');
+  const [limit, setLimit] = useState(500000);
+  const [available, setAvailable] = useState(500000);
   const [active, setActive] = useState<ActiveLoan | null>(null);
-  const [loaded, setLoaded] = useState(false); // has the first loans/status fetch resolved yet
   const [pinOpen, setPinOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [pinError, setPinError] = useState('');
   // Stable per-repayment key so a retry / double-tap is deduped server-side and
-  // never debits the wallet twice. Reset after a successful repayment — and
-  // whenever the loan or its outstanding changes, so a stale key can't replay a
-  // PRIOR repayment attempt against a different amount (mirrors sendmoney).
+  // never debits the wallet twice. Reset after a successful repayment.
   const idemKey = useRef<string>('');
-  useEffect(() => { idemKey.current = ''; }, [active?.reference, active?.outstanding]);
 
   const load = useCallback(async () => {
     const t = await getToken();
-    if (!t) { setLoaded(true); return; }
+    if (!t) return;
     setToken(t);
     try {
-      const res = await apiJson('/api/loans/status/');
+      const res = await loansService.getStatus();
       if (res.limit != null) setLimit(Number(res.limit));
       if (res.available != null) setAvailable(Number(res.available));
       setActive(res.active_loan ?? null);
     } catch {
       // keep last-known state
-    } finally {
-      setLoaded(true);
     }
   }, []);
 
@@ -67,9 +58,7 @@ const Loans = () => {
     setBusy(true);
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     try {
-      const res = await apiJson('/api/loans/repay/', {
-        amount: active.outstanding, transaction_pin: pin, idempotency_key: idemKey.current,
-      });
+      const res = await loansService.repay(active.outstanding, pin, idemKey.current);
       if (res.success) {
         setPinOpen(false);
         setPinError('');
@@ -80,10 +69,6 @@ const Loans = () => {
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        // A definitive rejection mints a new key (replaying a FAILED row 409s
-        // forever); a connectivity failure (`offline`) keeps it so a retry
-        // replays server-side instead of debiting twice.
-        if (!res.offline) idemKey.current = '';
         setPinOpen(false);
         notify('Error', res.message || 'Repayment failed');
       }
@@ -99,9 +84,9 @@ const Loans = () => {
     <Screen pad={false} tab>
       <Text style={{ paddingHorizontal: 20, paddingTop: 6, fontSize: 26, fontFamily: font.extrabold, color: c.ink1 }}>Loans</Text>
 
-      <Hero style={{ marginHorizontal: 20, marginVertical: 16 }}>
+      <Hero style={{ margin: 16 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>Available credit</Text>
-        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
+        <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <View style={{ height: 6, borderRadius: 4, backgroundColor: 'rgba(255,255,255,.25)', marginTop: 14, overflow: 'hidden' }}>
           <View style={{ width: `${usedPct}%`, height: '100%', backgroundColor: '#fff' }} />
         </View>
@@ -111,20 +96,16 @@ const Loans = () => {
       </Hero>
 
       {!active && (
-        <View style={{ marginHorizontal: 20 }}>
+        <View style={{ marginHorizontal: 16 }}>
           <Card>
             <Btn label="Get a new loan" icon="loan" onPress={() => router.push('/getloan')} />
           </Card>
         </View>
       )}
 
-      <View style={{ paddingHorizontal: 20, paddingTop: 22 }}>
+      <View style={{ paddingHorizontal: 18, paddingTop: 22 }}>
         <SectionLabel>Active loans</SectionLabel>
-        {!loaded ? (
-          <View style={{ alignItems: 'center', paddingTop: 60 }}>
-            <LoadingMark size={28} />
-          </View>
-        ) : active ? (
+        {active ? (
           <View style={{ borderRadius: 16, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line, padding: 16 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
               <View>
@@ -142,8 +123,8 @@ const Loans = () => {
         )}
       </View>
 
-      <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={pinOpen} onClose={() => !busy && setPinOpen(false)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Repay ${active ? money(Number(active.outstanding)) : ''} from your wallet`}
         </Text>
         <PinPad onComplete={(p) => repay(p)} busy={busy} error={pinError} />

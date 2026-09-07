@@ -1,8 +1,10 @@
 import React from 'react';
-import { View, Text, Pressable, Image } from 'react-native';
+import { View, Text } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image } from 'react-native';
 import ZIcon from '@/components/design/ZIcon';
-import { useTheme, font, ICON_COLORS, iconTint } from '@/lib/theme';
+import { Tap } from '@/components/design/ui';
+import { useTheme, font, radius, ICON_COLORS, iconTint } from '@/lib/theme';
 
 // Section label with optional right-aligned action (e.g. "See all").
 export const SectionLabel = ({ children, action, onAction }: { children: string; action?: string; onAction?: () => void }) => {
@@ -11,9 +13,9 @@ export const SectionLabel = ({ children, action, onAction }: { children: string;
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
       <Text style={{ fontSize: 17, fontFamily: font.bold, color: c.ink1 }}>{children}</Text>
       {action && (
-        <Pressable onPress={onAction} accessibilityRole="button" accessibilityLabel={`${action}, ${children}`}>
+        <Tap onPress={onAction}>
           <Text style={{ fontSize: 13, fontFamily: font.semibold, color: c.brand }}>{action}</Text>
-        </Pressable>
+        </Tap>
       )}
     </View>
   );
@@ -69,14 +71,7 @@ export const Badge = ({ label, hot }: { label: string; hot?: boolean }) => {
 };
 
 // 48px rounded icon tile used by the services grid + quick actions.
-//
-// Memoized for the same reason ZIcon and TxnRow are: Home renders nineteen of
-// these (eight in the grid, eleven in the More sheet) and every one of them
-// carries an SVG icon and an optional badge. Their props come from module-level
-// GRID/MORE constants, so both the strings and the `go` handlers are stable
-// identities and the shallow compare actually holds — without that a memo here
-// would be pure overhead rather than a saving.
-export const ServiceTile = React.memo(({
+export const ServiceTile = ({
   icon,
   label,
   onPress,
@@ -94,31 +89,23 @@ export const ServiceTile = React.memo(({
   const { c, theme } = useTheme();
   const accent = ICON_COLORS[icon] ?? c.brand;
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: !onPress }}
-      style={{ alignItems: 'center', gap: 7 }}
-    >
+    <Tap onPress={onPress} style={{ alignItems: 'center', gap: 7 }}>
       <View>
         <View
           style={{
-            width: 46,
-            height: 46,
-            borderRadius: round ? 23 : 15,
+            width: 48,
+            height: 48,
+            borderRadius: round ? 24 : 16,
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: iconTint(accent, theme === 'dark'),
           }}
         >
-          <ZIcon name={icon} size={21} color={accent} stroke={2.2} />
+          <ZIcon name={icon} size={24} color={accent} stroke={2} />
         </View>
         {badge && <Badge label={badge} hot={hot} />}
       </View>
-      <Text style={{ fontSize: 11, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
-    </Pressable>
+      <Text style={{ fontSize: 12, fontFamily: font.medium, color: c.ink2 }}>{label}</Text>
+    </Tap>
   );
-});
-ServiceTile.displayName = 'ServiceTile';
-
+};

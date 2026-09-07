@@ -1,9 +1,11 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
-import { apiPost, apiJson, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Btn, Sheet, PinPad, money, Naira, HeaderLink } from '@/components/design/ui';
+import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
+import { loansService } from '@/lib/services/loans';
+import { Screen, Header, Btn, Sheet, PinPad, Field, money, Naira } from '@/components/design/ui';
 import { Label, ConfirmSheet } from '@/components/design/flowkit';
 import { Hero } from '@/components/design/widgets';
 import Receipt from '@/components/design/Receipt';
@@ -28,26 +30,21 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
 const GetLoan = () => {
   const { c } = useTheme();
   const { reload } = useWallet();
-  const [, setToken] = useState('');
-  // Start at 0 so the Hero never advertises a fabricated ₦500,000 eligibility
-  // before /api/loans/status/ returns the user's real available credit.
-  const [available, setAvailable] = useState(0);
+  const [token, setToken] = useState('');
+  const [available, setAvailable] = useState(500000);
   const [amount, setAmount] = useState(100000);
   const [tenure, setTenure] = useState(30);
   const [rate, setRate] = useState(0.045);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   useEffect(() => {
     getToken().then((t) => {
       if (!t) return;
       setToken(t);
-      apiPost('/api/loans/status/')
+      apiPost(EP.loans.status)
         .then((r) => r.json())
         .then((res) => {
           if (res.available != null) setAvailable(Number(res.available));
@@ -64,35 +61,17 @@ const GetLoan = () => {
   const repay = amount + interest;
   const overLimit = amount > available;
 
-  // Stable across retries of one loan request so a network-timeout retry or a
-  // double-tap can't disburse the loan twice (the server dedups on this key).
-  const idemKey = useRef('');
-
-  // A different amount/tenure is a new request — drop the retained key so a
-  // stale one can't replay the PRIOR loan for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [amount, tenure]);
-
   const request = async (pin: string) => {
     setBusy(true);
-    if (!idemKey.current) idemKey.current = newIdempotencyKey();
     try {
-      const res = await apiJson('/api/loans/request/', {
-        amount: String(amount), tenure_days: tenure, transaction_pin: pin,
-        idempotency_key: idemKey.current,
-      });
+      const res = await loansService.request(amount, tenure, pin);
       if (res.success) {
-        setTxnRef(String(res.loan?.reference || ''));
         setStep(null);
         setDone(true);
-        idemKey.current = '';   // fresh key for a genuinely new request
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        // Only a definitive backend rejection mints a new key. On a connectivity
-        // failure (`offline`) the request may have been delivered, so the key is
-        // KEPT — a retry then replays server-side instead of disbursing twice.
-        if (!res.offline) idemKey.current = '';
         notify('Error', res.message || 'Loan request failed');
         setStep(null);
       }
@@ -111,7 +90,6 @@ const GetLoan = () => {
           title="Loan disbursed"
           message={`${money(amount)} has been added to your wallet. Repay by the due date to boost your limit.`}
           rows={[['Loan amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repayment', money(repay), true]]}
-          reference={txnRef}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -120,16 +98,16 @@ const GetLoan = () => {
 
   return (
     <Screen>
-      <Header title="Get Loan" sub="Instant, no paperwork" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
+      <Header title="Get Loan" sub="Instant, no paperwork" onBack={() => router.back()} />
 
       <Hero style={{ marginBottom: 18 }}>
-        <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You’re eligible for up to</Text>
-        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 34, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
+        <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You're eligible for up to</Text>
+        <Text style={{ fontSize: 34, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(available)}</Text>
         <Text style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>Based on your Zitch activity & repayment history</Text>
       </Hero>
 
       <Label>How much do you need?</Label>
-      <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: c.brand, textAlign: 'center', marginBottom: 12, fontVariant: ['tabular-nums'] }}>{money(amount)}</Text>
+      <Text style={{ fontSize: 32, fontFamily: font.extrabold, color: c.brand, textAlign: 'center', marginBottom: 12, fontVariant: ['tabular-nums'] }}>{money(amount)}</Text>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5, marginBottom: 12 }}>
         {PRESETS.map((p) => {
           const on = amount === p;
@@ -140,12 +118,30 @@ const GetLoan = () => {
                 onPress={() => !disabled && setAmount(p)}
                 style={{ alignItems: 'center', paddingVertical: 13, borderRadius: 13, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line, opacity: disabled ? 0.4 : 1 }}
               >
-                <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{(p / 1000)}k</Text>
+                <Text style={{ fontSize: 14, fontFamily: font.bold, color: on ? '#fff' : c.ink1, fontVariant: ['tabular-nums'] }}><Naira />{(p / 1000)}k</Text>
               </Pressable>
             </View>
           );
         })}
       </View>
+
+      {/* Design uses a range slider (min 10000, max 500000, step 5000). The native
+          @react-native-community/slider package is NOT installed and we must not
+          add a new native dependency here, so the documented fallback is used:
+          the quick-amount chips above + this free-text amount field, both honoring
+          the same 10000–available range. Swap to <Slider/> once the dep is added. */}
+      <Field
+        label={`Or enter an amount (up to ${money(available)})`}
+        value={amount ? String(amount) : ''}
+        onChangeText={(v) => setAmount(Number(v.replace(/\D/g, '')) || 0)}
+        keyboardType="number-pad"
+        placeholder="e.g. 75000"
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontFamily: font.bold }} />}
+      />
+      {amount > 0 && amount < 10000 ? (
+        <Text style={{ fontSize: 12, color: c.amber, fontFamily: font.medium, marginTop: 6 }}>Minimum loan is {money(10000)}.</Text>
+      ) : null}
+      <View style={{ height: 18 }} />
 
       <Label>Repayment period</Label>
       <View style={{ flexDirection: 'row', gap: 10, marginBottom: 18 }}>
@@ -153,7 +149,7 @@ const GetLoan = () => {
           const on = tenure === t;
           return (
             <Pressable key={t} onPress={() => setTenure(t)} style={{ flex: 1, alignItems: 'center', paddingVertical: 14, borderRadius: 14, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}>
-              <Text style={{ fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink1 }}>{t} days</Text>
+              <Text style={{ fontFamily: font.bold, color: on ? '#fff' : c.ink1 }}>{t} days</Text>
             </Pressable>
           );
         })}
@@ -165,7 +161,7 @@ const GetLoan = () => {
         <Row2 k="Total repayment" v={money(repay)} strong />
       </View>
 
-      <Btn label={`Get ${money(amount)}`} disabled={overLimit} onPress={() => setStep('confirm')} />
+      <Btn label={`Get ${money(amount)}`} disabled={overLimit || amount < 10000} onPress={() => setStep('confirm')} />
       {overLimit && (
         <Text style={{ fontSize: 12.5, color: c.red, marginTop: 10, textAlign: 'center', fontFamily: font.semibold }}>
           Amount exceeds your available credit
@@ -180,13 +176,10 @@ const GetLoan = () => {
         balance={available}
         rows={[['Amount', money(amount)], ['Interest', money(interest)], ['Tenure', `${tenure} days`], ['Repay', money(repay)]]}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
-        cta={`Confirm loan of ${money(amount)}`}
-        methodTitle="Disbursed to"
-        methodSub="Zitch Wallet · arrives instantly"
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Processing…' : `Authorize loan of ${money(amount)}`}
         </Text>
         <PinPad onComplete={(p) => request(p)} busy={busy} error={pinError} />

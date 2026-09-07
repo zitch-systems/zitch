@@ -1,25 +1,39 @@
+# Dependency update automation (SECURITY_AUDIT SEC-05).
+# Grouped, weekly, low-noise. Expo pins native module versions, so npm bumps are
+# kept conservative — review against `npx expo install --fix` before merging
+# anything that touches an expo-* or react-native* package.
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Batch the low-risk dev/test tooling into one PR.
+      dev-tooling:
+        patterns:
+          - "@types/*"
+          - "jest*"
+          - "typescript"
+          - "babel*"
+    ignore:
+      # Major bumps of these are gated by the Expo SDK; bump via `expo install`.
+      - dependency-name: "expo"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-native"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: pip
-    directory: /backend
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: npm
-    directory: /
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: npm
-    directory: /zitch-meta-connector
+    directory: "/backend"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
-    directory: /
+    directory: "/"
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3

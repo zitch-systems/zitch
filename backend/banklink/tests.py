@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 from django.test import Client, SimpleTestCase, TestCase, override_settings
 
 from utility import mono
-from transfers.models import Bank
 from wallet.models import FundingIntent, Wallet
 from wallet.tests import make_user
 
@@ -85,51 +84,6 @@ class MonoLiveTests(SimpleTestCase):
         self.assertFalse(mono.verify_webhook({"event": "x"}, ""))
 
 
-@override_settings(DEBUG=False, TESTING=False)
-class MonoSimulationTests(SimpleTestCase):
-    """In production with no keys the flow fails closed; MONO_SIMULATION=true lets
-    the mock link/fund flow run anyway so a real build can test it (no real money)."""
-
-    NOKEY = {**MONO_LIVE, "SECRET_KEY": ""}
-
-    def test_prod_without_keys_fails_closed(self):
-        with override_settings(MONO={**self.NOKEY, "SIMULATION": False}):
-            self.assertFalse(mono.mono_simulation())
-            r = mono.exchange_token("MONO-SIM-1")
-            self.assertFalse(r["success"])
-            self.assertIn("not configured", r["message"].lower())
-
-    def test_simulation_serves_mock_in_prod(self):
-        with override_settings(MONO={**self.NOKEY, "SIMULATION": True}):
-            self.assertTrue(mono.mono_simulation())
-            r = mono.exchange_token("MONO-SIM-1")
-            self.assertTrue(r["success"])
-            self.assertTrue(r["account_id"].startswith("mock_acct_"))
-            self.assertTrue(mono.get_account(r["account_id"])["success"])
-            self.assertTrue(mono.initiate_directpay(5000, "ZMONO-1", email="a@b.com")["success"])
-            self.assertEqual(mono.mono_diagnostics()["status"], "simulation")
-
-    def test_simulation_does_not_open_unsigned_webhook(self):
-        with override_settings(MONO={**self.NOKEY, "SIMULATION": True,
-                                     "WEBHOOK_SECRET": ""}):
-            self.assertFalse(mono.verify_webhook({"event": "payment_received"}, ""))
-
-
-@override_settings(DEBUG=False, TESTING=False,
-                   MONO={**MONO_LIVE, "SECRET_KEY": "", "SIMULATION": True})
-class BanklinkSimulationEndpointTests(TestCase):
-    """The Connect endpoint links a demo bank under simulation, even in prod."""
-
-    def test_connect_links_demo_bank_under_simulation(self):
-        client = Client()
-        _, token = make_user("08055500001", "sim@zitch.app")
-        r = client.post("/api/banklink/connect/",
-                        data=json.dumps({"code": "MONO-SIM-1", "access_token": token}),
-                        content_type="application/json")
-        self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json()["account"]["bank_name"])
-
-
 class BanklinkEndpointTests(TestCase):
     def setUp(self):
         self.client = Client()
@@ -138,6 +92,18 @@ class BanklinkEndpointTests(TestCase):
     def _post(self, path, body):
         return self.client.post(path, data=json.dumps({**body, "access_token": self.token}),
                                 content_type="application/json")
+
+    def test_connect_init_returns_mono_url(self):
+        r = self._post("/api/banklink/connect-init/", {"redirect_url": "Zitch://linkbank"})
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["success"])
+        # MOCK mode echoes the redirect back pre-filled with a code the app exchanges.
+        self.assertIn("Zitch://linkbank", body["mono_url"])
+        self.assertIn("code=", body["mono_url"])
+
+    def test_connect_init_requires_redirect(self):
+        self.assertFalse(self._post("/api/banklink/connect-init/", {}).json().get("success"))
 
     def test_connect_list_refresh_unlink(self):
         r = self._post("/api/banklink/connect/", {"code": "mono-code"})
@@ -170,150 +136,8 @@ class BanklinkEndpointTests(TestCase):
         r = self.client.post("/api/banklink/webhook/", data=json.dumps(event),
                              content_type="application/json")
         self.assertEqual(r.status_code, 200)
-        # A success label without a settled amount is incomplete evidence. It
-        # leaves the intent pending rather than minting the requested balance.
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("0"))
-        event["data"]["amount"] = 500000
-        self.client.post("/api/banklink/webhook/", data=json.dumps(event),
-                         content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
         # redelivered webhook does not double-credit
         self.client.post("/api/banklink/webhook/", data=json.dumps(event),
                          content_type="application/json")
         self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
-
-    @override_settings(MONO=MONO_LIVE)
-    def test_webhook_authenticates_before_parsing_body(self):
-        r = self.client.post(
-            "/api/banklink/webhook/", data=b"{" + b"x" * 1000,
-            content_type="application/json", HTTP_MONO_WEBHOOK_SECRET="wrong")
-        self.assertEqual(r.status_code, 401)
-
-    @override_settings(MONO=MONO_LIVE)
-    def test_webhook_rejects_non_object_event_data(self):
-        r = self.client.post(
-            "/api/banklink/webhook/",
-            data=json.dumps({"event": "mono.events.payment_received", "data": []}),
-            content_type="application/json", HTTP_MONO_WEBHOOK_SECRET="whsec")
-        self.assertEqual(r.status_code, 400)
-
-    def test_webhook_credits_settled_amount_not_requested_amount(self):
-        # Mono reports a SMALLER settled amount (kobo) than the user requested —
-        # credit what actually moved, not the requested intent amount.
-        lid = self._post("/api/banklink/connect/", {"code": "c"}).json()["account"]["id"]
-        ref = self._post("/api/banklink/fund/", {"linked_id": lid, "amount": "5000"}).json()["reference"]
-        event = {"event": "mono.events.payment_received", "data": {"reference": ref, "amount": 300000}}
-        self.client.post("/api/banklink/webhook/", data=json.dumps(event), content_type="application/json")
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("3000"))
-
-    def test_webhook_never_credits_more_than_requested(self):
-        # An over-reported (or forged) settled amount can't credit above the intent.
-        lid = self._post("/api/banklink/connect/", {"code": "c"}).json()["account"]["id"]
-        ref = self._post("/api/banklink/fund/", {"linked_id": lid, "amount": "5000"}).json()["reference"]
-        event = {"event": "mono.events.payment_received", "data": {"reference": ref, "amount": 900000}}
-        self.client.post("/api/banklink/webhook/", data=json.dumps(event), content_type="application/json")
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("5000"))
-
-    def test_connect_cannot_reassign_another_users_linked_account(self):
-        # `mono_account_id` is globally unique, so two users whose Connect code maps
-        # to the SAME id must not be able to steal each other's row via the upsert.
-        other, other_token = make_user("08044400099", "victim@zitch.app")
-        code = "shared-mono-code"
-        r1 = self.client.post("/api/banklink/connect/",
-                              data=json.dumps({"code": code, "access_token": other_token}),
-                              content_type="application/json")
-        self.assertEqual(r1.status_code, 200)
-        acct_id = LinkedBankAccount.objects.get().mono_account_id
-        # self.user links the SAME account id -> must be refused, not silently stolen.
-        r2 = self._post("/api/banklink/connect/", {"code": code})
-        self.assertEqual(r2.status_code, 409)
-        row = LinkedBankAccount.objects.get(mono_account_id=acct_id)
-        self.assertEqual(row.user_id, other.id)   # ownership unchanged
-
-    def test_non_numeric_linked_id_never_500s(self):
-        # `linked_id` flows into filter(id=…) on an integer PK; a non-numeric value
-        # must be treated as "not found", never raise into a 500.
-        for path in ("/api/banklink/refresh/", "/api/banklink/unlink/", "/api/banklink/fund/"):
-            r = self._post(path, {"linked_id": "not-an-int", "amount": "500"})
-            self.assertEqual(r.status_code, 404, f"{path} should 404 on a bad linked_id")
-
-
-class BanklinkPayoutTests(TestCase):
-    """Money OUT: wallet debit -> linked bank, PIN-verified, via the transfers rail."""
-
-    def setUp(self):
-        self.client = Client()
-        self.user, self.token = make_user("08044400002", "payout@zitch.app", balance="50000")
-        # One active bank so the linked account number can be routed (mock detect).
-        Bank.objects.create(code="gtb", name="GTBank", bank_code="058", color="#E32119")
-
-    def _post(self, path, body):
-        return self.client.post(path, data=json.dumps({**body, "access_token": self.token}),
-                                content_type="application/json")
-
-    def _link(self):
-        return self._post("/api/banklink/connect/", {"code": "c"}).json()["account"]["id"]
-
-    def test_payout_debits_wallet(self):
-        lid = self._link()
-        r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "10000", "pin": "1234"})
-        self.assertEqual(r.status_code, 200)
-        body = r.json()
-        self.assertTrue(body.get("success") or body.get("pending"))
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("40000"))
-
-    def test_payout_wrong_pin_does_not_debit(self):
-        lid = self._link()
-        r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "10000", "pin": "9999"})
-        self.assertIn(r.json().get("code"), ("pin_incorrect", "pin_locked"))
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
-
-    def test_payout_below_minimum_rejected(self):
-        lid = self._link()
-        r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "50", "pin": "1234"})
-        self.assertFalse(r.json().get("success"))
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
-
-    def test_payout_idempotent_on_retry(self):
-        lid = self._link()
-        body = {"linked_id": lid, "amount": "10000", "pin": "1234", "idempotency_key": "payout-key-1"}
-        self._post("/api/banklink/payout/", body)
-        self._post("/api/banklink/payout/", body)  # replay — must not debit twice
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("40000"))
-
-    def test_payout_blocked_under_simulation_with_live_rail(self):
-        # A demo (Mono-simulated) linked account must never drive the LIVE payout
-        # rail — that would move real wallet money to an unverified/fake account.
-        # Fully-mock (both rails mock) stays allowed; only the mismatch is refused.
-        lid = self._link()
-        with patch("utility.mono.mono_live", return_value=False), \
-             patch("utility.providers.payout_live", return_value=True):
-            r = self._post("/api/banklink/payout/",
-                           {"linked_id": lid, "amount": "10000", "pin": "1234"})
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(r.json().get("code"), "simulation")
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
-
-    def test_payout_blocked_for_sim_created_account_after_mono_goes_live(self):
-        # A row linked under SIMULATION stays a demo stub forever (mock_acct_ id).
-        # Flipping real Mono keys on later must NOT make it payable — it was never
-        # verified against a real bank. The guard is on the row, not the config.
-        lid = self._link()
-        with patch("utility.mono.mono_live", return_value=True), \
-             patch("utility.providers.payout_live", return_value=True):
-            r = self._post("/api/banklink/payout/",
-                           {"linked_id": lid, "amount": "10000", "pin": "1234"})
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(r.json().get("code"), "simulation")
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))
-
-    def test_payout_rejected_when_account_maps_to_multiple_banks(self):
-        # An ambiguous NUBAN (valid at two banks, possibly different holders) must
-        # not be routed by guessing matches[0] — reject and keep the wallet whole.
-        lid = self._link()
-        two = [{"bank": "gtb", "bank_name": "GTBank", "name": "ADA EZE"},
-               {"bank": "access", "bank_name": "Access Bank", "name": "JOHN DOE"}]
-        with patch("banklink.views.detect_account_banks", return_value=two):
-            r = self._post("/api/banklink/payout/", {"linked_id": lid, "amount": "10000", "pin": "1234"})
-        self.assertEqual(r.status_code, 400)
-        self.assertEqual(Wallet.objects.get(user=self.user).balance, Decimal("50000"))

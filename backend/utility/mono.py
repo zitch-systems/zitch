@@ -1,6 +1,6 @@
-﻿"""Mono (open banking) integration â€” link an external bank to the Zitch wallet.
+"""Mono (open banking) integration — link an external bank to the Zitch wallet.
 
-Covers what the banklink app needs, mirroring the conventions in utility.wema:
+Covers what the banklink app needs, mirroring the conventions in utility.kora:
 
 - Account linking: exchange the Mono Connect auth code for a permanent account id.
 - Account data: details, balance, transactions of a linked account.
@@ -14,12 +14,12 @@ URL is ``https://api.withmono.com``. Every function returns ``{"success": bool, 
 Amounts: Mono works in KOBO; helpers convert to/from naira at the boundary.
 
 MOCK mode: when ``MONO_SECRET_KEY`` is blank the calls simulate success so the
-flow is testable offline â€” EXCEPT in production (DEBUG off), where money /
+flow is testable offline — EXCEPT in production (DEBUG off), where money /
 account-linking calls fail closed via ``providers.mock_disabled_in_prod`` so a
 misconfigured deploy never fakes a link or a funding.
 
 VERIFY-BEFORE-LIVE: endpoint paths and field names follow Mono's published API
-(https://docs.mono.co) but can't be exercised from CI â€” confirm each against the
+(https://docs.mono.co) but can't be exercised from CI — confirm each against the
 dashboard before go-live. The MOCK paths are the source of truth until a real key
 is configured.
 """
@@ -36,37 +36,10 @@ from .providers import mock_disabled_in_prod
 REQUEST_TIMEOUT = 30
 log = logging.getLogger("zitch")
 
-# Mock/simulated links are branded with this account-id prefix forever, so a row
-# created before real Mono keys went live stays identifiable as unverified.
-MOCK_ACCOUNT_PREFIX = "mock_acct_"
-
-
-def is_mock_account(account_id: str) -> bool:
-    """Whether a stored mono_account_id was minted by the mock/simulated flow."""
-    return (account_id or "").startswith(MOCK_ACCOUNT_PREFIX)
-
 
 def mono_live() -> bool:
-    """Whether Mono may make a live call on this deployment."""
-    return not mono_simulation() and bool(settings.MONO.get("SECRET_KEY"))
-
-
-def mono_simulation() -> bool:
-    """Whether bank linking must use its mock flow.
-
-    MONO_SIMULATION can isolate this provider, while WEMA_SIMULATION is the
-    deploy-wide end-to-end switch. Either one prevents a live Mono request even
-    when credentials are already staged for go-live.
-    """
-    return bool(settings.MONO.get("SIMULATION")
-                or (getattr(settings, "WEMA", {}) or {}).get("SIMULATION"))
-
-
-def _mock_blocked() -> bool:
-    """True when a mock response must NOT be served: production, and simulation
-    is not explicitly enabled. (In dev/tests, or with MONO_SIMULATION on, mock is
-    allowed.)"""
-    return mock_disabled_in_prod() and not mono_simulation()
+    """Whether Mono has a secret key configured (live, non-mock)."""
+    return bool(settings.MONO.get("SECRET_KEY"))
 
 
 def _headers() -> dict:
@@ -78,7 +51,7 @@ def _url(path: str) -> str:
 
 
 def _ok(data: dict) -> bool:
-    """Mono's envelope status â€” "successful" (v1/v2) or a truthy boolean."""
+    """Mono's envelope status — "successful" (v1/v2) or a truthy boolean."""
     s = data.get("status")
     return s is True or str(s).lower() in ("successful", "success", "true") or bool(data.get("data"))
 
@@ -96,19 +69,48 @@ def _unreachable(exc: Exception) -> dict:
 
 
 def _naira(kobo) -> Decimal | None:
-    from decimal import InvalidOperation
     try:
         return (Decimal(str(kobo)) / 100).quantize(Decimal("0.01"))
-    except (TypeError, ValueError, InvalidOperation):
-        # None / non-numeric (e.g. a missing or garbage webhook amount) -> no value,
-        # never a 500. InvalidOperation is an ArithmeticError, not a ValueError, so
-        # it must be listed explicitly.
+    except (TypeError, ValueError):
         return None
 
 
 # ---------------------------------------------------------------------------
 # Account linking
 # ---------------------------------------------------------------------------
+def initiate_connect(redirect_url: str, *, name: str = "", email: str = "", ref: str = "") -> dict:
+    """Start a hosted Mono Connect session and return the URL to open.
+
+    POST /v2/accounts/initiate {customer, scope:'auth', redirect_url, meta} ->
+    {data: {mono_url}}. The app opens ``mono_url`` in a browser/auth session; on
+    success Mono redirects to ``redirect_url`` with a ``code`` query param the app
+    posts to /api/banklink/connect/. MOCK returns the redirect_url pre-filled with
+    a fake code so the link flow is testable offline.
+    """
+    if not mono_live():
+        if mock_disabled_in_prod():
+            return {"success": False, "message": "Bank linking is not configured"}
+        sep = "&" if "?" in redirect_url else "?"
+        return {"success": True, "mock": True,
+                "mono_url": f"{redirect_url}{sep}code=mock_code_{(ref or 'dev')[:12]}"}
+    try:
+        body = {
+            "scope": "auth",
+            "redirect_url": redirect_url,
+            "customer": {"name": name or "Zitch user", "email": email or "user@zitch.app"},
+            "meta": {"ref": ref},
+        }
+        data = _post("/v2/accounts/initiate", body).json()
+        d = data.get("data", {}) or {}
+        url = d.get("mono_url", "")
+        if not (_ok(data) and url):
+            log.warning("mono_initiate_failed msg=%s", data.get("message"))
+        return {"success": _ok(data) and bool(url), "mono_url": url,
+                "message": data.get("message", "Could not start bank linking"), "raw": data}
+    except requests.RequestException as exc:
+        return _unreachable(exc)
+
+
 def exchange_token(code: str) -> dict:
     """Exchange a Mono Connect auth code for a permanent account id.
 
@@ -116,10 +118,10 @@ def exchange_token(code: str) -> dict:
     link flow is testable offline.
     """
     if not mono_live():
-        if _mock_blocked():
+        if mock_disabled_in_prod():
             return {"success": False, "message": "Bank linking is not configured"}
         seed = hashlib.sha256((code or "x").encode()).hexdigest()[:16]
-        return {"success": True, "mock": True, "account_id": f"{MOCK_ACCOUNT_PREFIX}{seed}"}
+        return {"success": True, "mock": True, "account_id": f"mock_acct_{seed}"}
     try:
         resp = _post("/v2/accounts/auth", {"code": code})
         data = resp.json()
@@ -151,7 +153,7 @@ def _parse_account(d: dict) -> dict:
 def get_account(account_id: str) -> dict:
     """Fetch a linked account's details. GET /v2/accounts/{id}."""
     if not mono_live():
-        if _mock_blocked():
+        if mock_disabled_in_prod():
             return {"success": False, "message": "Bank linking is not configured"}
         return {"success": True, "mock": True, "account_id": account_id,
                 "bank_name": "GTBank (mock)", "account_number": "0123456789",
@@ -169,7 +171,7 @@ def get_account(account_id: str) -> dict:
 def get_balance(account_id: str) -> dict:
     """Fetch a linked account's balance. GET /v2/accounts/{id}/balance."""
     if not mono_live():
-        if _mock_blocked():
+        if mock_disabled_in_prod():
             return {"success": False, "message": "Bank linking is not configured"}
         return {"success": True, "mock": True, "balance_naira": Decimal("84200.10")}
     try:
@@ -192,7 +194,7 @@ def get_transactions(account_id: str, page: int = 1) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# DirectPay â€” fund the Zitch wallet from a linked bank
+# DirectPay — fund the Zitch wallet from a linked bank
 # ---------------------------------------------------------------------------
 def initiate_directpay(amount_naira, reference: str, *, email: str = "", name: str = "",
                        redirect_url: str = "") -> dict:
@@ -202,7 +204,7 @@ def initiate_directpay(amount_naira, reference: str, *, email: str = "", name: s
     kobo. MOCK returns a sentinel URL so funding is testable offline.
     """
     if not mono_live():
-        if _mock_blocked():
+        if mock_disabled_in_prod():
             return {"success": False, "message": "Bank funding is not configured"}
         return {"success": True, "mock": True, "reference": reference,
                 "authorization_url": f"mock://mono/directpay/{reference}"}
@@ -235,36 +237,27 @@ def verify_webhook(payload: dict, signature: str) -> bool:
 
     Mono signs webhooks with a shared secret you set in the dashboard, sent as the
     header value; we constant-time compare it to MONO['WEBHOOK_SECRET']. Fails
-    closed on every deployed host when no secret is set (including an end-to-end
-    simulation: fake money is still customer data and must not be attacker-mutable);
-    only local development/tests accept unsigned callbacks.
+    closed in production when no secret is set (an unsigned callback could credit a
+    wallet on a funding event); dev/test accept so local webhook testing works.
     """
     secret = settings.MONO.get("WEBHOOK_SECRET", "")
     if not secret:
-        return bool(getattr(settings, "DEBUG", False) or getattr(settings, "TESTING", False))
+        return not mock_disabled_in_prod()
     return hmac.compare_digest(str(signature or ""), secret)
 
 
 # ---------------------------------------------------------------------------
-# Diagnostics â€” mirrors wema.wema_diagnostics
+# Diagnostics — mirrors providers.kora_diagnostics
 # ---------------------------------------------------------------------------
 def mono_diagnostics() -> dict:
     """Structured Mono connectivity self-test (no secrets)."""
     m = settings.MONO
     out = {"base_url": m["BASE_URL"], "secret_key_set": bool(m.get("SECRET_KEY")),
            "public_key_set": bool(m.get("PUBLIC_KEY")),
-           "webhook_secret_set": bool(m.get("WEBHOOK_SECRET")), "mono_live": mono_live(),
-           "simulation": mono_simulation()}
+           "webhook_secret_set": bool(m.get("WEBHOOK_SECRET")), "mono_live": mono_live()}
     if not mono_live():
-        if mono_simulation():
-            out["status"] = "simulation"
-            out["hint"] = ("MONO_SIMULATION is ON â€” the mock link/fund flow is served even in "
-                           "production. No real bank is contacted and no real money moves. Set "
-                           "MONO_SECRET_KEY and turn MONO_SIMULATION off to go live.")
-            return out
         out["status"] = "keys_incomplete"
-        out["hint"] = ("Set MONO_SECRET_KEY (test key first), or set MONO_SIMULATION=true to test the "
-                       "flow with the mock provider. Until then bank linking fails closed in production.")
+        out["hint"] = "Set MONO_SECRET_KEY (test key first). Until then bank linking runs in mock mode."
         return out
     out["status"] = "configured"
     out["hint"] = ("Keys present. Verify exchange/balance/DirectPay/webhook field names against the "

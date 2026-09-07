@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
-import { Screen, Header, Btn, Sheet, PinPad, money, NText } from '@/components/design/ui';
-import { Label, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
+import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
+import { newIdempotencyKey } from '@/lib/api';
+import { savingsService } from '@/lib/services/savings';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, NText } from '@/components/design/ui';
+import { Label, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
 import { Hero } from '@/components/design/widgets';
 import ZIcon from '@/components/design/ZIcon';
@@ -31,40 +34,37 @@ const Row2 = ({ k, v, strong }: { k: string; v: string; strong?: boolean }) => {
 const FixedSave = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
   const [amt, setAmt] = useState('');
   const [days, setDays] = useState(90);
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
   const [rates, setRates] = useState<Record<number, number>>(FALLBACK_RATES);
   const [periods, setPeriods] = useState<number[]>(FALLBACK_PERIODS);
   const [minAmt, setMinAmt] = useState(1000);
 
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
+
   // Pull the live rate table; fall back to the bundled defaults on any failure.
   useEffect(() => {
-    let active = true;
-    publicJson('/api/savings/rates/')
+    fetch(`${baseUrl}/api/savings/rates/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+      .then((r) => r.json())
       .then((res) => {
-        if (!active) return;
         if (Array.isArray(res?.rates) && res.rates.length) {
           const map: Record<number, number> = {};
           res.rates.forEach((x: any) => { map[Number(x.days)] = Number(x.rate); });
-          const list = res.rates.map((x: any) => Number(x.days)).sort((a: number, b: number) => a - b);
           setRates(map);
-          setPeriods(list);
-          // Keep the selected period valid: if the live table doesn't offer the
-          // current default (90d), snap to the shortest offered period. Otherwise
-          // the quote reads "0% p.a / ₦0 interest" with no period highlighted.
-          setDays((d) => (list.includes(d) ? d : list[0]));
+          setPeriods(res.rates.map((x: any) => Number(x.days)).sort((a: number, b: number) => a - b));
         }
         if (res?.min != null) setMinAmt(Number(res.min));
       })
       .catch(() => { /* keep bundled fallbacks */ });
-    return () => { active = false; };
   }, []);
 
   const amount = Number(amt || 0);
@@ -75,17 +75,12 @@ const FixedSave = () => {
 
   const idemKey = useRef('');  // stable across retries of one lock attempt
 
-  // Any edit to the lock details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR lock for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [amt, days]);
-
   const create = async (pin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/savings/create/', { amount: amt, days, transaction_pin: pin, idempotency_key: idemKey.current });
+      const res = await savingsService.create(amt, days, pin, idemKey.current);
       if (res.success) {
-        setTxnRef(String(res.plan?.reference || ''));
         idemKey.current = '';
         setStep(null);
         setDone(true);
@@ -93,9 +88,7 @@ const FixedSave = () => {
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');  // keep key: no debit happened
       } else {
-        // Only a definitive rejection mints a new key; a connectivity failure
-        // (`offline`) keeps it so a retry replays server-side, never debits twice.
-        if (!res.offline) idemKey.current = '';
+        idemKey.current = '';  // definitive server failure — retry is a fresh attempt
         notify('Error', res.message || 'Could not lock savings');
         setStep(null);
       }
@@ -114,7 +107,6 @@ const FixedSave = () => {
           title="Savings locked 🔒"
           message={`${money(amount)} locked for ${days} days at ${(rate * 100).toFixed(0)}% p.a. You can't withdraw until maturity.`}
           rows={[['Principal', money(amount)], ['Rate', `${(rate * 100).toFixed(0)}% p.a`], ['Duration', `${days} days`], ['Interest earned', money(interest)], ['Maturity value', money(maturity), true]]}
-          reference={txnRef}
           onDone={() => router.replace('/savings')}
         />
       </Screen>
@@ -130,9 +122,6 @@ const FixedSave = () => {
         right={
           <Pressable
             onPress={() => router.push('/savings')}
-            accessibilityRole="button"
-            accessibilityLabel="View my fixed saves"
-            hitSlop={2}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 6, height: 42, paddingHorizontal: 14, borderRadius: 13, backgroundColor: c.surface, borderWidth: 1, borderColor: c.line }}
           >
             <ZIcon name="fixed" size={16} color={c.brand} />
@@ -143,7 +132,7 @@ const FixedSave = () => {
 
       <Hero style={{ marginBottom: 18 }}>
         <Text style={{ fontSize: 13, color: 'rgba(255,255,255,.85)', fontFamily: font.regular }}>You could earn</Text>
-        <NText numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(interest)}</NText>
+        <NText style={{ fontSize: 32, fontFamily: font.extrabold, color: '#fff', marginTop: 4, fontVariant: ['tabular-nums'] }}>{money(interest)}</NText>
         <NText style={{ fontSize: 12.5, color: 'rgba(255,255,255,.85)', marginTop: 6, fontFamily: font.regular }}>
           on {amount > 0 ? money(amount) : '₦0'} in {days} days · {(rate * 100).toFixed(0)}% p.a
         </NText>
@@ -151,7 +140,13 @@ const FixedSave = () => {
 
       <Label>How much to lock?</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
-      <AmountField value={amt} onChangeText={setAmt} placeholder={`Enter amount (min ${money(minAmt)})`} />
+      <Field
+        value={amt}
+        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
+        keyboardType="number-pad"
+        placeholder={`Enter amount (min ${money(minAmt)})`}
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
+      />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 
@@ -165,8 +160,8 @@ const FixedSave = () => {
                 onPress={() => setDays(d)}
                 style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 14, paddingHorizontal: 16, borderRadius: 14, backgroundColor: on ? c.brand : c.surface, borderWidth: 1.5, borderColor: on ? c.brand : c.line }}
               >
-                <Text style={{ fontFamily: font.bold, color: on ? c.inkOnBrand : c.ink1 }}>{d} days</Text>
-                <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: on ? c.inkOnBrand : c.brand, opacity: on ? 0.8 : 1 }}>{((rates[d] ?? 0) * 100).toFixed(0)}%</Text>
+                <Text style={{ fontFamily: font.bold, color: on ? '#fff' : c.ink1 }}>{d} days</Text>
+                <Text style={{ fontSize: 12.5, fontFamily: font.bold, color: on ? 'rgba(255,255,255,.85)' : c.brand }}>{((rates[d] ?? 0) * 100).toFixed(0)}%</Text>
               </Pressable>
             </View>
           );
@@ -191,8 +186,8 @@ const FixedSave = () => {
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Locking…' : `Lock ${money(amount)} for ${days} days`}
         </Text>
         <PinPad onComplete={(p) => create(p)} busy={busy} error={pinError} />
@@ -202,4 +197,3 @@ const FixedSave = () => {
 };
 
 export default FixedSave;
-

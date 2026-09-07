@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { router } from 'expo-router';
-import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
-import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira, HeaderLink } from '@/components/design/ui';
+import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
+import { newIdempotencyKey } from '@/lib/api';
+import { examsService } from '@/lib/services/bills';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
 import { Label, Monogram, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import { notify } from '@/components/design/Notify';
 import Receipt from '@/components/design/Receipt';
@@ -20,32 +22,23 @@ type Step = null | 'confirm' | 'pin';
 const Exams = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
   const [exams, setExams] = useState<Exam[]>([]);
-  const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState('');
   const [qty, setQty] = useState(1);
   const [phone, setPhone] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
-  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one purchase attempt
 
-  // Any edit to the purchase details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [selected, qty, phone]);
-
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    let active = true;
-    publicJson('/api/exams/list/')
-      .then((res) => { if (active && Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
-      .catch(() => {})
-      .finally(() => { if (active) setLoadingList(false); });
-    return () => { active = false; };
+    fetch(`${baseUrl}/api/exams/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then((r) => r.json())
+      .then((res) => { if (Array.isArray(res.exams)) { setExams(res.exams); if (res.exams[0]) setSelected(res.exams[0].code); } })
+      .catch(() => {});
   }, []);
 
   const exam = exams.find((e) => e.code === selected);
@@ -56,25 +49,16 @@ const Exams = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/exams/buy/', { exam: selected, quantity: qty, phone, transaction_pin: pin, idempotency_key: idemKey.current });
-      // `pending` = provider timeout: the money is DEBITED AND HELD while
-      // reconciliation confirms or refunds it. It carries no `success` field, so
-      // treating it as a failure (as before) told the user "Error", cleared the
-      // key, and invited a retry that debited a SECOND time. `duplicate` = the
-      // server replayed a completed attempt — also not a failure.
-      if (res.success || res.pending || res.duplicate) {
+      const res = await examsService.buy(selected, qty, phone, pin, idemKey.current);
+      if (res.success) {
         idemKey.current = '';
-        setTxnRef(String(res.reference || ''));
-        setPending(!res.success && !!res.pending && !res.duplicate);
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        // Only a definitive rejection mints a new key; a connectivity failure
-        // (`offline`) keeps it so a retry replays server-side, never debits twice.
-        if (!res.offline) idemKey.current = '';
+        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
@@ -90,13 +74,9 @@ const Exams = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={pending ? 'Processing' : 'PIN purchased'}
-          message={pending
-            ? `Your ${exam.name} ${exam.description} (${qty}) order is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
-            : `Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
+          title="PIN purchased"
+          message={`Your ${exam.name} ${exam.description} (${qty}) was sent to ${phone}.`}
           rows={[['Exam', exam.name], ['Item', exam.description], ['Quantity', String(qty)], ['Phone', phone], ['Total', money(amount), true]]}
-          reference={txnRef}
-          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -105,14 +85,9 @@ const Exams = () => {
 
   return (
     <Screen>
-      <Header title="Exams · JAMB / WAEC" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
+      <Header title="Exams · JAMB / WAEC" onBack={() => router.back()} />
 
       <Label>Select exam</Label>
-      {loadingList ? (
-        <View style={{ marginBottom: 16 }}><Loading full={false} /></View>
-      ) : exams.length === 0 ? (
-        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 16 }}>No exams available right now. Please try again later.</Text>
-      ) : (
       <View style={{ gap: 10, marginBottom: 16 }}>
         {exams.map((e) => {
           const on = selected === e.code;
@@ -132,7 +107,6 @@ const Exams = () => {
           );
         })}
       </View>
-      )}
 
       <Label>Quantity</Label>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 16 }}>
@@ -167,8 +141,8 @@ const Exams = () => {
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
         <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />

@@ -3,8 +3,9 @@ import { View, Text } from 'react-native';
 import { router } from 'expo-router';
 import { getToken } from '@/lib/secureStore';
 import { apiPost, newIdempotencyKey } from '@/lib/api';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
-import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
+import { EP } from '@/lib/endpoints';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Label, ProviderGrid, Segmented, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -29,45 +30,34 @@ type Step = null | 'confirm' | 'pin';
 const BuyElectricity = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
-  const [, setToken] = useState('');
+  const [token, setToken] = useState('');
   const [disco, setDisco] = useState('1');
   const [meterType, setMeterType] = useState('prepaid');
   const [meter, setMeter] = useState('');
   const [amt, setAmt] = useState('');
   const [customerName, setCustomerName] = useState('');
-  const [customerAddress, setCustomerAddress] = useState('');
   const [validating, setValidating] = useState(false);
   const [purchasedToken, setPurchasedToken] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
   const [pinError, setPinError] = useState('');
 
   useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setCustomerName('');
-      setCustomerAddress('');
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [disco, meterType, meter]);
+  useEffect(() => { setCustomerName(''); }, [disco, meterType, meter]);
 
   const provider = DISCOS.find((d) => d.id === disco)!;
   const amount = Number(amt || 0);
-  const valid = meter.length >= 8 && amount >= 500 && !!customerName;
+  const valid = meter.length >= 8 && amount >= 500;
 
   const validateMeter = async () => {
     if (meter.trim().length < 8) { notify('Error', 'Enter a valid meter number.'); return; }
     setValidating(true);
     try {
-      const response = await apiPost('/api/utility/validate_meter/', { meter, disco, meter_type: meterType });
+      const response = await apiPost(EP.utility.validateMeter, { meter, disco, meter_type: meterType });
       const result = await response.json();
       if (response.ok) {
         setCustomerName(result.customer_name || result.name || 'Verified');
-        setCustomerAddress(result.customer_address || result.address || 'Not provided by electricity provider');
       } else {
         notify('Error', result.message || 'Could not verify meter number.');
       }
@@ -78,18 +68,13 @@ const BuyElectricity = () => {
     }
   };
 
-  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const idemKey = useRef('');  // stable across retries of one purchase attempt
-
-  // Any edit to the purchase details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR purchase for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [disco, meterType, meter, amt]);
 
   const purchase = async (enteredPin: string) => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const response = await apiPost('/api/utility/buyelectricity/', {
+      const response = await apiPost(EP.utility.buyElectricity, {
         disco,
         meter,
         meter_type: meterType,
@@ -100,15 +85,7 @@ const BuyElectricity = () => {
       const result = await response.json();
       if (response.ok) {
         idemKey.current = '';
-        // `pending` = provider timeout: held while reconciliation confirms or
-        // refunds — no token yet, and the receipt must not claim delivery.
-        setTxnRef(String(result.reference || ''));
-        setPending(!!result.pending);
         if (result.token) setPurchasedToken(String(result.token));
-        if (result.customer_name) setCustomerName(String(result.customer_name));
-        if (result.customer_address || result.address) {
-          setCustomerAddress(String(result.customer_address || result.address));
-        }
         setStep(null);
         setDone(true);
         reload();
@@ -131,21 +108,15 @@ const BuyElectricity = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={purchasedToken ? 'Token generated' : pending ? 'Processing' : 'Payment successful'}
-          message={pending
-            ? `Your ${provider.name} ${meterType} purchase is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
-            : `Your ${provider.name} ${meterType} purchase was successful.`}
+          title={purchasedToken ? 'Token generated' : 'Payment successful'}
+          message={`Your ${provider.name} ${meterType} purchase was successful.`}
           rows={[
             ['Disco', provider.name],
             ['Meter', meter],
             ['Type', meterType],
-            ['Customer', customerName || 'Verified customer'],
-            ['Address', customerAddress || 'Not provided by electricity provider'],
             ...(purchasedToken ? ([['Token', purchasedToken]] as [string, string][]) : []),
             ['Total', money(amount), true],
           ]}
-          reference={txnRef}
-          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -154,7 +125,7 @@ const BuyElectricity = () => {
 
   return (
     <Screen>
-      <Header title="Electricity" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
+      <Header title="Electricity" onBack={() => router.back()} />
 
       <Label>Select disco</Label>
       <ProviderGrid items={DISCOS} value={disco} onPick={setDisco} cols={3} />
@@ -174,10 +145,7 @@ const BuyElectricity = () => {
       />
       <View style={{ marginTop: 8, marginBottom: 8 }}>
         {customerName ? (
-          <View style={{ gap: 3 }}>
-            <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {customerName}</Text>
-            <Text style={{ color: c.ink3, fontFamily: font.regular, fontSize: 12.5 }}>{customerAddress || 'Address unavailable'}</Text>
-          </View>
+          <Text style={{ color: c.brandDeep, fontFamily: font.semibold, fontSize: 12.5 }}>✓ {customerName}</Text>
         ) : (
           <Btn label="Validate meter" variant="outline" size="sm" full={false} onPress={validateMeter} disabled={validating} />
         )}
@@ -185,7 +153,13 @@ const BuyElectricity = () => {
 
       <Label>Amount</Label>
       <QuickAmounts amounts={ELEC_AMOUNTS} value={amt} onPick={setAmt} />
-      <AmountField value={amt} onChangeText={setAmt} placeholder="Enter amount (min 500)" />
+      <Field
+        value={amt}
+        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
+        keyboardType="number-pad"
+        placeholder="Enter amount (min 500)"
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
+      />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 
@@ -197,12 +171,12 @@ const BuyElectricity = () => {
         title="Confirm payment"
         total={amount}
         balance={balance}
-        rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType], ['Customer', customerName], ['Address', customerAddress || 'Not provided by electricity provider']]}
+        rows={[['Disco', provider.name], ['Meter', meter], ['Type', meterType]]}
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
         <PinPad onComplete={(p) => purchase(p)} busy={busy} error={pinError} />

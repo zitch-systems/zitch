@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text } from 'react-native';
-import { router, Link, useLocalSearchParams } from 'expo-router';
-import { getToken, saveRefreshToken } from '@/lib/secureStore';
+import { router, Link } from 'expo-router';
+import { getToken } from '@/lib/secureStore';
 import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import { notify } from '@/components/design/Notify';
 import { PRIVACY_URL } from '@/components/configFiles/links';
 import ZIcon from '@/components/design/ZIcon';
 import { ZMark } from '@/components/design/Brand';
-import { Screen, Header, Field, Btn } from '@/components/design/ui';
-import { Stepper } from '@/components/design/Stepper';
+import { Screen, Field, Btn } from '@/components/design/ui';
 import { useTheme, font } from '@/lib/theme';
 
 const Rule = ({ ok, text }: { ok: boolean; text: string }) => {
@@ -25,23 +25,16 @@ const Rule = ({ ok, text }: { ok: boolean; text: string }) => {
 
 const SetPassword = () => {
   const { c } = useTheme();
-  // `change=1` (from Security → Password) turns this into a CHANGE flow: the
-  // current password is required and, on success, we return to Security rather
-  // than continuing onboarding.
-  const params = useLocalSearchParams<{ change?: string }>();
-  const isChange = params.change === '1';
   const [isUpdating, setIsUpdating] = useState(false);
-  const [, setToken] = useState('');
-  const [form, setForm] = useState({ current: '', password1: '', password2: '' });
+  const [token, setToken] = useState('');
+  const [form, setForm] = useState({ password1: '', password2: '' });
 
   const p1 = form.password1;
-  const eight = p1.length >= 8;
-  const hasAlpha = /[A-Za-z]/.test(p1);
-  const hasNum = /[0-9]/.test(p1);
-  const hasSpecial = /[^A-Za-z0-9]/.test(p1);
+  const eight = /.{8,}/.test(p1);
+  const hasUpper = /[A-Z]/.test(p1);
+  const hasNum = /\d/.test(p1);
   const tally = p1 !== '' && p1 === form.password2;
-  const currentOk = !isChange || form.current.length > 0;
-  const canSubmit = eight && hasAlpha && hasNum && hasSpecial && tally && currentOk;
+  const canSubmit = eight && hasUpper && hasNum && tally;
 
   useEffect(() => {
     getToken().then((t) => t && setToken(t));
@@ -54,25 +47,10 @@ const SetPassword = () => {
     }
     setIsUpdating(true);
     try {
-      const body: Record<string, string> = { password: p1 };
-      if (isChange) body.current_password = form.current;
-      const response = await apiPost('/api/set-password/', body);
+      const response = await apiPost(EP.auth.setPassword, { password: p1 });
       const result = await response.json();
       if (response.ok) {
-        // Changing the password revokes every refresh chain on the account —
-        // including this device's, because the server cannot tell the victim's
-        // chain from an attacker's on the strength of a client-supplied device id.
-        // It hands back a replacement; store it, or this session keeps working
-        // until the access token expires and then silently signs the user out.
-        if (result?.refresh_token) await saveRefreshToken(result.refresh_token);
-        if (isChange) {
-          notify('Password changed', 'Your account password has been updated.');
-          router.back();
-        } else {
-          router.replace('/setpin');
-        }
-      } else if (result.code === 'current_password_required') {
-        notify('Error', 'Your current password is incorrect.');
+        router.replace('/setpin');
       } else {
         notify('Error', result.message || 'Could not set your password');
       }
@@ -85,78 +63,58 @@ const SetPassword = () => {
 
   return (
     <Screen>
-      {isChange ? (
-        <Header title="Change password" sub="Confirm your current password, then set a new one" onBack={() => router.back()} />
-      ) : (
-        <>
-          <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 16 }}>
-            <ZMark size={44} />
-          </View>
-          <Stepper step={3} total={4} label="Step 3 of 4 · Secure your account" />
-          <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1 }}>Set up password</Text>
-          <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 22, fontFamily: font.regular }}>
-            Create a strong password for your account
-          </Text>
-        </>
-      )}
+      <View style={{ alignItems: 'center', marginTop: 14, marginBottom: 8 }}>
+        <ZMark size={44} />
+      </View>
+      <Text style={{ fontSize: 22, fontFamily: font.extrabold, color: c.ink1 }}>Set up password</Text>
+      <Text style={{ fontSize: 14, color: c.ink3, marginTop: 6, marginBottom: 22, fontFamily: font.regular }}>
+        Create a strong password for your account
+      </Text>
 
       <View style={{ gap: 16 }}>
-        {isChange && (
-          <Field
-            label="Current password"
-            value={form.current}
-            onChangeText={(e) => setForm({ ...form, current: e })}
-            secureTextEntry
-            placeholder="Enter current password"
-            autoComplete="current-password"
-            textContentType="password"
-            prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
-          />
-        )}
         <Field
-          label={isChange ? 'New password' : 'Password'}
+          label="Password"
           value={form.password1}
           onChangeText={(e) => setForm({ ...form, password1: e })}
           secureTextEntry
-          placeholder={isChange ? 'Enter new password' : 'Enter password'}
-          autoComplete="new-password"
-          textContentType="newPassword"
+          placeholder="Enter password"
           prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
         />
-        <Field
-          label="Confirm password"
-          value={form.password2}
-          onChangeText={(e) => setForm({ ...form, password2: e })}
-          secureTextEntry
-          placeholder="Re-enter password"
-          autoComplete="new-password"
-          textContentType="newPassword"
-          prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
-        />
+        <View>
+          <Field
+            label="Confirm password"
+            value={form.password2}
+            onChangeText={(e) => setForm({ ...form, password2: e })}
+            secureTextEntry
+            placeholder="Re-enter password"
+            prefix={<ZIcon name="lock" size={18} color={c.ink3} />}
+          />
+          {form.password2.length > 0 && (
+            <Text style={{ fontSize: 12, color: tally ? c.lime : c.red, marginTop: 6, marginLeft: 2, fontFamily: font.semibold }}>
+              {tally ? 'Passwords match' : 'Passwords do not match'}
+            </Text>
+          )}
+        </View>
       </View>
 
       <View style={{ marginTop: 16 }}>
-        <Rule ok={eight} text="Must be at least 8 characters" />
-        <Rule ok={hasAlpha} text="Must include an alphabet (Aa-Zz)" />
-        <Rule ok={hasNum} text="Must include a number (0-9)" />
-        <Rule ok={hasSpecial} text="Must include a special character (!@#$…)" />
+        <Rule ok={eight} text="8+ characters" />
+        <Rule ok={hasUpper} text="1 uppercase" />
+        <Rule ok={hasNum} text="1 number" />
       </View>
 
       <View style={{ marginTop: 26 }}>
-        <Btn label={isChange ? 'Change password' : 'Continue'} disabled={!canSubmit || isUpdating} onPress={handleUpdate} />
+        <Btn label="Continue" disabled={!canSubmit || isUpdating} onPress={handleUpdate} />
       </View>
-      {!isChange && (
-        <Text style={{ fontSize: 12, color: c.ink3, marginTop: 14, lineHeight: 18, fontFamily: font.regular }}>
-          By continuing you agree to our{' '}
-          <Link href={PRIVACY_URL as any}>
-            <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy & Terms</Text>
-          </Link>
-          .
-        </Text>
-      )}
+      <Text style={{ fontSize: 12, color: c.ink3, marginTop: 14, lineHeight: 18, fontFamily: font.regular }}>
+        By continuing you agree to our{' '}
+        <Link href={PRIVACY_URL as any}>
+          <Text style={{ color: c.brand, fontFamily: font.semibold }}>Privacy Policy & Terms</Text>
+        </Link>
+        .
+      </Text>
     </Screen>
   );
 };
 
 export default SetPassword;
-

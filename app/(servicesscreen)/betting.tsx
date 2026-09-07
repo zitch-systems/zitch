@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 import { router } from 'expo-router';
-import { apiJson, newIdempotencyKey, publicJson } from '@/lib/api';
+import baseUrl from '@/components/configFiles/apiConfig';
+import { getToken } from '@/lib/secureStore';
+import { newIdempotencyKey } from '@/lib/api';
+import { bettingService } from '@/lib/services/bills';
 import ZIcon from '@/components/design/ZIcon';
-import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Field, Btn, Sheet, PinPad, money, HeaderLink } from '@/components/design/ui';
-import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint, AmountField } from '@/components/design/flowkit';
+import { Screen, Header, Field, Btn, Sheet, PinPad, money, Naira } from '@/components/design/ui';
+import { Label, ProviderGrid, QuickAmounts, ConfirmSheet, BalanceHint } from '@/components/design/flowkit';
 import Receipt from '@/components/design/Receipt';
 import { notify } from '@/components/design/Notify';
 import { useTheme, font } from '@/lib/theme';
@@ -18,32 +20,23 @@ type Step = null | 'confirm' | 'pin';
 const Betting = () => {
   const { c } = useTheme();
   const { balance, reload } = useWallet();
+  const [token, setToken] = useState('');
   const [platforms, setPlatforms] = useState<Platform[]>([]);
-  const [loadingList, setLoadingList] = useState(true);
   const [selected, setSelected] = useState('');
   const [userId, setUserId] = useState('');
   const [amt, setAmt] = useState('');
   const [step, setStep] = useState<Step>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
-  // The ledger reference the server minted for this transaction — shown on the
-  // receipt and carried into the saved/shared file, so a support ticket can name it.
-  const [txnRef, setTxnRef] = useState('');
-  const [pending, setPending] = useState(false);  // provider-pending: held, confirmed later
   const [pinError, setPinError] = useState('');
   const idemKey = useRef('');  // stable across retries of one funding attempt
 
-  // Any edit to the funding details is a new spend — drop the retained key so a
-  // stale one can't replay the PRIOR attempt for the edited one (mirrors sendmoney).
-  useEffect(() => { idemKey.current = ''; }, [selected, userId, amt]);
-
+  useEffect(() => { getToken().then((t) => t && setToken(t)); }, []);
   useEffect(() => {
-    let active = true;
-    publicJson('/api/betting/list/')
-      .then((res) => { if (active && Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
-      .catch(() => {})
-      .finally(() => { if (active) setLoadingList(false); });
-    return () => { active = false; };
+    fetch(`${baseUrl}/api/betting/list/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then((r) => r.json())
+      .then((res) => { if (Array.isArray(res.platforms)) { setPlatforms(res.platforms); if (res.platforms[0]) setSelected(res.platforms[0].code); } })
+      .catch(() => {});
   }, []);
 
   const platform = platforms.find((p) => p.code === selected);
@@ -54,25 +47,16 @@ const Betting = () => {
     if (!idemKey.current) idemKey.current = newIdempotencyKey();
     setBusy(true);
     try {
-      const res = await apiJson('/api/betting/fund/', { platform: selected, user_id: userId, amount: amt, transaction_pin: pin, idempotency_key: idemKey.current });
-      // `pending` = provider timeout: the money is DEBITED AND HELD while
-      // reconciliation confirms or refunds it. It carries no `success` field, so
-      // treating it as a failure (as before) told the user "Error", cleared the
-      // key, and invited a retry that debited a SECOND time. `duplicate` = the
-      // server replayed a completed attempt — also not a failure.
-      if (res.success || res.pending || res.duplicate) {
+      const res = await bettingService.fund(selected, userId, amt, pin, idemKey.current);
+      if (res.success) {
         idemKey.current = '';
-        setTxnRef(String(res.reference || ''));
-        setPending(!res.success && !!res.pending && !res.duplicate);
         setStep(null);
         setDone(true);
         reload();
       } else if (res.code === 'pin_incorrect' || res.code === 'pin_locked') {
         setPinError(res.message || 'Incorrect PIN');
       } else {
-        // Only a definitive rejection mints a new key; a connectivity failure
-        // (`offline`) keeps it so a retry replays server-side, never debits twice.
-        if (!res.offline) idemKey.current = '';
+        idemKey.current = '';  // definitive server failure — a retry is a fresh attempt
         notify('Error', res.message || 'Transaction failed');
         setStep(null);
       }
@@ -88,13 +72,9 @@ const Betting = () => {
     return (
       <Screen scroll={false}>
         <Receipt
-          title={pending ? 'Processing' : 'Wallet funded'}
-          message={pending
-            ? `${money(amount)} to your ${platform.name} account ${userId} is processing and will be confirmed shortly. If it can't be completed, you'll be refunded automatically.`
-            : `${money(amount)} added to your ${platform.name} account ${userId}.`}
+          title="Wallet funded"
+          message={`${money(amount)} added to your ${platform.name} account ${userId}.`}
           rows={[['Platform', platform.name], ['User ID', userId], ['Fee', '₦0'], ['Total', money(amount), true]]}
-          reference={txnRef}
-          status={pending ? 'Processing' : 'Successful'}
           onDone={() => router.replace('/home')}
         />
       </Screen>
@@ -103,16 +83,10 @@ const Betting = () => {
 
   return (
     <Screen>
-      <Header title="Betting" sub="Fund your betting wallet instantly" onBack={() => router.back()} right={<HeaderLink label="History" onPress={() => router.push('/history')} />} />
+      <Header title="Betting" sub="Fund your betting wallet instantly" onBack={() => router.back()} />
 
       <Label>Select platform</Label>
-      {loadingList ? (
-        <View style={{ marginBottom: 16 }}><Loading full={false} /></View>
-      ) : platforms.length === 0 ? (
-        <Text style={{ color: c.ink3, fontFamily: font.regular, marginBottom: 16 }}>No betting platforms available right now. Please try again later.</Text>
-      ) : (
-        <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={setSelected} cols={3} />
-      )}
+      <ProviderGrid items={platforms.map((p) => ({ id: p.code, name: p.name, color: p.color }))} value={selected} onPick={setSelected} cols={3} />
 
       <Field
         label="User ID"
@@ -125,7 +99,13 @@ const Betting = () => {
 
       <Label>Amount</Label>
       <QuickAmounts amounts={AMOUNTS} value={amt} onPick={setAmt} />
-      <AmountField value={amt} onChangeText={setAmt} />
+      <Field
+        value={amt}
+        onChangeText={(v) => setAmt(v.replace(/\D/g, ''))}
+        keyboardType="number-pad"
+        placeholder="Enter amount"
+        prefix={<Naira style={{ color: c.ink2, fontSize: 16, fontWeight: '800' }} />}
+      />
       <View style={{ height: 6 }} />
       <BalanceHint amount={amount} balance={balance} />
 
@@ -141,8 +121,8 @@ const Betting = () => {
         onPay={() => { setStep(null); setPinError(''); setTimeout(() => setStep('pin'), 320); }}
       />
 
-      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN" protectScreen>
-        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, fontFamily: font.regular }}>
+      <Sheet open={step === 'pin'} onClose={() => !busy && setStep(null)} title="Enter your PIN">
+        <Text style={{ fontSize: 13.5, color: c.ink3, marginBottom: 18, marginTop: -6, fontFamily: font.regular }}>
           {busy ? 'Authorizing payment…' : `Confirm payment of ${money(amount)}`}
         </Text>
         <PinPad onComplete={(p) => fund(p)} busy={busy} error={pinError} />

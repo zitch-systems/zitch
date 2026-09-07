@@ -1,39 +1,13 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react';
-import { getToken, saveDisplayName } from '@/lib/secureStore';
-import { apiPost, apiJson } from '@/lib/api';
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
+import { getToken } from '@/lib/secureStore';
+import { apiPost } from '@/lib/api';
+import { EP } from '@/lib/endpoints';
 import type { Txn } from '@/components/design/ui';
-
-// An external bank account the user linked via Mono open banking. Mirrors the
-// backend banklink.views._serialize shape (balance is display-only/cached).
-export type LinkedAccount = {
-  id: number;
-  bank_name: string;
-  account_number: string; // masked by the backend (****1234)
-  account_name: string;
-  balance: number | null;
-  balance_updated: string | null;
-  status: string; // 'active' | 'reauth' | ...
-  mono_account_id?: string;
-};
-
-// The backend sends "YYYY-MM-DD HH:MM" (wallet.views.transaction_history).
-// Parsed by hand rather than handed to `new Date(str)`: that form is not in the
-// ECMAScript spec's grammar, so Hermes and JSC are free to disagree about it —
-// and one of them reads it as UTC, which silently shifts a late-evening
-// transaction into the next day's group. Returns undefined when unreadable, and
-// the caller buckets those separately rather than inventing a date.
-const parseTs = (s: string): number | undefined => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(s.trim());
-  if (!m) {
-    const loose = Date.parse(s);
-    return Number.isNaN(loose) ? undefined : loose;
-  }
-  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime();
-};
 
 // Picks an icon from the service label. Direction comes from the backend's
 // authoritative `direction` field; the label regex is only a fallback.
-const mapTxn = (raw: any, i: number): Txn => {
+// Exported for unit testing of the mapping logic.
+export const mapTxn = (raw: any, i: number): Txn => {
   const service = String(raw?.service ?? raw?.type ?? 'Transaction');
   const s = service.toLowerCase();
   const inflow = /fund|deposit|refund|cashback|credit|received/.test(
@@ -46,174 +20,100 @@ const mapTxn = (raw: any, i: number): Txn => {
   else if (/elect|power|disco/.test(s)) icon = 'bills';
   else if (/transfer|send|withdraw/.test(s)) icon = 'send';
   else if (/fund|deposit|add/.test(s)) icon = 'deposit';
-  const when = String(raw?.date ?? raw?.created_at ?? raw?.time ?? '');
   return {
     id: String(raw?.id ?? raw?.reference ?? i),
     type: service,
-    detail: when,
-    ts: parseTs(when),
+    detail: String(raw?.date ?? raw?.created_at ?? raw?.time ?? ''),
     amount: Number(raw?.amount ?? 0),
     status: String(raw?.transaction_status ?? 'Successful'),
     icon,
     dir: raw?.direction === 'in' || raw?.direction === 'out' ? raw.direction : inflow ? 'in' : 'out',
     reference: String(raw?.reference ?? ''),
-    narration: String(raw?.narration ?? ''),
   };
 };
 
 type WalletValue = {
   balance: number;
   firstName: string;
+  fullName: string;
   avatar: string;
   accountNumber: string;
-  phoneNumber: string;
-  /** The full name the bank holds for the wallet's NUBAN. `firstName` is a
-   *  greeting; this is the legal name a receipt has to print. */
-  accountName: string;
   bankName: string;
   txns: Txn[];
   loading: boolean;
-  /** True once the first load ATTEMPT has finished, success or not.
-   *
-   *  Distinct from `loading`, and the distinction is the whole point: `loading`
-   *  goes true again on every focus refresh, so a screen that drew skeletons
-   *  from it would flash placeholders over content the customer is already
-   *  reading every time they navigated back. `hydrated` latches once and stays
-   *  true, which is what "show the skeleton only before there has ever been
-   *  data" actually needs. Refreshes after that are the pull-to-refresh
-   *  spinner's job, not the skeleton's. */
-  hydrated: boolean;
   showBal: boolean;
   setShowBal: (v: boolean) => void;
-  reload: () => Promise<void>;
-  linked: LinkedAccount[];
-  reloadLinked: () => Promise<void>;
+  reload: () => void;
 };
 
 const WalletContext = createContext<WalletValue>({
   balance: 0,
   firstName: '',
+  fullName: '',
   avatar: '',
   accountNumber: '',
-  phoneNumber: '',
-  accountName: '',
   bankName: '',
   txns: [],
   loading: true,
-  hydrated: false,
   showBal: true,
   setShowBal: () => {},
-  reload: () => Promise.resolve(),
-  linked: [],
-  reloadLinked: () => Promise.resolve(),
+  reload: () => {},
 });
 
 export const WalletProvider = ({ children }: { children: React.ReactNode }) => {
   const [balance, setBalance] = useState(0);
   const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [avatar, setAvatar] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [accountName, setAccountName] = useState('');
   const [bankName, setBankName] = useState('');
   const [txns, setTxns] = useState<Txn[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hydrated, setHydrated] = useState(false);
   const [showBal, setShowBal] = useState(true);
-  const [linked, setLinked] = useState<LinkedAccount[]>([]);
 
-  // The user's Mono-linked external bank accounts (display + funding source).
-  // Loaded alongside the wallet and refreshable on demand (reloadLinked).
-  const reloadLinked = useCallback(async () => {
+  const load = useCallback(async () => {
+    setLoading(true);
     try {
       const token = await getToken();
-      if (!token) return;
-      const r = await apiJson<{ accounts?: any[] }>('/api/banklink/list/');
-      const list = Array.isArray(r?.accounts) ? r.accounts : [];
-      setLinked(list.map((a) => ({
-        id: Number(a.id),
-        bank_name: String(a.bank_name ?? ''),
-        account_number: String(a.account_number ?? ''),
-        account_name: String(a.account_name ?? ''),
-        balance: a.balance == null || a.balance === '' ? null : Number(a.balance),
-        balance_updated: a.balance_updated ?? null,
-        status: String(a.status ?? 'active'),
-        mono_account_id: a.mono_account_id ? String(a.mono_account_id) : undefined,
-      })));
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+      const [balRes, txRes] = await Promise.allSettled([
+        apiPost(EP.wallet.balance).then((r) => r.json()),
+        apiPost(EP.wallet.history).then((r) => r.json()),
+      ]);
+
+      if (balRes.status === 'fulfilled' && balRes.value?.success) {
+        setBalance(Number(balRes.value.wallet ?? 0));
+        setFirstName(String(balRes.value.user_first_name ?? balRes.value.user_last_name ?? ''));
+        setLastName(String(balRes.value.user_last_name ?? ''));
+        setAvatar(String(balRes.value.user_avatar ?? ''));
+        setAccountNumber(String(balRes.value.account_number ?? ''));
+        setBankName(String(balRes.value.bank_name ?? ''));
+      }
+      if (txRes.status === 'fulfilled' && txRes.value?.status) {
+        const list = Array.isArray(txRes.value.all_site_transactions) ? txRes.value.all_site_transactions : [];
+        setTxns(list.map(mapTxn));
+      }
     } catch {
-      // keep last-known list; transient failures shouldn't blank the UI
+      // surfaced to the user elsewhere; keep the dashboard usable on failure
+    } finally {
+      setLoading(false);
     }
   }, []);
 
-  // Several tab focus effects can fire during the same navigation transition.
-  // Coalesce them into one balance/history request pair so the API, JSON parser and
-  // React tree do the work once rather than two or three times in parallel.
-  const loadInFlight = useRef<Promise<void> | null>(null);
-
-  const load = useCallback((): Promise<void> => {
-    if (loadInFlight.current) return loadInFlight.current;
-
-    const run = (async () => {
-      setLoading(true);
-      try {
-        const token = await getToken();
-        if (!token) return;
-        const [balRes, txRes] = await Promise.allSettled([
-          apiPost('/api/wallet_balance/').then((response) => response.json()),
-          apiPost('/api/user-transaction-history/').then((response) => response.json()),
-        ]);
-
-        if (balRes.status === 'fulfilled' && balRes.value?.success) {
-          const value = balRes.value;
-          setBalance(Number(value.wallet ?? 0));
-          const named = String(value.user_first_name || value.user_last_name
-            || String(value.user_email || '').split('@')[0] || '');
-          setFirstName(named);
-          void saveDisplayName(named);
-          setAvatar(String(value.user_avatar ?? ''));
-          setAccountNumber(String(value.account_number ?? ''));
-          setPhoneNumber(String(value.user_phone_number ?? ''));
-          setAccountName(String(value.account_name ?? ''));
-          setBankName(String(value.bank_name ?? ''));
-        }
-        if (txRes.status === 'fulfilled' && txRes.value?.status) {
-          const list = Array.isArray(txRes.value.all_site_transactions)
-            ? txRes.value.all_site_transactions
-            : [];
-          setTxns(list.map(mapTxn));
-        }
-      } catch {
-        // Keep last-known values visible through transient network failures.
-      } finally {
-        setLoading(false);
-        // Latched on the attempt, not on success: a first load that fails
-        // offline must stop showing skeletons and fall through to the real
-        // empty/error state, not shimmer indefinitely at someone with no signal.
-        setHydrated(true);
-      }
-    })();
-
-    loadInFlight.current = run;
-    void run.finally(() => {
-      if (loadInFlight.current === run) loadInFlight.current = null;
-    });
-    return run;
-  }, []);
-
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void load();
-      void reloadLinked();
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [load, reloadLinked]);
+    load();
+  }, [load]);
 
   // Memoize so the context value is stable between renders — otherwise every
   // wallet consumer (Home, Wallet, the tab bar, service screens) re-renders
   // whenever the provider renders, even when nothing it reads has changed.
+  const fullName = `${firstName} ${lastName}`.trim();
   const value = useMemo(
-    () => ({ balance, firstName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, hydrated, showBal, setShowBal, reload: load, linked, reloadLinked }),
-    [balance, firstName, avatar, accountNumber, phoneNumber, accountName, bankName, txns, loading, hydrated, showBal, load, linked, reloadLinked],
+    () => ({ balance, firstName, fullName, avatar, accountNumber, bankName, txns, loading, showBal, setShowBal, reload: load }),
+    [balance, firstName, fullName, avatar, accountNumber, bankName, txns, loading, showBal, load],
   );
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;

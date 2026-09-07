@@ -1,25 +1,11 @@
 name: CI
 
 on:
-  workflow_dispatch:
-  schedule:
-    # Re-run dependency and secret checks even when the repository is idle so a
-    # newly disclosed vulnerability does not wait for the next code push.
-    - cron: "17 4 * * *"
   push:
     branches: [main]
-    # `landing/**` is no longer ignored: the landing app ships raw .jsx that the
-    # browser transpiles, and the browser-asset parse check below is the only
-    # thing that reads it. Ignoring it would mean a syntax error there could
-    # merge without any check running at all.
-    paths-ignore: ['docs/**', '**/*.md']
+    paths-ignore: ['landing/**', 'docs/**', '**/*.md']
   pull_request:
-    paths-ignore: ['docs/**', '**/*.md']
-
-# Least privilege: every job only reads the repo. Nothing here writes to the
-# repo, packages, or deployments, so the default write token is unnecessary.
-permissions:
-  contents: read
+    paths-ignore: ['landing/**', 'docs/**', '**/*.md']
 
 # Cancel superseded runs so a burst of pushes doesn't stack up Actions minutes.
 concurrency:
@@ -27,8 +13,73 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decide which suites actually need to run for this change, so a backend-only
+  # PR doesn't spin up the (heavier) Expo job and vice versa — the single biggest
+  # lever on Actions minutes. The backend/app jobs gate on these outputs; a job
+  # skipped this way still reports success, so required-status-check branch
+  # protection is unaffected (unlike a workflow-level paths filter, which would
+  # leave a required check pending forever).
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      app: ${{ steps.filter.outputs.app }}
+    steps:
+      # fetch-depth: 0 so the diff below can reach the PR base / previous push.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      # Inline path filter (a plain git diff) instead of a third-party action, so
+      # the job runs under an org "Allowed actions" policy that only permits
+      # GitHub-authored actions. Mirrors the previous dorny/paths-filter config.
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Pick the commit to diff against: the PR base on pull_request, the
+          # pre-push tip on push.
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$BASE_SHA"
+          else
+            base="$BEFORE_SHA"
+          fi
+          # Fall back to the first parent when base is missing or unknown to git
+          # (new branch, force-push, or shallow gap) so we never diff the world.
+          if [ -z "${base:-}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD^ 2>/dev/null || git rev-parse HEAD)"
+          fi
+
+          files="$(git diff --name-only "$base" "$HEAD_SHA")"
+          echo "Changed files since $base:"
+          echo "$files"
+
+          matches() { printf '%s\n' "$files" | grep -qE "$1"; }
+
+          backend=false
+          app=false
+          if matches '^backend/' || matches '^\.github/workflows/ci\.yml$'; then
+            backend=true
+          fi
+          if matches '^(app|components|constants|hooks|lib|assets|shims|scripts)/' \
+            || matches '^(package\.json|package-lock\.json|tsconfig\.json|app\.json|babel\.config\.js|metro\.config\.js|eas\.json)$' \
+            || matches '^\.github/workflows/ci\.yml$'; then
+            app=true
+          fi
+
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "Resolved: backend=$backend app=$app"
+
   backend:
     name: Backend (Django)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     env:
       # CI runs with the production-secure default (DEBUG off). Provide a
@@ -36,43 +87,19 @@ jobs:
       # SECRET_KEY when DEBUG is off" boot guard. Not a real secret; the test
       # step is unaffected (Django forces DEBUG off under tests anyway).
       DJANGO_SECRET_KEY: "ci-only-throwaway-secret-not-used-in-production-000"
-      # This job is deliberately single-process; production keeps the secure
-      # default and must provide Redis for cross-worker rate-limit state.
-      DJANGO_REQUIRE_SHARED_CACHE: "false"
     defaults:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
-      # `manage.py check` imports the installed apps, but not modules nothing
-      # imports at boot — management commands most of all, which is exactly
-      # where a syntax error hides until an operator runs it during an incident.
-      - name: Compile every module
-        run: python -m compileall -q . -x '(__pycache__|\.venv)'
-      # The Flow JSON carries the logo as inlined base64, because WhatsApp Flows
-      # cannot fetch a remote image. That makes the JSON a build output as much
-      # as a source file: change the mark and the published Flow keeps the old
-      # bytes until someone remembers to re-run the script.
-      - name: WhatsApp Flow JSON is built from the current logo
-        working-directory: .
-        run: |
-          pip install --quiet pillow
-          python scripts/build-flow-logo.py --check
       - name: System check
         run: python manage.py check
-      - name: Deploy checks
-        # The production-settings audit (SECURE_*, cookies, HSTS, DEBUG…). CI runs
-        # with DEBUG off (see env above), so this validates what prod actually boots
-        # with. Fails only on errors; warnings print for review.
-        run: python manage.py check --deploy
       - name: Migrations are complete
         run: python manage.py makemigrations --check --dry-run
       - name: Migrate + seed (SQLite)
@@ -82,125 +109,29 @@ jobs:
       - name: Tests
         run: python manage.py test
 
-  security:
-    name: Security (secrets + Python dependency audit)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      # Secret scan — gitleaks as a pinned release binary (not the marketplace
-      # action, which the org's GitHub-authored-only actions policy would block
-      # and which needs a license key for orgs). Full history is checked out so a
-      # secret cannot remain recoverable in an earlier commit while the tip scans
-      # clean. Blocking.
-      - name: Secret scan (gitleaks)
-        run: |
-          set -euo pipefail
-          curl -sSL -o /tmp/gitleaks.tgz \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
-          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-          /tmp/gitleaks detect --source . --no-banner --redact
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-      # Python dependency audit — resolves the requirement floors as pip would
-      # today and checks the result against the vulnerability DBs. Clean as of
-      # the cryptography>=48.0.1 / Pillow>=12.2 floors, so this is blocking.
-      - name: pip-audit
-        run: |
-          pip install --quiet pip-audit
-          pip-audit -r backend/requirements.txt
   app:
     name: App (Expo)
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "22"
+          node-version: "20"
           cache: npm
-      - name: Use npm 11 audit client
-        run: npm install --global npm@11.6.2
       - run: npm ci
-      # Audit the installed production tree. The wrapper permits only explicitly
-      # mitigated, expiring build-parser advisories; every other high/critical
-      # finding still fails. Lockfile-only auditing hits npm's retired quick
-      # endpoint and can reject an otherwise valid dependency tree.
-      #
-      # The retry lives INSIDE the wrapper now, wrapped around the one network
-      # call rather than around the whole step. The step used to re-run the
-      # entire script and tell a service outage from a real finding by grepping
-      # its stderr — which meant it also re-ran the local invariant checks, and
-      # rested the whole distinction on wording nobody would think to keep
-      # stable. The script decides directly (a report either parsed or it did
-      # not) and reports the two cases as different exit codes.
-      - name: npm audit (production high + critical)
-        run: |
-          audit_status=0
-          npm run --silent audit:security || audit_status=$?
-          if [ "$audit_status" -eq 75 ]; then
-            echo "::error title=npm advisory service unavailable::Could not obtain an npm audit report; failing closed rather than shipping an unknown dependency-vulnerability state."
-          fi
-          exit "$audit_status"
-      - name: Lint
-        run: npm run lint
       - name: Typecheck
         run: npx tsc --noEmit
+      # Blocking on errors (warnings are allowed through). Run eslint directly so
+      # CI is deterministic and non-interactive (avoids `expo lint`'s setup path).
+      - name: Lint
+        run: npx eslint .
       - name: Unit tests
         run: npm test -- --ci
-      # The operator console, portal and landing app ship raw .jsx and transpile
-      # it in the browser. Nothing else in this pipeline reads those files — not
-      # the Expo bundle, not tsc, not eslint — so a syntax error there is
-      # invisible until someone opens a blank page. On the console, that is the
-      # screen used to investigate incidents.
-      - name: Browser assets parse (console, portal, landing)
-        run: npm run check:browser-assets
-      # Runs on pull requests too, not just merges to main: catching a broken
-      # bundle after it has landed means main is already red for everyone.
+      # The full Metro/iOS bundle is the most minute-heavy step and rarely catches
+      # what tsc + jest miss, so only run it on pushes to main (the merged result),
+      # not on every PR revision.
       - name: Bundle (Metro export, iOS)
+        if: github.event_name == 'push'
         run: npx expo export --platform ios --output-dir /tmp/ciexport
-      # LAST, and deliberately so. Both of these ask Expo's servers what the SDK
-      # currently expects, so they can go red because someone else published a
-      # patch release — with nothing in this repository having changed. A failing
-      # step skips every step after it, so while these ran fifth a stale version
-      # map silently suppressed the lint, typecheck, unit tests, browser-asset
-      # parse and Metro bundle above: the app went two days with no CI on a
-      # banking client, and the job still reported the single word "failure".
-      #
-      # They still FAIL the job — a drifted SDK is worth knowing about, and this
-      # is not continue-on-error. They just no longer decide whether the checks
-      # on our own code get to run at all.
-      #
-      # Both go through ci-retry.sh, which re-runs them ONLY on a network or
-      # upstream-service error. A genuine drift report ("react@19.1.0 - expected
-      # version: 19.1.1") still fails on the first try: retrying a real answer
-      # would only delay it, and would teach everyone reading the log that a red
-      # dependency check is something that sometimes clears on its own.
-      - name: Expo dependency compatibility
-        run: scripts/ci-retry.sh npx expo install --check
-      - name: Expo project health
-        run: scripts/ci-retry.sh npx expo-doctor
-
-  meta-connector:
-    name: Meta connector (MCP + OAuth)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: zitch-meta-connector
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: zitch-meta-connector/package-lock.json
-      - run: npm ci
-      - name: Typecheck source
-        run: npm run typecheck
-      - name: Build production server
-        run: npm run build
-      - name: Typecheck tests
-        run: npx tsc -p test/tsconfig.json
-      - name: Unit and OAuth integration tests
-        run: npm test

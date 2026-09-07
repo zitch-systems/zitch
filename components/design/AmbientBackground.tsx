@@ -16,39 +16,31 @@ import { useTheme } from '@/lib/theme';
 const AmbientBackground = () => {
   const { c, theme } = useTheme();
   const { width, height } = useWindowDimensions();
-  // Glows are a touch stronger on dark so the depth reads; gentle on light.
-  const a = theme === 'dark' ? 0.45 : 0.5;
+  // Opacities mirror the `--bg-grad` tokens (brand glow top-right, cyan glow
+  // bottom-left) — subtle on light, a touch stronger on dark, per tokens.css.
+  const brandA = theme === 'dark' ? 0.18 : 0.1;
+  const cyanA = theme === 'dark' ? 0.1 : 0.12;
 
   return (
     <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
       <Svg width={width} height={height}>
         <Defs>
           <RadialGradient id="zGlowTop" cx="50%" cy="50%" r="50%">
-            <Stop offset="0" stopColor={c.brand} stopOpacity={a} />
+            <Stop offset="0" stopColor={c.brand} stopOpacity={brandA} />
             <Stop offset="1" stopColor={c.brand} stopOpacity={0} />
           </RadialGradient>
           <RadialGradient id="zGlowBottom" cx="50%" cy="50%" r="50%">
-            <Stop offset="0" stopColor={c.cyan} stopOpacity={theme === 'dark' ? 0.22 : 0.3} />
+            <Stop offset="0" stopColor={c.cyan} stopOpacity={cyanA} />
             <Stop offset="1" stopColor={c.cyan} stopOpacity={0} />
           </RadialGradient>
-          <RadialGradient id="zGlowMid" cx="50%" cy="50%" r="50%">
-            <Stop offset="0" stopColor={c.brandDeep} stopOpacity={theme === 'dark' ? 0.18 : 0.14} />
-            <Stop offset="1" stopColor={c.brandDeep} stopOpacity={0} />
-          </RadialGradient>
         </Defs>
-        {/* top-right brand glow */}
-        <Circle cx={width * 0.92} cy={height * 0.06} r={width * 0.7} fill="url(#zGlowTop)" />
-        {/* bottom-left cyan glow */}
-        <Circle cx={width * 0.05} cy={height * 0.9} r={width * 0.75} fill="url(#zGlowBottom)" />
-        {/* faint mid-left deep teal for body */}
-        <Circle cx={width * 0.1} cy={height * 0.38} r={width * 0.55} fill="url(#zGlowMid)" />
+        {/* top-right brand glow (token: 50% 40% at 88% 2%) */}
+        <Circle cx={width * 0.88} cy={height * 0.02} r={width * 0.62} fill="url(#zGlowTop)" />
+        {/* bottom-left cyan glow (token: 48% 42% at 2% 100%) */}
+        <Circle cx={width * 0.02} cy={height * 1.0} r={width * 0.66} fill="url(#zGlowBottom)" />
       </Svg>
     </View>
   );
 };
 
-// Screen shells re-render whenever their children update (typing, polling, list
-// refreshes). The ambient SVG has no props, so rebuilding three full-screen radial
-// gradients on each of those renders wastes UI-thread work without changing a
-// pixel. Context changes (theme/rotation) still invalidate this memo normally.
-export default React.memo(AmbientBackground);
+export default AmbientBackground;

@@ -1,496 +1,58 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, Text, Pressable, Share, Linking } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { View, Text, Pressable } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
 import { notify } from '@/components/design/Notify';
-import { apiJson } from '@/lib/api';
+import { walletService } from '@/lib/services/wallet';
 import { Loading } from '@/components/design/Loading';
-import { Screen, Header, Card, Btn, Field, ZItem, NText, HeaderLink } from '@/components/design/ui';
+import { Screen, Header, Btn, Field } from '@/components/design/ui';
+import { Label } from '@/components/design/flowkit';
 import ZIcon from '@/components/design/ZIcon';
-import FaceVerifyModal from '@/components/design/FaceVerifyModal';
-import { useTheme, font, radius, iconTint } from '@/lib/theme';
-import { useWallet } from '@/lib/wallet';
+import { useTheme, font } from '@/lib/theme';
 
-type DediAccount = {
-  account_number: string;
-  account_name: string;
-  bank_name: string;
-  bank_tier?: number;
-  bvn_verified?: boolean;
-  nin_verified?: boolean;
-  account_setup_state?: string;
-  otp_required?: boolean;
-  tracking_id?: string;
-  otp_destination?: string;
-  otp_destination_kind?: 'bvn' | 'nin';
-  using_bvn?: boolean;
-};
+type DediAccount = { account_number: string; account_name: string; bank_name: string };
 
-type OtpAttempt = {
-  trackingId: string;
-  destination: string;
-  identity: 'BVN' | 'NIN';
-};
-
-const otpIdentityLabel = (r: any): 'BVN' | 'NIN' =>
-  String(r?.otp_destination_kind || (r?.using_bvn === false ? 'nin' : 'bvn')).toLowerCase() === 'nin'
-    ? 'NIN'
-    : 'BVN';
-
-// ---- Account number display helpers ----
-// Grouping is DISPLAY ONLY: copy/share always send the raw digits, because a
-// number with spaces in it is rejected by half the bank apps it gets pasted into.
-const digitsOnly = (v: string) => (v || '').replace(/\D/g, '');
-const groupAccount = (v: string) => {
-  const d = digitsOnly(v);
-  if (d.length !== 10) return v || '';
-  return `${d.slice(0, 3)} ${d.slice(3, 6)} ${d.slice(6)}`;
-};
-
-// ---- Bank app shortcuts ----
-// Best-effort deep links into the bank apps a customer is most likely to
-// transfer FROM. Schemes are matched loosely on the bank's name; anything we
-// can't resolve (or that isn't installed) just falls back to the copy, which is
-// the part that actually matters.
-const BANK_SCHEMES: Record<string, string> = {
-  gtbank: 'gtworld://',
-  'guaranty trust': 'gtworld://',
-  access: 'accessmore://',
-  zenith: 'zenithbank://',
-  'first bank': 'firstmobile://',
-  firstbank: 'firstmobile://',
-  uba: 'ubamobile://',
-  'united bank for africa': 'ubamobile://',
-  kuda: 'kuda://',
-  moniepoint: 'moniepoint://',
-  palmpay: 'palmpay://',
-  wema: 'alat://',
-  alat: 'alat://',
-  fidelity: 'fidelitybank://',
-  sterling: 'onebank://',
-  union: 'unionmobile://',
-  stanbic: 'stanbicibtc://',
-  fcmb: 'fcmbmobile://',
-  polaris: 'polarisbank://',
-  ecobank: 'ecobankmobile://',
-  keystone: 'keystonebank://',
-};
-
-const schemeFor = (name: string) => {
-  const k = (name || '').toLowerCase();
-  const hit = Object.keys(BANK_SCHEMES).find((s) => k.includes(s));
-  return hit ? BANK_SCHEMES[hit] : undefined;
-};
-
-const DEFAULT_BANKS = ['GTBank', 'Access Bank', 'Zenith Bank', 'First Bank', 'UBA', 'Kuda'];
-
-// No bank logo assets ship with the app, so each bank gets a coloured monogram
-// disc instead - built from its own name so a newly linked bank needs no asset.
-const monogram = (name: string) => {
-  const words = (name || '')
-    .replace(/[^A-Za-z ]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .filter((w) => !/^(bank|plc|mfb|microfinance|limited|ltd|nigeria)$/i.test(w));
-  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
-  const w = words[0] || name || '?';
-  return w.slice(0, 2).toUpperCase();
-};
-
-type BankShortcut = { name: string; url?: string };
-
-// The user's own linked banks first (those are the accounts they actually send
-// from), topped up with the common ones until we have `max`.
-const bankShortcuts = (linked: { bank_name: string }[], max: number): BankShortcut[] => {
-  const seen = new Set<string>();
-  const out: BankShortcut[] = [];
-  const push = (raw: string) => {
-    const name = (raw || '').trim();
-    const key = name.toLowerCase();
-    if (!name || seen.has(key) || out.length >= max) return;
-    seen.add(key);
-    out.push({ name, url: schemeFor(name) });
-  };
-  linked.forEach((a) => push(a.bank_name));
-  DEFAULT_BANKS.forEach(push);
-  return out;
-};
-
-// A receipt-style dashed rule. Rendered as a clipped 2px box with a full dashed
-// border: Android ignores `borderStyle` on a single edge, so a plain
-// `borderBottomWidth` rule would silently come out solid there.
-const DashedRule = ({ style }: { style?: object }) => {
-  const { c } = useTheme();
-  return (
-    <View style={[{ height: 1, overflow: 'hidden' }, style]}>
-      <View style={{ height: 2, borderWidth: 1, borderStyle: 'dashed', borderColor: c.line, borderRadius: 1 }} />
-    </View>
-  );
-};
-
-// Secondary action: brand text on a brand tint. Pairs with <Btn> at the same
-// height so the two sit as one row of equals.
-const TintBtn = ({ label, icon, onPress, disabled }: { label: string; icon: string; onPress: () => void; disabled?: boolean }) => {
-  const { c, theme } = useTheme();
-  return (
-    <Pressable
-      onPress={disabled ? undefined : onPress}
-      disabled={!!disabled}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ disabled: !!disabled }}
-      style={({ pressed }) => ({
-        flex: 1,
-        height: 48,
-        borderRadius: radius.pill,
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        backgroundColor: iconTint(c.brand, theme === 'dark'),
-        opacity: disabled ? 0.5 : pressed ? 0.85 : 1,
-      })}
-    >
-      <ZIcon name={icon} size={18} color={c.brand} stroke={2.2} />
-      <Text style={{ fontSize: 15, fontFamily: font.bold, color: c.brand }}>{label}</Text>
-    </Pressable>
-  );
-};
-
-// Funding is by bank transfer to a dedicated Zitch (Wema/ALAT) NUBAN - minted via
-// Wema's reserved-account onboarding (enter BVN; Wema verifies it and issues the
-// NUBAN over a one-time OTP). Wema has no hosted checkout, so there is no instant
-// card/bank pay-in here; deposits to the NUBAN are credited automatically by the
-// reconcile poller.
+// Funding is bank-transfer only: the user transfers to their dedicated Zitch
+// (Monnify reserved) account and the wallet is credited automatically by the
+// webhook — no card checkout. The account is minted through Monnify's own
+// onboarding: the user enters their BVN here and Monnify verifies it and issues
+// the NUBAN (no separate in-app KYC step needed first).
 const AddMoney = () => {
-  const { c, theme } = useTheme();
-  const { accountNumber: walletAcctNo, accountName: walletAcctName, bankName: walletBank, linked } = useWallet();
+  const { c } = useTheme();
   const [loading, setLoading] = useState(true);
   const [account, setAccount] = useState<DediAccount | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  // The customer's registered legal name - shown as the account name whenever the
-  // provider omits it, so the funding card never renders a nameless account (which
-  // a payer can't confirm before transferring).
-  const [holderName, setHolderName] = useState('');
   const [bvn, setBvn] = useState('');
   const [creating, setCreating] = useState(false);
 
-  // Wema/ALAT flow: account creation is a BVN + OTP round-trip. When the backend
-  // answers otp_required, we hold the tracking id and show the OTP step.
-  const [otpFlow, setOtpFlow] = useState<OtpAttempt | null>(null);
-  const [otp, setOtp] = useState('');
-  const [verifying, setVerifying] = useState(false);
-  const [bvnVerified, setBvnVerified] = useState(false);
-  const [pendingAttempt, setPendingAttempt] = useState<OtpAttempt | null>(null);
-  // The identity digits re-entered on the OTP screen to open the face check. Held
-  // only for the length of that one call: the raw BVN/NIN is never persisted here
-  // or on the server, which keeps a keyed hash and nothing else.
-  const [faceId, setFaceId] = useState('');
-  const [faceIdAsked, setFaceIdAsked] = useState(false);
-
-  // useCallback so loadAccount below can be stable too — the mount effect needs
-  // to list it as a dependency (react-hooks/exhaustive-deps) without that turning
-  // a once-on-mount fetch into a fetch on every render. Only state setters are
-  // closed over, and those are stable, so [] is honest here.
-  const rememberAccountState = useCallback((r: any) => {
-    setBvnVerified(!!r?.bvn_verified);
-    if (r?.otp_required && r?.tracking_id) {
-      const next: OtpAttempt = {
-        trackingId: String(r.tracking_id),
-        destination: String(r.otp_destination || ''),
-        identity: otpIdentityLabel(r),
-      };
-      setPendingAttempt(next);
-      return next;
-    }
-    setPendingAttempt(null);
-    return null;
-  }, []);
-
-  // Wema's hosted face check - the bank's own documented alternative to that OTP.
-  // It matters most on THIS screen: the code goes to the line registered against the
-  // BVN, which is routinely not the phone in the customer's hand, and without a way
-  // round it the account simply never gets created.
-  const [faceAvailable, setFaceAvailable] = useState(false);
-  const [faceUrl, setFaceUrl] = useState('');
-  const [facePolling, setFacePolling] = useState(false);
-  // The poll loop's cancellation token - a ref because the loop starts before the
-  // render that would have carried a new state value.
-  const faceSession = useRef('');
-  useEffect(() => () => { faceSession.current = ''; }, []);
-
-  const loadAccount = useCallback(() => {
+  useEffect(() => {
     let alive = true;
-    setLoading(true);
-    setLoadFailed(false);
-    // Never let a slow/hanging backend leave the page stuck on the spinner: show
-    // the screen within a few seconds no matter what. If the account lookup
-    // resolves later, it still fills in (account state).
+    // Never let a slow/hanging backend (e.g. a slow Monnify call) leave the page
+    // stuck on the spinner: show the screen within a few seconds no matter what.
+    // If the account lookup resolves later, it still fills in (account state).
     const guard = setTimeout(() => { if (alive) setLoading(false); }, 8000);
-    apiJson('/api/wallet/account/')
-      .then((r) => {
-        if (!alive || !r?.success) return;
-        if (r.holder_name) setHolderName(r.holder_name);
-        rememberAccountState(r);
-        if (r.account_number) setAccount(r as DediAccount);
-      })
-      .catch(() => { if (alive) setLoadFailed(true); })
+    walletService.getAccount()
+      .then((r) => { if (alive && r?.success && r.account_number) setAccount(r as DediAccount); })
+      .catch(() => {})
       .finally(() => { if (alive) { clearTimeout(guard); setLoading(false); } });
     return () => { alive = false; clearTimeout(guard); };
-  }, [rememberAccountState]);
-
-  useEffect(() => {
-    let cleanup: undefined | (() => void);
-    const timer = setTimeout(() => { cleanup = loadAccount(); }, 0);
-    return () => { clearTimeout(timer); cleanup?.(); };
-  }, [loadAccount]);
-
-  // The server owns this: only it knows whether the bank's verifier is keyed and
-  // its callback allowlist configured. Offering the button otherwise would just
-  // 503 the customer at the worst possible moment.
-  useEffect(() => {
-    let alive = true;
-    apiJson('/api/kyc/status/')
-      .then((r) => { if (alive && r?.success) setFaceAvailable(!!r.identity_face_available); })
-      .catch(() => { /* the OTP route still works - leave the option hidden */ });
-    return () => { alive = false; };
   }, []);
 
-  /** Hand the customer to the bank's hosted face page instead of the SMS code.
-   *
-   * Nothing here decides anything: the bank posts the result to our own callback,
-   * which is the only version a client cannot fake by driving its own WebView. On a
-   * pass the callback creates the Tier-1 NUBAN (the bank's documented without-OTP
-   * path), so a verdict is followed by re-reading the account rather than by
-   * trusting the page.
-   */
-  const verifyWithFace = async () => {
-    // The attempt this button is escaping FROM, if any. On the OTP screen it is
-    // always set — that screen is the only place this button is offered next to
-    // "No code arriving?".
-    const attempt = otpFlow || pendingAttempt;
-
-    // This used to return right here with "SMS already sent", which made the
-    // button impossible to use: it is only ever shown while an attempt is live,
-    // so the guard fired every single time and answered the one question it
-    // exists to answer ("the code never came") with "we already sent the code".
-    // The code goes to the line registered against the BVN/NIN, which is very
-    // often not the phone in the customer's hand, so resending is no help either
-    // — and with the SMS not arriving there was then no way to finish signup at
-    // all. Asking on purpose now opens the face check; the OTP stays live, and
-    // whichever proof the bank returns first creates the same account.
-    if (attempt) {
-      const type = attempt.identity === 'NIN' ? 'nin' : 'bvn';
-      // The raw number is never stored — not on the device and not on the server,
-      // which keeps only a keyed hash — so it has to come from this screen. Reuse
-      // what was typed a moment ago when it is the same identity; otherwise ask,
-      // which is also the case for an attempt started in an earlier session.
-      const known = type === 'bvn' && bvn.length === 11 ? bvn : faceId;
-      if (known.length !== 11) {
-        setFaceIdAsked(true);
-        notify(`Enter your ${attempt.identity}`,
-               `Confirm your 11-digit ${attempt.identity} to open Wema's face check.`);
-        return;
-      }
-      setCreating(true);
-      try {
-        // prefer_face: without it the server answers a live attempt with the same
-        // "enter the code we already sent", which is this dead end one layer down.
-        const r = await apiJson('/api/kyc/face/start/', { [type]: known, prefer_face: true });
-        // Only when the reply actually carries account state. A face SESSION reply
-        // is {url, session} and nothing else, and feeding that through here read
-        // its absent fields as negatives — clearing bvn_verified and dropping the
-        // pending attempt on the very response that means "the face route opened".
-        if (r?.account_number || r?.otp_required || 'bvn_verified' in (r || {})) {
-          rememberAccountState(r);
-        }
-        if (r?.success && r.account_number) {
-          setFaceId(''); setFaceIdAsked(false); setOtpFlow(null); setOtp(''); setBvn('');
-          loadAccount();
-          notify('Account ready', r.message || 'Your account is ready.');
-          return;
-        }
-        if (!r?.success || !r.url) {
-          notify('Not available', r?.message || 'Face verification is unavailable right now.');
-          return;
-        }
-        faceSession.current = String(r.session);
-        setFaceId(''); setFaceIdAsked(false);
-        setFaceUrl(String(r.url));
-        pollFace(String(r.session));
-      } catch {
-        notify('Error', 'Something went wrong. Please try again later.');
-      } finally { setCreating(false); }
-      return;
-    }
-    if (bvnVerified) {
-      notify('Already verified', 'Your BVN is already verified. You do not need to enter or verify it again.');
-      return;
-    }
-    if (bvn.length !== 11) { notify('Check the number', 'Enter your 11-digit BVN.'); return; }
-    setCreating(true);
-    let started: { url: string; session: string } | null = null;
-    try {
-      const r = await apiJson('/api/kyc/face/start/', { bvn });
-      // Already verified AND the account exists (or was just reconnected): there is
-      // nothing to check again - show the account instead of sending the customer
-      // back to the BVN field they just filled in.
-      const pending = rememberAccountState(r);
-      if (r?.success && r.account_number) {
-        setBvn('');
-        setOtpFlow(null);
-        setOtp('');
-        loadAccount();
-        notify('Account ready', r.message || 'Your account is ready.');
-        return;
-      }
-      if (r?.status === 'account_otp_pending' && pending) {
-        setOtpFlow(pending);
-        setOtp('');
-        notify('SMS already sent', r.message || 'Enter the Wema code already sent to finish creating your account.');
-        return;
-      }
-      if (r?.status === 'verified' && !r.account_number) {
-        notify('BVN verified', r.message || 'Your BVN is verified. Continue account setup to get your account number.');
-        return;
-      }
-      if (!r?.success || !r.url) {
-        notify('Not available', r?.message || 'Face verification is unavailable right now.');
-        return;
-      }
-      started = { url: String(r.url), session: String(r.session) };
-    } catch { notify('Error', 'Something went wrong. Please try again later.'); }
-    finally { setCreating(false); }
-    if (!started) return;
-    faceSession.current = started.session;
-    setFaceUrl(started.url);
-    pollFace(started.session);
-  };
-
-  const pollFace = async (session: string) => {
-    setFacePolling(true);
-    // Matches the server's session TTL: polling past the point where the check can
-    // still complete only burns battery and requests.
-    const deadline = Date.now() + 20 * 60 * 1000;
-    const startedAt = Date.now();
-    try {
-      while (faceSession.current === session && Date.now() < deadline) {
-        // Tight while the customer is actually in the check, then slow down - a flat
-        // 3s for twenty minutes would start drawing 429s, which this loop cannot tell
-        // apart from "not verified yet".
-        await new Promise((r) => setTimeout(r, Date.now() - startedAt < 60_000 ? 3000 : 10_000));
-        if (faceSession.current !== session) return;
-        let r;
-        try { r = await apiJson('/api/kyc/face/status/', { session }); }
-        catch { continue; }   // a dropped request is not a failed check
-        if (r?.status === 'verified') {
-          faceSession.current = '';
-          setFaceUrl('');
-          const accountState = await apiJson('/api/wallet/account/');
-          const pending = rememberAccountState(accountState);
-          if (accountState?.account_number) {
-            setBvn('');
-            setOtpFlow(null);
-            setOtp('');
-            setAccount(accountState as DediAccount);
-            notify('Account ready', 'Your Zitch account number is ready.');
-          } else if (pending) {
-            setOtpFlow(pending);
-            notify('BVN verified', 'Enter the Wema SMS code already sent to finish creating your account.');
-          } else {
-            notify('BVN verified', 'Your bank confirmed it. Continue account setup to get your account number.');
-          }
-          return;
-        }
-        if (r?.status === 'failed' || r?.status === 'expired') {
-          faceSession.current = '';
-          setFaceUrl('');
-          notify('Not verified', 'The face check did not complete. You can try again.');
-          return;
-        }
-      }
-      // No verdict inside the session's life. Say so rather than leaving the button
-      // disabled and the customer staring at a screen that never moves.
-      if (faceSession.current === session) {
-        faceSession.current = '';
-        setFaceUrl('');
-        notify('Not verified', 'Your bank didn’t send a result. Use the SMS code, or try again.');
-      }
-    } finally { setFacePolling(false); }
-  };
-
-  // The dedicated-account lookup is authoritative; the wallet context carries the
-  // same NUBAN and covers the window before that request lands.
-  const acctNo = digitsOnly(account?.account_number || walletAcctNo);
-  const bank = account?.bank_name || walletBank || '';
-  const acctName = account?.account_name || walletAcctName || holderName || '';
-  const ready = !!acctNo;
-
-  const banks = useMemo(() => bankShortcuts(linked, 5), [linked]);
-
   const copyAccount = async () => {
-    if (!acctNo) return;
-    await Clipboard.setStringAsync(acctNo);
+    if (!account) return;
+    await Clipboard.setStringAsync(account.account_number);
     notify('Copied', 'Account number copied to clipboard');
   };
 
-  const shareDetails = async () => {
-    if (!acctNo) return;
-    const message = [
-      'My Zitch account details',
-      `Account number: ${acctNo}`,
-      bank ? `Bank: ${bank}` : '',
-      acctName ? `Name: ${acctName}` : '',
-    ].filter(Boolean).join('\n');
-    try {
-      await Share.share({ message });
-    } catch {
-      /* the user dismissed the share sheet - nothing to report */
-    }
-  };
-
-  // Copy first, then try to hand the user off to their bank app. The copy is the
-  // part that always works, so a missing/unopenable app is a silent no-op rather
-  // than an error the user can do nothing about.
-  const openBankApp = async (b: BankShortcut) => {
-    await copyAccount();
-    if (!b.url) return;
-    try {
-      await Linking.openURL(b.url);
-    } catch {
-      /* app not installed / scheme not registered - the number is already copied */
-    }
-  };
+  // Display the NUBAN grouped 4-3-3 ("9012 345 678"); copy stays the raw digits.
+  const grouped = (n: string) => n.replace(/^(\d{4})(\d{3})(\d{3}).*$/, '$1 $2 $3');
 
   const createAccount = async () => {
-    if (pendingAttempt) {
-      setOtpFlow(pendingAttempt);
-      setOtp('');
-      return;
-    }
-    if (!bvnVerified && bvn.length !== 11) return;
+    if (bvn.length !== 11) return;
     setCreating(true);
     try {
-      const r = await apiJson('/api/wallet/account/create/', bvnVerified ? {} : { bvn });
-      const pending = rememberAccountState(r);
+      const r = await walletService.createAccount(bvn);
       if (r?.success && r.account_number) {
         setAccount(r as DediAccount);
-      } else if (r?.success && r.otp_required) {
-        // Wema flow: the bank validated the BVN and SMSed a consent code to the phone
-        // number ON THE BVN RECORD - not to the number this account uses. `destination`
-        // is therefore only ever a number the bank itself named; empty means "we don't
-        // know it", which must not be papered over with "your phone".
-        setOtpFlow(pending || {
-          trackingId: String(r.tracking_id || ''),
-          destination: String(r.otp_destination || ''),
-          identity: otpIdentityLabel(r),
-        });
-        setOtp('');
-        // Same correction as the screen copy below: Wema accepting the request is
-        // not Wema delivering the SMS, and today it routinely is not.
-        notify('Code on its way', r.otp_destination
-          ? `Enter the code Wema is sending to ${r.otp_destination}`
-          : `Enter the code Wema is sending to the phone number registered on the ${otpIdentityLabel(r)}`);
       } else {
         notify('Error', r?.message || "We couldn't create your account. Please try again.");
       }
@@ -498,42 +60,6 @@ const AddMoney = () => {
       notify('Error', 'Something went wrong. Please try again later.');
     } finally {
       setCreating(false);
-    }
-  };
-
-  const verifyOtp = async () => {
-    if (!otpFlow || otp.length < 4) return;
-    setVerifying(true);
-    try {
-      const r = await apiJson('/api/wallet/wema/verify-otp/', {
-        // The server binds this opaque tracking ID to the identity used to start
-        // the flow.  Never resend the BVN (or let a client swap identity/type) at
-        // verification time.
-        otp, tracking_id: otpFlow.trackingId,
-      });
-      if (r?.success && r.account_number) {
-        setAccount(r as DediAccount);
-        setOtpFlow(null);
-        notify('Account ready', 'Your Zitch account number is ready - fund it by bank transfer.');
-      } else {
-        notify('Error', r?.message || 'OTP verification failed. Please try again.');
-      }
-    } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
-    } finally {
-      setVerifying(false);
-    }
-  };
-
-  const resendOtp = async () => {
-    if (!otpFlow) return;
-    try {
-      const r = await apiJson('/api/wallet/wema/resend-otp/', {
-        tracking_id: otpFlow.trackingId,
-      });
-      notify(r?.success ? 'OTP resent' : 'Error', r?.message || (r?.success ? 'Check your phone' : "Couldn't resend the OTP"));
-    } catch {
-      notify('Error', 'Something went wrong. Please try again later.');
     }
   };
 
@@ -546,308 +72,102 @@ const AddMoney = () => {
     );
   }
 
-  // OTP is a focused step in the middle of account creation - it gets the whole
-  // screen rather than sitting inside the menu, so there is one thing to do.
-  if (otpFlow) {
-    return (
-      <Screen>
-        <Header title="Add money" onBack={() => router.back()} />
-        <View style={{ alignItems: 'center', paddingHorizontal: 16, paddingTop: 6 }}>
-          <View style={{ width: 72, height: 72, borderRadius: 22, backgroundColor: iconTint(c.brand, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
-            <ZIcon name="lock" size={34} color={c.brand} />
-          </View>
-          <Text style={{ fontSize: 17, color: c.ink1, fontFamily: font.extrabold, marginTop: 16, textAlign: 'center' }}>
-            Enter the OTP
-          </Text>
-          <Text style={{ fontSize: 13.5, color: c.ink3, fontFamily: font.regular, marginTop: 8, textAlign: 'center', lineHeight: 20 }}>
-            {/* "is sending", not "sent": all we observe is that Wema accepted the
-                request: delivery is on their side and never confirmed back to us.
-                See wallet.views._otp_prompt. */}
-            Wema is sending a one-time code to {otpFlow.destination || `the phone number registered on your ${otpFlow.identity}`} to confirm your account.
-          </Text>
-        </View>
-
-        <View style={{ height: 18 }} />
-        <Field
-          label="One-time code"
-          value={otp}
-          onChangeText={(v) => setOtp(v.replace(/\D/g, '').slice(0, 8))}
-          keyboardType="number-pad"
-          placeholder="Enter the code"
-        />
-        <View style={{ height: 18 }} />
-        <Btn
-          label={verifying ? 'Confirming...' : 'Confirm code'}
-          icon="check"
-          disabled={verifying || otp.length < 4}
-          onPress={verifyOtp}
-        />
-        <Pressable onPress={resendOtp} hitSlop={10} style={{ alignItems: 'center', marginTop: 16 }}>
-          <Text style={{ fontSize: 13.5, color: c.brand, fontFamily: font.bold }}>Resend code</Text>
-        </Pressable>
-
-        {/* The way out for a code that never lands. It goes to the line registered
-            against the BVN, not necessarily the phone in their hand, so resending is
-            no help to the people who need help most - and this screen was otherwise
-            a dead end for them. The OTP stays live: whichever proof the bank returns
-            first creates the same account. */}
-        {faceAvailable ? (
-          <View style={{ borderTopWidth: 1, borderColor: c.line, marginTop: 20, paddingTop: 16 }}>
-            <Text style={{ fontSize: 13.5, color: c.ink1, fontFamily: font.bold, textAlign: 'center' }}>
-              No code arriving?
-            </Text>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular, textAlign: 'center', marginTop: 6, marginBottom: 14, lineHeight: 19 }}>
-              The code goes to the phone registered on your {otpFlow.identity}. Verify on Wema’s secure
-              face page instead - your face is never sent to or stored by Zitch.
-            </Text>
-            {/* Asked for only when this screen cannot already supply it — the raw
-                number is never stored, on the device or on the server, so an
-                attempt begun in an earlier session has nothing to reuse. */}
-            {faceIdAsked ? (
-              <>
-                <Field
-                  label={`Confirm your ${otpFlow.identity}`}
-                  value={faceId}
-                  onChangeText={(v) => setFaceId(v.replace(/\D/g, '').slice(0, 11))}
-                  keyboardType="number-pad"
-                  placeholder={`Your 11-digit ${otpFlow.identity}`}
-                />
-                <View style={{ height: 14 }} />
-              </>
-            ) : null}
-            <Btn
-              label={facePolling ? 'Waiting for Wema...' : creating ? 'Opening Wema...' : 'Verify with Wema face'}
-              icon="faceid"
-              variant="outline"
-              disabled={creating || facePolling}
-              onPress={verifyWithFace}
-            />
-          </View>
-        ) : null}
-
-        <Pressable onPress={() => { setOtpFlow(null); setOtp(''); }} hitSlop={10} style={{ alignItems: 'center', marginTop: 16 }}>
-          <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.medium }}>Start over</Text>
-        </Pressable>
-        <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => { setFaceUrl(''); loadAccount(); }} />
-      </Screen>
-    );
-  }
-
-  const chevron = <ZIcon name="right" size={18} color={c.ink3} stroke={2.2} />;
-
   return (
     <Screen>
-      <Header
-        title="Add money"
-        onBack={() => router.back()}
-        right={<HeaderLink label="History" onPress={() => router.push('/history')} />}
-      />
+      <Header title="Add money" onBack={() => router.back()} />
 
-      {loadFailed && !ready && (
-        <Card style={{ marginBottom: 14 }} pad={14}>
-          <Text style={{ fontFamily: font.regular, fontSize: 13, color: c.ink3, lineHeight: 19 }}>
-            We couldn’t check your funding account. Retry before creating a new one.
-          </Text>
-          <Pressable onPress={loadAccount} accessibilityRole="button" style={{ marginTop: 9 }}>
-            <Text style={{ fontFamily: font.bold, fontSize: 13, color: c.brand }}>Retry</Text>
-          </Pressable>
-        </Card>
-      )}
-
-      {/* ---- 1. Bank transfer: the primary route, expanded inline ---- */}
-      <Card pad={16}>
-        <ZItem
-          icon="bank"
-          title="Bank Transfer"
-          sub="Add money via mobile or internet banking"
-          right={ready ? chevron : undefined}
-          onPress={ready ? () => router.push('/banktransfer') : undefined}
-          last
-        />
-        <DashedRule style={{ marginTop: 4, marginBottom: 16 }} />
-
-        {ready ? (
-          <>
-            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.medium }}>Zitch Account Number</Text>
-            <NText
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.72}
-              style={{ fontSize: 31, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 0.6, marginTop: 5, fontVariant: ['tabular-nums'] }}
-            >
-              {groupAccount(acctNo)}
-            </NText>
-            {bank || acctName ? (
-              <Text numberOfLines={1} style={{ fontSize: 12.5, color: c.ink2, fontFamily: font.medium, marginTop: 6 }}>
-                {[bank, acctName].filter(Boolean).join(' · ')}
+      {account ? (
+        <>
+          <Label>Fund by bank transfer</Label>
+          <View style={{ backgroundColor: c.surface, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 18 }}>
+            <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular }}>
+              Transfer any amount to this account from any bank app — your Zitch wallet is credited
+              automatically, usually within seconds.
+            </Text>
+            <View style={{ height: 1, backgroundColor: c.line, marginVertical: 14 }} />
+            {/* Design order top-to-bottom: bank name, grouped number, account name */}
+            <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
+              {account.bank_name}
+            </Text>
+            <Text style={{ fontSize: 26, color: c.ink1, fontFamily: font.extrabold, letterSpacing: 1.5, marginTop: 6, marginBottom: 2, fontVariant: ['tabular-nums'] }}>
+              {grouped(account.account_number)}
+            </Text>
+            {account.account_name ? (
+              <Text style={{ fontSize: 13, color: c.ink2, fontFamily: font.semibold }}>
+                {account.account_name}
               </Text>
             ) : null}
-
-            <View style={{ flexDirection: 'row', gap: 12, marginTop: 16 }}>
-              <TintBtn label="Copy Number" icon="copy" onPress={copyAccount} />
-              <View style={{ flex: 1 }}>
-                <Btn label="Share Details" icon="share" size="md" onPress={shareDetails} />
-              </View>
+            <View style={{ marginTop: 14 }}>
+              <Btn label="Copy account number" icon="copy" variant="ghost" onPress={copyAccount} />
             </View>
+          </View>
 
-            {/* Bank shortcuts - copy the number and hand off to the app they'll
-                actually transfer from. */}
-            <View style={{ backgroundColor: c.surface2, borderRadius: radius.md, padding: 14, marginTop: 16 }}>
-              <Text style={{ fontSize: 12, color: c.ink3, fontFamily: font.medium }}>Tap a bank to copy &amp; open its app</Text>
-              <View style={{ flexDirection: 'row', gap: 6, marginTop: 12 }}>
-                {banks.map((b, i) => {
-                  const tones = [c.brand, c.violet, c.amber, c.brandDeep, c.lime];
-                  const tone = tones[i % tones.length];
-                  return (
-                    <Pressable
-                      key={b.name}
-                      onPress={() => openBankApp(b)}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Copy account number and open ${b.name}`}
-                      style={({ pressed }) => ({ flex: 1, alignItems: 'center', gap: 6, opacity: pressed ? 0.7 : 1 })}
-                    >
-                      <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: iconTint(tone, theme === 'dark'), alignItems: 'center', justifyContent: 'center' }}>
-                        <Text style={{ fontSize: 14, fontFamily: font.extrabold, color: tone }}>{monogram(b.name)}</Text>
-                      </View>
-                      <Text numberOfLines={1} style={{ fontSize: 10.5, color: c.ink3, fontFamily: font.medium, textAlign: 'center' }}>
-                        {b.name}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 14 }}>
-              <View style={{ marginTop: 1 }}>
-                <ZIcon name="check" size={14} color={c.lime} stroke={2.6} />
-              </View>
-              <NText style={{ flex: 1, fontSize: 11.5, color: c.ink3, fontFamily: font.regular, lineHeight: 17 }}>
-                {`This account is permanently yours - transfers land automatically, usually in seconds. Tier ${account?.bank_tier || 1}: single inflow up to ${account?.bank_tier === 2 ? '₦100,000' : account?.bank_tier === 3 ? 'no stated limit' : '₦50,000'}, maximum balance ${account?.bank_tier === 2 ? '₦500,000' : account?.bank_tier === 3 ? 'with no stated limit' : '₦300,000'}.`}
-              </NText>
-            </View>
-          </>
-        ) : (
-          // No dedicated NUBAN yet - the BVN round-trip that mints one lives right
-          // where the account number will appear.
-          <>
-            <Text style={{ fontSize: 15, color: c.ink1, fontFamily: font.bold }}>
-              {pendingAttempt ? 'Finish your funding account' : bvnVerified ? 'Finish with NIN or wait for Wema' : 'Get your account number'}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 18, paddingHorizontal: 4 }}>
+            <ZIcon name="check" size={16} color={c.lime} stroke={2.6} />
+            <Text style={{ flex: 1, fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>
+              Save this account — it's permanently yours. Transfers reflect automatically, no need to confirm anything here.
             </Text>
-            <Text style={{ fontSize: 13, color: c.ink3, fontFamily: font.regular, marginTop: 6, lineHeight: 20 }}>
-              {pendingAttempt
-                ? `Your ${pendingAttempt.identity} verification is in progress. Enter the Wema SMS code already sent to finish issuing your account number.`
-                : bvnVerified
-                  ? 'Your BVN is verified and will not be requested again. Wema has not issued or linked your funding account number yet; use NIN verification or wait for the bank sync.'
-                  : 'Enter your BVN to get a dedicated account for funding by bank transfer. It is verified securely; we never store it.'}
-            </Text>
-            {holderName ? (
-              <Text style={{ fontSize: 12.5, color: c.ink2, fontFamily: font.semibold, marginTop: 8 }}>
-                Opened in your name · {holderName}
-              </Text>
-            ) : null}
-            {!bvnVerified ? (
-              <>
-                <View style={{ height: 14 }} />
-                <Field
-                  label="Bank Verification Number (BVN)"
-                  value={bvn}
-                  onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))}
-                  keyboardType="number-pad"
-                  placeholder="Enter your 11-digit BVN"
-                />
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8 }}>
-                  <ZIcon name="lock" size={13} color={c.ink3} />
-                  <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
-                    Dial *565*0# on your registered line to get your BVN.
-                  </Text>
+          </View>
+
+          {/* other ways to fund */}
+          <Label>Other ways to add money</Label>
+          {[
+            { icon: 'bank', title: 'Cash Deposit', sub: 'Deposit cash at a nearby Zitch agent', msg: 'Agent cash deposit is rolling out soon.' },
+            { icon: 'qr', title: 'Show my QR code', sub: 'Let someone scan to pay you', msg: 'Your receive-QR is coming soon.' },
+          ].map((m) => (
+            <Pressable key={m.title} onPress={() => notify('Coming soon', m.msg)}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: c.surface, borderRadius: 16, borderWidth: 1, borderColor: c.line, padding: 14, marginBottom: 10 }}>
+                <View style={{ width: 40, height: 40, borderRadius: 12, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+                  <ZIcon name={m.icon} size={20} color={c.brand} />
                 </View>
-              </>
-            ) : null}
-            <View style={{ height: 16 }} />
-            <Btn
-              label={pendingAttempt ? 'Enter Wema SMS code' : creating ? 'Creating your account...' : bvnVerified ? 'Waiting for Wema account...' : 'Get my account'}
-              icon="bank"
-              disabled={creating || (bvnVerified && !pendingAttempt) || (!bvnVerified && !pendingAttempt && bvn.length !== 11)}
-              onPress={createAccount}
-            />
-            {bvnVerified && !pendingAttempt ? (
-              <>
-                <View style={{ height: 10 }} />
-                <Btn
-                  label="Set up with NIN instead"
-                  icon="user"
-                  variant="outline"
-                  disabled={creating}
-                  onPress={() => router.push('/kyc')}
-                />
-              </>
-            ) : null}
-            {/* The bank's own alternative to the SMS code, offered up front as well
-                as on the code step - the customers who need it are exactly the ones
-                whose BVN is registered to a line they no longer carry, and they have
-                no way to know that until the code fails to arrive. */}
-            {faceAvailable && !bvnVerified && !pendingAttempt ? (
-              <>
-                <View style={{ height: 10 }} />
-                <Btn
-                  label={facePolling ? 'Waiting for Wema...' : 'Verify with Wema face instead'}
-                  icon="faceid"
-                  variant="outline"
-                  disabled={creating || facePolling || bvn.length !== 11}
-                  onPress={verifyWithFace}
-                />
-              </>
-            ) : null}
-          </>
-        )}
-      </Card>
-      <FaceVerifyModal url={faceUrl} visible={!!faceUrl} onClose={() => { setFaceUrl(''); loadAccount(); }} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 14, fontFamily: font.bold, color: c.ink1 }}>{m.title}</Text>
+                  <Text style={{ fontSize: 12.5, color: c.ink3, fontFamily: font.regular }}>{m.sub}</Text>
+                </View>
+                <ZIcon name="right" size={18} color={c.ink3} />
+              </View>
+            </Pressable>
+          ))}
+        </>
+      ) : (
+        <View style={{ paddingTop: 12 }}>
+          <View style={{ alignItems: 'center', paddingHorizontal: 16 }}>
+            <View style={{ width: 84, height: 84, borderRadius: 26, backgroundColor: 'rgba(15,162,149,.12)', alignItems: 'center', justifyContent: 'center' }}>
+              <ZIcon name="bank" size={40} color={c.brand} />
+            </View>
+            <Text style={{ fontSize: 19, color: c.ink1, fontFamily: font.extrabold, marginTop: 22, textAlign: 'center' }}>
+              Get your Zitch account number
+            </Text>
+            <Text style={{ fontSize: 14, color: c.ink3, fontFamily: font.regular, marginTop: 10, textAlign: 'center', lineHeight: 21 }}>
+              Enter your BVN to instantly get a dedicated account for funding by bank transfer — no
+              card needed. It's verified securely; we never store it.
+            </Text>
+          </View>
 
-      {/* ---- 2–5. The other ways in, one card each ---- */}
-      <Card pad={16} style={{ marginTop: 12 }}>
-        <ZItem
-          icon="deposit"
-          title="Cash Deposit"
-          sub="Fund your account with nearby agents"
-          right={chevron}
-          onPress={() => router.push('/comingsoon')}
-          last
-        />
-      </Card>
+          <View style={{ height: 22 }} />
+          <Field
+            label="Bank Verification Number (BVN)"
+            value={bvn}
+            onChangeText={(v) => setBvn(v.replace(/\D/g, '').slice(0, 11))}
+            keyboardType="number-pad"
+            placeholder="Enter your 11-digit BVN"
+          />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 8, paddingHorizontal: 2 }}>
+            <ZIcon name="lock" size={13} color={c.ink3} />
+            <Text style={{ fontSize: 11.5, color: c.ink3, fontFamily: font.regular }}>
+              Dial *565*0# on your registered line to get your BVN.
+            </Text>
+          </View>
 
-      <Card pad={16} style={{ marginTop: 12 }}>
-        <ZItem
-          icon="card"
-          title="Top-up with Card/Account"
-          sub="Add money directly from your bank card or account"
-          right={chevron}
-          onPress={() => router.push('/linkbank')}
-          last
-        />
-      </Card>
-
-      <Card pad={16} style={{ marginTop: 12 }}>
-        <ZItem
-          icon="phone"
-          title="Bank USSD"
-          sub="With other banks’ USSD codes"
-          right={chevron}
-          onPress={() => router.push('/ussd')}
-          last
-        />
-      </Card>
-
-      <Card pad={16} style={{ marginTop: 12 }}>
-        <ZItem
-          icon="qr"
-          title="Scan my QR Code"
-          sub="Show your QR code to any Zitch user"
-          right={chevron}
-          onPress={() => router.push('/scan')}
-          last
-        />
-      </Card>
+          <View style={{ height: 22 }} />
+          <Btn
+            label={creating ? 'Creating your account…' : 'Get my account'}
+            icon="bank"
+            disabled={creating || bvn.length !== 11}
+            onPress={createAccount}
+          />
+        </View>
+      )}
     </Screen>
   );
 };
