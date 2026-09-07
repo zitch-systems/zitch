@@ -8,7 +8,7 @@ services:
     # Money movement must not run on a sleeping/free instance. This takes effect
     # only when an operator deliberately syncs the Blueprint.
     plan: starter
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: commit
     buildCommand: "./build.sh"
     # Bind to 0.0.0.0:$PORT so Render's port scan can detect the service. Without
     # an explicit --bind, gunicorn listens on 127.0.0.1:8000 (loopback only), which
