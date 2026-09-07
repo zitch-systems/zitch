@@ -396,16 +396,33 @@ def attach_existing_bank_account(user, *, using_bvn: bool | None = None) -> tupl
     return wallet, "Reconnected the account the bank already held."
 
 
+BANK_PAYOUT_META_FILTER = (
+    Q(meta__has_key="bank")
+    | Q(meta__has_key="wema_transfer")
+    | Q(meta__has_key="account")
+    | Q(meta__has_key="recipient_account")
+    | Q(meta__has_key="recipient_account_number")
+)
+
+
 def is_bank_payout(txn) -> bool:
     """True for a bank-transfer (Wema payout) payout, as opposed to a VTU.ng
     purchase.
 
-    Both leave a PENDING + ``meta.reconcile`` outbound row, but a payout is
-    settled by the transfer webhook (settle_payout / reverse_transfer) and has
-    NO VTU.ng record — requerying it via vtu_requery would query the wrong provider
-    for a reference VTU.ng never saw. Bank payouts are the only such rows that
-    carry a ``bank`` in meta (set in transfers.services.execute_payout)."""
-    return bool((txn.meta or {}).get("bank"))
+    Payout rows used to be identified only by ``meta.bank``. That stranded real
+    pending transfers whenever another caller or older deploy persisted the bank
+    details under a different durable key, and it also let those rows fall into
+    the VTU requery sweep. Treat the Wema transfer marker and recipient account
+    fields as bank-payout evidence too; terminal state changes remain idempotent.
+    """
+    meta = txn.meta or {}
+    return bool(
+        meta.get("bank")
+        or meta.get("wema_transfer")
+        or meta.get("account")
+        or meta.get("recipient_account")
+        or meta.get("recipient_account_number")
+    )
 
 
 def pending_vtu_purchases(cutoff):
@@ -418,7 +435,7 @@ def pending_vtu_purchases(cutoff):
         direction=Transaction.OUT,
         meta__reconcile=True,
         created__lte=cutoff,
-    ).exclude(meta__has_key="bank")
+    ).exclude(BANK_PAYOUT_META_FILTER)
 
 
 @db_transaction.atomic
@@ -750,22 +767,17 @@ def apply_wema_credit(wallet, tx: dict, self_refs: list[str] | None = None) -> T
 
 
 def pending_bank_payouts(cutoff):
-    """PENDING outbound bank-transfer payouts (rows carrying a ``bank`` in meta),
-    due for settlement reconciliation.
+    """PENDING outbound bank-transfer payouts due for settlement reconciliation.
 
-    Wema exposes NO payout
-    webhook, so a Wema transfer returned PENDING/PROCESSING would otherwise sit
-    debited forever. reconcile_wema polls confirm_transfer_status for these and
-    settles/reverses them. The mirror of pending_vtu_purchases (which EXCLUDES
-    bank payouts)."""
-    # The bank marker is the durable discriminator. Older payout rows predate the
-    # reconcile flag, and filtering on it strands exactly those customer debits
-    # forever. Include every pending outbound bank payout; terminal rows remain
-    # excluded and the provider lookup/state transition are idempotent.
+    Wema exposes NO payout webhook, so a Wema transfer returned PENDING/PROCESSING
+    would otherwise sit debited forever. Include all durable bank-payout metadata
+    shapes, not only the newest ``meta.bank`` field, so old WhatsApp/app rows do
+    not get stuck showing Processing.
+    """
     return Transaction.objects.filter(
+        BANK_PAYOUT_META_FILTER,
         transaction_status=Transaction.PENDING,
         direction=Transaction.OUT,
-        meta__has_key="bank",
         created__lte=cutoff,
     )
 
