@@ -570,17 +570,19 @@ def wema_account_reference(user) -> str:
 def wema_provisioned_wallets():
     """Wallets whose funding account lives on Wema and must be swept for deposits.
 
-    Older reserved-account code stored the generic ``ZITCH-WALLET-`` reference
-    even though the number was minted on Wema. Those accounts look valid in the
-    app and on WhatsApp, but the funding reconciler skipped them because it only
-    scanned ``WEMA-WALLET-`` references. Include that legacy prefix for real
-    Wema accounts so existing customers' deposits are polled without needing a
-    manual data repair; demo/mock accounts stay excluded.
+    Older reserved-account code could store either the generic ``ZITCH-WALLET-``
+    reference or incomplete bank metadata even though the number was minted on
+    Wema. Those accounts look valid in the app and on WhatsApp, but the funding
+    reconciler skipped them because it only scanned ``WEMA-WALLET-`` references.
+    Include real Wema-style ``045`` NUBANs so existing customers' deposits are
+    polled without needing a manual data repair; demo/mock accounts stay
+    excluded.
     """
     return (Wallet.objects
             .filter(Q(account_reference__startswith=WEMA_ACCOUNT_REF_PREFIX)
                     | (Q(account_reference__startswith="ZITCH-WALLET-")
-                       & Q(bank_name__icontains="Wema")))
+                       & Q(bank_name__icontains="Wema"))
+                    | Q(account_number__regex=r"^045[0-9]{7}$"))
             .exclude(account_number="")
             .exclude(bank_name__icontains=DEMO_ACCOUNT_MARKER))
 
